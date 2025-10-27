@@ -12,7 +12,6 @@ import Metal
 import MetalPerformanceShaders
 import OSLog
 import simd
-import DomainPorts
 
 #if canImport(MetalPerformanceShaders)
 public final class MPSVolumeRenderer {
@@ -57,8 +56,8 @@ public final class MPSVolumeRenderer {
 
     private let device: any MTLDevice
     private let commandQueue: any MTLCommandQueue
-    private let logger = Logger(subsystem: "com.isis.metalvolumetrics",
-                                category: "Imaging.MPSVolumeRenderer")
+    private let logger = Logger(subsystem: "com.isis.volumerenderingkit",
+                                category: "MPSVolumeRenderer")
     private var histogramInfo: MPSImageHistogramInfo
     private let histogramKernel: MPSImageHistogram
 

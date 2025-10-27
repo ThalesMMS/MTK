@@ -13,7 +13,7 @@ import Metal
 import OSLog
 import SceneKit
 import simd
-import DomainPorts
+import VolumeRenderingCore
 
 public final class MPRPlaneMaterial: SCNMaterial, SCNProgramDelegate {
     public enum BlendMode: Int32, CaseIterable {
@@ -52,8 +52,8 @@ public final class MPRPlaneMaterial: SCNMaterial, SCNProgramDelegate {
     public private(set) var dimension: SIMD3<Int32> = SIMD3<Int32>(1, 1, 1)
     public private(set) var resolution: SIMD3<Float> = SIMD3<Float>(1, 1, 1)
     private var textureFactory: VolumeTextureFactory = VolumeTextureFactory(part: .none)
-    private let logger = Logger(subsystem: "com.isis.metalvolumetrics",
-                                category: "Volumetric.MPRPlaneMaterial")
+    private let logger = Logger(subsystem: "com.isis.volumerenderingkit",
+                                category: "MPRPlaneMaterial")
 
     public init(device: any MTLDevice) {
         fallbackVolumeTexture = MPRPlaneMaterial.makeFallbackVolumeTexture(device: device)

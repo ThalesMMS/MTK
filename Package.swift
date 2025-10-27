@@ -33,9 +33,6 @@ let package = Package(
                 .product(name: "ZIPFoundation", package: "ZIPFoundation")
             ],
             path: "Sources/VolumeRenderingCore",
-            exclude: [
-                "Shaders"
-            ],
             resources: [
                 .process("Resources")
             ]
