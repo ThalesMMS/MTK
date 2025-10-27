@@ -13,13 +13,10 @@ import Metal
 import OSLog
 import SceneKit
 import simd
-import DomainPorts
+import VolumeRenderingCore
 
 public final class VolumeCubeMaterial: SCNMaterial, SCNProgramDelegate {
-    public enum Preset: String, CaseIterable, Identifiable {
-        public var id: RawValue { rawValue }
-        case ct_arteries, ct_entire, ct_lung
-    }
+    public typealias Preset = VolumeRenderingBuiltinPreset
 
     public enum Method: String, CaseIterable, Identifiable {
         case dvr
@@ -118,8 +115,8 @@ public final class VolumeCubeMaterial: SCNMaterial, SCNProgramDelegate {
     private var transferFunctionTexture: (any MTLTexture)?
 
     private(set) var textureGenerator: VolumeTextureFactory = VolumeTextureFactory(part: .none)
-    private let logger = Logger(subsystem: "com.isis.metalvolumetrics",
-                                category: "Volumetric.VolumeCubeMaterial")
+    private let logger = Logger(subsystem: "com.isis.volumerenderingkit",
+                                category: "VolumeCubeMaterial")
 
     public var tf: TransferFunction?
     public private(set) var transferFunctionDomain: ClosedRange<Float>?
@@ -486,8 +483,8 @@ extension VolumeCubeMaterial {
     public func program(_ program: SCNProgram, handleError error: any Error) {
         logger.error("SceneKit program error: \(error.localizedDescription)")
     }
-
 }
+
 
 #if DEBUG
 @_spi(Testing) extension VolumeCubeMaterial {

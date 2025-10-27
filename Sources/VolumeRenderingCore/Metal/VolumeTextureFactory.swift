@@ -107,7 +107,7 @@ private extension VolumeTextureFactory {
                                    spacing: VolumeSpacing,
                                    pixelFormat: VolumePixelFormat,
                                    intensity: ClosedRange<Int32>) -> VolumeDataset {
-        guard let url = Bundle.main.url(forResource: name, withExtension: "raw.zip") else {
+        guard let url = Bundle.module.url(forResource: name, withExtension: "raw.zip") else {
             resourceLogger.warning("Missing resource: \(name).raw.zip")
             return placeholderDataset()
         }

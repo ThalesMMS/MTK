@@ -1,6 +1,6 @@
 //
 //  MetalRuntimeGuard.swift
-//  MetalVolumetrics
+//  VolumeRenderingKit
 //
 //  Provides runtime inspection utilities to confirm that the host GPU supports
 //  the features required by the Metal volumetric rendering stack. Mirrors the
@@ -52,7 +52,8 @@ public enum MetalRuntimeGuard {
         case unavailable(Status)
     }
 
-    private static let logger = Logger(subsystem: "com.isis.dicomviewer", category: "MetalRuntimeGuard")
+    private static let logger = Logger(subsystem: "com.isis.volumerenderingkit",
+                                       category: "MetalRuntimeGuard")
     private static let lock = NSLock()
     private static var cachedStatus: Status?
     private static var overrideProvider: MetalRuntimeAvailabilityProviding?

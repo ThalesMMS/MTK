@@ -9,7 +9,6 @@
 
 import Foundation
 import simd
-import DomainPorts
 
 @preconcurrency
 public actor MetalMPRAdapter: MPRReslicePort {

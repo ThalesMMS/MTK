@@ -1,6 +1,6 @@
 //
 //  MetalRuntimeAvailability.swift
-//  MetalVolumetrics
+//  VolumeRenderingKit
 //
 //  Lightweight bridge exposing Metal runtime guard details to the app target
 //  without requiring it to depend directly on the Support module. This keeps
@@ -8,7 +8,6 @@
 //
 
 import Foundation
-import Support
 
 public enum MetalRuntimeAvailability {
     @inlinable

@@ -1,6 +1,6 @@
 //
 //  VolumeDataReader.swift
-//  MetalVolumetrics
+//  VolumeRenderingKit
 //
 //  Lightweight helper that exposes random-access and interpolated reads over
 //  the volumetric dataset buffers used by the Metal adapters. The reader keeps
@@ -11,7 +11,6 @@
 
 import Foundation
 import simd
-import DomainPorts
 
 struct VolumeDataReader {
     let dataset: VolumeDataset

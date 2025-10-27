@@ -99,7 +99,7 @@ public final class MetalRaycaster {
         } else if let defaultLibrary = device.makeDefaultLibrary() {
             resolvedLibrary = defaultLibrary
         } else if #available(iOS 13.0, tvOS 13.0, macOS 11.0, *),
-                  let bundleLibrary = try? device.makeDefaultLibrary(bundle: Bundle.main) {
+                  let bundleLibrary = try? device.makeDefaultLibrary(bundle: Bundle.module) {
             resolvedLibrary = bundleLibrary
         } else {
             resolvedLibrary = nil
@@ -197,6 +197,11 @@ public final class MetalRaycaster {
         )
         currentDataset = resources
         return resources
+    }
+
+    @discardableResult
+    public func load(dataset: VolumeDataset) throws -> DatasetResources {
+        try prepare(dataset: dataset, texture: nil)
     }
 
     @discardableResult

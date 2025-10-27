@@ -1,6 +1,6 @@
 //
 //  MetalVolumeRenderingAdapter.swift
-//  MetalVolumetrics
+//  VolumeRenderingKit
 //
 //  Provides a CPU-backed approximation of the Metal volume renderer so unit
 //  tests can exercise the domain contracts without depending on GPU
@@ -16,8 +16,6 @@ import CoreGraphics
 import Metal
 import OSLog
 import simd
-import DomainPorts
-@preconcurrency import MetalRendering
 
 @preconcurrency
 public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
@@ -38,7 +36,7 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
         public var window: ClosedRange<Int32>
     }
 
-    private let logger = Logger(subsystem: "com.isis.metalvolumetrics",
+    private let logger = Logger(subsystem: "com.isis.volumerenderingkit",
                                 category: "MetalVolumeRenderingAdapter")
     private var overrides = Overrides()
     private var currentPreset: VolumeRenderingPreset?
