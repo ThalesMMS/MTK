@@ -1,6 +1,6 @@
 //
 //  MetalRuntimeGuard.swift
-//  VolumeRenderingKit
+//  MTK
 //
 //  Provides runtime inspection utilities to confirm that the host GPU supports
 //  the features required by the Metal volumetric rendering stack. Mirrors the

@@ -3,7 +3,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "VolumeRenderingKit",
+    name: "MTK",
     defaultLocalization: "en",
     platforms: [
         .iOS(.v17),

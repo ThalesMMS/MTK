@@ -24,20 +24,20 @@ public final class MPRPlaneMaterial: SCNMaterial, SCNProgramDelegate {
     }
 
     public struct Uniforms: sizeable {
-        var voxelMinValue: Int32 = -1024
-        var voxelMaxValue: Int32 = 3071
-        var blendMode: Int32 = BlendMode.single.rawValue
-        var numSteps: Int32 = 1
-        var flipVertical: Int32 = 0
-        var slabHalf: Float = 0
-        var _pad0: SIMD2<Float> = .zero
+        public var voxelMinValue: Int32 = -1024
+        public var voxelMaxValue: Int32 = 3071
+        public var blendMode: Int32 = BlendMode.single.rawValue
+        public var numSteps: Int32 = 1
+        public var flipVertical: Int32 = 0
+        public var slabHalf: Float = 0
+        public var _pad0: SIMD2<Float> = .zero
 
-        var planeOrigin: SIMD3<Float> = .zero
-        var _pad1: Float = 0
-        var planeX: SIMD3<Float> = SIMD3<Float>(1, 0, 0)
-        var _pad2: Float = 0
-        var planeY: SIMD3<Float> = SIMD3<Float>(0, 1, 0)
-        var _pad3: Float = 0
+        public var planeOrigin: SIMD3<Float> = .zero
+        public var _pad1: Float = 0
+        public var planeX: SIMD3<Float> = SIMD3<Float>(1, 0, 0)
+        public var _pad2: Float = 0
+        public var planeY: SIMD3<Float> = SIMD3<Float>(0, 1, 0)
+        public var _pad3: Float = 0
 
         public init() {}
     }

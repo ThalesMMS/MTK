@@ -1,6 +1,6 @@
 //
 //  MetalRaycaster.swift
-//  VolumeRenderingKit
+//  MTK
 //
 //  Facade over the Metal pipelines backing volume rendering and MPR.
 //

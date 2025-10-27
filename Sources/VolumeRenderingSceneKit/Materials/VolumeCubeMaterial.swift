@@ -53,54 +53,54 @@ public final class VolumeCubeMaterial: SCNMaterial, SCNProgramDelegate {
     public struct Uniforms: sizeable {
         /// Flag usada pelos kernels de volume para decidir se aplicam iluminação
         /// difusa/especular durante a composição.
-        var isLightingOn: Int32 = 1
+        public var isLightingOn: Int32 = 1
 
         /// Inverte a marcha do raio em `direct_volume_rendering` quando `1`,
         /// fazendo o shader consumir o volume de trás para frente.
-        var isBackwardOn: Int32 = 0
+        public var isBackwardOn: Int32 = 0
 
         /// Método de renderização consumido pela função `volume_fragment` para
         /// decidir qual kernel especializado chamar.
-        var method: Int32 = Method.dvr.idInt32
+        public var method: Int32 = Method.dvr.idInt32
 
         /// Número de passos de ray marching (`quality`) para amostragem do
         /// volume, passado diretamente para os utilitários `VR::initRayMarch`.
-        var renderingQuality: Int32 = 512
+        public var renderingQuality: Int32 = 512
 
         /// Limites de intensidade HU utilizados pelos kernels para normalizar o
         /// voxel corrente antes de consultar a transfer function.
-        var voxelMinValue: Int32 = -1024
-        var voxelMaxValue: Int32 = 3071
+        public var voxelMinValue: Int32 = -1024
+        public var voxelMaxValue: Int32 = 3071
 
         /// Faixa de densidade normalizada mantida para gating de projeções
         /// legacy (slabs espessos).
-        var densityFloor: Float = 0.02
-        var densityCeil: Float = 1.0
+        public var densityFloor: Float = 0.02
+        public var densityCeil: Float = 1.0
 
         /// Janelas HU e flag de gating avaliadas em `projection_rendering` e
         /// `direct_volume_rendering` para descartar voxels fora do intervalo.
-        var gateHuMin: Int32 = -900
-        var gateHuMax: Int32 = -500
-        var useHuGate: Int32 = 0
+        public var gateHuMin: Int32 = -900
+        public var gateHuMax: Int32 = -500
+        public var useHuGate: Int32 = 0
 
         /// Dimensões do volume em voxels, utilizadas pelo shader para calcular
         /// gradientes corretos considerando o espaçamento real das amostras.
-        var dimX: Int32 = 1
-        var dimY: Int32 = 1
-        var dimZ: Int32 = 1
+        public var dimX: Int32 = 1
+        public var dimY: Int32 = 1
+        public var dimZ: Int32 = 1
 
         /// Flag preservada para projeções espessas utilizarem a mesma transfer
         /// function do DVR quando necessária.
-        var useTFProj: Int32 = 0
+        public var useTFProj: Int32 = 0
 
         /// Faixa normalizada [0, 1] consumida pelos kernels para mapear HU
         /// para coordenadas na textura de transfer function.
-        var tfCoordMin: Float = 0
-        var tfCoordMax: Float = 1
+        public var tfCoordMin: Float = 0
+        public var tfCoordMax: Float = 1
 
         /// Espaços reservados para manter alinhamento com a struct Metal.
-        var _pad0: Int32 = 0
-        var _pad1: Int32 = 0
+        public var _pad0: Int32 = 0
+        public var _pad1: Int32 = 0
 
         public init() {}
     }

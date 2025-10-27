@@ -22,7 +22,7 @@ import MetalPerformanceShaders
 import MetalKit
 #endif
 import VolumeRenderingCore
-import VolumeRenderingCore
+import VolumeRenderingSceneKit
 
 @MainActor extension VolumetricSceneController {
     /// Encadeia o dataset entre SceneKit e MPS, recalculando bounds do volume
@@ -241,14 +241,14 @@ import VolumeRenderingCore
 #endif
     }
 
-    func setLighting(enabled: Bool) async {
+    public func setLighting(enabled: Bool) async {
         volumeMaterial.setLighting(on: enabled)
 #if canImport(MetalPerformanceShaders) && canImport(MetalKit)
         mpsDisplay?.updateLighting(enabled: enabled)
 #endif
     }
 
-    func setSamplingStep(_ step: Float) async {
+    public func setSamplingStep(_ step: Float) async {
         baseSamplingStep = step
         volumeMaterial.setStep(step)
 #if canImport(MetalPerformanceShaders) && canImport(MetalKit)
@@ -256,21 +256,21 @@ import VolumeRenderingCore
 #endif
     }
 
-    func setProjectionsUseTransferFunction(_ enabled: Bool) async {
+    public func setProjectionsUseTransferFunction(_ enabled: Bool) async {
         volumeMaterial.setUseTFOnProjections(enabled)
 #if canImport(MetalPerformanceShaders) && canImport(MetalKit)
         mpsDisplay?.updateProjectionsUseTransferFunction(enabled)
 #endif
     }
 
-    func setProjectionDensityGate(floor: Float, ceil: Float) async {
+    public func setProjectionDensityGate(floor: Float, ceil: Float) async {
         volumeMaterial.setDensityGate(floor: floor, ceil: ceil)
 #if canImport(MetalPerformanceShaders) && canImport(MetalKit)
         mpsDisplay?.updateDensityGate(floor: floor, ceil: ceil)
 #endif
     }
 
-    func setProjectionHuGate(enabled: Bool, min: Int32, max: Int32) async {
+    public func setProjectionHuGate(enabled: Bool, min: Int32, max: Int32) async {
         volumeMaterial.setHuGate(enabled: enabled)
         if enabled {
             volumeMaterial.setHuWindow(minHU: min, maxHU: max)
@@ -302,7 +302,7 @@ import VolumeRenderingCore
     }
 
 
-    func setRenderMethod(_ method: VolumeCubeMaterial.Method) async {
+    public func setRenderMethod(_ method: VolumeCubeMaterial.Method) async {
         await setVolumeMethod(method)
 #if canImport(MetalPerformanceShaders) && canImport(MetalKit)
         mpsDisplay?.updateRenderMethod(method)
@@ -497,7 +497,7 @@ import VolumeRenderingCore
         requestImmediateSceneViewFrame()
     }
 
-    func resetView() async {
+    public func resetView() async {
         guard datasetApplied else { return }
 
         if let geometry {

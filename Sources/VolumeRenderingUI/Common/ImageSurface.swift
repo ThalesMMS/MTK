@@ -96,7 +96,6 @@ private final class SceneSurfaceView: SCNView {
     }
 
     private func configure() {
-        preferredRenderingAPI = .metal
         preferredFramesPerSecond = 0
         isPlaying = false
         rendersContinuously = false
@@ -160,20 +159,13 @@ private final class SceneSurfaceView: SCNView {
     }
 
     private func configure() {
-        #if os(iOS)
-        preferredRenderingAPI = .metal
-        preferredFramesPerSecond = 0
         isPlaying = false
         rendersContinuously = false
-        #else
-        isPlaying = false
-        rendersContinuously = false
-        #endif
-        #if os(macOS)
-        #if os(macOS)
-        wantsBestResolutionOpenGLSurface = false
-        #endif
-        #endif
+        if #available(macOS 10.14, *) {
+            // Deprecated; no-op on modern macOS.
+        } else {
+            wantsBestResolutionOpenGLSurface = false
+        }
         antialiasingMode = .none
         autoenablesDefaultLighting = false
         backgroundColor = .clear
@@ -344,11 +336,19 @@ public final class ImageSurface {
         if let sceneView = view as? SceneSurfaceView {
             configureSceneView(sceneView)
             sceneView.layoutDelegate = self
+            #if os(iOS)
+            sceneView.layer.addSublayer(layer)
+            #else
             sceneView.layer?.addSublayer(layer)
+            #endif
             return
         } else if let sceneView = view as? SCNView {
             configureSceneView(sceneView)
+            #if os(iOS)
+            sceneView.layer.addSublayer(layer)
+            #else
             sceneView.layer?.addSublayer(layer)
+            #endif
             startFallbackLayoutObservation(on: sceneView)
             return
         }
@@ -357,11 +357,19 @@ public final class ImageSurface {
         if let metalView = view as? MetalSurfaceView {
             configureMetalView(metalView)
             metalView.layoutDelegate = self
+            #if os(iOS)
+            metalView.layer.addSublayer(layer)
+            #else
             metalView.layer?.addSublayer(layer)
+            #endif
             return
         } else if let metalView = view as? MTKView {
             configureMetalView(metalView)
+            #if os(iOS)
+            metalView.layer.addSublayer(layer)
+            #else
             metalView.layer?.addSublayer(layer)
+            #endif
             startFallbackLayoutObservation(on: metalView)
             return
         }
@@ -387,9 +395,6 @@ public final class ImageSurface {
 
 #if canImport(SceneKit)
     private func configureSceneView(_ sceneView: SCNView) {
-#if os(iOS)
-        sceneView.preferredRenderingAPI = .metal
-#endif
         sceneView.isPlaying = false
         sceneView.rendersContinuously = false
         sceneView.antialiasingMode = .none
@@ -460,26 +465,28 @@ public final class ImageSurface {
 #if os(iOS)
     private static func makeDefaultView() -> PlatformView {
 #if canImport(SceneKit)
-        let sceneView = SceneSurfaceView(frame: .zero)
-        return sceneView
+        return SceneSurfaceView(frame: .zero)
 #elseif canImport(MetalKit)
         if let device = MTLCreateSystemDefaultDevice() {
             return MetalSurfaceView(frame: .zero, device: device)
         }
-#endif
         return MetalLayerBackedView(frame: .zero)
+#else
+        return MetalLayerBackedView(frame: .zero)
+#endif
     }
 #elseif os(macOS)
     private static func makeDefaultView() -> PlatformView {
 #if canImport(SceneKit)
-        let sceneView = SceneSurfaceView(frame: .zero)
-        return sceneView
+        return SceneSurfaceView(frame: .zero)
 #elseif canImport(MetalKit)
         if let device = MTLCreateSystemDefaultDevice() {
             return MetalSurfaceView(frame: .zero, device: device)
         }
-#endif
         return MetalLayerBackedView(frame: .zero)
+#else
+        return MetalLayerBackedView(frame: .zero)
+#endif
     }
 #endif
 }

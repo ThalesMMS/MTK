@@ -9,7 +9,7 @@ import Foundation
 import SceneKit
 import simd
 import VolumeRenderingCore
-import VolumeRenderingCore
+import VolumeRenderingSceneKit
 #if canImport(UIKit)
 import UIKit
 #endif

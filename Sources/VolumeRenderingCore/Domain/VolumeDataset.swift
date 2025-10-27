@@ -1,6 +1,6 @@
 //
 //  VolumeDataset.swift
-//  VolumeRenderingKit
+//  MTK
 //
 //  Core volumetric data structures shared across volume rendering stacks.
 //  Mirrors the legacy DomainPorts module so clients can exchange datasets

@@ -8,7 +8,7 @@
 import Foundation
 import SceneKit
 import VolumeRenderingCore
-import VolumeRenderingCore
+import VolumeRenderingSceneKit
 import simd
 #if canImport(Metal)
 import Metal

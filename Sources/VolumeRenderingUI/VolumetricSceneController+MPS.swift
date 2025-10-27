@@ -18,7 +18,7 @@ import MetalPerformanceShaders
 import MetalKit
 #endif
 import VolumeRenderingCore
-import VolumeRenderingCore
+import VolumeRenderingSceneKit
 
 #if canImport(MetalPerformanceShaders) && canImport(MetalKit)
 public extension VolumetricSceneController {
@@ -163,7 +163,7 @@ public extension VolumetricSceneController {
             refreshClearColor()
         }
 
-        func draw(in view: MTKView) {
+        public func draw(in view: MTKView) {
             guard isBackendActive else { return }
             guard
                 let descriptor = view.currentRenderPassDescriptor,
@@ -178,7 +178,7 @@ public extension VolumetricSceneController {
             commandBuffer.commit()
         }
 
-        func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
+        public func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
             // No-op: adapter does not rely on drawable size for now.
         }
 

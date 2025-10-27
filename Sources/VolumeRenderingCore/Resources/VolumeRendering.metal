@@ -3,7 +3,7 @@
 // real dimension for gradient magnitude, and minor fixes.
 
 #include <metal_stdlib>
-#include "../MPR/Shared.metal"
+#include "MPR/Shared.metal"
 
 using namespace metal;
 

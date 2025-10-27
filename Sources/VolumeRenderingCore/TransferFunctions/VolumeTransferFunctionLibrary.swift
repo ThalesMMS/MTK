@@ -1,6 +1,6 @@
 //
 //  VolumeTransferFunctionLibrary.swift
-//  VolumeRenderingKit
+//  MTK
 //
 
 import Foundation

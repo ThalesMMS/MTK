@@ -1,6 +1,6 @@
 //
 //  VolumeDatasetPreset.swift
-//  VolumeRenderingKit
+//  MTK
 //
 
 import Foundation

@@ -1,6 +1,6 @@
 //
 //  VolumeRenderingPreset.swift
-//  VolumeRenderingKit
+//  MTK
 //
 
 import Foundation

@@ -1,6 +1,6 @@
 //
 //  Sizeable.swift
-//  VolumeRenderingKit
+//  MTK
 //
 //  Memory layout helpers shared by Metal uniform structs.
 //

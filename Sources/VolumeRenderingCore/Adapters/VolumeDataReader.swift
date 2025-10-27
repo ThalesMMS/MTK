@@ -1,6 +1,6 @@
 //
 //  VolumeDataReader.swift
-//  VolumeRenderingKit
+//  MTK
 //
 //  Lightweight helper that exposes random-access and interpolated reads over
 //  the volumetric dataset buffers used by the Metal adapters. The reader keeps

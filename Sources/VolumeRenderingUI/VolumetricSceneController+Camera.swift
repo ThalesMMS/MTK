@@ -21,7 +21,7 @@ import MetalPerformanceShaders
 import MetalKit
 #endif
 import VolumeRenderingCore
-import VolumeRenderingCore
+import VolumeRenderingSceneKit
 
 @MainActor public extension VolumetricSceneController {
     func applyPatientOrientationIfNeeded() {

@@ -1,6 +1,6 @@
 //
 //  MetalVolumeRenderingAdapter.swift
-//  VolumeRenderingKit
+//  MTK
 //
 //  Provides a CPU-backed approximation of the Metal volume renderer so unit
 //  tests can exercise the domain contracts without depending on GPU

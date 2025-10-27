@@ -18,9 +18,9 @@ import MetalPerformanceShaders
 import MetalKit
 #endif
 import VolumeRenderingCore
-import VolumeRenderingCore
+@_spi(Testing) import VolumeRenderingSceneKit
 
-struct VolumeMaterialSnapshot {
+public struct VolumeMaterialSnapshot {
     var methodID: Int32
     var renderingQuality: Int32
     var huGateEnabled: Bool
@@ -30,7 +30,7 @@ struct VolumeMaterialSnapshot {
     var lightingEnabled: Bool
 }
 
-struct MPRMaterialSnapshot {
+public struct MPRMaterialSnapshot {
     var blendModeID: Int32
     var voxelMin: Int32
     var voxelMax: Int32

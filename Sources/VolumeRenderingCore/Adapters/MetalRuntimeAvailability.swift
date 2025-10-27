@@ -1,6 +1,6 @@
 //
 //  MetalRuntimeAvailability.swift
-//  VolumeRenderingKit
+//  MTK
 //
 //  Lightweight bridge exposing Metal runtime guard details to the app target
 //  without requiring it to depend directly on the Support module. This keeps

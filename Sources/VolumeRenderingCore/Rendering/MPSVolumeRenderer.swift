@@ -27,7 +27,7 @@ public final class MPSVolumeRenderer {
         /// Creates a ray using the provided origin and normalizes the supplied
         /// direction, falling back to the positive Z axis when normalization
         /// produces an invalid vector.
-        init(origin: SIMD3<Float>, direction: SIMD3<Float>) {
+        public init(origin: SIMD3<Float>, direction: SIMD3<Float>) {
             let normalized = simd_normalize(direction)
             self.origin = origin
             if normalized.x.isFinite && normalized.y.isFinite && normalized.z.isFinite {

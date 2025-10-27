@@ -1,6 +1,6 @@
 //
 //  TransferFunction.swift
-//  VolumeRenderingKit
+//  MTK
 //
 //  Declares the transfer function model and helpers used to build Metal textures.
 //

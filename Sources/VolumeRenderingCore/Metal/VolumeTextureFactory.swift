@@ -1,6 +1,6 @@
 //
 //  VolumeTextureFactory.swift
-//  VolumeRenderingKit
+//  MTK
 //
 //  Converts volumetric datasets into Metal textures and exposes built-in presets.
 //
