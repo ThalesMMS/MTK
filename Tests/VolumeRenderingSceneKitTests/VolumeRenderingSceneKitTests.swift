@@ -1,3 +1,8 @@
+//  VolumeRenderingSceneKitTests.swift
+//  MTK
+//  Guards SceneKit volume factory behaviour and skips when unavailable.
+//  Thales Matheus Mendonça Santos — October 2025
+
 import XCTest
 #if canImport(SceneKit)
 import SceneKit

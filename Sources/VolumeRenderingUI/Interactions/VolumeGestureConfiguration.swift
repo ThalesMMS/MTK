@@ -148,9 +148,14 @@ extension VolumetricSceneController {
     public func gestureContext(using state: VolumeGestureState) -> VolumeGestureContext {
         let handler = VolumeGestureContext(
             onTranslate: { axis, delta in
-                guard let controllerAxis = VolumetricSceneController.Axis(axis) else { return }
                 Task { [weak self] in
                     guard let self else { return }
+                    if axis == .volume {
+                        let screenDelta = SIMD2<Float>(Float(delta.width), Float(delta.height))
+                        await self.rotateCamera(screenDelta: screenDelta)
+                        return
+                    }
+                    guard let controllerAxis = VolumetricSceneController.Axis(axis) else { return }
                     let normalized = Float(delta.height / 512)
                     await self.translate(axis: controllerAxis, deltaNormalized: normalized)
                 }
@@ -164,7 +169,12 @@ extension VolumetricSceneController {
             },
             onRotate: { axis, radians in
                 Task { [weak self] in
-                    guard let self, let controllerAxis = VolumetricSceneController.Axis(axis) else { return }
+                    guard let self else { return }
+                    if axis == .volume {
+                        await self.tiltCamera(roll: Float(radians), pitch: 0)
+                        return
+                    }
+                    guard let controllerAxis = VolumetricSceneController.Axis(axis) else { return }
                     await self.rotate(axis: controllerAxis, radians: Float(radians))
                 }
             },

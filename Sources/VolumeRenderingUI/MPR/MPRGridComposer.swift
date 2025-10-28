@@ -50,7 +50,11 @@ public struct MPRGridComposer: View {
         .background(Color(.systemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .onAppear {
-            Task { await controller.setDisplayConfiguration(.mpr(axis: axis.toControllerAxis(), index: 0, blend: .single, slab: nil)) }
+            Task {
+                await controller.setDisplayConfiguration(
+                    .mpr(axis: axis.toControllerAxis(), index: mprIndex(for: axis), blend: .single, slab: nil)
+                )
+            }
         }
     }
 
@@ -106,6 +110,21 @@ private extension VolumeGestureAxis {
             return .y
         case .axial, .volume:
             return .z
+        }
+    }
+}
+
+private extension MPRGridComposer {
+    func mprIndex(for axis: VolumeGestureAxis) -> Int {
+        switch axis {
+        case .axial:
+            return 0
+        case .coronal:
+            return 1
+        case .sagittal:
+            return 2
+        case .volume:
+            return 3
         }
     }
 }
