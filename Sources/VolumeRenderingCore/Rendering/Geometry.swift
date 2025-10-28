@@ -1,10 +1,10 @@
 //
 //  Geometry.swift
-//  Isis DICOM Viewer
+//  MTK
 //
 //  Modela transformações entre espaço do voxel, mundo (LPS) e coordenadas de textura para volumes MPR.
 //  Constrói matrizes de ida e volta, normaliza vetores de orientação e projeta planos em espaço normalizado para orientar reslices.
-//  Thales Matheus Mendonça Santos - September 2025
+//  Thales Matheus Mendonça Santos — October 2025
 //
 
 import simd

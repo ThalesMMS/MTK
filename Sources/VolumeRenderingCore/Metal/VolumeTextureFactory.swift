@@ -4,6 +4,7 @@
 //
 //  Converts volumetric datasets into Metal textures and exposes built-in presets.
 //
+//  Thales Matheus Mendonça Santos — October 2025
 
 import Foundation
 import Metal
@@ -13,9 +14,9 @@ import ZIPFoundation
 
 public final class VolumeTextureFactory {
     private(set) public var dataset: VolumeDataset
-    private let logger = Logger(subsystem: "com.isis.volumerenderingkit",
+    private let logger = Logger(subsystem: "com.mtk.volumerendering",
                                 category: "VolumeTextureFactory")
-    private static let resourceLogger = Logger(subsystem: "com.isis.volumerenderingkit",
+    private static let resourceLogger = Logger(subsystem: "com.mtk.volumerendering",
                                                category: "VolumeResources")
 
     public init(dataset: VolumeDataset) {

@@ -4,6 +4,7 @@
 //
 //  Declares the transfer function model and helpers used to build Metal textures.
 //
+//  Thales Matheus Mendonça Santos — October 2025
 
 import Foundation
 import Metal
@@ -85,7 +86,7 @@ public struct TransferFunction: Codable {
     }
 
     public static func load(from url: URL,
-                            logger: Logger = Logger(subsystem: "com.isis.volumerenderingkit",
+                            logger: Logger = Logger(subsystem: "com.mtk.volumerendering",
                                                      category: "TransferFunction")) -> TransferFunction? {
         do {
             let data = try Data(contentsOf: url)
@@ -98,7 +99,7 @@ public struct TransferFunction: Codable {
 
     @MainActor
     public func makeTexture(device: any MTLDevice,
-                            logger: Logger = Logger(subsystem: "com.isis.volumerenderingkit",
+                            logger: Logger = Logger(subsystem: "com.mtk.volumerendering",
                                                      category: "TransferFunction")) -> (any MTLTexture)? {
         TransferFunctions.texture(for: self, device: device, logger: logger)
     }

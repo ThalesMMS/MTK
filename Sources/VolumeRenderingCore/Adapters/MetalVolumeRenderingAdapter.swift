@@ -8,6 +8,7 @@
 //  compositing, lighting) and returns fallback images alongside rich metadata.
 //  Real GPU work will replace these code paths in future milestones.
 //
+//  Thales Matheus Mendonça Santos — October 2025
 
 import Foundation
 #if canImport(CoreGraphics)
@@ -36,7 +37,7 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
         public var window: ClosedRange<Int32>
     }
 
-    private let logger = Logger(subsystem: "com.isis.volumerenderingkit",
+    private let logger = Logger(subsystem: "com.mtk.volumerendering",
                                 category: "MetalVolumeRenderingAdapter")
     private var overrides = Overrides()
     private var currentPreset: VolumeRenderingPreset?

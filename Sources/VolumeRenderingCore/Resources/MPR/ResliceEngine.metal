@@ -1,12 +1,12 @@
 //
-//  mpr.metal
-//  Isis DICOM Viewer
+//  ResliceEngine.metal
+//  MTK
 //
 //  MVP MPR Shader (Metal)
 //  - Renderiza um plano de reamostragem dentro do volume (dicom 3D).
 //  - Suporta MPR fino e thick slab com MIP/MinIP/Mean.
 //  - Normalização HU -> [0,1] via min/max (mesma ideia do VR).
-//  Thales Matheus Mendonça Santos - September 2025
+//  Thales Matheus Mendonça Santos — October 2025
 //
 
 #include <metal_stdlib>

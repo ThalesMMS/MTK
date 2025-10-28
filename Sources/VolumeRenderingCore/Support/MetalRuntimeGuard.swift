@@ -8,7 +8,7 @@
 //  checks, override hooks for tests and structured logging describing detected
 //  capabilities.
 //
-//  Thales Matheus Mendonça Santos - September 2025
+//  Thales Matheus Mendonça Santos — October 2025
 //
 
 import Foundation
@@ -52,7 +52,7 @@ public enum MetalRuntimeGuard {
         case unavailable(Status)
     }
 
-    private static let logger = Logger(subsystem: "com.isis.volumerenderingkit",
+    private static let logger = Logger(subsystem: "com.mtk.volumerendering",
                                        category: "MetalRuntimeGuard")
     private static let lock = NSLock()
     private static var cachedStatus: Status?
@@ -248,7 +248,7 @@ private extension MetalRuntimeGuard.Status.MissingFeature {
 private enum Overrides {
     static let forceUnavailableArgument = "--uitest-force-metal-unavailable"
     static let forceAvailableArgument = "--uitest-force-metal-available"
-    static let environmentKey = "ISIS_FORCE_METAL_AVAILABILITY"
+    static let environmentKey = "MTK_FORCE_METAL_AVAILABILITY"
     static let forcedDeviceName = "override"
 
     enum EnvironmentValues {

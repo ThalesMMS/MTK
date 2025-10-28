@@ -1,13 +1,13 @@
 //
 //  TransferFunctions.swift
-//  Isis DICOM Viewer
+//  MTK
 //
 //  Biblioteca centralizada de curvas HU e geração de texturas 1D
 //  reutilizada pelos materiais volumétricos (VolumeCube/MPRPlane).
 //  Concentra presets, normaliza cores (sRGB/linear), aplica shift e
 //  disponibiliza cache compartilhado para evitar recriação de texturas.
 //
-//  Thales Matheus Mendonça Santos - September 2025
+//  Thales Matheus Mendonça Santos — October 2025
 //
 
 import Foundation
@@ -52,7 +52,7 @@ public enum TransferFunctions {
     public static func texture(for preset: VolumeRenderingBuiltinPreset,
                                device: any MTLDevice,
                                options: TextureOptions = .default,
-                               logger: Logger = Logger(subsystem: "com.isis.volumerenderingkit",
+                               logger: Logger = Logger(subsystem: "com.mtk.volumerendering",
                                                        category: "Volumetric.TransferFunction")) -> (any MTLTexture)? {
         guard let transfer = transferFunction(for: preset) else { return nil }
         return texture(for: transfer, device: device, options: options, logger: logger)
@@ -62,7 +62,7 @@ public enum TransferFunctions {
     public static func texture(for transferFunction: TransferFunction,
                                device: any MTLDevice,
                                options: TextureOptions = .default,
-                               logger: Logger = Logger(subsystem: "com.isis.volumerenderingkit",
+                               logger: Logger = Logger(subsystem: "com.mtk.volumerendering",
                                                        category: "Volumetric.TransferFunction")) -> (any MTLTexture)? {
         TransferFunctionTextureCache.shared.texture(
             for: transferFunction,

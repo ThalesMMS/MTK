@@ -1,12 +1,12 @@
 //
 //  VolumeCubeMaterial.swift
-//  Isis DICOM Viewer
+//  MTK
 //
 //  Material SceneKit que encapsula o shader de volume Metal. Gera o cubo volumétrico
 //  utilizado pelos modos de renderização direta e projeções, expondo controles de
 //  iluminação, gating e transferência de função.
 //
-//  Thales Matheus Mendonça Santos - September 2025
+//  Thales Matheus Mendonça Santos — October 2025
 //
 
 import Metal
@@ -115,7 +115,7 @@ public final class VolumeCubeMaterial: SCNMaterial, SCNProgramDelegate {
     private var transferFunctionTexture: (any MTLTexture)?
 
     private(set) var textureGenerator: VolumeTextureFactory = VolumeTextureFactory(part: .none)
-    private let logger = Logger(subsystem: "com.isis.volumerenderingkit",
+    private let logger = Logger(subsystem: "com.mtk.volumerendering",
                                 category: "VolumeCubeMaterial")
 
     public var tf: TransferFunction?

@@ -1,12 +1,12 @@
 //
 //  MPRPlaneMaterial.swift
-//  Isis DICOM Viewer
+//  MTK
 //
 //  Material SceneKit dedicado a planos de reconstrução multiplanar. Habilita MPR fino
 //  ou thick slab com projeções, aplicando a mesma textura do volume para amostragem
 //  consistente. Sincroniza uniforms com o shader Metal responsável pela renderização.
 //
-//  Thales Matheus Mendonça Santos - September 2025
+//  Thales Matheus Mendonça Santos — October 2025
 //
 
 import Metal
@@ -52,7 +52,7 @@ public final class MPRPlaneMaterial: SCNMaterial, SCNProgramDelegate {
     public private(set) var dimension: SIMD3<Int32> = SIMD3<Int32>(1, 1, 1)
     public private(set) var resolution: SIMD3<Float> = SIMD3<Float>(1, 1, 1)
     private var textureFactory: VolumeTextureFactory = VolumeTextureFactory(part: .none)
-    private let logger = Logger(subsystem: "com.isis.volumerenderingkit",
+    private let logger = Logger(subsystem: "com.mtk.volumerendering",
                                 category: "MPRPlaneMaterial")
 
     public init(device: any MTLDevice) {

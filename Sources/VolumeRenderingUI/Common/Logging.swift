@@ -11,7 +11,7 @@ public protocol LoggerProtocol: Sendable {
 public final class Logger: @unchecked Sendable, LoggerProtocol {
     private let logger: os.Logger
 
-    public init(subsystem: String = "com.isis.dicomviewer", category: String) {
+    public init(subsystem: String = "com.mtk.ui", category: String) {
         self.logger = os.Logger(subsystem: subsystem, category: category)
     }
 
@@ -42,7 +42,7 @@ public final class Logger: @unchecked Sendable, LoggerProtocol {
 
 public extension Logger {
     convenience init(category: String) {
-        self.init(subsystem: "com.isis.dicomviewer", category: category)
+        self.init(subsystem: "com.mtk.ui", category: category)
     }
 
     func debug(_ message: String) {

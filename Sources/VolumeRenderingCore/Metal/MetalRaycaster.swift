@@ -4,6 +4,7 @@
 //
 //  Facade over the Metal pipelines backing volume rendering and MPR.
 //
+//  Thales Matheus Mendonça Santos — October 2025
 
 import Foundation
 import Metal
@@ -48,7 +49,7 @@ public final class MetalRaycaster {
     private let device: any MTLDevice
     private let commandQueue: any MTLCommandQueue
     private let library: any MTLLibrary
-    private let logger = Logger(subsystem: "com.isis.volumerenderingkit",
+    private let logger = Logger(subsystem: "com.mtk.volumerendering",
                                 category: "MetalRaycaster")
     private var fragmentCache: [FragmentSignature: any MTLRenderPipelineState] = [:]
     private var computeCache: [Technique: any MTLComputePipelineState] = [:]

@@ -1,10 +1,10 @@
 //
 //  MPSVolumeRenderer.swift
-//  Isis DICOM Viewer
+//  MTK
 //
 //  Implementa um renderizador volumétrico baseado em Metal Performance Shaders capaz de calcular histogramas, filtros gaussianos e texturas 3D para volumes DICOM.
 //  Também administra interseções de raios e buffers auxiliares para acelerar amostragens, encapsulando detalhes de GPU e garantindo fallback seguros para dispositivos incompatíveis.
-//  Thales Matheus Mendonça Santos - September 2025
+//  Thales Matheus Mendonça Santos — October 2025
 //
 
 import Foundation
@@ -56,7 +56,7 @@ public final class MPSVolumeRenderer {
 
     private let device: any MTLDevice
     private let commandQueue: any MTLCommandQueue
-    private let logger = Logger(subsystem: "com.isis.volumerenderingkit",
+    private let logger = Logger(subsystem: "com.mtk.volumerendering",
                                 category: "MPSVolumeRenderer")
     private var histogramInfo: MPSImageHistogramInfo
     private let histogramKernel: MPSImageHistogram
