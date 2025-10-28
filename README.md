@@ -68,6 +68,28 @@ struct ViewerApp: App {
 }
 ```
 
+### Gesture & Overlay Scaffolding (Etapa 2)
+
+- `volumeGestures(controller:state:configuration:)` attaches drag/pinch/rotate gestures to any SwiftUI surface and forwards them to `VolumetricSceneController`. Customize behaviour via `VolumeGestureConfiguration` or inspect state through `VolumeGestureState`.
+- Overlay components live under `VolumeRenderingUI/Overlays` (`CrosshairOverlayView`, `OrientationOverlayView`, `WindowLevelControlView`, `SlabThicknessControlView`) and honour the lightweight `VolumetricUIStyle` protocol so hosts can supply their own palette.
+- `MPRGridComposer` provides a minimal 2×2 layout (axial, coronal, sagittal, 3D) that synchronizes slab/window changes via the controller—ideal for quick prototyping until richer panes are wired.
+
+### ShaderLibraryLoader (Etapa 3 prototype)
+
+`ShaderLibraryLoader` resolves Metal libraries packaged with SwiftPM without touching `Package.swift`:
+
+```swift
+import Metal
+import VolumeRenderingCore
+
+guard let device = MTLCreateSystemDefaultDevice() else { fatalError("Metal unavailable") }
+let library = ShaderLibraryLoader.makeDefaultLibrary(on: device) { message in
+    debugPrint(message)
+}
+```
+
+The loader prefers `Bundle.module` output, then falls back to `device.makeDefaultLibrary()` and finally probes `VolumeRendering.metallib` inside `Sources/VolumeRenderingCore/Resources`. Diagnostics surfaced through the closure clarify which path succeeded, keeping builds deterministic.
+
 ## Documentation
 
 - API reference (DocC) — planned
