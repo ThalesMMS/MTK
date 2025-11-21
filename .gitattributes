@@ -2,3 +2,4 @@
 * text=auto
 scripts/*.sh linguist-vendored linguist-detectable=false
 scripts/*.bash linguist-vendored linguist-detectable=false
+Tooling/**/*.sh linguist-vendored linguist-detectable=false
