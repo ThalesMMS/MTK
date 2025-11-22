@@ -308,6 +308,7 @@ public final class VolumetricSceneController: VolumetricSceneControlling, Observ
     var initialCameraTransform: simd_float4x4?
     var defaultCameraTarget: SCNVector3 = SCNVector3(x: 0, y: 0, z: 0)
     var renderingBackend: VolumetricRenderingBackend = .sceneKit
+    var sharedVolumeTexture: (any MTLTexture)?
 #if canImport(MetalPerformanceShaders) && canImport(MetalKit)
     let mpsDisplay: MPSDisplayAdapter?
 #endif

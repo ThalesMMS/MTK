@@ -167,7 +167,7 @@ public final class MPSVolumeRenderer {
         let floatDescriptor = makeSliceDescriptor(
             from: view,
             pixelFormat: floatPixelFormat,
-            usage: [.shaderRead, .shaderWrite]
+            usage: [.shaderRead, .shaderWrite, .pixelFormatView]
         )
 
         guard let floatSource = device.makeTexture(descriptor: floatDescriptor),
@@ -189,7 +189,7 @@ public final class MPSVolumeRenderer {
         let integerDescriptor = makeSliceDescriptor(
             from: view,
             pixelFormat: view.pixelFormat,
-            usage: [.shaderRead, .shaderWrite]
+            usage: [.shaderRead, .shaderWrite, .pixelFormatView]
         )
         guard let destination = device.makeTexture(descriptor: integerDescriptor) else {
             throw RendererError.texturePreparationFailed
@@ -335,7 +335,7 @@ private extension MPSVolumeRenderer {
         descriptor.height = volume.height
         descriptor.arrayLength = volume.depth
         descriptor.mipmapLevelCount = 1
-        descriptor.usage = [.shaderRead]
+        descriptor.usage = [.shaderRead, .pixelFormatView]
         descriptor.storageMode = volume.storageMode
 
         guard let sliceTexture = device.makeTexture(descriptor: descriptor) else {
@@ -420,6 +420,9 @@ private extension MPSVolumeRenderer {
     func convertTexture(on commandBuffer: any MTLCommandBuffer,
                         source: any MTLTexture,
                         destination: any MTLTexture) {
+        // MPSImageConversion only accepts 2D textures with normalized or float formats.
+        // When inputs are 2D arrays or integer-only formats, create slice views
+        // reinterpreted as normalized/float formats before encoding.
         let conversion = MPSImageConversion(
             device: device,
             srcAlpha: .alphaIsOne,
@@ -427,9 +430,16 @@ private extension MPSVolumeRenderer {
             backgroundColor: nil,
             conversionInfo: nil
         )
-        conversion.encode(commandBuffer: commandBuffer,
-                           sourceTexture: source,
-                           destinationTexture: destination)
+        let sliceCount = source.textureType == .type2D ? 1 : max(1, source.arrayLength)
+        for slice in 0..<sliceCount {
+            guard let srcView = source.makeConversionView(slice: slice),
+                  let dstView = destination.makeConversionView(slice: slice) else {
+                continue
+            }
+            conversion.encode(commandBuffer: commandBuffer,
+                              sourceTexture: srcView,
+                              destinationTexture: dstView)
+        }
     }
 
     func makeSliceDescriptor(from texture: any MTLTexture,
@@ -449,6 +459,20 @@ private extension MPSVolumeRenderer {
 }
 
 private extension MTLPixelFormat {
+    /// Returns a normalized or float format compatible with MPSImageConversion.
+    var mpsConversionFormat: MTLPixelFormat? {
+        switch self {
+        case .r16Unorm, .r16Float, .r32Float:
+            return self
+        case .r16Uint, .r16Sint:
+            return .r16Float
+        case .r8Unorm, .r8Snorm, .r8Uint, .r8Sint:
+            return .r8Unorm
+        default:
+            return nil
+        }
+    }
+
     var gaussianCompatibleFloatFormat: MTLPixelFormat? {
         switch self {
         case .r16Sint:
@@ -458,6 +482,20 @@ private extension MTLPixelFormat {
         default:
             return nil
         }
+    }
+}
+
+private extension MTLTexture {
+    func makeConversionView(slice: Int) -> MTLTexture? {
+        let targetType: MTLTextureType = .type2D
+        guard let format = pixelFormat.mpsConversionFormat else { return nil }
+        if textureType == .type2D {
+            return makeTextureView(pixelFormat: format)
+        }
+        return makeTextureView(pixelFormat: format,
+                               textureType: targetType,
+                               levels: 0..<1,
+                               slices: slice..<(slice + 1))
     }
 }
 #endif

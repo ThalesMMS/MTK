@@ -39,7 +39,7 @@ public final class VolumeTextureFactory {
         let descriptor = MTLTextureDescriptor()
         descriptor.textureType = .type3D
         descriptor.pixelFormat = dataset.pixelFormat.metalPixelFormat
-        descriptor.usage = .shaderRead
+        descriptor.usage = [.shaderRead, .pixelFormatView]
         descriptor.width = dataset.dimensions.width
         descriptor.height = dataset.dimensions.height
         descriptor.depth = dataset.dimensions.depth

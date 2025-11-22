@@ -32,9 +32,19 @@ import MTKSceneKit
     public func applyDataset(_ dataset: VolumeDataset) async {
         guard self.dataset != dataset || datasetApplied == false else { return }
         self.dataset = dataset
+        sharedVolumeTexture = nil
 
-        volumeMaterial.setDataset(device: device, dataset: dataset)
-        mprMaterial.setDataset(device: device, dataset: dataset)
+        let factory = VolumeTextureFactory(dataset: dataset)
+        if let texture = factory.generate(device: device) {
+            texture.label = "SharedVolumeTexture"
+            sharedVolumeTexture = texture
+            volumeMaterial.setDataset(device: device, dataset: dataset, volumeTexture: texture)
+            mprMaterial.setDataset(device: device, dataset: dataset, volumeTexture: texture)
+        } else {
+            logger.error("Failed to generate shared volume texture")
+            volumeMaterial.setDataset(device: device, dataset: dataset)
+            mprMaterial.setDataset(device: device, dataset: dataset)
+        }
 
         let scale = volumeMaterial.scale
         volumeNode.scale = SCNVector3(scale)

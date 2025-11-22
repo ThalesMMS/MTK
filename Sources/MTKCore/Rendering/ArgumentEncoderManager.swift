@@ -285,7 +285,7 @@ public final class ArgumentEncoderManager {
                 height: height,
                 mipmapped: false
             )
-            descriptor.usage = [.shaderWrite, .shaderRead]
+            descriptor.usage = [.shaderWrite, .shaderRead, .pixelFormatView]
             descriptor.storageMode = .shared
 
             outputTexture = device.makeTexture(descriptor: descriptor)

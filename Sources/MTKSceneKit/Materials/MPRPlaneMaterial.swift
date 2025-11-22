@@ -260,7 +260,7 @@ private extension MPRPlaneMaterial {
         descriptor.height = 1
         descriptor.depth = 1
         descriptor.mipmapLevelCount = 1
-        descriptor.usage = [.shaderRead]
+        descriptor.usage = [.shaderRead, .pixelFormatView]
         let texture = device.makeTexture(descriptor: descriptor)
         texture?.label = "MPRVolumeFallback"
         var zero: Int16 = 0
@@ -281,7 +281,7 @@ private extension MPRPlaneMaterial {
         descriptor.height = 1
         descriptor.depth = 1
         descriptor.mipmapLevelCount = 1
-        descriptor.usage = [.shaderRead]
+        descriptor.usage = [.shaderRead, .pixelFormatView]
         guard let texture = device.makeTexture(descriptor: descriptor) else {
             fatalError("Unable to allocate fallback 3D texture for MPR")
         }
