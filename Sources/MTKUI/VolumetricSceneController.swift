@@ -367,11 +367,13 @@ public final class VolumetricSceneController: VolumetricSceneControlling, Observ
         }
         self.sceneSurface = SceneKitSurface(sceneView: resolvedSceneView)
         self.sceneView = resolvedSceneView
-        #if os(iOS)
+#if os(iOS)
         resolvedSceneView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        #else
+#else
         resolvedSceneView.autoresizingMask = [.width, .height]
-        #endif
+        // Enable default camera controls on macOS as a fallback interaction mode.
+        resolvedSceneView.allowsCameraControl = true
+#endif
         resolvedSceneView.isPlaying = true
         resolvedSceneView.preferredFramesPerSecond = 60
         resolvedSceneView.backgroundColor = .black

@@ -47,6 +47,12 @@ import MTKSceneKit
             mprMaterial.setDataset(device: device, dataset: dataset)
         }
 
+        if volumeMaterial.tf == nil {
+            // Default to a visible preset and lighting on first load.
+            volumeMaterial.setPreset(device: device, preset: .ctSoftTissue)
+            volumeMaterial.setLighting(on: true)
+        }
+
         let scale = volumeMaterial.scale
         volumeNode.scale = SCNVector3(scale)
 
@@ -76,6 +82,9 @@ import MTKSceneKit
 #if canImport(MetalPerformanceShaders)
         prepareMpsResourcesForDataset(dataset)
 #endif
+
+        // Ensure the first frame is requested even before user interaction.
+        requestImmediateSceneViewFrame()
     }
 
     public func setDisplayConfiguration(_ configuration: DisplayConfiguration) async {

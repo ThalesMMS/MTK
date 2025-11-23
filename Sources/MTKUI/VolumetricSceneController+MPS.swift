@@ -72,7 +72,11 @@ public extension VolumetricSceneController {
         // MARK: - RenderSurface
 
         public func display(_ image: CGImage) {
+#if os(macOS)
+            metalView.layer?.contents = image
+#else
             metalView.layer.contents = image
+#endif
         }
 
         public func setContentScale(_ scale: CGFloat) {

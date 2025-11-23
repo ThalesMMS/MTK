@@ -406,7 +406,10 @@ public final class VolumeCubeMaterial: SCNMaterial, SCNProgramDelegate {
             buffer.contents().copyMemory(from: pointer, byteCount: Uniforms.stride)
         }
 #if os(macOS)
-        buffer.didModifyRange(0..<Uniforms.stride)
+        // Only notify managed buffers; shared storage does not require (and cannot use) didModifyRange.
+        if buffer.storageMode == .managed {
+            buffer.didModifyRange(0..<Uniforms.stride)
+        }
 #endif
     }
 
