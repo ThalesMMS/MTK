@@ -4,8 +4,9 @@
 //
 //  Metal Performance Shaders support extracted from the main controller.
 //
-#if os(iOS)
+#if os(iOS) || os(macOS)
 import Foundation
+import CoreGraphics
 import SceneKit
 import simd
 #if canImport(Metal)
@@ -23,8 +24,8 @@ import MTKSceneKit
 #if canImport(MetalPerformanceShaders) && canImport(MetalKit)
 public extension VolumetricSceneController {
     @MainActor
-    final class MPSDisplayAdapter: NSObject, MTKViewDelegate {
-        let view: MTKView
+    public final class MPSDisplayAdapter: NSObject, MTKViewDelegate, RenderSurface {
+        private let metalView: MTKView
         private let commandQueue: any MTLCommandQueue
         private var histogram: MPSVolumeRenderer.HistogramResult?
         private var dataset: VolumeDataset?
@@ -45,24 +46,41 @@ public extension VolumetricSceneController {
         private var isBackendActive = false
         private var raySamples: [MPSVolumeRenderer.RayCastingSample] = []
 
-        init(device: any MTLDevice, commandQueue: any MTLCommandQueue) {
+        public init(device: any MTLDevice, commandQueue: any MTLCommandQueue) {
             self.commandQueue = commandQueue
-            self.view = MTKView(frame: .zero, device: device)
+            self.metalView = MTKView(frame: .zero, device: device)
             super.init()
-            view.translatesAutoresizingMaskIntoConstraints = false
-            view.framebufferOnly = false
-            view.enableSetNeedsDisplay = false
-            view.isPaused = false
-            view.preferredFramesPerSecond = 60
-            view.colorPixelFormat = .bgra8Unorm
-            view.clearColor = MTLClearColorMake(0, 0, 0, 1)
-            view.delegate = self
-            view.isHidden = true
+            metalView.translatesAutoresizingMaskIntoConstraints = false
+            metalView.framebufferOnly = false
+            metalView.enableSetNeedsDisplay = false
+            metalView.isPaused = false
+            metalView.preferredFramesPerSecond = 60
+            metalView.colorPixelFormat = .bgra8Unorm
+            metalView.clearColor = MTLClearColorMake(0, 0, 0, 1)
+            metalView.delegate = self
+            metalView.isHidden = true
         }
+
+        public var view: PlatformView { metalView }
+        public var mtkView: MTKView { metalView }
 
         func updateDataset(_ dataset: VolumeDataset?) {
             self.dataset = dataset
             refreshClearColor()
+        }
+
+        // MARK: - RenderSurface
+
+        public func display(_ image: CGImage) {
+            metalView.layer.contents = image
+        }
+
+        public func setContentScale(_ scale: CGFloat) {
+#if os(iOS)
+            metalView.contentScaleFactor = scale
+#elseif os(macOS)
+            metalView.layer?.contentsScale = scale
+#endif
         }
 
         func updateHistogram(_ histogram: MPSVolumeRenderer.HistogramResult?) {
@@ -148,13 +166,13 @@ public extension VolumetricSceneController {
 
         func setRenderMode(_ mode: VolumetricRenderMode) {
             renderMode = mode
-            view.isPaused = mode == .paused || !isBackendActive
+            metalView.isPaused = mode == .paused || !isBackendActive
         }
 
         func setActive(_ active: Bool) {
             isBackendActive = active
-            view.isHidden = !active
-            view.isPaused = !active || renderMode == .paused
+            metalView.isHidden = !active
+            metalView.isPaused = !active || renderMode == .paused
             refreshClearColor()
         }
 
@@ -189,7 +207,7 @@ public extension VolumetricSceneController {
 
         @_spi(Testing)
         public func debugClearColor() -> MTLClearColor {
-            view.clearColor
+            metalView.clearColor
         }
 
         @_spi(Testing)
@@ -202,7 +220,7 @@ public extension VolumetricSceneController {
             let saturation = resolvedSaturation()
             let brightness = resolvedBrightness()
             let rgb = hsbToRGB(hue: hue, saturation: saturation, brightness: brightness)
-            view.clearColor = MTLClearColorMake(Double(rgb.r), Double(rgb.g), Double(rgb.b), 1)
+            metalView.clearColor = MTLClearColorMake(Double(rgb.r), Double(rgb.g), Double(rgb.b), 1)
         }
 
         private func resolvedHue() -> Float {

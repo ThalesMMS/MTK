@@ -26,8 +26,9 @@ public struct VolumetricConfiguration {
     /// Enable extended density visualization (diagnostics only)
     public static var ENABLE_DENSITY_DEBUG: Bool = false
 
-    /// Toggle compute backend usage for compatible devices
-    public static var computeEnabled: Bool = true
+    /// Toggle compute backend usage for compatible devices. Default is false to
+    /// avoid activating the experimental compute path unless explicitly opted in.
+    public static var computeEnabled: Bool = false
 
     /// Configure for demo/development mode
     public static func configureForDemo() {

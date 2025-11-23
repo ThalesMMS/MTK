@@ -4,7 +4,7 @@
 //
 //  Snapshot helpers and debug utilities extracted from the main controller.
 //
-#if os(iOS)
+#if os(iOS) || os(macOS)
 import Foundation
 import SceneKit
 import simd

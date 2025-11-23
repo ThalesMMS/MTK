@@ -67,7 +67,7 @@ public enum VolumetricRenderMode {
     case paused
 }
 
-#if os(iOS)
+#if os(iOS) || os(macOS)
 import Foundation
 import SceneKit
 import simd
@@ -87,7 +87,7 @@ import MetalKit
 import MetalPerformanceShaders
 #endif
 
-#if os(iOS)
+#if os(iOS) || os(macOS)
 private extension VolumetricSceneController {
     func publishCameraState(position: SIMD3<Float>, target: SIMD3<Float>, up: SIMD3<Float>) {
         cameraState = VolumetricCameraState(position: position, target: target, up: up)
@@ -251,11 +251,15 @@ public final class VolumetricSceneController: VolumetricSceneControlling, Observ
     ]
 
     public let sceneSurface: SceneKitSurface
-    public var surface: any RenderSurface { sceneSurface }
+#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
+    let mpsSurface: (any RenderSurface)?
+#endif
+    var activeSurface: any RenderSurface
+    public var surface: any RenderSurface { activeSurface }
     public let sceneView: SCNView
 #if canImport(MetalPerformanceShaders) && canImport(MetalKit)
     public var mpsView: MTKView? {
-        mpsDisplay?.view
+        mpsDisplay?.mtkView
     }
 #endif
 
@@ -342,9 +346,12 @@ public final class VolumetricSceneController: VolumetricSceneControlling, Observ
         self.commandQueue = queue
 #if canImport(MetalPerformanceShaders) && canImport(MetalKit)
         if MPSSupportsMTLDevice(resolvedDevice) {
-            mpsDisplay = MPSDisplayAdapter(device: resolvedDevice, commandQueue: queue)
+            let display = MPSDisplayAdapter(device: resolvedDevice, commandQueue: queue)
+            mpsDisplay = display
+            mpsSurface = display
         } else {
             mpsDisplay = nil
+            mpsSurface = nil
         }
 #endif
 
@@ -355,7 +362,8 @@ public final class VolumetricSceneController: VolumetricSceneControlling, Observ
         if let providedView = sceneView {
             resolvedSceneView = providedView
         } else {
-            resolvedSceneView = SCNView(frame: .zero, options: viewOptions)
+            let defaultFrame = CGRect(x: 0, y: 0, width: 320, height: 480)
+            resolvedSceneView = SCNView(frame: defaultFrame, options: viewOptions)
         }
         self.sceneSurface = SceneKitSurface(sceneView: resolvedSceneView)
         self.sceneView = resolvedSceneView
@@ -392,6 +400,8 @@ public final class VolumetricSceneController: VolumetricSceneControlling, Observ
         mprNode.isHidden = true
         rootNode.addChildNode(mprNode)
         mprNode.simdTransform = volumeNode.simdTransform
+
+        activeSurface = sceneSurface
 
         updateVolumeBounds()
 

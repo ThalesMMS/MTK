@@ -5,8 +5,9 @@
 //  Interaction-facing API split from the core controller to keep files under
 //  the verify script thresholds.
 //
-#if os(iOS)
+#if os(iOS) || os(macOS)
 import Foundation
+import CoreGraphics
 import SceneKit
 import simd
 #if canImport(UIKit)
@@ -63,7 +64,10 @@ import MTKSceneKit
         defaultTransferShift = baselineShift
 
         datasetApplied = true
-        logger.debug("Applied dataset dim=\(scale)")
+        let cameraNode = ensureCameraNode()
+        logger.debug(
+            "Dataset applied dim=\(scale) sceneBounds=\(formatSize(sceneView.bounds.size)) cameraPosition=\(formatVector(cameraNode.simdPosition)) cameraTarget=\(formatVector(cameraTarget)) cameraUp=\(formatVector(cameraUpVector)) radius=\(volumeBoundingRadius)"
+        )
 #if canImport(MetalPerformanceShaders) && canImport(MetalKit)
         mpsDisplay?.updateDataset(dataset)
         mpsDisplay?.updateTransferFunction(transferFunction ?? volumeMaterial.tf)
@@ -84,6 +88,9 @@ import MTKSceneKit
         currentDisplay = configuration
 
         resumeSceneViewIfNeeded()
+        logger.debug(
+            "setDisplayConfiguration request=\(describe(configuration)) sceneBounds=\(formatSize(sceneView.bounds.size)) volumeHidden=\(volumeNode.isHidden) mprHidden=\(mprNode.isHidden) backend=\(renderingBackend.rawValue)"
+        )
 
         switch configuration {
         case let .volume(method):
@@ -91,6 +98,7 @@ import MTKSceneKit
             volumeNode.isHidden = false
             mprNode.isHidden = true
             requestImmediateSceneViewFrame()
+            logger.debug("Volume mode enabled; volumeNodeHidden=\(volumeNode.isHidden) mprNodeHidden=\(mprNode.isHidden)")
 #if canImport(MetalPerformanceShaders) && canImport(MetalKit)
             mpsDisplay?.updateDisplayConfiguration(configuration)
 #endif
@@ -98,6 +106,7 @@ import MTKSceneKit
             configureMPR(axis: axis, index: index, blend: blend, slab: slab)
             volumeNode.isHidden = true
             mprNode.isHidden = false
+            logger.debug("MPR mode enabled axis=\(axis.rawValue) index=\(index) blend=\(blend.rawValue) volumeNodeHidden=\(volumeNode.isHidden) mprNodeHidden=\(mprNode.isHidden)")
 #if canImport(MetalPerformanceShaders) && canImport(MetalKit)
             mpsDisplay?.updateDisplayConfiguration(configuration)
 #endif
@@ -473,6 +482,7 @@ import MTKSceneKit
 
             renderingBackend = .metalPerformanceShaders
             sceneView.isHidden = true
+            activeSurface = mpsSurface ?? sceneSurface
             display.setActive(true)
 
             if datasetApplied, let dataset {
@@ -501,6 +511,7 @@ import MTKSceneKit
         mpsDisplay?.setActive(false)
 #endif
         sceneView.isHidden = false
+        activeSurface = sceneSurface
         renderingBackend = .sceneKit
         if datasetApplied, let dataset {
             volumeMaterial.setDataset(device: device, dataset: dataset)
@@ -549,6 +560,29 @@ import MTKSceneKit
     public func metadata() -> (dimension: SIMD3<Int32>, resolution: SIMD3<Float>)? {
         guard datasetApplied else { return nil }
         return volumeMaterial.datasetMeta
+    }
+
+    private func formatVector(_ vector: SIMD3<Float>) -> String {
+        String(format: "(%.3f, %.3f, %.3f)", vector.x, vector.y, vector.z)
+    }
+
+    private func formatSize(_ size: CGSize) -> String {
+        String(format: "%.1fx%.1f", size.width, size.height)
+    }
+
+    private func describe(_ configuration: DisplayConfiguration) -> String {
+        switch configuration {
+        case let .volume(method):
+            return "volume(method=\(method.rawValue))"
+        case let .mpr(axis, index, blend, slab):
+            let slabDescription: String
+            if let slab {
+                slabDescription = "slab=th:\(slab.thickness)xsteps:\(slab.steps)"
+            } else {
+                slabDescription = "slab=none"
+            }
+            return "mpr(axis=\(axis.rawValue) index=\(index) blend=\(blend.rawValue) \(slabDescription))"
+        }
     }
 }
 #endif

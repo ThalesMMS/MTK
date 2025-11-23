@@ -9,7 +9,7 @@
 import simd
 import MTKCore
 
-#if os(iOS)
+#if os(iOS) || os(macOS)
 
 struct MprPlaneComputation {
     let originVoxel: SIMD3<Float>

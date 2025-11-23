@@ -6,6 +6,7 @@ import AppKit
 public typealias PlatformView = NSView
 #endif
 import CoreGraphics
+import OSLog
 
 @MainActor
 public protocol RenderSurface: AnyObject {
@@ -20,10 +21,27 @@ import SwiftUI
 public struct RenderSurfaceView: UIViewRepresentable {
     public final class ContainerView: UIView {
         private weak var hostedView: UIView?
+        private let logger = Logger(subsystem: "com.isis.viewer", category: "RenderSurfaceView")
+        private var lastLoggedSize: CGSize = .zero
+
+        public override func layoutSubviews() {
+            super.layoutSubviews()
+            if let hostedView = hostedView {
+                hostedView.frame = bounds
+            }
+        }
 
         public func host(_ view: UIView) {
-            guard hostedView !== view else {
+            let typeName = String(describing: type(of: view))
+            if hostedView === view && view.superview === self {
+                // logger.debug("RenderSurfaceView already hosting view type=\(typeName)")
                 return
+            }
+
+            logger.debug("RenderSurfaceView hosting view type=\(typeName) currentSuperview=\(String(describing: type(of: view.superview))) self=\(String(describing: type(of: self)))")
+
+            if typeName.contains("_UIReparentingView") {
+                logger.error("CRITICAL: Attempting to host _UIReparentingView! This indicates a UIHostingController's view is being passed instead of the raw Metal/SceneKit view.")
             }
 
             hostedView?.removeFromSuperview()
@@ -31,13 +49,30 @@ public struct RenderSurfaceView: UIViewRepresentable {
 
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
-
+            
             NSLayoutConstraint.activate([
                 view.leadingAnchor.constraint(equalTo: leadingAnchor),
                 view.trailingAnchor.constraint(equalTo: trailingAnchor),
                 view.topAnchor.constraint(equalTo: topAnchor),
                 view.bottomAnchor.constraint(equalTo: bottomAnchor)
             ])
+
+            setNeedsLayout()
+            layoutIfNeeded()
+            logHostingEvent(view: view)
+        }
+
+        private func logHostingEvent(view: UIView) {
+            let size = bounds.size
+            let viewSize = view.bounds.size
+            let windowAttached = window != nil || view.window != nil
+            guard size != lastLoggedSize || viewSize != lastLoggedSize else { return }
+            lastLoggedSize = size
+            if size.width <= 1 || size.height <= 1 {
+                logger.warning("Render surface container is degenerate hostSize=\(size.width)x\(size.height) viewSize=\(viewSize.width)x\(viewSize.height) windowAttached=\(windowAttached)")
+            } else {
+                logger.debug("Render surface container hostSize=\(size.width)x\(size.height) viewSize=\(viewSize.width)x\(viewSize.height) windowAttached=\(windowAttached)")
+            }
         }
     }
 
@@ -72,6 +107,13 @@ public struct RenderSurfaceView: NSViewRepresentable {
 
         public required init?(coder: NSCoder) {
             fatalError("init(coder:) has not been implemented")
+        }
+
+        public override func layout() {
+            super.layout()
+            if let hostedView = hostedView {
+                hostedView.frame = bounds
+            }
         }
 
         public func host(_ view: NSView) {

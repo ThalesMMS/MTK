@@ -4,7 +4,7 @@
 //
 //  Lightweight forwarding helpers split from the core controller.
 //
-#if os(iOS)
+#if os(iOS) || os(macOS)
 import Foundation
 import SceneKit
 import simd

@@ -184,46 +184,82 @@ private extension MetalRuntimeGuard {
         }
 
         private static func supports3DTextures(device: any MTLDevice) -> Bool {
-            var supports3DTextures = false
             #if os(iOS) || os(tvOS)
             if #available(iOS 13.0, tvOS 13.0, *) {
-                supports3DTextures = device.supportsFamily(.apple3) ||
-                                     device.supportsFamily(.apple4) ||
-                                     device.supportsFamily(.apple5) ||
-                                     device.supportsFamily(.apple6) ||
-                                     device.supportsFamily(.apple7)
+                if device.supportsAnyFamily([
+                    .apple3,
+                    .apple4,
+                    .apple5,
+                    .apple6,
+                    .apple7,
+                    .apple8,
+                    .apple9,
+                    .apple10,
+                    .common3
+                ]) {
+                    return true
+                }
             } else {
-                supports3DTextures = true
+                return true
             }
             #elseif os(macOS)
             if #available(macOS 11.0, *) {
-                supports3DTextures = device.supportsFamily(.mac2)
+                if device.supportsAnyFamily([.mac1, .mac2, .common3]) {
+                    return true
+                }
             } else {
-                supports3DTextures = true
+                return true
             }
             #else
-            supports3DTextures = true
+            return true
             #endif
-            return supports3DTextures
+
+            // Fallback to an allocation probe for environments (e.g., simulators or
+            // future GPU families) where family reporting might be incomplete.
+            return probe3DTextureAllocation(device: device)
         }
 
         private static func supportsRequiredGPUFamilies(device: any MTLDevice) -> Bool {
             #if os(iOS) || os(tvOS)
             if #available(iOS 16.0, tvOS 16.0, *) {
-                return device.supportsFamily(.apple4) ||
-                       device.supportsFamily(.apple5) ||
-                       device.supportsFamily(.apple6) ||
-                       device.supportsFamily(.apple7)
+                if device.supportsAnyFamily([
+                    .apple4,
+                    .apple5,
+                    .apple6,
+                    .apple7,
+                    .apple8,
+                    .apple9,
+                    .apple10,
+                    .common3
+                ]) {
+                    return true
+                }
+                return probe3DTextureAllocation(device: device)
             }
             return true
             #elseif os(macOS)
             if #available(macOS 12.0, *) {
-                return device.supportsFamily(.mac2)
+                if device.supportsAnyFamily([.mac1, .mac2, .common3]) {
+                    return true
+                }
+                return probe3DTextureAllocation(device: device)
             }
             return true
             #else
             return true
             #endif
+        }
+
+        private static func probe3DTextureAllocation(device: any MTLDevice) -> Bool {
+            let descriptor = MTLTextureDescriptor()
+            descriptor.textureType = .type3D
+            descriptor.pixelFormat = .r8Unorm
+            descriptor.width = 4
+            descriptor.height = 4
+            descriptor.depth = 4
+            descriptor.storageMode = .private
+            descriptor.usage = [.shaderRead]
+            return device.makeTexture(descriptor: descriptor) != nil
         }
     }
 }
@@ -242,6 +278,13 @@ private extension MetalRuntimeGuard.Status.MissingFeature {
         case .unsupportedGPUFamily:
             return "required GPU family unsupported"
         }
+    }
+}
+
+private extension MTLDevice {
+    @available(iOS 13.0, macOS 11.0, tvOS 13.0, *)
+    func supportsAnyFamily(_ families: [MTLGPUFamily]) -> Bool {
+        families.contains { supportsFamily($0) }
     }
 }
 

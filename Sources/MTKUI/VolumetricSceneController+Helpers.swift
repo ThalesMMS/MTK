@@ -4,7 +4,7 @@
 //
 //  Supporting math helpers for the volumetric controller.
 //
-#if os(iOS)
+#if os(iOS) || os(macOS)
 import Foundation
 import SceneKit
 import MTKCore

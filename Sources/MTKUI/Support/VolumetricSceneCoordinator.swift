@@ -21,6 +21,9 @@ public final class VolumetricSceneCoordinator: ObservableObject {
     /// Shared singleton instance
     public static let shared = VolumetricSceneCoordinator()
 
+    /// Whether a Metal device was successfully resolved
+    @Published public private(set) var isMetalAvailable: Bool
+
     private enum SurfaceKey: Hashable {
         case volume
         case mpr(VolumetricSceneController.Axis)
@@ -43,7 +46,8 @@ public final class VolumetricSceneCoordinator: ObservableObject {
         .y: MprConfiguration(blend: .single, slab: nil, normalizedPosition: 0.5),
         .z: MprConfiguration(blend: .single, slab: nil, normalizedPosition: 0.5)
     ]
-    private let device: any MTLDevice
+    private let device: (any MTLDevice)?
+    private var stubControllers: [SurfaceKey: VolumetricSceneController] = [:]
     @Published public private(set) var rendererState = VolumetricRendererState(
         normalizedMprPositions: [
             VolumetricSceneController.Axis.x: 0.5,
@@ -53,10 +57,13 @@ public final class VolumetricSceneCoordinator: ObservableObject {
     )
 
     private init() {
-        guard let metalDevice = MTLCreateSystemDefaultDevice() else {
-            fatalError("Metal device not available")
+        if let metalDevice = MTLCreateSystemDefaultDevice() {
+            self.device = metalDevice
+            self.isMetalAvailable = true
+        } else {
+            self.device = nil
+            self.isMetalAvailable = false
         }
-        self.device = metalDevice
     }
 
     /// Primary controller used for the preview overlay and volume rendering tile
@@ -84,6 +91,7 @@ public final class VolumetricSceneCoordinator: ObservableObject {
             .y: MprConfiguration(blend: .single, slab: nil, normalizedPosition: 0.5),
             .z: MprConfiguration(blend: .single, slab: nil, normalizedPosition: 0.5)
         ]
+        stubControllers.removeAll()
         updateRendererState { state in
             state.dataset = nil
             state.huWindow = nil
@@ -99,6 +107,7 @@ public final class VolumetricSceneCoordinator: ObservableObject {
     /// Applies a new dataset to all managed controllers, creating them on-demand
     /// - Parameter dataset: The volume dataset to apply
     public func apply(dataset: VolumeDataset) {
+        guard isMetalAvailable else { return }
         pendingDataset = dataset
         updateRendererState { state in
             state.dataset = VolumetricRendererState.DatasetSummary(
@@ -116,6 +125,7 @@ public final class VolumetricSceneCoordinator: ObservableObject {
     /// Propagates the active transfer function to all controllers (volume + MPR)
     /// - Parameter transferFunction: The transfer function to apply (nil to clear)
     public func apply(transferFunction: TransferFunction?) {
+        guard isMetalAvailable else { return }
         pendingTransferFunction = transferFunction
         updateRendererState { $0.transferFunction = transferFunction }
         controllers.forEach { surface, controller in
@@ -128,6 +138,7 @@ public final class VolumetricSceneCoordinator: ObservableObject {
     ///   - min: Minimum HU value
     ///   - max: Maximum HU value
     public func applyHuWindow(min: Int32, max: Int32) {
+        guard isMetalAvailable else { return }
         let mapping = makeHuMapping(min: min, max: max)
         pendingHuWindow = mapping
         updateRendererState { $0.huWindow = mapping }
@@ -139,6 +150,7 @@ public final class VolumetricSceneCoordinator: ObservableObject {
     /// Ensures the shared volume controller renders with the expected configuration (e.g., DVR)
     /// - Parameter configuration: The display configuration to apply
     public func configureVolumeDisplay(_ configuration: VolumetricSceneController.DisplayConfiguration) {
+        guard isMetalAvailable else { return }
         volumeConfiguration = configuration
         if let controller = controllers[.volume] {
             Task { await propagateState(to: controller, surface: .volume) }
@@ -155,6 +167,7 @@ public final class VolumetricSceneCoordinator: ObservableObject {
                                     blend: MPRPlaneMaterial.BlendMode = .single,
                                     slab: VolumetricSceneController.SlabConfiguration? = nil,
                                     normalizedPosition: Float = 0.5) {
+        guard isMetalAvailable else { return }
         let clamped = clamp(normalizedPosition, lower: 0, upper: 1)
         mprConfigurations[axis] = MprConfiguration(blend: blend,
                                                    slab: slab,
@@ -170,6 +183,7 @@ public final class VolumetricSceneCoordinator: ObservableObject {
     ///   - axis: The MPR axis to update
     ///   - normalizedPosition: Normalized position along axis (0...1)
     public func setMprPlane(axis: VolumetricSceneController.Axis, normalizedPosition: Float) {
+        guard isMetalAvailable else { return }
         let clamped = clamp(normalizedPosition, lower: 0, upper: 1)
         if var config = mprConfigurations[axis] {
             config.normalizedPosition = clamped
@@ -183,19 +197,45 @@ public final class VolumetricSceneCoordinator: ObservableObject {
     }
 
     private func controller(for surface: SurfaceKey) -> VolumetricSceneController {
+        if !isMetalAvailable {
+            if let stub = stubControllers[surface]
+                ?? (try? VolumetricSceneController(device: nil, sceneView: nil))
+                ?? (try? VolumetricSceneController()) {
+                stubControllers[surface] = stub
+                controllers[surface] = stub
+                return stub
+            }
+            fatalError("Failed to create stub VolumetricSceneController without Metal.")
+        }
+
         if let existing = controllers[surface] {
             return existing
         }
 
         let newController: VolumetricSceneController
-#if os(iOS)
-        do {
-            newController = try VolumetricSceneController(device: device)
-        } catch {
-            fatalError("Failed to create VolumetricSceneController: \(error)")
+#if os(iOS) || os(macOS)
+        guard let device else {
+            if let stub = stubControllers[surface]
+                ?? (try? VolumetricSceneController(device: nil, sceneView: nil))
+                ?? (try? VolumetricSceneController()) {
+                stubControllers[surface] = stub
+                controllers[surface] = stub
+                return stub
+            }
+            fatalError("Failed to create fallback VolumetricSceneController when Metal device is unavailable.")
         }
+        newController = (try? VolumetricSceneController(device: device))
+            ?? (try? VolumetricSceneController(device: nil, sceneView: nil))
+            ?? (try? VolumetricSceneController())
+            ?? {
+                fatalError("Failed to create VolumetricSceneController with or without Metal device.")
+            }()
 #else
-        newController = VolumetricSceneController()
+        newController = (try? VolumetricSceneController(device: nil, sceneView: nil))
+            ?? (try? VolumetricSceneController())
+            ?? {
+                fatalError("Failed to create VolumetricSceneController stub on unsupported platform.")
+            }()
 #endif
 
         controllers[surface] = newController

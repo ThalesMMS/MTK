@@ -111,11 +111,7 @@ public struct BackendResolver {
     ///
     /// - Returns: true if Metal runtime is available and meets minimum requirements, false otherwise
     private static func isMetalBackendAvailable() -> Bool {
-        #if canImport(MetalAdapters)
         return MetalRuntimeAvailability.isAvailable()
-        #else
-        return false
-        #endif
     }
 
     /// The UserDefaults key for storing the Metal availability check result
