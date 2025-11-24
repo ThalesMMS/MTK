@@ -132,12 +132,14 @@ import MTKSceneKit
     }
 
     private func requestImmediateSceneViewFrame() {
-        guard renderingBackend == .sceneKit else { return }
+        sceneView.isPlaying = true
+        sceneView.rendersContinuously = true
 #if os(macOS)
         sceneView.setNeedsDisplay(sceneView.bounds)
 #else
         sceneView.setNeedsDisplay()
 #endif
+        logger.debug("Requested immediate scene view frame")
     }
 
     public func resetCamera() async {
@@ -448,6 +450,7 @@ import MTKSceneKit
         case .active:
             sceneView.isPlaying = true
             sceneView.rendersContinuously = true
+            requestImmediateSceneViewFrame()
         case .paused:
             sceneView.isPlaying = false
             sceneView.rendersContinuously = false
