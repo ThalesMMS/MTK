@@ -741,6 +741,13 @@ private extension MetalVolumeRenderingAdapter {
                                        nearZ: nearZ,
                                        farZ: farZ)
         let matrix = projection * view
+        
+        if diagnosticLoggingEnabled {
+            logger.info("[DIAG] View Matrix:\n\(view.debugDescription)")
+            logger.info("[DIAG] Projection Matrix:\n\(projection.debugDescription)")
+            logger.info("[DIAG] InvViewProj Matrix:\n\(simd_inverse(matrix).debugDescription)")
+        }
+        
         return simd_inverse(matrix)
     }
 
