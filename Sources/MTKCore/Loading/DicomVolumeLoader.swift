@@ -21,6 +21,7 @@ public protocol DICOMSeriesVolumeProtocol {
     var spacingX: Double { get }
     var spacingY: Double { get }
     var spacingZ: Double { get }
+    var sliceThickness: Double { get }
     var orientation: simd_float3x3 { get }
     var origin: SIMD3<Float> { get }
     var rescaleSlope: Double { get }
@@ -64,11 +65,19 @@ public struct DicomImportResult {
     public let dataset: VolumeDataset
     public let sourceURL: URL
     public let seriesDescription: String
+    public let originalSpacing: VolumeSpacing
+    public let sliceThickness: Double
     
-    public init(dataset: VolumeDataset, sourceURL: URL, seriesDescription: String) {
+    public init(dataset: VolumeDataset,
+                sourceURL: URL,
+                seriesDescription: String,
+                originalSpacing: VolumeSpacing? = nil,
+                sliceThickness: Double = 0) {
         self.dataset = dataset
         self.sourceURL = sourceURL
         self.seriesDescription = seriesDescription
+        self.originalSpacing = originalSpacing ?? dataset.spacing
+        self.sliceThickness = sliceThickness
     }
 }
 
@@ -84,10 +93,46 @@ public enum DicomVolumeUIProgress {
     case reading(Double)
 }
 
+/// Geometry/spatial handling mode applied when creating the VolumeDataset.
+/// - `physicalSpacing`: preserves the spacing read from the DICOM tags (default).
+/// - `viewerIsotropic`: forces cubic voxels using the smallest spacing component
+///   (visual compatibility with viewers that resample to isotropic voxels).
+public enum DicomVolumeGeometryMode: Equatable, Sendable {
+    case physicalSpacing
+    case viewerIsotropic
+
+    public func apply(to spacing: VolumeSpacing, sliceThickness: Double? = nil) -> VolumeSpacing {
+        switch self {
+        case .physicalSpacing:
+            return spacing
+        case .viewerIsotropic:
+            let tagThickness = sliceThickness ?? spacing.z
+            // Outros visualizadores tendem a usar SliceThickness/SpacingBetweenSlices para o eixo Z.
+            // Use o maior entre spacing.z (computado via IPP) e a espessura declarada.
+            let effectiveZ = max(spacing.z, tagThickness)
+            let iso = min(spacing.x, spacing.y, effectiveZ)
+            return VolumeSpacing(x: iso, y: iso, z: iso)
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .physicalSpacing:
+            return "physicalSpacing"
+        case .viewerIsotropic:
+            return "viewerIsotropic"
+        }
+    }
+}
+
 /// DICOM volume loader with async progress tracking
 public final class DicomVolumeLoader {
     private let logger = Logger(subsystem: "com.mtk.dicom", category: "Loader")
     private let loader: DicomSeriesLoading
+    /// Controls how voxel spacing is interpreted when building the dataset.
+    /// Default is `.physicalSpacing` (true-to-DICOM). Set to `.viewerIsotropic`
+    /// to force cubic voxels for visual compatibility with other viewers.
+    public var geometryMode: DicomVolumeGeometryMode = .physicalSpacing
     
     /// Initialize with a custom series loader
     /// - Parameter seriesLoader: DICOM series loading implementation
@@ -110,6 +155,7 @@ public final class DicomVolumeLoader {
                     completion: @escaping (Result<DicomImportResult, Error>) -> Void) {
         let sourceURL = url.standardizedFileURL
         logger.info("Starting DICOM import from \(sourceURL.path(percentEncoded: false))")
+        let spacingMode = self.geometryMode
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 let prepared = try self.prepareDirectory(from: url)
@@ -117,9 +163,11 @@ public final class DicomVolumeLoader {
 
                 var convertedData: Data?
                 var dimensions = SIMD3<Int32>(repeating: 0)
-                var spacing = SIMD3<Float>(repeating: 0)
+                var resolvedSpacing = SIMD3<Float>(repeating: 0)
+                var nativeSpacing: VolumeSpacing?
+                var sliceThickness: Double = 0
                 var orientation = matrix_identity_float3x3
-                var origin = float3.zero
+                var origin = SIMD3<Float>.zero
                 var slope: Double = 1.0
                 var intercept: Double = 0.0
                 var isSigned = false
@@ -144,12 +192,24 @@ public final class DicomVolumeLoader {
                         dimensions = SIMD3(Int32(partialVolume.width),
                                             Int32(partialVolume.height),
                                             Int32(partialVolume.depth))
-                        let meterScale: Float = 0.001
-                        spacing = SIMD3(Float(partialVolume.spacingX) * meterScale,
-                                        Float(partialVolume.spacingY) * meterScale,
-                                        Float(partialVolume.spacingZ) * meterScale)
+                        let meterScale: Double = 0.001
+                        let rawSpacing = VolumeSpacing(x: partialVolume.spacingX * meterScale,
+                                                       y: partialVolume.spacingY * meterScale,
+                                                       z: partialVolume.spacingZ * meterScale)
+                        sliceThickness = partialVolume.sliceThickness * meterScale
+                        nativeSpacing = rawSpacing
+                        let adjustedSpacing = spacingMode.apply(to: rawSpacing,
+                                                                 sliceThickness: sliceThickness)
+                        resolvedSpacing = SIMD3<Float>(Float(adjustedSpacing.x),
+                                                       Float(adjustedSpacing.y),
+                                                       Float(adjustedSpacing.z))
+                        if spacingMode != .physicalSpacing {
+                            let native = self.formatSpacing(rawSpacing)
+                            let adjusted = self.formatSpacing(adjustedSpacing)
+                            self.logger.info("Geometry mode \(spacingMode.description) → spacing native=\(native) adjusted=\(adjusted)")
+                        }
                         orientation = partialVolume.orientation
-                        origin = SIMD3<Float>(partialVolume.origin) * meterScale
+                        origin = SIMD3<Float>(partialVolume.origin) * Float(meterScale)
                         slope = partialVolume.rescaleSlope == 0 ? 1.0 : partialVolume.rescaleSlope
                         intercept = partialVolume.rescaleIntercept
                         isSigned = partialVolume.isSignedPixel
@@ -210,12 +270,15 @@ public final class DicomVolumeLoader {
                     throw DicomVolumeLoaderError.missingResult
                 }
 
+                let physicalSpacing = nativeSpacing ?? VolumeSpacing(x: Double(resolvedSpacing.x),
+                                                                      y: Double(resolvedSpacing.y),
+                                                                      z: Double(resolvedSpacing.z))
                 let range = Self.intensityRange(minHU: minHU, maxHU: maxHU)
                 let dataset = self.makeDataset(data: convertedData,
                                                width: Int(dimensions.x),
                                                height: Int(dimensions.y),
                                                depth: Int(dimensions.z),
-                                               spacing: spacing,
+                                               spacing: resolvedSpacing,
                                                orientationMatrix: orientation,
                                                origin: origin,
                                                intensityRange: range)
@@ -226,7 +289,9 @@ public final class DicomVolumeLoader {
 
                 let result = DicomImportResult(dataset: dataset,
                                                sourceURL: url,
-                                               seriesDescription: (volume as? any DICOMSeriesVolumeProtocol)?.seriesDescription ?? "")
+                                               seriesDescription: (volume as? any DICOMSeriesVolumeProtocol)?.seriesDescription ?? "",
+                                               originalSpacing: physicalSpacing,
+                                               sliceThickness: sliceThickness)
 
                 self.logger.info("DICOM import completed for \(sourceURL.lastPathComponent) (\(dimensions.x)x\(dimensions.y)x\(dimensions.z))")
                 DispatchQueue.main.async {
@@ -271,11 +336,7 @@ public final class DicomVolumeLoader {
 
         let archive: Archive
         do {
-            guard let opened = try Archive(url: url, accessMode: .read) else {
-                logger.error("Archive initializer returned nil for \(url.lastPathComponent)")
-                throw DicomVolumeLoaderError.missingResult
-            }
-            archive = opened
+            archive = try Archive(url: url, accessMode: .read)
         } catch {
             logger.error("Failed to open archive \(url.lastPathComponent): \(error.localizedDescription)")
             throw DicomVolumeLoaderError.bridgeError(error as NSError)
@@ -329,6 +390,13 @@ private extension DicomVolumeLoader {
         return minHU...maxHU
     }
 
+    func formatSpacing(_ spacing: VolumeSpacing) -> String {
+        let mmX = spacing.x * 1000
+        let mmY = spacing.y * 1000
+        let mmZ = spacing.z * 1000
+        return String(format: "%.4f × %.4f × %.4f mm", mmX, mmY, mmZ)
+    }
+
     func makeDataset(data: Data,
                      width: Int,
                      height: Int,
@@ -341,12 +409,15 @@ private extension DicomVolumeLoader {
         let volumeSpacing = VolumeSpacing(x: Double(spacing.x),
                                           y: Double(spacing.y),
                                           z: Double(spacing.z))
-        let row = SIMD3<Float>(orientationMatrix.columns.0.x,
-                               orientationMatrix.columns.0.y,
-                               orientationMatrix.columns.0.z)
-        let column = SIMD3<Float>(orientationMatrix.columns.1.x,
+        let rawRow = SIMD3<Float>(orientationMatrix.columns.0.x,
+                                  orientationMatrix.columns.0.y,
+                                  orientationMatrix.columns.0.z)
+        let rawCol = SIMD3<Float>(orientationMatrix.columns.1.x,
                                   orientationMatrix.columns.1.y,
                                   orientationMatrix.columns.1.z)
+        let row = simd_normalize(rawRow)
+        let normal = simd_normalize(simd_cross(row, rawCol))
+        let column = simd_normalize(simd_cross(normal, row)) // enforce orthogonality
         let orientation = VolumeOrientation(row: row, column: column, origin: origin)
         return VolumeDataset(data: data,
                              dimensions: volumeDimensions,

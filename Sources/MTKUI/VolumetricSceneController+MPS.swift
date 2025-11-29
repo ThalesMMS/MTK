@@ -24,7 +24,7 @@ import MTKSceneKit
 #if canImport(MetalPerformanceShaders) && canImport(MetalKit)
 public extension VolumetricSceneController {
     @MainActor
-    public final class MPSDisplayAdapter: NSObject, MTKViewDelegate, RenderSurface {
+    final class MPSDisplayAdapter: NSObject, MTKViewDelegate, RenderSurface {
         private let metalView: MTKView
         private let commandQueue: any MTLCommandQueue
         private var histogram: MPSVolumeRenderer.HistogramResult?

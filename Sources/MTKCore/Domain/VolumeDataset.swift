@@ -114,9 +114,25 @@ public struct VolumeDataset: Sendable, Equatable {
 
     public var scale: VolumeSpacing {
         VolumeSpacing(
-            x: spacing.x * Double(dimensions.width),
-            y: spacing.y * Double(dimensions.height),
-            z: spacing.z * Double(dimensions.depth)
+            x: spacing.x * Double(max(dimensions.width - 1, 1)),
+            y: spacing.y * Double(max(dimensions.height - 1, 1)),
+            z: spacing.z * Double(max(dimensions.depth - 1, 1))
+        )
+    }
+
+    /// Creates a DICOMGeometry from this VolumeDataset
+    /// Used to compute world↔texture transformation matrices
+    public var dicomGeometry: DICOMGeometry {
+        return DICOMGeometry(
+            cols: Int32(dimensions.width),
+            rows: Int32(dimensions.height),
+            slices: Int32(dimensions.depth),
+            spacingX: Float(spacing.x),
+            spacingY: Float(spacing.y),
+            spacingZ: Float(spacing.z),
+            iopRow: orientation.row,
+            iopCol: orientation.column,
+            ipp0: orientation.origin
         )
     }
 }

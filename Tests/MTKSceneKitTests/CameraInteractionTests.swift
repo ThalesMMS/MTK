@@ -6,6 +6,7 @@
 import XCTest
 @testable import MTKSceneKit
 
+@MainActor
 final class CameraInteractionTests: XCTestCase {
     func testStoreRetainsControllersWeakly() {
         let store = VolumeCameraControllerStore()

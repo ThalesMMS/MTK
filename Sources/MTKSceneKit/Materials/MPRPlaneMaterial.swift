@@ -38,6 +38,16 @@ public final class MPRPlaneMaterial: SCNMaterial, SCNProgramDelegate {
         public var planeY: SIMD3<Float> = SIMD3<Float>(0, 1, 0)
         public var _pad3: Float = 0
 
+        // Phase 4 MPR accuracy controls (default-off for legacy parity)
+        public var spacingMM: SIMD3<Float> = SIMD3<Float>(1, 1, 1)
+        public var slabThicknessMM: Float = 0
+        public var usePhysicalWeighting: Int32 = 0
+        public var useBoundsEpsilon: Int32 = 0
+        public var boundsEpsilon: Float = 0
+        public var _pad4: Float = 0
+        public var volumeSizeMM: SIMD3<Float> = SIMD3<Float>(1, 1, 1)
+        public var _pad5: Float = 0
+
         public init() {}
     }
 
@@ -54,6 +64,9 @@ public final class MPRPlaneMaterial: SCNMaterial, SCNProgramDelegate {
     private var textureFactory: VolumeTextureFactory = VolumeTextureFactory(part: .none)
     private let logger = Logger(subsystem: "com.mtk.volumerendering",
                                 category: "MPRPlaneMaterial")
+    private static var compileCount: Int = 0
+    private static var compileWindowStart: Date = Date()
+    private static let compileWindow: TimeInterval = 60.0
 
     public init(device: any MTLDevice) {
         self.device = device
@@ -64,6 +77,13 @@ public final class MPRPlaneMaterial: SCNMaterial, SCNProgramDelegate {
         program.fragmentFunctionName = "mpr_fragment"
         program.delegate = self
         assignProgramLibrary(program)
+        Self.compileCount += 1
+        let now = Date()
+        if now.timeIntervalSince(Self.compileWindowStart) >= Self.compileWindow {
+            logger.debug("Shader library compilations in last \(Int(Self.compileWindow))s: \(Self.compileCount)")
+            Self.compileWindowStart = now
+            Self.compileCount = 0
+        }
         program.handleBinding(ofBufferNamed: uniformsKey, frequency: .perFrame) { [weak self] _, _, _, renderer in
             guard let self,
                   let encoder = renderer.currentRenderCommandEncoder,
@@ -93,6 +113,15 @@ public final class MPRPlaneMaterial: SCNMaterial, SCNProgramDelegate {
     public func setDataset(dimension: SIMD3<Int32>, resolution: SIMD3<Float>) {
         self.dimension = dimension
         self.resolution = resolution
+        let spacingMM = resolution * 1000.0
+        let dims = SIMD3<Float>(
+            max(1, Float(dimension.x)),
+            max(1, Float(dimension.y)),
+            max(1, Float(dimension.z))
+        )
+        uniforms.spacingMM = spacingMM
+        uniforms.volumeSizeMM = spacingMM * dims
+        syncUniforms()
     }
 
     public func setPart(device: any MTLDevice, part: VolumeCubeMaterial.BodyPart) {
@@ -120,15 +149,20 @@ public final class MPRPlaneMaterial: SCNMaterial, SCNProgramDelegate {
 
     public func setSlab(thicknessInVoxels: Int, axis: Int, steps: Int) {
         let denominator: Float
+        let axisSpacingMM: Float
         switch axis {
         case 0:
             denominator = max(1, Float(dimension.x))
+            axisSpacingMM = uniforms.spacingMM.x
         case 1:
             denominator = max(1, Float(dimension.y))
+            axisSpacingMM = uniforms.spacingMM.y
         default:
             denominator = max(1, Float(dimension.z))
+            axisSpacingMM = uniforms.spacingMM.z
         }
         uniforms.slabHalf = 0.5 * Float(thicknessInVoxels) / denominator
+        uniforms.slabThicknessMM = Float(thicknessInVoxels) * axisSpacingMM
         uniforms.numSteps = Int32(max(1, steps))
         syncUniforms()
     }
@@ -174,6 +208,17 @@ public final class MPRPlaneMaterial: SCNMaterial, SCNProgramDelegate {
         uniforms.flipVertical = enabled ? 1 : 0
     }
 
+    public func setPhysicalWeighting(_ enabled: Bool) {
+        uniforms.usePhysicalWeighting = enabled ? 1 : 0
+        syncUniforms()
+    }
+
+    public func setBoundsEpsilon(enabled: Bool, epsilon: Float = 1.0e-4) {
+        uniforms.useBoundsEpsilon = enabled ? 1 : 0
+        uniforms.boundsEpsilon = enabled ? epsilon : 0
+        syncUniforms()
+    }
+
     public func snapshotUniforms() -> Uniforms {
         uniforms
     }
@@ -187,10 +232,7 @@ public final class MPRPlaneMaterial: SCNMaterial, SCNProgramDelegate {
 
 private extension MPRPlaneMaterial {
     func assignProgramLibrary(_ program: SCNProgram) {
-        guard let metalDevice = device as? MTLDevice else {
-            logger.fault("Unable to resolve MTLDevice for MPRPlaneMaterial shader binding")
-            return
-        }
+        let metalDevice = device
 
         let library = ShaderLibraryLoader.makeDefaultLibrary(on: metalDevice) { [logger] message in
             logger.debug("\(message)")
@@ -219,14 +261,24 @@ private extension MPRPlaneMaterial {
             return
         }
 
-        guard texture.pixelFormat == .r16Sint else {
-            logger.fault("Volume texture must be r16Sint. Received pixelFormat=\(texture.pixelFormat.rawValue)")
+        guard texture.pixelFormat == .r16Float else {
+            logger.fault("Volume texture must be r16Float. Received pixelFormat=\(texture.pixelFormat.rawValue)")
             bindVolumeTexture(fallbackVolumeTexture)
             return
         }
 
         dimension = factory.dimension
         resolution = factory.resolution
+
+        // Precompute spacing and volume extent in millimeters for slab accuracy
+        let spacingMM = factory.resolution * 1000.0
+        let dims = SIMD3<Float>(
+            max(1, Float(dimension.x)),
+            max(1, Float(dimension.y)),
+            max(1, Float(dimension.z))
+        )
+        uniforms.spacingMM = spacingMM
+        uniforms.volumeSizeMM = spacingMM * dims
 
         let range = factory.dataset.intensityRange
         uniforms.voxelMinValue = range.lowerBound
@@ -255,7 +307,7 @@ private extension MPRPlaneMaterial {
     static func makeFallbackVolumeTexture(device: any MTLDevice) -> any MTLTexture {
         let descriptor = MTLTextureDescriptor()
         descriptor.textureType = .type3D
-        descriptor.pixelFormat = .r16Sint
+        descriptor.pixelFormat = .r16Float
         descriptor.width = 1
         descriptor.height = 1
         descriptor.depth = 1
@@ -263,20 +315,20 @@ private extension MPRPlaneMaterial {
         descriptor.usage = [.shaderRead, .pixelFormatView]
         let texture = device.makeTexture(descriptor: descriptor)
         texture?.label = "MPRVolumeFallback"
-        var zero: Int16 = 0
+        var zero: Float16 = 0
         texture?.replace(region: MTLRegionMake3D(0, 0, 0, 1, 1, 1),
                          mipmapLevel: 0,
                          slice: 0,
                          withBytes: &zero,
-                         bytesPerRow: MemoryLayout<Int16>.stride,
-                         bytesPerImage: MemoryLayout<Int16>.stride)
+                         bytesPerRow: MemoryLayout<Float16>.stride,
+                         bytesPerImage: MemoryLayout<Float16>.stride)
         return texture ?? MPRPlaneMaterial.nullFallbackTexture(device: device)
     }
 
     static func nullFallbackTexture(device: any MTLDevice) -> any MTLTexture {
         let descriptor = MTLTextureDescriptor()
         descriptor.textureType = .type3D
-        descriptor.pixelFormat = .r16Sint
+        descriptor.pixelFormat = .r16Float
         descriptor.width = 1
         descriptor.height = 1
         descriptor.depth = 1

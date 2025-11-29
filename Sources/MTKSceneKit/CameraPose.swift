@@ -217,6 +217,7 @@ public struct CameraPose: Equatable, Codable {
 ///
 /// Implementations should provide the current camera pose, which is essential
 /// for rendering engines that need to know the camera's spatial configuration.
+@MainActor
 public protocol VolumetricCameraPoseProviding {
     /// The current camera pose used for volumetric rendering
     var cameraPose: CameraPose { get }

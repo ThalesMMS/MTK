@@ -6,12 +6,14 @@
 import Foundation
 import simd
 
+@MainActor
 public protocol VolumeCameraControlling: AnyObject {
     func orbit(by delta: SIMD2<Float>)
     func pan(by delta: SIMD2<Float>)
     func zoom(by factor: Float)
 }
 
+@MainActor
 public final class VolumeCameraControllerStore {
     private var controllers: NSMapTable<AnyObject, AnyObject>
 
@@ -31,4 +33,3 @@ public final class VolumeCameraControllerStore {
         controllers.removeObject(forKey: key)
     }
 }
-

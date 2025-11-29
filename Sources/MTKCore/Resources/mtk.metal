@@ -80,7 +80,7 @@ surface_rendering(VertexOut in,
                   short dataMin, short dataMax,
                   bool isLightingOn,
                   float3 dimension,   // NOVO: dimensão real
-                  texture3d<short, access::sample> volume,
+                  texture3d<float, access::sample> volume,
                   texture2d<float, access::sample> transferColor)
 {
     FragmentOut out;
@@ -103,14 +103,14 @@ surface_rendering(VertexOut in,
             currPos.z < 0 || currPos.z > 1)
             continue;
 
-        short hu = VR::getDensity(volume, currPos);
-        float densityWindow = Util::normalize(hu, windowMin, windowMax);
+        float hu = VR::getDensity(volume, currPos);
+        float densityWindow = Util::normalize(hu, (float)windowMin, (float)windowMax);
 
         if (densityWindow > 0.2f) // limiar de superfície (ajustável no futuro)
         {
             float3 gradient = VR::calGradient(volume, currPos, dimension);
             float3 normal = normalize(gradient);
-            float densityDataset = Util::normalize(hu, dataMin, dataMax);
+            float densityDataset = Util::normalize(hu, (float)dataMin, (float)dataMax);
             col = VR::getTfColour(transferColor, clamp(densityDataset, 0.0f, 1.0f));
             if (isLightingOn)
                 col.rgb = Util::calculateLighting(col.rgb, normal, lightDir, ray.direction, 0.15f);
@@ -134,7 +134,7 @@ direct_volume_rendering(VertexOut in,
                         int dataMinValue, int dataMaxValue,
                         bool isLightingOn, bool isBackwardOn,
                         float3 dimension,   // NOVO: dimensão real
-                        texture3d<short, access::sample> dicom,
+                        texture3d<float, access::sample> dicom,
                         texture2d<float, access::sample> tfTable)
 {
     FragmentOut out;
@@ -149,7 +149,7 @@ direct_volume_rendering(VertexOut in,
     // pequeno jitter
     ray.startPosition = ray.startPosition + (2 * ray.direction / raymarch.numSteps);
 
-    float4 col = float4(0.0f);
+    half4 col = half4(0.0h);
     int zeroCount = 0;
     constexpr int ZRUN = 4;
     constexpr int ZSKIP = 3;
@@ -163,30 +163,31 @@ direct_volume_rendering(VertexOut in,
             currPos.z < 0 || currPos.z > 1)
             break;
 
-        short hu = VR::getDensity(dicom, currPos);
-        float densityWindow = Util::normalize(hu,
-                                              (short)windowMinValue,
-                                              (short)windowMaxValue);
-        float densityDataset = Util::normalize(hu,
-                                               (short)dataMinValue,
-                                               (short)dataMaxValue);
+        float hu = VR::getDensity(dicom, currPos);
+        half densityWindow = (half)Util::normalize(hu,
+                                              (float)windowMinValue,
+                                              (float)windowMaxValue);
+        half densityDataset = (half)Util::normalize(hu,
+                                               (float)dataMinValue,
+                                               (float)dataMaxValue);
 
-        densityWindow = clamp(densityWindow, 0.0f, 1.0f);
-        float4 src = VR::getTfColour(tfTable, clamp(densityDataset, 0.0f, 1.0f));
-        float3 gradient = VR::calGradient(dicom, currPos, dimension);
-        float3 normal   = normalize(gradient);
-        float3 direction = isBackwardOn ? ray.direction : -ray.direction;
+        densityWindow = clamp(densityWindow, 0.0h, 1.0h);
+        half4 src = (half4)VR::getTfColour(tfTable, (float)clamp(densityDataset, 0.0h, 1.0h));
+        
+        if (isLightingOn) {
+            float3 gradient = VR::calGradient(dicom, currPos, dimension);
+            half3 normal   = (half3)normalize(gradient);
+            half3 direction = isBackwardOn ? (half3)ray.direction : (half3)-ray.direction;
+            src.rgb = Util::calculateLighting(src.rgb, normal, (half3)lightDir, direction, 0.3h);
+        }
 
-        if (isLightingOn)
-            src.rgb = Util::calculateLighting(src.rgb, normal, lightDir, direction, 0.3f);
-
-        if (densityWindow < 0.1f)
-            src.a = 0.0f;
+        if (densityWindow < 0.1h)
+            src.a = 0.0h;
         else
             src.a *= densityWindow;
 
         // Empty-space skipping (transparência consecutiva)
-        if (src.a < 0.001f) {
+        if (src.a < 0.001h) {
             zeroCount++;
             if (zeroCount >= ZRUN) {
                 iStep += ZSKIP;
@@ -198,18 +199,18 @@ direct_volume_rendering(VertexOut in,
         }
 
         if (isBackwardOn) {
-            col.rgb = src.a * src.rgb + (1.0f - src.a) * col.rgb;
-            col.a   = src.a + (1.0f - src.a) * col.a;
+            col.rgb = src.a * src.rgb + (1.0h - src.a) * col.rgb;
+            col.a   = src.a + (1.0h - src.a) * col.a;
         } else {
             src.rgb *= src.a;
-            col = (1.0f - col.a) * src + col;
+            col = (1.0h - col.a) * src + col;
         }
 
-        if (col.a > 1)
+        if (col.a > 1.0h)
             break;
     }
 
-    out.color = col;
+    out.color = (float4)col;
     return out;
 }
 
@@ -226,7 +227,7 @@ maximum_intensity_projection(VertexOut in,
                              float3 dimension,
                              bool useTFProj,
                              int gateHuMin, int gateHuMax, int useHuGate,
-                             texture3d<short, access::sample> volume,
+                             texture3d<float, access::sample> volume,
                              texture2d<float, access::sample> tfTable)
 {
     FragmentOut out;
@@ -247,9 +248,9 @@ maximum_intensity_projection(VertexOut in,
             currPos.z < -1e-6 || currPos.z > 1+1e-6)
             break;
 
-        short hu = VR::getDensity(volume, currPos);
-        float densityWindow = Util::normalize(hu, windowMin, windowMax);
-        float densityDataset = Util::normalize(hu, dataMin, dataMax);
+        float hu = VR::getDensity(volume, currPos);
+        float densityWindow = Util::normalize(hu, (float)windowMin, (float)windowMax);
+        float densityDataset = Util::normalize(hu, (float)dataMin, (float)dataMax);
         densityWindow = clamp(densityWindow, 0.0f, 1.0f);
         densityDataset = clamp(densityDataset, 0.0f, 1.0f);
 
@@ -285,7 +286,7 @@ minimum_intensity_projection(VertexOut in,
                              float3 dimension,
                              bool useTFProj,
                              int gateHuMin, int gateHuMax, int useHuGate,
-                             texture3d<short, access::sample> volume,
+                             texture3d<float, access::sample> volume,
                              texture2d<float, access::sample> tfTable)
 {
     FragmentOut out;
@@ -307,9 +308,9 @@ minimum_intensity_projection(VertexOut in,
             currPos.z < -1e-6 || currPos.z > 1+1e-6)
             break;
 
-        short hu = VR::getDensity(volume, currPos);
-        float densityWindow = Util::normalize(hu, windowMin, windowMax);
-        float densityDataset = Util::normalize(hu, dataMin, dataMax);
+        float hu = VR::getDensity(volume, currPos);
+        float densityWindow = Util::normalize(hu, (float)windowMin, (float)windowMax);
+        float densityDataset = Util::normalize(hu, (float)dataMin, (float)dataMax);
         densityWindow = clamp(densityWindow, 0.0f, 1.0f);
         densityDataset = clamp(densityDataset, 0.0f, 1.0f);
         bool pass;
@@ -344,7 +345,7 @@ average_intensity_projection(VertexOut in,
                              float3 dimension,
                              bool useTFProj,
                              int gateHuMin, int gateHuMax, int useHuGate,
-                             texture3d<short, access::sample> volume,
+                             texture3d<float, access::sample> volume,
                              texture2d<float, access::sample> tfTable)
 {
     FragmentOut out;
@@ -366,9 +367,9 @@ average_intensity_projection(VertexOut in,
             currPos.z < -1e-6 || currPos.z > 1+1e-6)
             break;
 
-        short hu = VR::getDensity(volume, currPos);
-        float densityWindow = Util::normalize(hu, windowMin, windowMax);
-        float densityDataset = Util::normalize(hu, dataMin, dataMax);
+        float hu = VR::getDensity(volume, currPos);
+        float densityWindow = Util::normalize(hu, (float)windowMin, (float)windowMax);
+        float densityDataset = Util::normalize(hu, (float)dataMin, (float)dataMax);
         densityWindow = clamp(densityWindow, 0.0f, 1.0f);
         densityDataset = clamp(densityDataset, 0.0f, 1.0f);
         bool pass;
@@ -397,7 +398,7 @@ volume_fragment(VertexOut in [[stage_in]],
                 constant SCNSceneBuffer& scn_frame [[buffer(0)]],
                 constant NodeBuffer& scn_node [[buffer(1)]],
                 constant Uniforms& uniforms [[buffer(4)]],
-                texture3d<short, access::sample> dicom [[texture(0)]],
+                texture3d<float, access::sample> dicom [[texture(0)]],
                 texture2d<float, access::sample>  transferColor [[texture(3)]])
 {
     int  quality      = uniforms.renderingQuality;

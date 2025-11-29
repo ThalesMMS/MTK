@@ -38,7 +38,7 @@ public final class VolumeTextureFactory {
     public func generate(device: any MTLDevice) -> (any MTLTexture)? {
         let descriptor = MTLTextureDescriptor()
         descriptor.textureType = .type3D
-        descriptor.pixelFormat = dataset.pixelFormat.metalPixelFormat
+        descriptor.pixelFormat = .r16Float
         descriptor.usage = [.shaderRead, .pixelFormatView]
         descriptor.width = dataset.dimensions.width
         descriptor.height = dataset.dimensions.height
@@ -49,10 +49,25 @@ public final class VolumeTextureFactory {
             return nil
         }
 
-        let bytesPerRow = dataset.pixelFormat.bytesPerVoxel * descriptor.width
+        // Convert Int16 data to Float16 for hardware linear filtering support
+        let float16Data = dataset.data.withUnsafeBytes { buffer -> Data in
+            guard let baseAddress = buffer.baseAddress?.assumingMemoryBound(to: Int16.self) else { return Data() }
+            let count = dataset.dimensions.voxelCount
+            var outputData = Data(count: count * MemoryLayout<Float16>.stride)
+            
+            outputData.withUnsafeMutableBytes { outBuffer in
+                guard let outPtr = outBuffer.baseAddress?.assumingMemoryBound(to: Float16.self) else { return }
+                for i in 0..<count {
+                    outPtr[i] = Float16(baseAddress[i])
+                }
+            }
+            return outputData
+        }
+
+        let bytesPerRow = MemoryLayout<Float16>.stride * descriptor.width
         let bytesPerImage = bytesPerRow * descriptor.height
 
-        dataset.data.withUnsafeBytes { buffer in
+        float16Data.withUnsafeBytes { buffer in
             guard let baseAddress = buffer.baseAddress else { return }
             texture.replace(
                 region: MTLRegionMake3D(0, 0, 0, descriptor.width, descriptor.height, descriptor.depth),
@@ -129,13 +144,9 @@ private extension VolumeTextureFactory {
                             intensity: ClosedRange<Int32>) -> VolumeDataset {
         let archive: Archive
         do {
-            guard let archive_ = try Archive(url: url, accessMode: .read) else {
-                resourceLogger.error("Unable to create archive at \(url.path)")
-                return placeholderDataset()
-            }
-            archive = archive_
+            archive = try Archive(url: url, accessMode: .read)
         } catch {
-            resourceLogger.error("Unable to read archive at \(url.path): \(String(describing: error))")
+            resourceLogger.error("Unable to open archive at \(url.path): \(String(describing: error))")
             return placeholderDataset()
         }
 

@@ -55,9 +55,32 @@ import MTKSceneKit
 
         let scale = volumeMaterial.scale
         volumeNode.scale = SCNVector3(scale)
+        
+        // Diagnostic logging for scale debugging (anteroposterior flattening issue)
+        let dims = dataset.dimensions
+        let spacing = dataset.spacing
+        logger.info("""
+            [SCALE] Volume dimensions: \(dims.width)×\(dims.height)×\(dims.depth) voxels
+            [SCALE] Spacing (meters): X=\(spacing.x), Y=\(spacing.y), Z=\(spacing.z)
+            [SCALE] Spacing (mm): X=\(spacing.x * 1000), Y=\(spacing.y * 1000), Z=\(spacing.z * 1000)
+            [SCALE] Physical extent (meters): X=\(scale.x), Y=\(scale.y), Z=\(scale.z)
+            [SCALE] Aspect ratio Y/X=\(scale.y / max(scale.x, 0.0001)), Z/X=\(scale.z / max(scale.x, 0.0001))
+            """)
 
         geometry = makeGeometry(from: dataset)
         applyPatientOrientationIfNeeded()
+        if let geometry {
+            let row = geometry.iopRow
+            let col = geometry.iopCol
+            let norm = geometry.iopNorm
+            let dx = geometry.spacingX * Float(max(geometry.cols - 1, 0))
+            let dy = geometry.spacingY * Float(max(geometry.rows - 1, 0))
+            let dz = geometry.spacingZ * Float(max(geometry.slices - 1, 0))
+            let center = geometry.ipp0 + 0.5 * (row * dx + col * dy + norm * dz)
+            volumeNode.simdPosition = center
+        } else {
+            volumeNode.simdPosition = .zero
+        }
         synchronizeMprNodeTransform()
         updateVolumeBounds()
         if let geometry {
@@ -329,6 +352,11 @@ import MTKSceneKit
 
     public func endAdaptiveSamplingInteraction() async {
         restoreSamplingStep()
+    }
+
+    public func setInteractionQualityFactor(_ factor: Float) async {
+        // Clamp to sensible range (0.1 ... 1.0). 1.0 means no quality drop on interaction.
+        adaptiveInteractionFactor = max(0.1, min(1.0, factor))
     }
 
 

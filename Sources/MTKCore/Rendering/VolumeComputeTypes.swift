@@ -26,9 +26,25 @@ struct VolumeUniforms: Sizeable {
     var dimY: Int32 = 1
     var dimZ: Int32 = 1
     var useTFProj: Int32 = 1
-    var _pad0: Int32 = 0
+    var gradientSmoothness: Float = 0.0
+    var usePreIntegratedTF: Int32 = 0
     var _pad1: Int32 = 0
     var _pad2: Int32 = 0
+    // Per-mode early-exit thresholds
+    var earlyExitMIP: Float = 1.0   // disabled by default for MIP/MinIP
+    var earlyExitAvgIP: Float = 0.99
+    var earlyExitFTB: Float = 0.99
+    var _earlyExitPad: Float = 0.0
+
+    // Reconstruction kernel and advanced flags (Phase 4)
+    var samplingMethod: Int32 = 0 // 0=linear,1=cubic,2=lanczos2
+    var occupancySkipEnabled: Int32 = 0
+    var minMaxSkipEnabled: Int32 = 0
+    var dualParameterTFEnabled: Int32 = 0
+    var lightOcclusionEnabled: Int32 = 0
+    var lightOcclusionStrength: Float = 0.0
+    var _padAdv0: Float = 0.0
+    var _padAdv1: Float = 0.0
 }
 
 struct PackedColor: Sizeable {
@@ -82,13 +98,44 @@ struct RenderingParameters: Sizeable {
     var backgroundColor: SIMD3<Float> = SIMD3<Float>(repeating: 0)
     var padding0: UInt8 = 0
     var padding1: UInt16 = 0
+    // Spacing (mm)
+    var spacingX: Float = 1
+    var spacingY: Float = 1
+    var spacingZ: Float = 1
+    var spacingPad: Float = 0
+    // Adaptive step sizing
+    var adaptiveStepMinScale: Float = 1.0
+    var adaptiveStepMaxScale: Float = 1.0
+    var adaptiveGradientScale: Float = 0.0
+    var adaptiveFlatThreshold: Float = 0.0
+    var adaptiveFlatBoost: Float = 1.0
+    var minStepNormalized: Float = 0.0
+    var preTFBlurRadius: Float = 0.0
+    // Empty-space skipping controls
+    var zeroRunThreshold: Float = 0.001
+    var zeroRunLength: UInt16 = 4
+    var zeroSkipDistance: UInt16 = 3
+    var emptySpaceGradientThreshold: Float = 0.0
+    var emptySpaceDensityThreshold: Float = 0.0
+    var _emptySpacePad: UInt16 = 0
+
+    // Occupancy grid (optional)
+    var occupancyBrickDimX: UInt16 = 0
+    var occupancyBrickDimY: UInt16 = 0
+    var occupancyBrickDimZ: UInt16 = 0
+    var occupancyInvBrickCountX: Float = 0
+    var occupancyInvBrickCountY: Float = 0
+    var occupancyInvBrickCountZ: Float = 0
+    var _occupancyPad: Float = 0
 }
 
 struct CameraUniforms: Sizeable {
     var modelMatrix: simd_float4x4 = matrix_identity_float4x4
     var inverseModelMatrix: simd_float4x4 = matrix_identity_float4x4
     var inverseViewProjectionMatrix: simd_float4x4 = matrix_identity_float4x4
+    var worldToTextureMatrix: simd_float4x4 = matrix_identity_float4x4      // SCTC: world (mm, LPS) -> texture [0,1]^3
+    var textureToWorldMatrix: simd_float4x4 = matrix_identity_float4x4      // Inverse: texture [0,1]^3 -> world (mm, LPS)
     var cameraPositionLocal: SIMD3<Float> = .zero
     var frameIndex: UInt32 = 0
-    var padding: UInt32 = 0
+    var padding: SIMD3<UInt32> = .zero
 }
