@@ -28,7 +28,7 @@ public struct VolumetricDisplayContainer<Overlays: View>: View {
                 overlays()
             }
             .onAppear { logSize(proxy.size) }
-            .onChange(of: proxy.size) { _, newValue in logSize(newValue) }
+            .onChange(of: proxy.size) { logSize($0) }
         }
     }
 }

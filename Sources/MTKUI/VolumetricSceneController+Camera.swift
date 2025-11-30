@@ -643,10 +643,6 @@ import MTKSceneKit
 
     func makeGeometry(from dataset: VolumeDataset) -> DICOMGeometry {
         let orientation = dataset.orientation
-        let row = simd_normalize(orientation.row)
-        let col = simd_normalize(orientation.column)
-        let normal = simd_normalize(simd_cross(row, col))
-        let fixedCol = simd_normalize(simd_cross(normal, row)) // re-orthogonalize column
         return DICOMGeometry(
             cols: Int32(dataset.dimensions.width),
             rows: Int32(dataset.dimensions.height),
@@ -654,8 +650,8 @@ import MTKSceneKit
             spacingX: Float(dataset.spacing.x),
             spacingY: Float(dataset.spacing.y),
             spacingZ: Float(dataset.spacing.z),
-            iopRow: row,
-            iopCol: fixedCol,
+            iopRow: orientation.row,
+            iopCol: orientation.column,
             ipp0: orientation.origin
         )
     }
@@ -713,12 +709,8 @@ import MTKSceneKit
         mprMaterial.setBlend(blend)
         if let slab {
             mprMaterial.setSlab(thicknessInVoxels: slab.thickness, axis: axis.rawValue, steps: slab.steps)
-            mprMaterial.setPhysicalWeighting(slab.usePhysicalWeighting)
-            mprMaterial.setBoundsEpsilon(enabled: slab.useBoundsEpsilon, epsilon: slab.boundsEpsilon)
         } else {
             mprMaterial.setSlab(thicknessInVoxels: 1, axis: axis.rawValue, steps: 1)
-            mprMaterial.setPhysicalWeighting(false)
-            mprMaterial.setBoundsEpsilon(enabled: false)
         }
 
         mprPlaneIndex = clampedIndex(for: axis, index: index)

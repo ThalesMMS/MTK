@@ -14,7 +14,7 @@ import Foundation
 #if canImport(CoreGraphics)
 import CoreGraphics
 #endif
-@preconcurrency import Metal
+import Metal
 import OSLog
 import simd
 
@@ -36,13 +36,6 @@ public struct ExtendedRenderingState: Sendable {
     var clipBounds: ClipBoundsSnapshot = .default
     var clipPlanePreset: Int = 0
     var clipPlaneOffset: Float = 0
-    var earlyExit: VolumeRenderRequest.EarlyExitThresholds = .defaults
-    var emptySpace: VolumeRenderRequest.EmptySpaceSkipping = .defaults
-    var gradientSmoothness: Float = 0.0
-    var usePreIntegratedTF: Bool = false
-    var adaptiveStepMinScale: Float = 1.0
-    var adaptiveStepMaxScale: Float = 1.0
-    var adaptiveGradientScale: Float = 0.0
 }
 
 public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
@@ -64,14 +57,6 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
         public var samplingDistance: Float?
         public var window: ClosedRange<Int32>?
         public var lightingEnabled: Bool = true
-        public var gradientSmoothness: Float?
-        public var usePreIntegratedTF: Bool?
-        public var adaptiveStepMinScale: Float?
-        public var adaptiveStepMaxScale: Float?
-        public var adaptiveGradientScale: Float?
-        public var adaptiveFlatThreshold: Float?
-        public var adaptiveFlatBoost: Float?
-        public var preTFBlurRadius: Float?
     }
 
     public struct RenderSnapshot {
@@ -106,7 +91,6 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
     private final class MetalState: @unchecked Sendable {
         struct TransferCache {
             var transfer: VolumeTransferFunction
-            var sampleDistance: Float
             var texture: any MTLTexture
         }
 
@@ -119,7 +103,6 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
         var datasetIdentity: DatasetIdentity?
         var volumeTexture: (any MTLTexture)?
         var transferCache: TransferCache?
-        var occupancyTexture: (any MTLTexture)?
         var frameIndex: UInt32 = 0
 
         init(device: any MTLDevice,
@@ -166,30 +149,6 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
             if diagnosticLoggingEnabled {
                 logger.info("[DIAG] Applied sampling distance override: \(samplingDistance)")
             }
-        }
-        if let gs = overrides.gradientSmoothness {
-            effectiveRequest.gradientSmoothness = gs
-        }
-        if let pitf = overrides.usePreIntegratedTF {
-            effectiveRequest.usePreIntegratedTF = pitf
-        }
-        if let minScale = overrides.adaptiveStepMinScale {
-            effectiveRequest.adaptiveStepMinScale = minScale
-        }
-        if let maxScale = overrides.adaptiveStepMaxScale {
-            effectiveRequest.adaptiveStepMaxScale = maxScale
-        }
-        if let gradScale = overrides.adaptiveGradientScale {
-            effectiveRequest.adaptiveGradientScale = gradScale
-        }
-        if let flatThresh = overrides.adaptiveFlatThreshold {
-            effectiveRequest.adaptiveFlatThreshold = flatThresh
-        }
-        if let flatBoost = overrides.adaptiveFlatBoost {
-            effectiveRequest.adaptiveFlatBoost = flatBoost
-        }
-        if let blur = overrides.preTFBlurRadius {
-            effectiveRequest.preTFBlurRadius = blur
         }
 
         let window = extendedState.huWindow
@@ -334,14 +293,6 @@ extension MetalVolumeRenderingAdapter {
 
     @_spi(Testing)
     public var debugCurrentPreset: VolumeRenderingPreset? { currentPreset }
-
-    func debugInverseViewProjectionMatrix(camera: VolumeRenderRequest.Camera,
-                                          viewportSize: (width: Int, height: Int),
-                                          dataset: VolumeDataset? = nil) -> simd_float4x4 {
-        makeInverseViewProjectionMatrix(camera: camera,
-                                        viewportSize: viewportSize,
-                                        dataset: dataset)
-    }
 }
 
 // MARK: - Helpers
@@ -420,18 +371,9 @@ private extension MetalVolumeRenderingAdapter {
         }
 
         let datasetTexture = try prepareDatasetTexture(for: request.dataset, state: state)
-        var tfForRendering = request.transferFunction
-        if request.useDualParameterTF {
-            tfForRendering.gradientResolution = max(tfForRendering.gradientResolution, 256)
-        }
-
-        let transferTexture = try await prepareTransferTexture(for: tfForRendering,
+        let transferTexture = try await prepareTransferTexture(for: request.transferFunction,
                                                                dataset: request.dataset,
-                                                               sampleDistance: request.samplingDistance,
                                                                state: state)
-        let occupancyTexture = try prepareOccupancyTexture(for: request.dataset,
-                                                           request: request,
-                                                           state: state)
 
         var parameters = buildRenderingParameters(for: request)
         var optionValue = computeOptionFlags()
@@ -443,33 +385,6 @@ private extension MetalVolumeRenderingAdapter {
         state.argumentManager.encodeTexture(transferTexture, argumentIndex: .transferTextureCh2)
         state.argumentManager.encodeTexture(transferTexture, argumentIndex: .transferTextureCh3)
         state.argumentManager.encodeTexture(transferTexture, argumentIndex: .transferTextureCh4)
-        if let occupancyTexture {
-            state.argumentManager.encodeTexture(occupancyTexture, argumentIndex: .occupancyTexture)
-        } else if let fallback = state.occupancyTexture {
-            state.argumentManager.encodeTexture(fallback, argumentIndex: .occupancyTexture)
-        } else {
-            // Bind a 1x1 zero texture to keep argument buffer valid
-            let descriptor = MTLTextureDescriptor()
-            descriptor.textureType = .type3D
-            descriptor.pixelFormat = .rg16Float
-            descriptor.width = 1
-            descriptor.height = 1
-            descriptor.depth = 1
-            descriptor.mipmapLevelCount = 1
-            descriptor.usage = [.shaderRead]
-            let tex = state.device.makeTexture(descriptor: descriptor)
-            var zero = SIMD2<Float16>(0, 0)
-            tex?.replace(region: MTLRegionMake3D(0, 0, 0, 1, 1, 1),
-                         mipmapLevel: 0,
-                         slice: 0,
-                         withBytes: &zero,
-                         bytesPerRow: MemoryLayout<SIMD2<Float16>>.stride,
-                         bytesPerImage: MemoryLayout<SIMD2<Float16>>.stride)
-            if let tex {
-                state.argumentManager.encodeTexture(tex, argumentIndex: .occupancyTexture)
-                state.occupancyTexture = tex
-            }
-        }
         state.argumentManager.encodeSampler(filter: .linear)
         state.argumentManager.encode(&parameters, argumentIndex: .renderParams)
         state.argumentManager.encode(&optionValue, argumentIndex: .optionValue)
@@ -530,136 +445,24 @@ private extension MetalVolumeRenderingAdapter {
 
     private func prepareTransferTexture(for transfer: VolumeTransferFunction,
                                         dataset: VolumeDataset,
-                                        sampleDistance: Float,
                                         state: MetalState) async throws -> any MTLTexture {
         if let cache = state.transferCache,
-           cache.transfer == transfer,
-           abs(cache.sampleDistance - sampleDistance) < 1e-5 {
+           cache.transfer == transfer {
             return cache.texture
         }
 
-        let unitDistance = OpacityCorrection.scalarOpacityUnitDistance(for: dataset)
-        let factor = OpacityCorrection.opacityFactor(sampleDistance: sampleDistance,
-                                                    opacityUnitDistance: unitDistance)
-        let correctedTransfer = OpacityCorrection.correctedTransferFunction(transfer, factor: factor)
-        let resolvedTransfer = makeTransferFunction(from: correctedTransfer,
+        let resolvedTransfer = makeTransferFunction(from: transfer,
                                                     dataset: dataset)
-        var tfOptions = TransferFunctions.TextureOptions.default
-        if transfer.gradientResolution > 1 {
-            tfOptions.gradientResolution = transfer.gradientResolution
-        }
-        let options = tfOptions
         let texture = await MainActor.run {
             TransferFunctions.texture(for: resolvedTransfer,
-                                      device: state.device,
-                                      options: options)
+                                      device: state.device)
         }
 
         guard let texture else {
             throw RenderingError.transferTextureUnavailable
         }
         texture.label = "VolumeCompute.Transfer"
-        state.transferCache = MetalState.TransferCache(transfer: transfer,
-                                                       sampleDistance: sampleDistance,
-                                                       texture: texture)
-        return texture
-    }
-
-    private func prepareOccupancyTexture(for dataset: VolumeDataset,
-                                          request: VolumeRenderRequest,
-                                          state: MetalState,
-                                          brickSize: Int = 8) throws -> (any MTLTexture)? {
-        guard request.emptySpaceSkipping.occupancyEnabled || request.emptySpaceSkipping.minMaxEnabled else {
-            state.occupancyTexture = nil
-            return nil
-        }
-
-        if let existing = state.occupancyTexture,
-           state.datasetIdentity == DatasetIdentity(dataset: dataset) {
-            return existing
-        }
-
-        let dims = dataset.dimensions
-        let bricksX = max(1, (dims.width + brickSize - 1) / brickSize)
-        let bricksY = max(1, (dims.height + brickSize - 1) / brickSize)
-        let bricksZ = max(1, (dims.depth + brickSize - 1) / brickSize)
-        let totalBricks = bricksX * bricksY * bricksZ
-
-        // Safety: avoid huge allocations
-        if totalBricks > 4_000_000 {
-            logger.warning("Occupancy grid skipped: too many bricks (\(totalBricks))")
-            state.occupancyTexture = nil
-            return nil
-        }
-
-        let descriptor = MTLTextureDescriptor()
-        descriptor.textureType = .type3D
-        descriptor.pixelFormat = .rg16Float
-        descriptor.width = bricksX
-        descriptor.height = bricksY
-        descriptor.depth = bricksZ
-        descriptor.usage = [.shaderRead]
-
-        guard let texture = state.device.makeTexture(descriptor: descriptor) else {
-            throw RenderingError.datasetTextureUnavailable
-        }
-        texture.label = "VolumeCompute.Occupancy"
-
-        var data = Data(count: totalBricks * MemoryLayout<SIMD2<Float16>>.stride)
-
-        data.withUnsafeMutableBytes { buffer in
-            guard let outPtr = buffer.baseAddress?.assumingMemoryBound(to: SIMD2<Float16>.self) else { return }
-            dataset.data.withUnsafeBytes { raw in
-                let base = raw.bindMemory(to: Int16.self)
-                    let minVal = Float(dataset.intensityRange.lowerBound)
-                    let maxVal = Float(dataset.intensityRange.upperBound)
-                    let invRange = maxVal - minVal > 1e-5 ? 1.0 / (maxVal - minVal) : 1.0
-
-                for bz in 0..<bricksZ {
-                    for by in 0..<bricksY {
-                        for bx in 0..<bricksX {
-                            var minV: Float = Float.greatestFiniteMagnitude
-                            var maxV: Float = -Float.greatestFiniteMagnitude
-
-                            let startZ = bz * brickSize
-                            let startY = by * brickSize
-                            let startX = bx * brickSize
-
-                            for z in startZ..<min(startZ + brickSize, dims.depth) {
-                                for y in startY..<min(startY + brickSize, dims.height) {
-                                    let rowOffset = (z * dims.height + y) * dims.width
-                                    let startIdx = rowOffset + startX
-                                    let endIdx = min(rowOffset + min(startX + brickSize, dims.width), rowOffset + dims.width)
-                                    for idx in startIdx..<endIdx {
-                                        let v = Float(base[idx])
-                                        minV = min(minV, v)
-                                        maxV = max(maxV, v)
-                                    }
-                                }
-                            }
-
-                            let normMin = simd_clamp((minV - minVal) * invRange, 0.0, 1.0)
-                            let normMax = simd_clamp((maxV - minVal) * invRange, 0.0, 1.0)
-                            let brickIndex = (bz * bricksY * bricksX) + (by * bricksX) + bx
-                            outPtr[brickIndex] = SIMD2<Float16>(Float16(normMin), Float16(normMax))
-                        }
-                    }
-                }
-            }
-        }
-
-        data.withUnsafeBytes { buffer in
-            guard let src = buffer.baseAddress else { return }
-            let region = MTLRegionMake3D(0, 0, 0, bricksX, bricksY, bricksZ)
-            texture.replace(region: region,
-                             mipmapLevel: 0,
-                             slice: 0,
-                             withBytes: src,
-                             bytesPerRow: bricksX * MemoryLayout<SIMD2<Float16>>.stride,
-                             bytesPerImage: bricksX * bricksY * MemoryLayout<SIMD2<Float16>>.stride)
-        }
-
-        state.occupancyTexture = texture
+        state.transferCache = MetalState.TransferCache(transfer: transfer, texture: texture)
         return texture
     }
 
@@ -720,19 +523,9 @@ private extension MetalVolumeRenderingAdapter {
 
     private func buildRenderingParameters(for request: VolumeRenderRequest) -> RenderingParameters {
         var params = RenderingParameters()
-        let dataset = request.dataset
         params.material = buildVolumeUniforms(for: request)
-        let normalizedStep = SampleDistanceCalculator.normalizedSampleDistance(request.samplingDistance,
-                                                                               dataset: request.dataset)
-        params.renderingStep = normalizedStep
+        params.renderingStep = request.samplingDistance
         params.earlyTerminationThreshold = extendedState.earlyTerminationThreshold
-        // Empty-space skipping
-        let ess = request.emptySpaceSkipping
-        params.zeroRunThreshold = ess.enabled ? ess.alphaThreshold : 1.0 // effectively disable when false
-        params.zeroRunLength = ess.zeroRunLength
-        params.zeroSkipDistance = ess.zeroSkipDistance
-        params.emptySpaceGradientThreshold = ess.enabled ? ess.gradientThreshold : 0.0
-        params.emptySpaceDensityThreshold = ess.enabled ? ess.densityThreshold : 0.0
         params.adaptiveGradientThreshold = extendedState.adaptiveThreshold
         params.jitterAmount = extendedState.jitterAmount
         params.intensityRatio = extendedState.channelIntensities
@@ -749,46 +542,7 @@ private extension MetalVolumeRenderingAdapter {
         params.clipPlane1 = planes.1
         params.clipPlane2 = planes.2
         params.backgroundColor = SIMD3<Float>(repeating: 0)
-        // Spacing (mm)
-        let spacing = dataset.spacing
-        params.spacingX = Float(spacing.x)
-        params.spacingY = Float(spacing.y)
-        params.spacingZ = Float(spacing.z)
-        // Adaptive step sizing (default identity)
-        params.adaptiveStepMinScale = max(0.1, request.adaptiveStepMinScale)
-        params.adaptiveStepMaxScale = max(params.adaptiveStepMinScale, request.adaptiveStepMaxScale)
-        params.adaptiveGradientScale = max(0.0, request.adaptiveGradientScale)
-        params.adaptiveFlatThreshold = max(0.0, request.adaptiveFlatThreshold)
-        params.adaptiveFlatBoost = max(1.0, request.adaptiveFlatBoost)
-        params.minStepNormalized = Self.computeMinStepNormalized(for: dataset)
-        params.preTFBlurRadius = max(0.0, request.preTFBlurRadius)
-
-        // Occupancy grid dimensions (if provided)
-        let brickSize = 8
-        let bricksX = max(1, (dataset.dimensions.width + brickSize - 1) / brickSize)
-        let bricksY = max(1, (dataset.dimensions.height + brickSize - 1) / brickSize)
-        let bricksZ = max(1, (dataset.dimensions.depth + brickSize - 1) / brickSize)
-        params.occupancyBrickDimX = UInt16(clamping: bricksX)
-        params.occupancyBrickDimY = UInt16(clamping: bricksY)
-        params.occupancyBrickDimZ = UInt16(clamping: bricksZ)
-        params.occupancyInvBrickCountX = 1.0 / Float(bricksX)
-        params.occupancyInvBrickCountY = 1.0 / Float(bricksY)
-        params.occupancyInvBrickCountZ = 1.0 / Float(bricksZ)
         return params
-    }
-
-    /// Minimum normalized step to avoid skipping fine features; derived from smallest voxel spacing.
-    private static func computeMinStepNormalized(for dataset: VolumeDataset) -> Float {
-        let spacing = dataset.spacing
-        let minSpacing = Float(min(spacing.x, min(spacing.y, spacing.z)))
-        let bounds = MPRCameraConfiguration.worldBounds(for: dataset)
-        guard bounds.count >= 6 else { return 1.0e-5 }
-        let dx = bounds[1] - bounds[0]
-        let dy = bounds[3] - bounds[2]
-        let dz = bounds[5] - bounds[4]
-        let worldDiagonal = sqrt(dx * dx + dy * dy + dz * dz)
-        guard worldDiagonal > 1.0e-5 else { return 1.0e-5 }
-        return max(1.0e-5, (minSpacing * sqrt(3.0)) / worldDiagonal)
     }
 
     private func buildVolumeUniforms(for request: VolumeRenderRequest) -> VolumeUniforms {
@@ -807,9 +561,7 @@ private extension MetalVolumeRenderingAdapter {
         uniforms.dimY = Int32(dataset.dimensions.height)
         uniforms.dimZ = Int32(dataset.dimensions.depth)
 
-        let normalizedDistance = SampleDistanceCalculator.normalizedSampleDistance(request.samplingDistance,
-                                                                                   dataset: dataset)
-        let steps = max(1, Int32(roundf(1.0 / max(normalizedDistance, 1e-5))))
+        let steps = max(1, Int32(roundf(1.0 / max(request.samplingDistance, 1e-5))))
         uniforms.renderingQuality = steps
 
         switch request.compositing {
@@ -825,22 +577,6 @@ private extension MetalVolumeRenderingAdapter {
 
         let lightingEnabled = overrides.lightingEnabled && extendedState.lightingEnabled
         uniforms.isLightingOn = lightingEnabled ? 1 : 0
-
-        // Per-mode early-exit thresholds
-        let thresholds = request.earlyExit
-        uniforms.earlyExitFTB = thresholds.frontToBack
-        uniforms.earlyExitAvgIP = thresholds.averageIntensity
-        uniforms.earlyExitMIP = thresholds.maximumIntensity // used for both MIP and MinIP
-
-        uniforms.gradientSmoothness = request.gradientSmoothness
-        uniforms.usePreIntegratedTF = request.usePreIntegratedTF ? 1 : 0
-
-        uniforms.samplingMethod = Int32(request.reconstructionKernel.rawValue)
-        uniforms.occupancySkipEnabled = request.emptySpaceSkipping.occupancyEnabled ? 1 : 0
-        uniforms.minMaxSkipEnabled = request.emptySpaceSkipping.minMaxEnabled ? 1 : 0
-        uniforms.dualParameterTFEnabled = request.useDualParameterTF ? 1 : 0
-        uniforms.lightOcclusionEnabled = request.useLightOcclusion ? 1 : 0
-        uniforms.lightOcclusionStrength = request.lightOcclusionStrength
 
         if let gate = extendedState.densityGate {
             uniforms.densityFloor = gate.lowerBound
@@ -981,175 +717,38 @@ private extension MetalVolumeRenderingAdapter {
         camera.modelMatrix = matrix_identity_float4x4
         camera.inverseModelMatrix = matrix_identity_float4x4
         camera.inverseViewProjectionMatrix = makeInverseViewProjectionMatrix(camera: request.camera,
-                                                                             viewportSize: viewportSize,
-                                                                             dataset: request.dataset)
-
-        // Compute SCTC matrices from DICOM geometry
-        let geometry = request.dataset.dicomGeometry
-        camera.worldToTextureMatrix = geometry.worldToTextureMatrix
-        camera.textureToWorldMatrix = geometry.textureToWorldMatrix
-
+                                                                             viewportSize: viewportSize)
         camera.cameraPositionLocal = request.camera.position
         camera.frameIndex = frameIndex
         return camera
     }
 
     private func makeInverseViewProjectionMatrix(camera: VolumeRenderRequest.Camera,
-                                                 viewportSize: (width: Int, height: Int),
-                                                 dataset: VolumeDataset? = nil) -> simd_float4x4 {
+                                                 viewportSize: (width: Int, height: Int)) -> simd_float4x4 {
         let aspect = max(Float(viewportSize.width) / Float(viewportSize.height), 1e-3)
         let view = simd_float4x4(lookAt: camera.position,
                                  target: camera.target,
                                  up: camera.up)
 
-        // Calcular clipping planes baseado nos bounds reais do volume
-        let (nearZ, farZ) = computeClippingRange(
-            camera: camera,
-            viewMatrix: view,
-            dataset: dataset
-        )
+        let center = SIMD3<Float>(repeating: 0.5)
+        let distanceToCenter = simd_length(camera.position - center)
+        let farPadding = max(1.0, distanceToCenter * 0.1 + 1.0)
+        let nearZ: Float = 0.01
+        let farZ = max(distanceToCenter + farPadding, nearZ + 100.0)
 
-        let projection: simd_float4x4
-        if camera.parallelProjection {
-            let scale = max(camera.parallelScale, 1e-3)
-            projection = simd_float4x4(
-                orthographicWithParallelScale: scale,
-                aspect: aspect,
-                nearZ: nearZ,
-                farZ: farZ,
-                windowCenter: camera.windowCenter
-            )
-        } else {
-            projection = simd_float4x4(
-                perspectiveFovY: max(camera.fieldOfView * .pi / 180, 0.01),
-                aspect: aspect,
-                nearZ: nearZ,
-                farZ: farZ
-            )
-        }
+        let projection = simd_float4x4(perspectiveFovY: max(camera.fieldOfView * .pi / 180, 0.01),
+                                       aspect: aspect,
+                                       nearZ: nearZ,
+                                       farZ: farZ)
         let matrix = projection * view
-
+        
         if diagnosticLoggingEnabled {
             logger.info("[DIAG] View Matrix:\n\(view.debugDescription)")
-            logger.info("[DIAG] Projection Matrix (\(camera.parallelProjection ? "ortho" : "persp")):\n\(projection.debugDescription)")
-            logger.info("[DIAG] Clipping Range: near=\(nearZ), far=\(farZ)")
+            logger.info("[DIAG] Projection Matrix:\n\(projection.debugDescription)")
             logger.info("[DIAG] InvViewProj Matrix:\n\(simd_inverse(matrix).debugDescription)")
         }
         
         return simd_inverse(matrix)
-    }
-    
-    /// Calcula o clipping range baseado nos bounds do volume.
-    /// Garante que o near e far sejam calculados corretamente em relação à posição da câmera e aos bounds do volume.
-    private func computeClippingRange(camera: VolumeRenderRequest.Camera,
-                                      viewMatrix: simd_float4x4,
-                                      dataset: VolumeDataset?) -> (near: Float, far: Float) {
-        // Se não temos dataset, usar cálculo de fallback
-        guard let dataset = dataset else {
-            let center = SIMD3<Float>(repeating: 0.5)
-            let distanceToCenter = simd_length(camera.position - center)
-            let farPadding = max(1.0, distanceToCenter * 0.1 + 1.0)
-            let nearZ: Float = 0.01
-            let farZ = max(distanceToCenter + farPadding, nearZ + 100.0)
-            return (nearZ, farZ)
-        }
-        
-        // Calcular bounds do volume no espaço do mundo
-        // O volume está em coordenadas normalizadas [0, 1]³, então precisamos transformar
-        // para o espaço do mundo usando a orientação e spacing
-        let dims = dataset.dimensions
-        let spacing = dataset.spacing
-        
-        // Bounds em coordenadas de índice (0 a dim-1)
-        let maxX = Float(dims.width - 1)
-        let maxY = Float(dims.height - 1)
-        let maxZ = Float(dims.depth - 1)
-        
-        // Bounds em coordenadas físicas (considerando spacing)
-        let boundsMin = SIMD3<Float>(0, 0, 0)
-        let boundsMax = SIMD3<Float>(
-            Float(spacing.x) * maxX,
-            Float(spacing.y) * maxY,
-            Float(spacing.z) * maxZ
-        )
-        
-        // Transformar bounds para o espaço do mundo usando a orientação
-        let orientation = dataset.orientation
-        let origin = SIMD3<Float>(orientation.origin)
-        let row = SIMD3<Float>(orientation.row)
-        let col = SIMD3<Float>(orientation.column)
-        let normal = simd_normalize(simd_cross(row, col))
-        
-        // Criar matriz de transformação do espaço do volume para o espaço do mundo
-        let volumeToWorld = simd_float4x4(
-            columns: (
-                SIMD4<Float>(row * Float(spacing.x), 0),
-                SIMD4<Float>(col * Float(spacing.y), 0),
-                SIMD4<Float>(normal * Float(spacing.z), 0),
-                SIMD4<Float>(origin, 1)
-            )
-        )
-        
-        // Transformar os 8 cantos do bounding box para o espaço do mundo
-        let corners: [SIMD3<Float>] = [
-            SIMD3<Float>(boundsMin.x, boundsMin.y, boundsMin.z),
-            SIMD3<Float>(boundsMin.x, boundsMin.y, boundsMax.z),
-            SIMD3<Float>(boundsMin.x, boundsMax.y, boundsMin.z),
-            SIMD3<Float>(boundsMin.x, boundsMax.y, boundsMax.z),
-            SIMD3<Float>(boundsMax.x, boundsMin.y, boundsMin.z),
-            SIMD3<Float>(boundsMax.x, boundsMin.y, boundsMax.z),
-            SIMD3<Float>(boundsMax.x, boundsMax.y, boundsMin.z),
-            SIMD3<Float>(boundsMax.x, boundsMax.y, boundsMax.z)
-        ]
-        
-        var worldCorners: [SIMD3<Float>] = []
-        for corner in corners {
-            let worldCorner = volumeToWorld * SIMD4<Float>(corner, 1)
-            worldCorners.append(SIMD3<Float>(worldCorner.x, worldCorner.y, worldCorner.z))
-        }
-        
-        // Calcular distâncias dos cantos ao longo da direção da câmera
-        // A direção da câmera é de position para target (normalizada)
-        let cameraDirection = simd_normalize(camera.target - camera.position)
-        
-        var minDistance: Float = .infinity
-        var maxDistance: Float = -.infinity
-        
-        for corner in worldCorners {
-            // Vetor da câmera para o canto
-            let toCorner = corner - camera.position
-            // Projeção ao longo da direção da câmera (distância ao longo do eixo Z da câmera)
-            let distance = simd_dot(toCorner, cameraDirection)
-            minDistance = min(minDistance, distance)
-            maxDistance = max(maxDistance, distance)
-        }
-        
-        // As distâncias são ao longo da direção da câmera
-        // near = distância ao ponto mais próximo (menor valor, pode ser negativo se atrás)
-        // far = distância ao ponto mais distante (maior valor)
-        let nearDistance = max(minDistance, 0.01)  // Garantir que near seja positivo
-        let farDistance = max(maxDistance, nearDistance + 0.1)
-        
-        // Garantir valores mínimos e gap adequado
-        let minGap: Float = 0.1
-        let nearClippingPlaneTolerance: Float = 0.01
-        
-        var nearZ = nearDistance
-        var farZ = farDistance
-        
-        // Garantir gap mínimo entre near e far
-        if farZ < nearZ + minGap {
-            farZ = nearZ + minGap
-        }
-        
-        // Garantir que near seja pelo menos uma fração de far (para resolução do z-buffer)
-        let minNear = farZ * nearClippingPlaneTolerance
-        if nearZ < minNear {
-            nearZ = minNear
-            farZ = max(farZ, nearZ + minGap)
-        }
-        
-        return (nearZ, farZ)
     }
 
     static func makeFallbackImage(dataset: VolumeDataset,
@@ -1258,7 +857,7 @@ private extension MetalVolumeRenderingAdapter {
     }
 }
 
-extension simd_float4x4 {
+private extension simd_float4x4 {
     init(lookAt eye: SIMD3<Float>,
          target: SIMD3<Float>,
          up: SIMD3<Float>) {
@@ -1301,41 +900,6 @@ extension simd_float4x4 {
             SIMD4<Float>(0, yScale, 0, 0),
             SIMD4<Float>(0, 0, z, -1),
             SIMD4<Float>(0, 0, wz, 0)
-        ))
-    }
-
-    /// Orthographic projection
-    /// - Parameters:
-    ///   - parallelScale: Half of the viewport height in world units
-    ///   - aspect: Viewport width / height
-    ///   - nearZ: Near clipping plane
-    ///   - farZ: Far clipping plane
-    ///   - windowCenter: Frustum offset defaults to .zero
-    init(orthographicWithParallelScale parallelScale: Float,
-         aspect: Float,
-         nearZ: Float,
-         farZ: Float,
-         windowCenter: SIMD2<Float> = .zero) {
-        let width = parallelScale * aspect
-        let height = parallelScale
-
-        let left = (windowCenter.x - 1.0) * width
-        let right = (windowCenter.x + 1.0) * width
-        let bottom = (windowCenter.y - 1.0) * height
-        let top = (windowCenter.y + 1.0) * height
-
-        let rl = right - left
-        let tb = top - bottom
-        let fn = farZ - nearZ
-
-        self = simd_float4x4(columns: (
-            SIMD4<Float>(2.0 / rl, 0, 0, 0),
-            SIMD4<Float>(0, 2.0 / tb, 0, 0),
-            SIMD4<Float>(0, 0, -2.0 / fn, 0),
-            SIMD4<Float>(-(right + left) / rl,
-                        -(top + bottom) / tb,
-                        -(farZ + nearZ) / fn,
-                        1)
         ))
     }
 }

@@ -129,9 +129,6 @@ public final class VolumeCubeMaterial: SCNMaterial, SCNProgramDelegate {
     private(set) var textureGenerator: VolumeTextureFactory = VolumeTextureFactory(part: .none)
     private let logger = Logger(subsystem: "com.mtk.volumerendering",
                                 category: "VolumeCubeMaterial")
-    private static var compileCount: Int = 0
-    private static var compileWindowStart: Date = Date()
-    private static let compileWindow: TimeInterval = 60.0
 
     public var tf: TransferFunction?
     public private(set) var transferFunctionDomain: ClosedRange<Float>?
@@ -424,17 +421,13 @@ public final class VolumeCubeMaterial: SCNMaterial, SCNProgramDelegate {
 
 private extension VolumeCubeMaterial {
     func assignProgramLibrary(_ program: SCNProgram) {
-        let metalDevice = device
+        guard let metalDevice = device as? MTLDevice else {
+            logger.fault("Unable to resolve MTLDevice for VolumeCubeMaterial shader binding")
+            return
+        }
 
         let library = ShaderLibraryLoader.makeDefaultLibrary(on: metalDevice) { [logger] message in
             logger.debug("\(message)")
-        }
-        Self.compileCount += 1
-        let now = Date()
-        if now.timeIntervalSince(Self.compileWindowStart) >= Self.compileWindow {
-            logger.debug("Shader library compilations in last \(Int(Self.compileWindow))s: \(Self.compileCount)")
-            Self.compileWindowStart = now
-            Self.compileCount = 0
         }
 
         if let library {

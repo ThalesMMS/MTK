@@ -10,9 +10,9 @@ final class MTKCoreTests: XCTestCase {
             pixelFormat: .int16Unsigned
         )
 
-        XCTAssertEqual(dataset.scale.x, dataset.spacing.x * Double(max(dataset.dimensions.width - 1, 1)))
-        XCTAssertEqual(dataset.scale.y, dataset.spacing.y * Double(max(dataset.dimensions.height - 1, 1)))
-        XCTAssertEqual(dataset.scale.z, dataset.spacing.z * Double(max(dataset.dimensions.depth - 1, 1)))
+        XCTAssertEqual(dataset.scale.x, dataset.spacing.x * Double(dataset.dimensions.width))
+        XCTAssertEqual(dataset.scale.y, dataset.spacing.y * Double(dataset.dimensions.height))
+        XCTAssertEqual(dataset.scale.z, dataset.spacing.z * Double(dataset.dimensions.depth))
     }
 
     func testTransferFunctionPresetAvailability() {

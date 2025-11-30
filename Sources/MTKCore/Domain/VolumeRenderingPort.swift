@@ -22,24 +22,15 @@ public struct VolumeRenderRequest: Sendable, Equatable {
         public var target: SIMD3<Float>
         public var up: SIMD3<Float>
         public var fieldOfView: Float
-        public var parallelProjection: Bool
-        public var parallelScale: Float
-        public var windowCenter: SIMD2<Float>
 
         public init(position: SIMD3<Float>,
                     target: SIMD3<Float>,
                     up: SIMD3<Float>,
-                    fieldOfView: Float,
-                    parallelProjection: Bool = false,
-                    parallelScale: Float = 1,
-                    windowCenter: SIMD2<Float> = .zero) {
+                    fieldOfView: Float) {
             self.position = position
             self.target = target
             self.up = up
             self.fieldOfView = fieldOfView
-            self.parallelProjection = parallelProjection
-            self.parallelScale = parallelScale
-            self.windowCenter = windowCenter
         }
     }
 
@@ -56,55 +47,6 @@ public struct VolumeRenderRequest: Sendable, Equatable {
         case frontToBack
     }
 
-    // Per-mode early-exit thresholds; defaults preserve current behaviour
-    public struct EarlyExitThresholds: Sendable, Equatable {
-        public var frontToBack: Float
-        public var maximumIntensity: Float
-        public var minimumIntensity: Float
-        public var averageIntensity: Float
-
-        public static let defaults = EarlyExitThresholds(frontToBack: 0.99,
-                                                          maximumIntensity: 1.0, // disable for MIP
-                                                          minimumIntensity: 1.0, // disable for MinIP
-                                                          averageIntensity: 0.99)
-
-        public func value(for mode: Compositing) -> Float {
-            switch mode {
-            case .frontToBack: return frontToBack
-            case .maximumIntensity: return maximumIntensity
-            case .minimumIntensity: return minimumIntensity
-            case .averageIntensity: return averageIntensity
-            }
-        }
-    }
-
-    // Empty-space skipping controls
-    public struct EmptySpaceSkipping: Sendable, Equatable {
-        public var enabled: Bool
-        public var occupancyEnabled: Bool
-        public var minMaxEnabled: Bool
-        public var zeroRunLength: UInt16
-        public var zeroSkipDistance: UInt16
-        public var alphaThreshold: Float
-        public var gradientThreshold: Float // <=0 disables
-        public var densityThreshold: Float  // <=0 disables
-
-        public static let defaults = EmptySpaceSkipping(enabled: true,
-                                                        occupancyEnabled: false,
-                                                        minMaxEnabled: false,
-                                                        zeroRunLength: 4,
-                                                        zeroSkipDistance: 3,
-                                                        alphaThreshold: 0.001,
-                                                        gradientThreshold: 0.0,
-                                                        densityThreshold: 0.0)
-    }
-
-    public enum ReconstructionKernel: UInt32, Sendable, Equatable {
-        case linear = 0
-        case cubic = 1
-        case lanczos2 = 2
-    }
-
     public var dataset: VolumeDataset
     public var transferFunction: VolumeTransferFunction
     public var viewportSize: CGSize
@@ -112,65 +54,21 @@ public struct VolumeRenderRequest: Sendable, Equatable {
     public var samplingDistance: Float
     public var compositing: Compositing
     public var quality: Quality
-    public var earlyExit: EarlyExitThresholds
-    public var emptySpaceSkipping: EmptySpaceSkipping
-    public var gradientSmoothness: Float
-    public var usePreIntegratedTF: Bool
-    public var reconstructionKernel: ReconstructionKernel
-    public var useDualParameterTF: Bool
-    public var useLightOcclusion: Bool
-    public var lightOcclusionStrength: Float
-    public var adaptiveStepMinScale: Float
-    public var adaptiveStepMaxScale: Float
-    public var adaptiveGradientScale: Float
-    public var adaptiveFlatThreshold: Float
-    public var adaptiveFlatBoost: Float
-    public var preTFBlurRadius: Float
 
     public init(dataset: VolumeDataset,
                 transferFunction: VolumeTransferFunction,
                 viewportSize: CGSize,
                 camera: Camera,
-                samplingDistance: Float? = nil,
+                samplingDistance: Float,
                 compositing: Compositing,
-                quality: Quality,
-                earlyExit: EarlyExitThresholds = .defaults,
-                emptySpaceSkipping: EmptySpaceSkipping = .defaults,
-                gradientSmoothness: Float = 0.0,
-                usePreIntegratedTF: Bool = false,
-                reconstructionKernel: ReconstructionKernel = .linear,
-                useDualParameterTF: Bool = false,
-                useLightOcclusion: Bool = false,
-                lightOcclusionStrength: Float = 0.0,
-                adaptiveStepMinScale: Float = 1.0,
-                adaptiveStepMaxScale: Float = 1.0,
-                adaptiveGradientScale: Float = 0.0,
-                adaptiveFlatThreshold: Float = 0.02,
-                adaptiveFlatBoost: Float = 1.5,
-                preTFBlurRadius: Float = 0.0) {
+                quality: Quality) {
         self.dataset = dataset
         self.transferFunction = transferFunction
         self.viewportSize = viewportSize
         self.camera = camera
-        // If caller did not provide a sampling distance, compute a default based on voxel spacing and quality.
-        let computed = samplingDistance ?? dataset.CompatibleSampleDistance(quality: quality.sampleQuality)
-        self.samplingDistance = computed
+        self.samplingDistance = samplingDistance
         self.compositing = compositing
         self.quality = quality
-        self.earlyExit = earlyExit
-        self.emptySpaceSkipping = emptySpaceSkipping
-        self.gradientSmoothness = gradientSmoothness
-        self.usePreIntegratedTF = usePreIntegratedTF
-        self.reconstructionKernel = reconstructionKernel
-        self.useDualParameterTF = useDualParameterTF
-        self.useLightOcclusion = useLightOcclusion
-        self.lightOcclusionStrength = lightOcclusionStrength
-        self.adaptiveStepMinScale = adaptiveStepMinScale
-        self.adaptiveStepMaxScale = adaptiveStepMaxScale
-        self.adaptiveGradientScale = adaptiveGradientScale
-        self.adaptiveFlatThreshold = adaptiveFlatThreshold
-        self.adaptiveFlatBoost = adaptiveFlatBoost
-        self.preTFBlurRadius = preTFBlurRadius
     }
 }
 
@@ -197,14 +95,10 @@ public struct VolumeTransferFunction: Sendable, Equatable {
 
     public var opacityPoints: [OpacityControlPoint]
     public var colourPoints: [ColourControlPoint]
-    public var gradientResolution: Int
 
-    public init(opacityPoints: [OpacityControlPoint],
-                colourPoints: [ColourControlPoint],
-                gradientResolution: Int = 1) {
+    public init(opacityPoints: [OpacityControlPoint], colourPoints: [ColourControlPoint]) {
         self.opacityPoints = opacityPoints
         self.colourPoints = colourPoints
-        self.gradientResolution = max(1, gradientResolution)
     }
 }
 

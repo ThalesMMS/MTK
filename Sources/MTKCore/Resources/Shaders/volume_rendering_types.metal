@@ -24,25 +24,9 @@ struct VolumeUniforms {
     int dimY;
     int dimZ;
     int useTFProj;
-    float gradientSmoothness;
-    int usePreIntegratedTF;
+    int _pad0;
     int _pad1;
     int _pad2;
-    // Per-mode early-exit thresholds
-    float earlyExitMIP;
-    float earlyExitAvgIP;
-    float earlyExitFTB;
-    float _earlyExitPad;
-
-    // Reconstruction kernel and advanced flags (Phase 4)
-    int samplingMethod;           // 0=linear,1=cubic,2=lanczos2
-    int occupancySkipEnabled;
-    int minMaxSkipEnabled;
-    int dualParameterTFEnabled;
-    int lightOcclusionEnabled;
-    float lightOcclusionStrength;
-    float _padAdv0;
-    float _padAdv1;
 };
 
 struct PackedColor {
@@ -96,50 +80,19 @@ struct RenderingParameters {
     float3 backgroundColor;
     uchar padding0;
     ushort padding1;
-    // Spacing (mm)
-    float spacingX;
-    float spacingY;
-    float spacingZ;
-    float spacingPad;
-    // Adaptive step sizing
-    float adaptiveStepMinScale;
-    float adaptiveStepMaxScale;
-    float adaptiveGradientScale;
-    float adaptiveFlatThreshold;
-    float adaptiveFlatBoost;
-    float minStepNormalized;
-    float preTFBlurRadius;
-    // Empty-space skipping controls
-    float zeroRunThreshold;
-    ushort zeroRunLength;
-    ushort zeroSkipDistance;
-    float emptySpaceGradientThreshold;
-    float emptySpaceDensityThreshold;
-    ushort _emptySpacePad;
-
-    // Occupancy grid (optional)
-    ushort occupancyBrickDimX;
-    ushort occupancyBrickDimY;
-    ushort occupancyBrickDimZ;
-    float occupancyInvBrickCountX;
-    float occupancyInvBrickCountY;
-    float occupancyInvBrickCountZ;
-    float _occupancyPad;
 };
 
 struct CameraUniforms {
     float4x4 modelMatrix;
     float4x4 inverseModelMatrix;
     float4x4 inverseViewProjectionMatrix;
-    float4x4 worldToTextureMatrix;      // SCTC: world (mm, LPS) -> texture [0,1]^3
-    float4x4 textureToWorldMatrix;      // Inverse: texture [0,1]^3 -> world (mm, LPS)
     float3   cameraPositionLocal;
     uint     frameIndex;
-    uint3    padding;
+    uint     padding;
 };
 
 struct RenderingArguments {
-    texture3d<float, access::sample> volumeTexture [[id(0)]];
+    texture3d<short, access::sample> volumeTexture [[id(0)]];
     constant RenderingParameters &params           [[id(1)]];
     texture2d<float, access::write> outputTexture  [[id(2)]];
     device float *toneBufferCh1                    [[id(3)]];
@@ -158,7 +111,6 @@ struct RenderingArguments {
     texture2d<float, access::sample> transferTextureCh2 [[id(16)]];
     texture2d<float, access::sample> transferTextureCh3 [[id(17)]];
     texture2d<float, access::sample> transferTextureCh4 [[id(18)]];
-    texture3d<half, access::sample> occupancyTexture    [[id(19)]];
 };
 
 #endif

@@ -40,14 +40,13 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
     worldNear /= worldNear.w;
     worldFar  /= worldFar.w;
 
-    // Map world positions to texture space using precomputed SCTC matrix
-    float4 texFar4  = camera.worldToTextureMatrix * worldFar;
-    float3 texFar   = texFar4.xyz / texFar4.w;
-    float3 cameraTex = (camera.worldToTextureMatrix * float4(camera.cameraPositionLocal, 1.0)).xyz;
+    float4 localFar4  = camera.inverseModelMatrix * worldFar;
+    float3 localFar   = (localFar4.xyz / localFar4.w) + float3(0.5f);
 
-    float3 rayDir = VolumeCompute::computeRayDirection(cameraTex, texFar);
+    float3 cameraLocal01 = camera.cameraPositionLocal + float3(0.5f);
+    float3 rayDir = VolumeCompute::computeRayDirection(cameraLocal01, localFar);
 
-    float2 intersection = VR::intersectAABB(cameraTex,
+    float2 intersection = VR::intersectAABB(cameraLocal01,
                                             rayDir,
                                             float3(0.0f),
                                             float3(1.0f));
@@ -65,11 +64,11 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
         return;
     }
 
-    float3 startPos = cameraTex + rayDir * tEnter;
-    float3 endPos   = cameraTex + rayDir * tExit;
+    float3 startPos = cameraLocal01 + rayDir * tEnter;
+    float3 endPos   = cameraLocal01 + rayDir * tExit;
 
     constant VolumeUniforms& material = args.params.material;
-    const float opacityThreshold = VolumeCompute::getEarlyExitThreshold(material, args.params);
+    const float opacityThreshold = clamp(args.params.earlyTerminationThreshold, 0.0f, 0.9999f);
 
     const int maxSteps = max(material.renderingQuality, 1);
     const float baseStepForJitter = sqrt(3.0f) / float(maxSteps);
@@ -87,8 +86,8 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
             tEnter = min(tEnter + jitterDistance, tExit);
         }
 
-        startPos = cameraTex + rayDir * tEnter;
-        endPos   = cameraTex + rayDir * tExit;
+        startPos = cameraLocal01 + rayDir * tEnter;
+        endPos   = cameraLocal01 + rayDir * tExit;
     }
 
     VR::RayInfo ray;
@@ -115,30 +114,23 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
         return;
     }
 
-    half4 accumulator = half4(0.0h);
+    float4 accumulator = float4(0.0f);
     float debugMaxDensity = 0.0f;
     float debugMaxSampleAlpha = 0.0f;
     const float3 dimension = float3(material.dimX,
                                     material.dimY,
                                     material.dimZ);
-    const bool isMIP = (material.method == 2);
-    const bool isMinIP = (material.method == 3);
-    float mipMaxSeen = 0.0f;
-    float mipMinSeen = 1.0f;
-    constexpr float kMipEarlyStop = 0.999f;   // stop when remaining samples cannot improve
-    constexpr float kMinIpEarlyStop = 0.001f; // stop when already near floor
 
     const float baseStep = max(march.stepSize, 1.0e-5f);
     int zeroCount = 0;
-    const int kZeroRun = max((int)args.params.zeroRunLength, 1);
-    const int kZeroSkip = max((int)args.params.zeroSkipDistance, 1);
-    // zeroRunThreshold handled inside shouldSkipEmptySpace; adaptive flag unused
+    constexpr int kZeroRun = 4;
+    constexpr int kZeroSkip = 3;
+    const bool adaptiveEnabled = ((args.optionValue & VolumeCompute::OPTION_ADAPTIVE) != 0) &&
+                                 (args.params.adaptiveGradientThreshold > 1.0e-4f);
     const float totalDistance = max(length(ray.endPosition - ray.startPosition), baseStep);
     float distanceTravelled = 0.0f;
     int iteration = 0;
     const int maxIterations = max(march.numSteps * 4, march.numSteps + 16);
-
-    float prevDensityDataset = 0.0f;
 
     while (distanceTravelled < totalDistance && iteration < maxIterations) {
         float stepDistance = baseStep;
@@ -163,40 +155,17 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
             continue;
         }
 
-        float hu = VolumeCompute::sampleDensity(args.volumeTexture,
-                                                args.volumeSampler,
-                                                samplePos,
-                                                material);
-        // Optional pre-TF blur to reduce wood-grain/banding at low step counts.
-        if (args.params.preTFBlurRadius > 0.0f) {
-            const float r = args.params.preTFBlurRadius;
-            float weight = 1.0f;
-            float accum = hu;
-            const float3 offsets[6] = {
-                float3( r, 0, 0), float3(-r, 0, 0),
-                float3(0,  r, 0), float3(0, -r, 0),
-                float3(0, 0,  r), float3(0, 0, -r)
-            };
-            for (uint o = 0; o < 6; ++o) {
-                float3 coord = clamp(samplePos + offsets[o], float3(0.0f), float3(1.0f));
-                accum += VolumeCompute::sampleDensity(args.volumeTexture,
-                                                      args.volumeSampler,
-                                                      coord,
-                                                      material);
-                weight += 1.0f;
-            }
-            hu = accum / weight;
-        }
-        const float windowMin = (float)material.voxelMinValue;
-        const float windowMax = (float)material.voxelMaxValue;
-        const float dataMin = (float)material.datasetMinValue;
-        const float dataMax = (float)material.datasetMaxValue;
+        const short hu = VR::getDensity(args.volumeTexture, samplePos);
+        const short windowMin = (short)material.voxelMinValue;
+        const short windowMax = (short)material.voxelMaxValue;
+        const short dataMin = (short)material.datasetMinValue;
+        const short dataMax = (short)material.datasetMaxValue;
 
-        half densityWindow = (half)Util::normalize(hu, windowMin, windowMax);
-        half densityDataset = (half)Util::normalize(hu, dataMin, dataMax);
+        float densityWindow = Util::normalize(hu, windowMin, windowMax);
+        float densityDataset = Util::normalize(hu, dataMin, dataMax);
 
-        densityWindow = clamp(densityWindow, 0.0h, 1.0h);
-        densityDataset = clamp(densityDataset, 0.0h, 1.0h);
+        densityWindow = clamp(densityWindow, 0.0f, 1.0f);
+        densityDataset = clamp(densityDataset, 0.0f, 1.0f);
 
 #if DEBUG
         if (debugDensityEnabled && !debugDensitySentinelWritten) {
@@ -215,7 +184,7 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
         }
 #endif
 
-        debugMaxDensity = max(debugMaxDensity, (float)densityWindow);
+        debugMaxDensity = max(debugMaxDensity, densityWindow);
 
         if (VolumeCompute::gateDensity(densityWindow, args.params, hu)) {
             distanceTravelled += stepDistance;
@@ -223,35 +192,25 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
             continue;
         }
 
-        const bool useTransfer = (material.useTFProj != 0 || material.method == 1);
-        const float densityForColour = useTransfer ? (float)densityDataset : (float)densityWindow;
-        const half windowIntensity = densityWindow;
-
-        // Gradient / adaptive step precomputation
-        const float3 spacing = float3(args.params.spacingX, args.params.spacingY, args.params.spacingZ);
-        const bool needGradient = (material.isLightingOn != 0) || (args.params.adaptiveGradientScale > 0.0f) || (args.params.emptySpaceGradientThreshold > 0.0f) || (material.dualParameterTFEnabled != 0);
         float3 gradient = float3(0.0f);
-        float gradientMagnitude = 0.0f;
-        if (needGradient) {
-            gradient = VolumeCompute::computeSpacingAwareGradient(args.volumeTexture, samplePos, dimension, spacing);
-            if (material.gradientSmoothness > 0.0f) {
-                float smooth = clamp(material.gradientSmoothness, 0.0f, 1.0f);
-                gradient *= (1.0f - smooth);
-            }
-            gradientMagnitude = length(gradient);
+        if (adaptiveEnabled || material.isLightingOn != 0) {
+            gradient = VR::calGradient(args.volumeTexture, samplePos, dimension);
         }
 
-        // Adaptive step sizing (edge-aware and flat-region boost)
-        {
-            float scale = VolumeCompute::computeAdaptiveStepScale(gradientMagnitude, args.params);
-            stepDistance = baseStep * scale;
-            stepDistance = max(stepDistance, args.params.minStepNormalized);
+        if (adaptiveEnabled) {
+            float gradMagnitude = length(gradient);
+            float threshold = max(args.params.adaptiveGradientThreshold, 1.0e-4f);
+            float normalizedGradient = clamp(gradMagnitude / threshold, 0.0f, 1.0f);
+            float adaptFactor = mix(2.0f, 0.5f, normalizedGradient);
+            stepDistance = baseStep * adaptFactor;
         }
 
-        half4 sampleColour = (half4)VolumeCompute::compositeChannels(args,
+        const bool useTransfer = (material.useTFProj != 0 || material.method == 1);
+        const float densityForColour = useTransfer ? densityDataset : densityWindow;
+        const float windowIntensity = densityWindow;
+        float4 sampleColour = VolumeCompute::compositeChannels(args,
                                                                args.params,
                                                                densityForColour,
-                                                               gradientMagnitude,
                                                                useTransfer);
 
         if (useTransfer) {
@@ -260,39 +219,19 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
 
         if (material.isLightingOn != 0) {
             float lengthSq = dot(gradient, gradient);
-            half3 normal = lengthSq > 1.0e-6f ? (half3)normalize(gradient) : half3(0.0h);
-            float3 eyeDirF = (material.isBackwardOn != 0) ? ray.direction : -ray.direction;
-            float3 lightDirF = normalize(cameraTex - samplePos);
-            half3 eyeDir = (half3)eyeDirF;
-            half3 lightDir = (half3)lightDirF;
+            float3 normal = lengthSq > 1.0e-6f ? normalize(gradient) : float3(0.0f);
+            float3 eyeDir = (material.isBackwardOn != 0) ? ray.direction : -ray.direction;
+            float3 lightDir = normalize(cameraLocal01 - samplePos);
             sampleColour.rgb = Util::calculateLighting(sampleColour.rgb,
                                                        normal,
                                                        lightDir,
                                                        eyeDir,
-                                                       0.3h);
-
-            if (material.lightOcclusionEnabled != 0) {
-                float occlusion = 1.0f;
-                float probeStep = max(baseStep * 2.0f, 1.0e-4f);
-                float3 probePos = samplePos;
-                const int kProbeSteps = 4;
-                for (int i = 0; i < kProbeSteps; ++i) {
-                    probePos += (lightDirF * probeStep);
-                    if (any(probePos < 0.0f) || any(probePos > 1.0f)) { break; }
-                    float dProbe = VolumeCompute::sampleDensity(args.volumeTexture,
-                                                                args.volumeSampler,
-                                                                probePos,
-                                                                material);
-                    float atten = exp(-material.lightOcclusionStrength * dProbe);
-                    occlusion *= atten;
-                }
-                sampleColour.rgb *= (half)clamp(occlusion, 0.0f, 1.0f);
-            }
+                                                       0.3f);
         }
 
-        const half densityFloor = (half)clamp(args.params.material.densityFloor, 0.0f, 1.0f);
+        const float densityFloor = clamp(args.params.material.densityFloor, 0.0f, 1.0f);
         if (densityWindow <= densityFloor) {
-            sampleColour.a = 0.0h;
+            sampleColour.a = 0.0f;
         }
 
         if (useTransfer) {
@@ -301,11 +240,9 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
             sampleColour.a = densityWindow;
         }
 
-        debugMaxSampleAlpha = max(debugMaxSampleAlpha, (float)clamp(sampleColour.a, 0.0h, 1.0h));
+        debugMaxSampleAlpha = max(debugMaxSampleAlpha, clamp(sampleColour.a, 0.0f, 1.0f));
 
-        // Empty-space skipping with optional gradient gating
-        if (VolumeCompute::shouldSkipEmptySpace((float)sampleColour.a, gradientMagnitude, args.params) ||
-            VolumeCompute::shouldSkipByOccupancy(args.params, samplePos, args.occupancyTexture)) {
+        if (sampleColour.a < 0.001f) {
             zeroCount++;
             if (zeroCount >= kZeroRun) {
                 distanceTravelled += baseStep * float(kZeroSkip);
@@ -319,8 +256,8 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
         }
         zeroCount = 0;
 
-        const half alpha = clamp(sampleColour.a, 0.0h, 1.0h);
-        const half3 premultColor = sampleColour.rgb * alpha;
+        const float alpha = clamp(sampleColour.a, 0.0f, 1.0f);
+        const float3 premultColor = sampleColour.rgb * alpha;
 
 #if DEBUG
         if (debugDensityEnabled && !debugPreBlendSentinelWritten) {
@@ -329,37 +266,14 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
         }
 #endif
 
-        // Optional pre-integrated TF blend with previous density
-        if (useTransfer && material.usePreIntegratedTF != 0) {
-            half4 prevColour = (half4)VolumeCompute::compositeChannels(args,
-                                                                       args.params,
-                                                                       prevDensityDataset,
-                                                                       gradientMagnitude,
-                                                                       useTransfer);
-            sampleColour = (sampleColour + prevColour) * 0.5h;
-        }
-
         if (material.isBackwardOn != 0) {
-            const half oneMinusSampleAlpha = 1.0h - alpha;
+            const float oneMinusSampleAlpha = 1.0f - alpha;
             accumulator.rgb = premultColor + oneMinusSampleAlpha * accumulator.rgb;
             accumulator.a = alpha + oneMinusSampleAlpha * accumulator.a;
         } else {
-            const half oneMinusAccumAlpha = 1.0h - accumulator.a;
+            const float oneMinusAccumAlpha = 1.0f - accumulator.a;
             accumulator.rgb += premultColor * oneMinusAccumAlpha;
             accumulator.a += alpha * oneMinusAccumAlpha;
-        }
-
-        // MIP/MinIP early break: once bound is reached, remaining steps cannot improve the result
-        if (isMIP) {
-            mipMaxSeen = max(mipMaxSeen, (float)alpha);
-            if (mipMaxSeen >= kMipEarlyStop) {
-                break;
-            }
-        } else if (isMinIP) {
-            mipMinSeen = min(mipMinSeen, (float)alpha);
-            if (mipMinSeen <= kMinIpEarlyStop) {
-                break;
-            }
         }
 
         if (accumulator.a > opacityThreshold) {
@@ -369,15 +283,14 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
         distanceTravelled += stepDistance;
         distanceTravelled = min(distanceTravelled, totalDistance);
         iteration++;
-        prevDensityDataset = (float)densityDataset;
     }
 
-    accumulator = clamp(accumulator, half4(0.0h), half4(1.0h));
+    accumulator = clamp(accumulator, float4(0.0f), float4(1.0f));
 
     if ((args.optionValue & VolumeCompute::OPTION_DEBUG_DENSITY) != 0) {
-        float3 debugRGB = float3(debugMaxDensity, debugMaxSampleAlpha, (float)accumulator.a);
+        float3 debugRGB = float3(debugMaxDensity, debugMaxSampleAlpha, accumulator.a);
         args.outputTexture.write(float4(debugRGB, 1.0f), gid);
         return;
     }
-    args.outputTexture.write((float4)accumulator, gid);
+    args.outputTexture.write(accumulator, gid);
 }

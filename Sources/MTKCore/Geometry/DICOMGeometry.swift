@@ -49,10 +49,10 @@ public struct DICOMGeometry {
         let Nz = iopNorm * spacingZ
         let t  = ipp0
         return simd_float4x4(columns: (
-            simd_float4(Rx.x, Rx.y, Rx.z, 0),
-            simd_float4(Cy.x, Cy.y, Cy.z, 0),
-            simd_float4(Nz.x, Nz.y, Nz.z, 0),
-            simd_float4(t.x,  t.y,  t.z,  1)
+            simd_float4(Rx.x, Cy.x, Nz.x, t.x),
+            simd_float4(Rx.y, Cy.y, Nz.y, t.y),
+            simd_float4(Rx.z, Cy.z, Nz.z, t.z),
+            simd_float4(0, 0, 0, 1)
         ))
     }
 
@@ -66,23 +66,19 @@ public struct DICOMGeometry {
     private var voxelToTex: simd_float4x4 {
         let dx = Float(cols), dy = Float(rows), dz = Float(slices)
         let scale = simd_float4x4(diagonal: simd_float4(1/dx, 1/dy, 1/dz, 1))
-        let translate = simd_float4x4(columns: (
-            simd_float4(1, 0, 0, 0),
-            simd_float4(0, 1, 0, 0),
-            simd_float4(0, 0, 1, 0),
-            simd_float4(0.5/dx, 0.5/dy, 0.5/dz, 1)
+        let half  = simd_float4x4(columns: (
+            simd_float4(1, 0, 0, 0.5/dx),
+            simd_float4(0, 1, 0, 0.5/dy),
+            simd_float4(0, 0, 1, 0.5/dz),
+            simd_float4(0, 0, 0, 1)
         ))
-        return translate * scale
+        return half * scale
     }
 
     /// Transformation matrix from world coordinates to texture coordinates [0,1]^3
     public var worldToTex: simd_float4x4 {
         voxelToTex * worldToVoxel
     }
-
-    public var worldToTextureMatrix: simd_float4x4 { worldToTex }
-    public var textureToWorldMatrix: simd_float4x4 { simd_inverse(worldToTex) }
-    public var SCTCMatrix: simd_float4x4 { worldToTex }
 
     /// Convert a plane defined in world coordinates (mm) to texture coordinates ([0,1]^3)
     /// - Parameters:

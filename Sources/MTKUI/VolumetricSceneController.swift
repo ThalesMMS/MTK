@@ -205,22 +205,12 @@ public final class VolumetricSceneController: VolumetricSceneControlling, Observ
     public struct SlabConfiguration: Equatable {
         public var thickness: Int
         public var steps: Int
-        public var usePhysicalWeighting: Bool
-        public var useBoundsEpsilon: Bool
-        public var boundsEpsilon: Float
 
-        public init(thickness: Int,
-                    steps: Int,
-                    usePhysicalWeighting: Bool = false,
-                    useBoundsEpsilon: Bool = false,
-                    boundsEpsilon: Float = 1.0e-4) {
+        public init(thickness: Int, steps: Int) {
             let normalizedThickness = Self.snapToOddVoxelCount(thickness)
             let normalizedSteps = Self.snapToOddVoxelCount(max(1, steps))
             self.thickness = normalizedThickness
             self.steps = normalizedSteps
-            self.usePhysicalWeighting = usePhysicalWeighting
-            self.useBoundsEpsilon = useBoundsEpsilon
-            self.boundsEpsilon = boundsEpsilon
         }
 
         public static func snapToOddVoxelCount(_ value: Int) -> Int {
@@ -317,7 +307,7 @@ public final class VolumetricSceneController: VolumetricSceneControlling, Observ
 #if canImport(UIKit)
     var adaptiveRecognizers: Set<ObjectIdentifier> = []
 #endif
-    var adaptiveInteractionFactor: Float = 0.5
+    let adaptiveInteractionFactor: Float = 0.5
     let defaultCameraDistanceFactor: Float = 2.5
     var initialCameraTransform: simd_float4x4?
     var defaultCameraTarget: SCNVector3 = SCNVector3(x: 0, y: 0, z: 0)

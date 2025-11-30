@@ -18,14 +18,14 @@ inline uint histogram_bin(float value, uint binCount) {
     return min(uint(round(scaled)), binCount - 1);
 }
 
-inline float normalize_density(float value, short minValue, short maxValue) {
-    float numerator = value - float(minValue);
+inline float normalize_density(short value, short minValue, short maxValue) {
+    float numerator = float(value - minValue);
     float denominator = max(float(maxValue - minValue), 1.0f);
     return clamp(numerator / denominator, 0.0f, 1.0f);
 }
 }
 
-kernel void computeHistogramThreadgroup(texture3d<float, access::read> inputTexture [[texture(0)]],
+kernel void computeHistogramThreadgroup(texture3d<short, access::read> inputTexture [[texture(0)]],
                                         constant uint8_t &channelCount [[buffer(0)]],
                                         constant uint &binCount [[buffer(1)]],
                                         constant short &voxelMin [[buffer(2)]],
@@ -55,7 +55,7 @@ kernel void computeHistogramThreadgroup(texture3d<float, access::read> inputText
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     if (gid.x < width && gid.y < height && gid.z < depth) {
-        float raw = inputTexture.read(uint3(gid)).r;
+        short raw = inputTexture.read(uint3(gid)).r;
         float normalized = normalize_density(raw, voxelMin, voxelMax);
         uint bin = histogram_bin(normalized, bins);
         for (uint channel = 0; channel < limitedChannelCount; ++channel) {
@@ -76,7 +76,7 @@ kernel void computeHistogramThreadgroup(texture3d<float, access::read> inputText
     }
 }
 
-kernel void computeHistogramLegacy(texture3d<float, access::read> inputTexture [[texture(0)]],
+kernel void computeHistogramLegacy(texture3d<short, access::read> inputTexture [[texture(0)]],
                                    constant uint8_t &channelCount [[buffer(0)]],
                                    constant uint &binCount [[buffer(1)]],
                                    constant short &voxelMin [[buffer(2)]],
@@ -99,7 +99,7 @@ kernel void computeHistogramLegacy(texture3d<float, access::read> inputTexture [
         return;
     }
 
-    float raw = inputTexture.read(uint3(gid)).r;
+    short raw = inputTexture.read(uint3(gid)).r;
     float normalized = normalize_density(raw, voxelMin, voxelMax);
     uint bin = histogram_bin(normalized, bins);
 

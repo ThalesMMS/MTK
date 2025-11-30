@@ -57,7 +57,6 @@ public final class ArgumentEncoderManager {
         case transferTextureCh2 = 16
         case transferTextureCh3 = 17
         case transferTextureCh4 = 18
-        case occupancyTexture = 19
 
         public var description: String {
             switch self {
@@ -80,12 +79,11 @@ public final class ArgumentEncoderManager {
             case .transferTextureCh2: return "transfer function ch2"
             case .transferTextureCh3: return "transfer function ch3"
             case .transferTextureCh4: return "transfer function ch4"
-            case .occupancyTexture: return "occupancy grid"
             }
         }
 
         static func validateShaderLayout(file: StaticString = #file, line: UInt = #line) {
-            assert(allCases.count == 20, "RenderingArguments defines 20 resources in volume_compute.metal", file: file, line: line)
+            assert(allCases.count == 19, "RenderingArguments defines 19 resources in volume_compute.metal", file: file, line: line)
             assert(ArgumentIndex.mainTexture.rawValue == 0, "volume_compute.metal expects volumeTexture at index 0", file: file, line: line)
             assert(ArgumentIndex.renderParams.rawValue == 1, "volume_compute.metal expects RenderingParameters at index 1", file: file, line: line)
             assert(ArgumentIndex.outputTexture.rawValue == 2, "volume_compute.metal expects outputTexture at index 2", file: file, line: line)
@@ -105,7 +103,6 @@ public final class ArgumentEncoderManager {
             assert(ArgumentIndex.transferTextureCh2.rawValue == 16, "volume_compute.metal expects transferTextureCh2 at index 16", file: file, line: line)
             assert(ArgumentIndex.transferTextureCh3.rawValue == 17, "volume_compute.metal expects transferTextureCh3 at index 17", file: file, line: line)
             assert(ArgumentIndex.transferTextureCh4.rawValue == 18, "volume_compute.metal expects transferTextureCh4 at index 18", file: file, line: line)
-            assert(ArgumentIndex.occupancyTexture.rawValue == 19, "volume_compute.metal expects occupancyTexture at index 19", file: file, line: line)
         }
     }
 

@@ -405,9 +405,9 @@ private extension MPSVolumeRenderer {
         let height = Float(dataset.dimensions.height)
         let depth = Float(dataset.dimensions.depth)
         let spacing = dataset.spacing
-        let maxPoint = vector_float3(Float(spacing.x) * max(width - 1, 1),
-                                     Float(spacing.y) * max(height - 1, 1),
-                                     Float(spacing.z) * max(depth - 1, 1))
+        let maxPoint = vector_float3(Float(spacing.x) * width,
+                                     Float(spacing.y) * height,
+                                     Float(spacing.z) * depth)
         var box = MPSAxisAlignedBoundingBox()
         box.min = vector_float3(0, 0, 0)
         box.max = maxPoint

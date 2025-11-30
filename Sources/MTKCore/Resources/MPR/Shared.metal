@@ -44,7 +44,7 @@ struct NodeBuffer {
 };
 
 constexpr sampler sampler3d(coord::normalized,
-                            filter::linear,
+                            filter::nearest,
                             address::clamp_to_edge);
 
 constexpr sampler sampler2d(coord::normalized,
@@ -112,15 +112,6 @@ public:
         float normalized = float(value - minValue) / float(maxValue - minValue);
         return clamp(normalized, 0.0f, 1.0f);
     }
-
-    static float normalize(float value, float minValue, float maxValue)
-    {
-        if (maxValue <= minValue) {
-            return 0.0f;
-        }
-        float normalized = (value - minValue) / (maxValue - minValue);
-        return clamp(normalized, 0.0f, 1.0f);
-    }
     
     static float lerp(float a, float b, float w) {
         return a + w * (b-a);
@@ -139,18 +130,6 @@ public:
         float3 r = ::normalize(reflect(-lightDir, normal));
         float rdotv = max(dot(r, v), 0.0);
         float3 specular = pow(rdotv, 32) * float3(1) * specularIntensity;
-        return diffuse + specular;
-    }
-
-    static half3 calculateLighting(half3 col, half3 normal, half3 lightDir, half3 eyeDir,
-                             half specularIntensity)
-    {
-        half ndotl = max(mix(0.0h, 1.5h, dot(normal, lightDir)), 0.5h);
-        half3 diffuse = ndotl * col;
-        half3 v = eyeDir;
-        half3 r = ::normalize(reflect(-lightDir, normal));
-        half rdotv = max(dot(r, v), 0.0h);
-        half3 specular = pow(rdotv, 32.0h) * half3(1.0h) * specularIntensity;
         return diffuse + specular;
     }
 };
@@ -182,7 +161,7 @@ public:
         return short(clamp(sampleValue, -32768.0f, 32767.0f));
     }
 
-    static float3 calGradient(texture3d<float, access::sample> volume,
+    static float3 calGradient(texture3d<short, access::sample> volume,
                               float3 coord,
                               float3 dimension)
     {
@@ -260,9 +239,9 @@ public:
         return raymarchInfo;
     }
 
-    static float getDensity(texture3d<float, access::sample> volume, float3 coord)
+    static short getDensity(texture3d<short, access::sample> volume, float3 coord)
     {
-        return volume.sample(sampler3d, coord).r;
+        return decodeInt16SampleToShort(volume.sample(sampler3d, coord).r);
     }
     
     static float3 getGradient(texture3d<float, access::sample> gradient, float3 coord)

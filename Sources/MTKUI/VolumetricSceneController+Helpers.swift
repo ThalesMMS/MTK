@@ -15,9 +15,7 @@ import Metal
 #endif
 
 
-extension SCNVector3 {
-    /// Initialize SCNVector3 from SIMD3<Float> with explicit component mapping.
-    /// This ensures correct axis-aligned scaling for volume rendering.
+private extension SCNVector3 {
     init(_ vector: SIMD3<Float>) {
         self.init(vector.x, vector.y, vector.z)
     }

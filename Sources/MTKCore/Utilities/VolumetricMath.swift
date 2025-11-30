@@ -111,7 +111,7 @@ public extension matrix_float4x4 {
     }
 
     /// Create rotated matrix
-    func rotatingMatrix(angle: Float, axis: SIMD3<Float>) -> matrix_float4x4 {
+    func rotatingMatrix(angle: Float, axis: float3) -> matrix_float4x4 {
         var result = matrix_identity_float4x4
 
         let x: Float = axis.x
