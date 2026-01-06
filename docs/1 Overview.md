@@ -9,7 +9,7 @@
 
 MTK (Metal Toolkit) is a Swift Package providing volumetric rendering infrastructure for medical imaging applications on iOS and macOS. It orchestrates Metal-accelerated 3D visualization through a three-tier architecture: **MTKCore** (domain models and Metal abstractions), **MTKSceneKit** (rendering materials and camera controls), and **MTKUI** (SwiftUI integration with reactive state management). The system supports dual rendering backends—SceneKit with custom Metal shaders and Metal Performance Shaders (MPS) for GPU-accelerated operations—with automatic capability detection and runtime switching.
 
-For specific integration patterns, see [Getting Started](#1.2). For detailed rendering architecture, see [Rendering Architecture](#2). For the central controller API, see [VolumetricSceneController](#3).
+For specific integration patterns, see [Getting Started](1b%20Getting-Started.md). For detailed rendering architecture, see [Rendering Architecture](2%20Rendering-Architecture.md). For the central controller API, see [VolumetricSceneController](3%20VolumetricSceneController.md).
 
 ---
 
@@ -24,7 +24,7 @@ MTK provides the complete pipeline for volumetric medical imaging visualization:
 * Exposing SwiftUI-compatible views with reactive state management
 * Supporting both SceneKit-based and MPS-based rendering paths
 
-The toolkit **does not** provide DICOM parsing implementations—clients must supply a `DicomSeriesLoading` bridge (see [DICOM Loading](#5.2)). It also does not include medical image processing algorithms beyond basic windowing and histogram analysis.
+The toolkit **does not** provide DICOM parsing implementations—clients must supply a `DicomSeriesLoading` bridge (see [DICOM Loading](5b%20DICOM-Loading.md)). It also does not include medical image processing algorithms beyond basic windowing and histogram analysis.
 
 **Sources:** [README.md L1-L9](https://github.com/ThalesMMS/MTK/blob/eda6f990/README.md#L1-L9)
 
@@ -303,7 +303,7 @@ MPSRender -.-> Display
 * Active backend renders to `RenderSurface` protocol ([Sources/MTKCore/Adapters/RenderSurface.swift L1-L50](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKCore/Adapters/RenderSurface.swift#L1-L50) )
 * `VolumetricDisplayContainer` displays `controller.surface` in SwiftUI ([Sources/MTKUI/VolumetricDisplayContainer.swift L26-L50](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricDisplayContainer.swift#L26-L50) )
 
-**Sources:** [README.md L36-L70](https://github.com/ThalesMMS/MTK/blob/eda6f990/README.md#L36-L70)
+**Sources:** README.md
 
  [Sources/MTKUI/VolumetricSceneController.swift L332-L436](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricSceneController.swift#L332-L436)
 
@@ -332,7 +332,7 @@ Central orchestrator split across five extension files:
 * `@Published var windowLevelState: VolumetricWindowLevelState` — HU window min/max ([Sources/MTKUI/VolumetricSceneController.swift L279](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricSceneController.swift#L279-L279) )
 * `@Published var adaptiveSamplingEnabled: Bool` — performance mode flag ([Sources/MTKUI/VolumetricSceneController.swift L280](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricSceneController.swift#L280-L280) )
 
-See [VolumetricSceneController](#3) for detailed API documentation.
+See [VolumetricSceneController](3%20VolumetricSceneController.md) for detailed API documentation.
 
 **Sources:** [Sources/MTKUI/VolumetricSceneController.swift L193-L436](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricSceneController.swift#L193-L436)
 
@@ -347,7 +347,7 @@ SwiftUI-friendly wrapper providing simplified API:
 * Singleton pattern via `shared` property for global state
 * Located at [Sources/MTKUI/VolumetricSceneCoordinator.swift L1-L300](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricSceneCoordinator.swift#L1-L300)
 
-See [Coordinator Pattern & State Flow](#6.2) for integration patterns.
+See [Coordinator Pattern & State Flow](6b%20Coordinator-Pattern-&-State-Flow.md) for integration patterns.
 
 **Sources:** [Sources/MTKUI/VolumetricSceneCoordinator.swift L1-L300](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricSceneCoordinator.swift#L1-L300)
 
@@ -366,11 +366,11 @@ Composes built-in overlays:
 * `WindowLevelControlView()` — HU window/level sliders
 * `MPRGridComposer` — synchronized tri-planar layout
 
-See [VolumetricDisplayContainer](#6.1) for detailed usage.
+See [VolumetricDisplayContainer](6a%20VolumetricDisplayContainer.md) for detailed usage.
 
 **Sources:** [Sources/MTKUI/VolumetricDisplayContainer.swift L12-L59](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricDisplayContainer.swift#L12-L59)
 
- [README.md L44-L70](https://github.com/ThalesMMS/MTK/blob/eda6f990/README.md#L44-L70)
+ README.md
 
 ---
 
@@ -438,9 +438,9 @@ Minimal SwiftUI app loading a dataset and displaying volume rendering:
 import SwiftUIimport MTKCoreimport MTKUI@mainstruct VolumeApp: App {    var body: some Scene {        WindowGroup {            ContentView()        }    }}struct ContentView: View {    @StateObject private var coordinator = VolumetricSceneCoordinator.shared        var body: some View {        VolumetricDisplayContainer(controller: coordinator.controller) {            CrosshairOverlayView()            OrientationOverlayView()        }        .task {            // Create synthetic dataset (256³ volume)            let voxelCount = 256 * 256 * 256            let bytesPerVoxel = VolumePixelFormat.int16Signed.bytesPerVoxel            let voxels = Data(repeating: 0, count: voxelCount * bytesPerVoxel)                        let dataset = VolumeDataset(                data: voxels,                dimensions: VolumeDimensions(width: 256, height: 256, depth: 256),                spacing: VolumeSpacing(x: 0.001, y: 0.001, z: 0.001),                pixelFormat: .int16Signed,                intensityRange: (-1024)...3071            )                        coordinator.apply(dataset: dataset)            coordinator.applyHuWindow(min: -500, max: 1200)            await coordinator.controller.setPreset(.softTissue)        }    }}
 ```
 
-For gesture handling, add `.volumeGestures(controller:)` modifier. For DICOM loading, see [DICOM Loading](#5.2).
+For gesture handling, add `.volumeGestures(controller:)` modifier. For DICOM loading, see [DICOM Loading](5b%20DICOM-Loading.md).
 
-**Sources:** [README.md L36-L70](https://github.com/ThalesMMS/MTK/blob/eda6f990/README.md#L36-L70)
+**Sources:** README.md
 
  [Sources/MTKUI/VolumetricDisplayContainer.swift L12-L59](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricDisplayContainer.swift#L12-L59)
 
@@ -501,44 +501,44 @@ SceneKit provides universal fallback, MPS provides GPU acceleration:
 
 ## Related Pages
 
-* [Module Structure](#1.1) — Detailed dependency graph and module boundaries
-* [Getting Started](#1.2) — Step-by-step integration guide with code examples
-* [Rendering Architecture](#2) — In-depth explanation of dual backend system
-* [VolumetricSceneController](#3) — Central orchestrator API reference
-* [Materials and Shaders](#4) — Custom Metal shaders and material system
-* [Data Pipeline](#5) — DICOM loading and texture generation
-* [SwiftUI Integration](#6) — Reactive UI patterns and state management
-* [Metal Rendering Infrastructure](#7) — Low-level Metal abstractions and compute shaders
-* [Advanced Topics](#9) — Backend resolution, adaptive sampling, coordinate transformations
+* [Module Structure](1a%20Module-Structure.md) — Detailed dependency graph and module boundaries
+* [Getting Started](1b%20Getting-Started.md) — Step-by-step integration guide with code examples
+* [Rendering Architecture](2%20Rendering-Architecture.md) — In-depth explanation of dual backend system
+* [VolumetricSceneController](3%20VolumetricSceneController.md) — Central orchestrator API reference
+* [Materials and Shaders](4%20Materials-and-Shaders.md) — Custom Metal shaders and material system
+* [Data Pipeline](5%20Data-Pipeline.md) — DICOM loading and texture generation
+* [SwiftUI Integration](6%20SwiftUI-Integration.md) — Reactive UI patterns and state management
+* [Metal Rendering Infrastructure](7%20Metal-Rendering-Infrastructure.md) — Low-level Metal abstractions and compute shaders
+* [Advanced Topics](9%20Advanced-Topics.md) — Backend resolution, adaptive sampling, coordinate transformations
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 
-* [Overview](#1-overview)
-* [Purpose and Scope](#1-purpose-and-scope)
-* [Three-Tier Module Architecture](#1-three-tier-module-architecture)
-* [Dual Rendering Backend System](#1-dual-rendering-backend-system)
-* [SceneKit Backend (Universal Fallback)](#1-scenekit-backend-universal-fallback)
-* [Metal Performance Shaders Backend (GPU-Accelerated)](#1-metal-performance-shaders-backend-gpu-accelerated)
-* [Active Surface Pattern](#1-active-surface-pattern)
-* [Data Pipeline Overview](#1-data-pipeline-overview)
-* [Core Components and Entry Points](#1-core-components-and-entry-points)
-* [VolumetricSceneController](#1-volumetricscenecontroller)
-* [VolumetricSceneCoordinator](#1-volumetricscenecoordinator)
-* [VolumetricDisplayContainer](#1-volumetricdisplaycontainer)
-* [Runtime Requirements and Capability Detection](#1-runtime-requirements-and-capability-detection)
-* [Metal Availability Check](#1-metal-availability-check)
-* [Platform and Framework Requirements](#1-platform-and-framework-requirements)
-* [Shader Compilation](#1-shader-compilation)
-* [Quick Integration Example](#1-quick-integration-example)
-* [Key Design Decisions](#1-key-design-decisions)
-* [Framework-Agnostic Core](#1-framework-agnostic-core)
-* [Dual Backend Strategy](#1-dual-backend-strategy)
-* [Reactive State Management](#1-reactive-state-management)
-* [Extension-Based Modularity](#1-extension-based-modularity)
-* [Related Pages](#1-related-pages)
+* [Overview](1%20Overview.md)
+* [Purpose and Scope](1%20Overview.md)
+* [Three-Tier Module Architecture](1%20Overview.md)
+* [Dual Rendering Backend System](1%20Overview.md)
+* [SceneKit Backend (Universal Fallback)](1%20Overview.md)
+* [Metal Performance Shaders Backend (GPU-Accelerated)](1%20Overview.md)
+* [Active Surface Pattern](1%20Overview.md)
+* [Data Pipeline Overview](1%20Overview.md)
+* [Core Components and Entry Points](1%20Overview.md)
+* [VolumetricSceneController](1%20Overview.md)
+* [VolumetricSceneCoordinator](1%20Overview.md)
+* [VolumetricDisplayContainer](1%20Overview.md)
+* [Runtime Requirements and Capability Detection](1%20Overview.md)
+* [Metal Availability Check](1%20Overview.md)
+* [Platform and Framework Requirements](1%20Overview.md)
+* [Shader Compilation](1%20Overview.md)
+* [Quick Integration Example](1%20Overview.md)
+* [Key Design Decisions](1%20Overview.md)
+* [Framework-Agnostic Core](1%20Overview.md)
+* [Dual Backend Strategy](1%20Overview.md)
+* [Reactive State Management](1%20Overview.md)
+* [Extension-Based Modularity](1%20Overview.md)
+* [Related Pages](1%20Overview.md)
 
 Ask Devin about MTK

@@ -7,7 +7,7 @@
 
 The `ArgumentEncoderManager` class provides centralized management of Metal argument buffers for GPU-based volume rendering. It encapsulates the complexity of keeping CPU-side buffer resources synchronized with shader expectations, implementing dirty tracking to avoid unnecessary GPU uploads, and managing output texture lifecycle.
 
-This document covers the internal mechanics of argument buffer encoding and resource management. For the higher-level rendering adapter that uses this manager, see [MetalVolumeRenderingAdapter](#7.1). For details on the shader compilation and loading system, see [Shader System](#7.3).
+This document covers the internal mechanics of argument buffer encoding and resource management. For the higher-level rendering adapter that uses this manager, see [MetalVolumeRenderingAdapter](7a%20MetalVolumeRenderingAdapter.md). For details on the shader compilation and loading system, see [Shader System](7c%20MPSVolumeRenderer.md).
 
 **Sources:** [Sources/MTKCore/Rendering/ArgumentEncoderManager.swift L1-L417](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKCore/Rendering/ArgumentEncoderManager.swift#L1-L417)
 
@@ -580,9 +580,9 @@ This design centralizes the complex state management required for efficient Meta
 
 **Sources:** [Sources/MTKCore/Rendering/ArgumentEncoderManager.swift L1-L417](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKCore/Rendering/ArgumentEncoderManager.swift#L1-L417)
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 

@@ -7,7 +7,7 @@
 
 This page documents the `VolumeRenderRequest` structure, which serves as the primary data contract for requesting volumetric rendering operations through the `VolumeRenderingPort` protocol. The request model encapsulates all parameters necessary for a single rendering pass: camera configuration, quality settings, compositing method, and sampling parameters.
 
-For information about the protocol that consumes this request, see [VolumeRenderingPort](#8.1). For details about how requests are transformed into GPU resources, see [MetalVolumeRenderingAdapter](#7.1).
+For information about the protocol that consumes this request, see [VolumeRenderingPort](8a%20VolumeRenderingPort.md). For details about how requests are transformed into GPU resources, see [MetalVolumeRenderingAdapter](7a%20MetalVolumeRenderingAdapter.md).
 
 **Sources:** [Sources/MTKCore/Domain/VolumeRenderingPort.swift L19-L73](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKCore/Domain/VolumeRenderingPort.swift#L19-L73)
 
@@ -545,37 +545,38 @@ The metadata reflects the *effective* parameters after override application [Sou
 
  [Sources/MTKCore/Adapters/MetalVolumeRenderingAdapter.swift L410-L416](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKCore/Adapters/MetalVolumeRenderingAdapter.swift#L410-L416)
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 
-* [Rendering Request Model](#8.2-rendering-request-model)
-* [Purpose and Scope](#8.2-purpose-and-scope)
-* [Request Structure Overview](#8.2-request-structure-overview)
-* [Camera Configuration](#8.2-camera-configuration)
-* [Camera Structure](#8.2-camera-structure)
-* [Camera Matrix Construction](#8.2-camera-matrix-construction)
-* [Quality Levels](#8.2-quality-levels)
-* [Quality Interpretation](#8.2-quality-interpretation)
-* [Compositing Methods](#8.2-compositing-methods)
-* [Compositing Modes](#8.2-compositing-modes)
-* [Compositing Mode Translation](#8.2-compositing-mode-translation)
-* [Sampling Distance](#8.2-sampling-distance)
-* [Sampling Parameter Flow](#8.2-sampling-parameter-flow)
-* [Typical Sampling Values](#8.2-typical-sampling-values)
-* [Request Construction](#8.2-request-construction)
-* [Initialization](#8.2-initialization)
-* [Parameter Dependencies](#8.2-parameter-dependencies)
-* [Request Consumption in Rendering Pipeline](#8.2-request-consumption-in-rendering-pipeline)
-* [Rendering Pipeline Flow](#8.2-rendering-pipeline-flow)
-* [Key Transformation Functions](#8.2-key-transformation-functions)
-* [Request Validation and Sanitization](#8.2-request-validation-and-sanitization)
-* [Viewport Sanitization](#8.2-viewport-sanitization)
-* [Sampling Distance Validation](#8.2-sampling-distance-validation)
-* [Camera Matrix Stability](#8.2-camera-matrix-stability)
-* [Metadata Propagation](#8.2-metadata-propagation)
-* [Metadata Structure](#8.2-metadata-structure)
+- [Rendering Request Model](#rendering-request-model)
+  - [Purpose and Scope](#purpose-and-scope)
+  - [Request Structure Overview](#request-structure-overview)
+  - [Camera Configuration](#camera-configuration)
+    - [Camera Structure](#camera-structure)
+    - [Camera Matrix Construction](#camera-matrix-construction)
+  - [Quality Levels](#quality-levels)
+    - [Quality Interpretation](#quality-interpretation)
+  - [Compositing Methods](#compositing-methods)
+    - [Compositing Modes](#compositing-modes)
+    - [Compositing Mode Translation](#compositing-mode-translation)
+  - [Sampling Distance](#sampling-distance)
+    - [Sampling Parameter Flow](#sampling-parameter-flow)
+    - [Typical Sampling Values](#typical-sampling-values)
+  - [Request Construction](#request-construction)
+    - [Initialization](#initialization)
+    - [Parameter Dependencies](#parameter-dependencies)
+  - [Request Consumption in Rendering Pipeline](#request-consumption-in-rendering-pipeline)
+    - [Rendering Pipeline Flow](#rendering-pipeline-flow)
+    - [Key Transformation Functions](#key-transformation-functions)
+  - [Request Validation and Sanitization](#request-validation-and-sanitization)
+    - [Viewport Sanitization](#viewport-sanitization)
+    - [Sampling Distance Validation](#sampling-distance-validation)
+    - [Camera Matrix Stability](#camera-matrix-stability)
+  - [Metadata Propagation](#metadata-propagation)
+    - [Metadata Structure](#metadata-structure)
+    - [On this page](#on-this-page)
 
 Ask Devin about MTK

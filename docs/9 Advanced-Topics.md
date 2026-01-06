@@ -9,7 +9,7 @@
 
 This page covers advanced architectural patterns and optimization techniques in MTK that support high-performance volumetric rendering. These topics include runtime backend selection, performance optimization strategies, GPU-accelerated ray casting, volume boundary management, and coordinate system transformations.
 
-For basic rendering concepts, see [Rendering Architecture](#2). For the core controller API, see [VolumetricSceneController](#3). For Metal-level infrastructure, see [Metal Rendering Infrastructure](#7).
+For basic rendering concepts, see [Rendering Architecture](2%20Rendering-Architecture.md). For the core controller API, see [VolumetricSceneController](3%20VolumetricSceneController.md). For Metal-level infrastructure, see [Metal Rendering Infrastructure](7%20Metal-Rendering-Infrastructure.md).
 
 ---
 
@@ -27,7 +27,7 @@ MTK implements several sophisticated subsystems that work together to deliver sm
 
 These systems interact at initialization, during user interaction, and at render time to ensure robust, performant visualization.
 
-**Sources**: [README.md L77-L80](https://github.com/ThalesMMS/MTK/blob/eda6f990/README.md#L77-L80)
+**Sources**: README.md
 
  [VolumetricSceneController L1-L600](https://github.com/ThalesMMS/MTK/blob/eda6f990/VolumetricSceneController+Interaction.swift#L1-L600)
 
@@ -86,7 +86,7 @@ SetActive -.-> Ready
 
  [VolumetricSceneController L463-L519](https://github.com/ThalesMMS/MTK/blob/eda6f990/VolumetricSceneController+Interaction.swift#L463-L519)
 
- [README.md L77-L80](https://github.com/ThalesMMS/MTK/blob/eda6f990/README.md#L77-L80)
+ README.md
 
 ---
 
@@ -214,7 +214,7 @@ When `setRenderingBackend()` is called:
 3. **MPS Request**: * Verify `MPSSupportsMTLDevice(device)` and `mpsDisplay != nil` * If MPS unavailable, fall back to SceneKit * Lazy-initialize `mpsRenderer` if needed * Hide `sceneView`, show MPS view * Set `activeSurface = mpsSurface` * Synchronize dataset/transfer function/display config to MPS backend
 4. **Return**: Current active backend (which may differ from request if fallback occurred)
 
-**Key Abstraction**: The `RenderSurface` protocol (see [RenderSurface Abstraction](#2.3)) allows SwiftUI views to remain unchanged during backend switches. The container simply displays whatever surface is currently active.
+**Key Abstraction**: The `RenderSurface` protocol (see [RenderSurface Abstraction](2c%20RenderSurface-Abstraction.md)) allows SwiftUI views to remain unchanged during backend switches. The container simply displays whatever surface is currently active.
 
 **Sources**: [VolumetricSceneController L463-L533](https://github.com/ThalesMMS/MTK/blob/eda6f990/VolumetricSceneController+Interaction.swift#L463-L533)
 
@@ -453,31 +453,31 @@ The advanced systems in MTK work together as follows:
 
 These subsystems are detailed in their respective child pages:
 
-* [Backend Resolution & Metal Detection](#9.1)
-* [Adaptive Sampling](#9.2)
-* [MPS Ray Casting Cache](#9.3)
-* [Volume Bounds and Clipping](#9.4)
-* [Coordinate System Transformations](#9.5)
+* [Backend Resolution & Metal Detection](9a%20Backend-Resolution-&-Metal-Detection.md)
+* [Adaptive Sampling](9b%20Adaptive-Sampling.md)
+* [MPS Ray Casting Cache](9c%20MPS-Ray-Casting-Cache.md)
+* [Volume Bounds and Clipping](9d%20Volume-Bounds-and-Clipping.md)
+* [Coordinate System Transformations](9e%20Coordinate-System-Transformations.md)
 
 **Sources**: [VolumetricSceneController L1-L600](https://github.com/ThalesMMS/MTK/blob/eda6f990/VolumetricSceneController+Interaction.swift#L1-L600)
 
  [BACKEND_RESOLVER_USAGE.md L1-L57](https://github.com/ThalesMMS/MTK/blob/eda6f990/BACKEND_RESOLVER_USAGE.md#L1-L57)
 
- [README.md L1-L87](https://github.com/ThalesMMS/MTK/blob/eda6f990/README.md#L1-L87)
+ README.md
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 
-* [Advanced Topics](#9-advanced-topics)
-* [Overview of Advanced Systems](#9-overview-of-advanced-systems)
-* [Backend Resolution Initialization Flow](#9-backend-resolution-initialization-flow)
-* [Adaptive Sampling Interaction Lifecycle](#9-adaptive-sampling-interaction-lifecycle)
-* [Backend Switching and Surface Abstraction](#9-backend-switching-and-surface-abstraction)
-* [Volume Bounds and Camera Constraint System](#9-volume-bounds-and-camera-constraint-system)
-* [Coordinate System Transformation Pipeline](#9-coordinate-system-transformation-pipeline)
-* [Summary of Advanced Systems Integration](#9-summary-of-advanced-systems-integration)
+* [Advanced Topics](9%20Advanced-Topics.md)
+* [Overview of Advanced Systems](9%20Advanced-Topics.md)
+* [Backend Resolution Initialization Flow](9%20Advanced-Topics.md)
+* [Adaptive Sampling Interaction Lifecycle](9%20Advanced-Topics.md)
+* [Backend Switching and Surface Abstraction](9%20Advanced-Topics.md)
+* [Volume Bounds and Camera Constraint System](9%20Advanced-Topics.md)
+* [Coordinate System Transformation Pipeline](9%20Advanced-Topics.md)
+* [Summary of Advanced Systems Integration](9%20Advanced-Topics.md)
 
 Ask Devin about MTK

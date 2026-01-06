@@ -8,7 +8,7 @@
 
 This page documents the Multi-Planar Reconstruction (MPR) rendering mode in `VolumetricSceneController`, which allows viewing volumetric datasets as 2D cross-sectional slices. MPR supports orthogonal planes (aligned to dataset axes X, Y, Z), oblique planes (arbitrary rotations), and thick slab projections (multi-slice averaging or maximum intensity projection).
 
-For volume rendering configuration, see [Display Configuration](#3.1). For camera control during volume mode, see [Camera Management](#3.2). For the material that renders MPR slices, see [MPRPlaneMaterial](#4.2).
+For volume rendering configuration, see [Display Configuration](3a%20Interaction-API.md). For camera control during volume mode, see [Camera Management](3b%20Camera-Management.md). For the material that renders MPR slices, see [MPRPlaneMaterial](4b%20Transfer-Functions.md).
 
 ---
 
@@ -381,7 +381,7 @@ The `alignCameraToMpr(normal, up)` method:
 
 ### Clipping Plane Management
 
-Camera clipping planes are updated after alignment to ensure the MPR plane remains visible. The `updateCameraClippingPlanes()` helper (defined in [Camera Management](#3.2)) adjusts near/far planes based on volume bounds and camera distance.
+Camera clipping planes are updated after alignment to ensure the MPR plane remains visible. The `updateCameraClippingPlanes()` helper (defined in [Camera Management](3b%20Camera-Management.md)) adjusts near/far planes based on volume bounds and camera distance.
 
 **Sources:** [Sources/MTKUI/VolumetricSceneController L328-L345](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricSceneController+Camera.swift#L328-L345)
 
@@ -484,7 +484,7 @@ The material's fragment shader uses these parameters to perform multi-sample acc
 
 ### Published State Properties
 
-The controller publishes slice state through reactive properties (documented in [State Management](#3.4)):
+The controller publishes slice state through reactive properties (documented in [State Management](3d%20State-Management-&-Reactivity.md)):
 
 * `sliceState`: Records axis and normalized position after each MPR update
 * `windowLevelState`: Tracks HU windowing changes
@@ -545,9 +545,9 @@ This ensures both rendering paths (SceneKit and MPS) maintain identical visual o
 
  [Sources/MTKUI/VolumetricSceneController L568-L607](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricSceneController+Camera.swift#L568-L607)
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 

@@ -10,9 +10,9 @@
 
 The DICOM loading system enables MTK to construct `VolumeDataset` instances from medical imaging files. The architecture uses a **bridge pattern** where `DicomVolumeLoader` orchestrates ZIP extraction and dataset construction, while delegating DICOM-specific parsing to an external implementation of the `DicomSeriesLoading` protocol.
 
-This page documents the orchestration layer, ZIP handling, and bridge contract. For information about the resulting `VolumeDataset` structure, see [VolumeDataset](#5.1). For texture generation from loaded datasets, see [VolumeTextureFactory](#5.2).
+This page documents the orchestration layer, ZIP handling, and bridge contract. For information about the resulting `VolumeDataset` structure, see [VolumeDataset](5a%20VolumeDataset-and-VolumeTextureFactory.md). For texture generation from loaded datasets, see [VolumeTextureFactory](#5.2).
 
-**Sources:** [README.md L74-L75](https://github.com/ThalesMMS/MTK/blob/eda6f990/README.md#L74-L75)
+**Sources:** README.md
 
 ---
 
@@ -64,7 +64,7 @@ subgraph subGraph0 ["Client Application"]
 end
 ```
 
-**Sources:** [README.md L74-L75](https://github.com/ThalesMMS/MTK/blob/eda6f990/README.md#L74-L75)
+**Sources:** README.md
 
  High-Level Diagram 3
 
@@ -81,7 +81,7 @@ end
 
 **Key Design Decision:** MTK does not bundle a DICOM parser to avoid licensing constraints and binary size overhead. Clients integrate their preferred DICOM library (GDCM, dcmtk, DICOMCore) by implementing the `DicomSeriesLoading` protocol.
 
-**Sources:** [README.md L74-L75](https://github.com/ThalesMMS/MTK/blob/eda6f990/README.md#L74-L75)
+**Sources:** README.md
 
 ---
 
@@ -199,7 +199,7 @@ While the specific protocol definition is not included in the provided files, th
 // 1. Client implements DicomSeriesLoadingclass CustomDicomLoader: DicomSeriesLoading {    func loadSeries(from urls: [URL]) async throws -> [DicomSlice] {        // Use your DICOM library (GDCM, dcmtk, etc.)    }        func extractMetadata(from slices: [DicomSlice]) -> VolumeMetadata {        // Analyze slice headers for geometry    }}// 2. Initialize DicomVolumeLoader with bridgelet loader = DicomVolumeLoader(seriesLoader: CustomDicomLoader())// 3. Load DICOM archivelet dataset = try await loader.loadVolume(from: zipURL)
 ```
 
-**Sources:** [README.md L74-L75](https://github.com/ThalesMMS/MTK/blob/eda6f990/README.md#L74-L75)
+**Sources:** README.md
 
 ---
 
@@ -226,7 +226,7 @@ UIUpdate -.->|"formatted string"| SwiftUIView
 struct DicomLoadingView: View {    @State private var progressMessage = "Ready"        var body: some View {        VStack {            ProgressView(progressMessage)                .padding()                        Button("Load DICOM") {                Task {                    await loadDicomVolume()                }            }        }    }        func loadDicomVolume() async {        let loader = DicomVolumeLoader(seriesLoader: customBridge)                // Map progress updates to UI        for await progress in loader.progressStream {            progressMessage = DicomVolumeLoader.uiUpdate(from: progress)        }                do {            let dataset = try await loader.loadVolume(from: dicomZipURL)            // Apply to VolumetricSceneController        } catch {            progressMessage = "Load failed: \(error.localizedDescription)"        }    }}
 ```
 
-**Sources:** [README.md L75](https://github.com/ThalesMMS/MTK/blob/eda6f990/README.md#L75-L75)
+**Sources:** README.md
 
 ---
 
@@ -304,7 +304,7 @@ end
 
 **Sources:** [Sources/MTKCore/Metal/VolumeTextureFactory.swift L125-L166](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKCore/Metal/VolumeTextureFactory.swift#L125-L166)
 
- [README.md L74-L75](https://github.com/ThalesMMS/MTK/blob/eda6f990/README.md#L74-L75)
+ README.md
 
 ---
 
@@ -350,9 +350,9 @@ The `LegacyDicomSeriesLoader` in the MTK-Demo repository provides a complete GDC
 * Voxel data extraction and buffer assembly
 * Progress reporting during multi-file operations
 
-**Sources:** [README.md L75](https://github.com/ThalesMMS/MTK/blob/eda6f990/README.md#L75-L75)
+**Sources:** README.md
 
- [README.md L83](https://github.com/ThalesMMS/MTK/blob/eda6f990/README.md#L83-L83)
+ README.md
 
 ---
 
@@ -368,7 +368,7 @@ DICOM loading tests have specific fixture requirements:
 
 The testing infrastructure gracefully handles missing fixtures rather than failing tests in CI environments where DICOM samples cannot be committed.
 
-**Sources:** [README.md L82-L83](https://github.com/ThalesMMS/MTK/blob/eda6f990/README.md#L82-L83)
+**Sources:** README.md
 
  [DOCUMENTATION_STANDARD.md L26-L28](https://github.com/ThalesMMS/MTK/blob/eda6f990/DOCUMENTATION_STANDARD.md#L26-L28)
 
@@ -421,11 +421,11 @@ This fail-safe approach ensures that rendering components receive a valid (thoug
 
 For typical CT series (512×512×300 slices, ~150MB), expect total load time of 1-6 seconds depending on the DICOM bridge performance.
 
-**Sources:** [README.md L74-L75](https://github.com/ThalesMMS/MTK/blob/eda6f990/README.md#L74-L75)
+**Sources:** README.md
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 

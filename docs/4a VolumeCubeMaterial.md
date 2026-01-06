@@ -5,7 +5,7 @@
 
 **Purpose**: `VolumeCubeMaterial` is a custom SceneKit material that encapsulates Metal fragment shaders for volumetric rendering. It manages the GPU resources, uniform parameters, and shader bindings required to render 3D medical volumes using ray marching techniques (DVR, MIP, MinIP, surface rendering, and averaging).
 
-**Scope**: This page covers the material's structure, initialization, dataset binding, transfer function integration, HU windowing system, and rendering parameter management. For information about the Metal shader implementations consumed by this material, see the shader documentation. For MPR slice rendering, see [MPRPlaneMaterial](#4.2). For transfer function details, see [Transfer Functions](#4.3).
+**Scope**: This page covers the material's structure, initialization, dataset binding, transfer function integration, HU windowing system, and rendering parameter management. For information about the Metal shader implementations consumed by this material, see the shader documentation. For MPR slice rendering, see [MPRPlaneMaterial](3c%20Multi-Planar-Reconstruction-%28MPR%29.md). For transfer function details, see [Transfer Functions](4b%20Transfer-Functions.md).
 
 ---
 
@@ -623,9 +623,9 @@ Exposes internal texture for testing without polluting public API.
 
  [Sources/MTKSceneKit/Materials/VolumeCubeMaterial.swift L529-L535](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKSceneKit/Materials/VolumeCubeMaterial.swift#L529-L535)
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 

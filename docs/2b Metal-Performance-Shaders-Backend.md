@@ -14,7 +14,7 @@ The Metal Performance Shaders (MPS) backend provides GPU-accelerated volumetric 
 
 The MPS backend consists of two primary components: `MPSVolumeRenderer` (core GPU operations) and `MPSDisplayAdapter` (display surface and state management). This page documents both components and their integration with `VolumetricSceneController`.
 
-For the alternative SceneKit rendering path, see [SceneKit Backend](#2.1). For the protocol abstraction that decouples these backends from the UI layer, see [RenderSurface Abstraction](#2.3).
+For the alternative SceneKit rendering path, see [SceneKit Backend](2a%20SceneKit-Backend.md). For the protocol abstraction that decouples these backends from the UI layer, see [RenderSurface Abstraction](2c%20RenderSurface-Abstraction.md).
 
 **Sources:** [Sources/MTKCore/Rendering/MPSVolumeRenderer.swift L1-L502](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKCore/Rendering/MPSVolumeRenderer.swift#L1-L502)
 
@@ -487,7 +487,7 @@ The Metal Performance Shaders (MPS) backend provides GPU-accelerated volumetric 
 
 The MPS backend consists of two primary components: `MPSVolumeRenderer` (core GPU operations) and `MPSDisplayAdapter` (display surface and state management). This page documents both components and their integration with `VolumetricSceneController`.
 
-For the alternative SceneKit rendering path, see [SceneKit Backend](#2.1). For the protocol abstraction that decouples these backends from the UI layer, see [RenderSurface Abstraction](#2.3).
+For the alternative SceneKit rendering path, see [SceneKit Backend](2a%20SceneKit-Backend.md). For the protocol abstraction that decouples these backends from the UI layer, see [RenderSurface Abstraction](2c%20RenderSurface-Abstraction.md).
 
 **Sources:** [Sources/MTKCore/Rendering/MPSVolumeRenderer.swift L1-L502](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKCore/Rendering/MPSVolumeRenderer.swift#L1-L502)
 
@@ -1420,7 +1420,7 @@ The entire MPS backend is conditionally compiled only when Metal Performance Sha
 #endif
 ```
 
-This ensures the code compiles on platforms without MPS support, falling back to the SceneKit backend automatically through the `BackendResolver` system (see [Backend Resolution](#9.1)).
+This ensures the code compiles on platforms without MPS support, falling back to the SceneKit backend automatically through the `BackendResolver` system (see [Backend Resolution](9a%20Backend-Resolution-&-Metal-Detection.md)).
 
 **Sources:** [Sources/MTKUI/VolumetricSceneController L18-L24](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricSceneController+MPS.swift#L18-L24)
 
@@ -1430,9 +1430,9 @@ This ensures the code compiles on platforms without MPS support, falling back to
 
 ```
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 

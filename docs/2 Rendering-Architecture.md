@@ -8,7 +8,7 @@
 
 This document explains the **dual rendering backend system** in MTK, which supports two distinct rendering paths: a SceneKit-based backend and a Metal Performance Shaders (MPS) backend. The architecture allows runtime selection between backends, sharing core resources while providing different rendering strategies optimized for different use cases and hardware capabilities.
 
-For detailed information about individual backends, see [SceneKit Backend](#2.1) and [Metal Performance Shaders Backend](#2.2). For the abstraction layer that decouples rendering from platform views, see [RenderSurface Abstraction](#2.3).
+For detailed information about individual backends, see [SceneKit Backend](2a%20SceneKit-Backend.md) and [Metal Performance Shaders Backend](2b%20Metal-Performance-Shaders-Backend.md). For the abstraction layer that decouples rendering from platform views, see [RenderSurface Abstraction](2c%20RenderSurface-Abstraction.md).
 
 ---
 
@@ -231,7 +231,7 @@ The controller manages node visibility based on the active `DisplayConfiguration
 
  [Sources/MTKUI/VolumetricSceneController.swift L390-L403](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricSceneController.swift#L390-L403)
 
-For detailed material implementation and shader architecture, see [Materials and Shaders](#4).
+For detailed material implementation and shader architecture, see [Materials and Shaders](4%20Materials-and-Shaders.md).
 
 ---
 
@@ -514,7 +514,7 @@ end
 
  [Sources/MTKUI/VolumetricSceneController L27](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricSceneController+MPS.swift#L27-L27)
 
-This abstraction allows `VolumetricDisplayContainer` to remain agnostic to the active backend. For complete documentation of the surface abstraction, see [RenderSurface Abstraction](#2.3).
+This abstraction allows `VolumetricDisplayContainer` to remain agnostic to the active backend. For complete documentation of the surface abstraction, see [RenderSurface Abstraction](2c%20RenderSurface-Abstraction.md).
 
 ---
 
@@ -575,39 +575,39 @@ Both surfaces and their underlying views are created during controller initializ
 
 **Sources:** [Sources/MTKUI/VolumetricSceneController.swift L332-L406](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricSceneController.swift#L332-L406)
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 
-* [Rendering Architecture](#2-rendering-architecture)
-* [Purpose and Scope](#2-purpose-and-scope)
-* [Backend Architecture Overview](#2-backend-architecture-overview)
-* [Backend Enumeration](#2-backend-enumeration)
-* [Backend Selection and Switching](#2-backend-selection-and-switching)
-* [Initialization and Runtime Checks](#2-initialization-and-runtime-checks)
-* [Backend Switching API](#2-backend-switching-api)
-* [SceneKit Backend Path](#2-scenekit-backend-path)
-* [Architecture Components](#2-architecture-components)
-* [Node Visibility Management](#2-node-visibility-management)
-* [MPS Backend Path](#2-mps-backend-path)
-* [MPSDisplayAdapter Architecture](#2-mpsdisplayadapter-architecture)
-* [Clear Color Feedback System](#2-clear-color-feedback-system)
-* [Shared Resource Management](#2-shared-resource-management)
-* [Shared Volume Texture](#2-shared-volume-texture)
-* [Transfer Function Synchronization](#2-transfer-function-synchronization)
-* [Camera State Management](#2-camera-state-management)
-* [Backend Coordination](#2-backend-coordination)
-* [Display Configuration Propagation](#2-display-configuration-propagation)
-* [Render Mode Control](#2-render-mode-control)
-* [Surface Abstraction Layer](#2-surface-abstraction-layer)
-* [Backend-Specific Features](#2-backend-specific-features)
-* [SceneKit Exclusive Features](#2-scenekit-exclusive-features)
-* [MPS Exclusive Features](#2-mps-exclusive-features)
-* [Implementation Notes](#2-implementation-notes)
-* [Backend Availability Checks](#2-backend-availability-checks)
-* [Thread Safety](#2-thread-safety)
-* [Resource Lifetime](#2-resource-lifetime)
+* [Rendering Architecture](2%20Rendering-Architecture.md)
+* [Purpose and Scope](2%20Rendering-Architecture.md)
+* [Backend Architecture Overview](2%20Rendering-Architecture.md)
+* [Backend Enumeration](2%20Rendering-Architecture.md)
+* [Backend Selection and Switching](2%20Rendering-Architecture.md)
+* [Initialization and Runtime Checks](2%20Rendering-Architecture.md)
+* [Backend Switching API](2%20Rendering-Architecture.md)
+* [SceneKit Backend Path](2%20Rendering-Architecture.md)
+* [Architecture Components](2%20Rendering-Architecture.md)
+* [Node Visibility Management](2%20Rendering-Architecture.md)
+* [MPS Backend Path](2%20Rendering-Architecture.md)
+* [MPSDisplayAdapter Architecture](2%20Rendering-Architecture.md)
+* [Clear Color Feedback System](2%20Rendering-Architecture.md)
+* [Shared Resource Management](2%20Rendering-Architecture.md)
+* [Shared Volume Texture](2%20Rendering-Architecture.md)
+* [Transfer Function Synchronization](2%20Rendering-Architecture.md)
+* [Camera State Management](2%20Rendering-Architecture.md)
+* [Backend Coordination](2%20Rendering-Architecture.md)
+* [Display Configuration Propagation](2%20Rendering-Architecture.md)
+* [Render Mode Control](2%20Rendering-Architecture.md)
+* [Surface Abstraction Layer](2%20Rendering-Architecture.md)
+* [Backend-Specific Features](2%20Rendering-Architecture.md)
+* [SceneKit Exclusive Features](2%20Rendering-Architecture.md)
+* [MPS Exclusive Features](2%20Rendering-Architecture.md)
+* [Implementation Notes](2%20Rendering-Architecture.md)
+* [Backend Availability Checks](2%20Rendering-Architecture.md)
+* [Thread Safety](2%20Rendering-Architecture.md)
+* [Resource Lifetime](2%20Rendering-Architecture.md)
 
 Ask Devin about MTK

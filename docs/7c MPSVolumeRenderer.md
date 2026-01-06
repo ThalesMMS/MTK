@@ -11,7 +11,7 @@
 2. **Gaussian Filtering**: Applies 3D Gaussian blur using MPS kernels with multi-stage texture format conversion
 3. **Bounding Box Ray Casting**: Performs axis-aligned bounding box intersection tests for ray marching optimization
 
-This renderer operates at a **lower abstraction level** than the full MPS rendering backend described in [2.2](#2.2). It provides foundational GPU operations that are consumed by the `MPSDisplayAdapter` (see [3.5](#3.5)) and other MPS-based rendering components. For the complete MPS rendering pipeline, see [7.1](#7.1) on `MetalVolumeRenderingAdapter`.
+This renderer operates at a **lower abstraction level** than the full MPS rendering backend described in [2.2](2b%20Metal-Performance-Shaders-Backend.md). It provides foundational GPU operations that are consumed by the `MPSDisplayAdapter` (see [3.5](3e%20MPS-Display-Adapter.md)) and other MPS-based rendering components. For the complete MPS rendering pipeline, see [7.1](7a%20MetalVolumeRenderingAdapter.md) on `MetalVolumeRenderingAdapter`.
 
 **Sources**: [Sources/MTKCore/Rendering/MPSVolumeRenderer.swift L1-L502](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKCore/Rendering/MPSVolumeRenderer.swift#L1-L502)
 
@@ -513,7 +513,7 @@ The `MPSDisplayAdapter` uses `prepareHistogram` to compute dynamic clear colors 
 
 ### Camera Ray Cache Integration
 
-The `performBoundingBoxRayCast` method supports the **MPS ray casting cache** (see [9.3](#9.3)). Camera rays are pre-filtered against the volume's bounding box, allowing the ray marching shader to skip rays that never intersect the volume, improving performance for oblique viewing angles.
+The `performBoundingBoxRayCast` method supports the **MPS ray casting cache** (see [9.3](9c%20MPS-Ray-Casting-Cache.md)). Camera rays are pre-filtered against the volume's bounding box, allowing the ray marching shader to skip rays that never intersect the volume, improving performance for oblique viewing angles.
 
 **Sources**: [Sources/MTKCore/Rendering/MPSVolumeRenderer.swift L1-L502](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKCore/Rendering/MPSVolumeRenderer.swift#L1-L502)
 
@@ -545,9 +545,9 @@ For a 512×512×300 volume with r16Sint format, total temporary memory: **~1.5 G
 
 **Sources**: [Sources/MTKCore/Rendering/MPSVolumeRenderer.swift L81-L237](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKCore/Rendering/MPSVolumeRenderer.swift#L81-L237)
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 

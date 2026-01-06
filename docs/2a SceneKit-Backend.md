@@ -8,7 +8,7 @@
 
 The SceneKit Backend provides the primary rendering path for volumetric visualization in MTK. It combines SceneKit's scene graph management with custom Metal shaders to perform GPU-accelerated volume rendering. This backend serves as the universal fallback—it's always available on Metal-capable devices and provides reliable rendering without device capability checks.
 
-This page documents the SceneKit rendering architecture, including `SCNView` configuration, scene graph organization, the `VolumeCubeMaterial` system, custom Metal shaders, and the uniforms buffer structure. For the alternative MPS-accelerated rendering path, see [Metal Performance Shaders Backend](#2.2). For the abstraction layer that unifies both backends, see [RenderSurface Abstraction](#2.3).
+This page documents the SceneKit rendering architecture, including `SCNView` configuration, scene graph organization, the `VolumeCubeMaterial` system, custom Metal shaders, and the uniforms buffer structure. For the alternative MPS-accelerated rendering path, see [Metal Performance Shaders Backend](2b%20Metal-Performance-Shaders-Backend.md). For the abstraction layer that unifies both backends, see [RenderSurface Abstraction](2c%20RenderSurface-Abstraction.md).
 
 ## Architecture Overview
 
@@ -755,9 +755,9 @@ The material exposes testing-only accessors via `@_spi(Testing)` for introspecti
 * [Sources/MTKSceneKit/Materials/VolumeCubeMaterial.swift L522-L526](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKSceneKit/Materials/VolumeCubeMaterial.swift#L522-L526)
 * [Sources/MTKSceneKit/Materials/VolumeCubeMaterial.swift L529-L535](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKSceneKit/Materials/VolumeCubeMaterial.swift#L529-L535)
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 

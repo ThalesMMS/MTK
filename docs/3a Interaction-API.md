@@ -5,7 +5,7 @@
 
 The Interaction API provides the complete public interface for controlling volumetric rendering through `VolumetricSceneController`. This extension-based module exposes approximately 40 methods organized into logical groups: dataset loading, display configuration, camera manipulation, rendering parameters, backend management, MPR plane control, and adaptive sampling. All methods are marked `@MainActor` and asynchronous to ensure thread-safe UI integration.
 
-For camera implementation details and internal transform calculations, see [Camera Management](#3.2). For MPR-specific geometry and plane computation, see [Multi-Planar Reconstruction](#3.3). For the underlying state synchronization mechanism, see [State Management](#3.4).
+For camera implementation details and internal transform calculations, see [Camera Management](3b%20Camera-Management.md). For MPR-specific geometry and plane computation, see [Multi-Planar Reconstruction](3c%20Multi-Planar-Reconstruction-%28MPR%29.md). For the underlying state synchronization mechanism, see [State Management](3d%20State-Management-&-Reactivity.md).
 
 ---
 
@@ -928,9 +928,9 @@ public func setLighting(enabled: Bool) async {    volumeMaterial.setLig
 
 **Sources:** [Sources/MTKUI/VolumetricSceneController L274-L279](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricSceneController+Interaction.swift#L274-L279)
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 

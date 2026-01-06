@@ -8,7 +8,7 @@
 
 This page documents the reactive state management system in `VolumetricSceneController`, which enables SwiftUI views to observe and respond to changes in camera position, slice navigation, window/level adjustments, and rendering performance modes. The controller publishes four distinct state streams using Combine's `@Published` property wrapper, allowing UI components to automatically update without manual refresh logic.
 
-For the interaction methods that trigger state changes, see [Interaction API](#3.1). For how SwiftUI views consume these state streams, see [Coordinator Pattern & State Flow](#6.2). For UI components that observe this state, see [UI Overlays and Gestures](#6.3).
+For the interaction methods that trigger state changes, see [Interaction API](3a%20Interaction-API.md). For how SwiftUI views consume these state streams, see [Coordinator Pattern & State Flow](6b%20Coordinator-Pattern-&-State-Flow.md). For UI components that observe this state, see [UI Overlays and Gestures](6c%20UI-Overlays-and-Gestures.md).
 
 ---
 
@@ -490,7 +490,7 @@ Coordinator -.->|"observes"| Props
 View -.->|"reads"| Coordinator
 ```
 
-**Sources**: See [Coordinator Pattern & State Flow](#6.2) for coordinator implementation details.
+**Sources**: See [Coordinator Pattern & State Flow](6b%20Coordinator-Pattern-&-State-Flow.md) for coordinator implementation details.
 
 ### Combine Publisher Subscription
 
@@ -591,9 +591,9 @@ This design enables cross-platform SwiftUI code that references the controller w
 
 **Sources**: [Sources/MTKUI/VolumetricSceneController.swift L492-L731](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricSceneController.swift#L492-L731)
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 

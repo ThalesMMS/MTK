@@ -6,7 +6,7 @@
 
 This page documents the coordinate system transformations used throughout MTK's volumetric rendering pipeline. Understanding these systems is critical for camera positioning, multi-planar reconstruction (MPR), ray casting, and DICOM patient orientation.
 
-For volume bounds calculation and camera distance management, see [Volume Bounds and Clipping](#9.4). For MPR plane computation details, see [Multi-Planar Reconstruction](#3.3). For camera management mechanics, see [Camera Management](#3.2).
+For volume bounds calculation and camera distance management, see [Volume Bounds and Clipping](9d%20Volume-Bounds-and-Clipping.md). For MPR plane computation details, see [Multi-Planar Reconstruction](3c%20Multi-Planar-Reconstruction-%28MPR%29.md). For camera management mechanics, see [Camera Management](3b%20Camera-Management.md).
 
 ---
 
@@ -532,9 +532,9 @@ Sources: [Sources/MTKUI/VolumetricSceneController L1-L723](https://github.com/Th
 
  [Sources/MTKUI/VolumetricSceneController L1-L61](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricSceneController+Helpers.swift#L1-L61)
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 

@@ -439,7 +439,7 @@ All protocol methods are `async throws`, allowing implementations to:
 * **CGImage path:** AppKit/UIKit image views, file export, CPU-based post-processing
 * **MTLTexture path:** Direct Metal rendering pipelines, texture-based effects, zero-copy compositor integration
 
-The MPS backend (see [Metal Performance Shaders Backend](#2.2)) can bypass `CGImage` generation entirely when the caller only needs the Metal texture.
+The MPS backend (see [Metal Performance Shaders Backend](2b%20Metal-Performance-Shaders-Backend.md)) can bypass `CGImage` generation entirely when the caller only needs the Metal texture.
 
 **Sources:** [Sources/MTKCore/Domain/VolumeRenderingPort.swift L170-L192](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKCore/Domain/VolumeRenderingPort.swift#L170-L192)
 
@@ -459,7 +459,7 @@ This separation enables optimizations like batching commands before the next ren
 
 ## Implementation Reference
 
-The primary implementation of `VolumeRenderingPort` is `MetalVolumeRenderingAdapter`, documented in [MetalVolumeRenderingAdapter](#7.1). This implementation:
+The primary implementation of `VolumeRenderingPort` is `MetalVolumeRenderingAdapter`, documented in [MetalVolumeRenderingAdapter](7a%20MetalVolumeRenderingAdapter.md). This implementation:
 
 * Uses Metal compute shaders for ray casting
 * Falls back to CPU-based rendering when Metal is unavailable
@@ -468,9 +468,9 @@ The primary implementation of `VolumeRenderingPort` is `MetalVolumeRenderingAdap
 
 **Sources:** [Sources/MTKCore/Domain/VolumeRenderingPort.swift L1-L213](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKCore/Domain/VolumeRenderingPort.swift#L1-L213)
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 

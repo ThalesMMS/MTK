@@ -8,12 +8,12 @@
 
 **Scope**: This page covers the controller's architecture, initialization lifecycle, core properties, and responsibilities. For detailed information about specific subsystems, see:
 
-* Public interaction API methods: [Interaction API](#3.1)
-* Camera transforms and constraints: [Camera Management](#3.2)
-* MPR plane computation: [Multi-Planar Reconstruction](#3.3)
-* Combine-based reactive state: [State Management & Reactivity](#3.4)
-* MPS backend coordination: [MPS Display Adapter](#3.5)
-* Mathematical utilities: [Helper Utilities](#3.6)
+* Public interaction API methods: [Interaction API](3a%20Interaction-API.md)
+* Camera transforms and constraints: [Camera Management](3b%20Camera-Management.md)
+* MPR plane computation: [Multi-Planar Reconstruction](3c%20Multi-Planar-Reconstruction-%28MPR%29.md)
+* Combine-based reactive state: [State Management & Reactivity](3d%20State-Management-&-Reactivity.md)
+* MPS backend coordination: [MPS Display Adapter](3e%20MPS-Display-Adapter.md)
+* Mathematical utilities: [Helper Utilities](3f%20Helper-Utilities.md)
 
 ---
 
@@ -606,41 +606,41 @@ These methods are marked `@_spi(Testing)` to prevent accidental usage in product
 
 * [Sources/MTKUI/VolumetricSceneController.swift L440-L490](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricSceneController.swift#L440-L490)
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 
-* [VolumetricSceneController](#3-volumetricscenecontroller)
-* [Architecture Overview](#3-architecture-overview)
-* [Extension-Based Architecture Diagram](#3-extension-based-architecture-diagram)
-* [Core Properties and State](#3-core-properties-and-state)
-* [Internal Rendering State](#3-internal-rendering-state)
-* [Published Observable State](#3-published-observable-state)
-* [Initialization Lifecycle](#3-initialization-lifecycle)
-* [Initialization Sequence Diagram](#3-initialization-sequence-diagram)
-* [Initialization Code Path](#3-initialization-code-path)
-* [Backend Management](#3-backend-management)
-* [Backend Architecture](#3-backend-architecture)
-* [Backend Switching Logic](#3-backend-switching-logic)
-* [Scene Graph Structure](#3-scene-graph-structure)
-* [SceneKit Hierarchy](#3-scenekit-hierarchy)
-* [Node Visibility Management](#3-node-visibility-management)
-* [Protocol Conformance](#3-protocol-conformance)
-* [VolumetricSceneControlling Protocol](#3-volumetricscenecontrolling-protocol)
-* [ObservableObject Protocol](#3-observableobject-protocol)
-* [Error Handling](#3-error-handling)
-* [Type Definitions](#3-type-definitions)
-* [Axis Enumeration](#3-axis-enumeration)
-* [SlabConfiguration](#3-slabconfiguration)
-* [DisplayConfiguration](#3-displayconfiguration)
-* [Platform Compatibility](#3-platform-compatibility)
-* [Key Design Patterns](#3-key-design-patterns)
-* [Extension-Based Modularity](#3-extension-based-modularity)
-* [Shared Resource Optimization](#3-shared-resource-optimization)
-* [Reactive State Publication](#3-reactive-state-publication)
-* [Graceful Degradation](#3-graceful-degradation)
-* [Testing Considerations](#3-testing-considerations)
+* [VolumetricSceneController](3%20VolumetricSceneController.md)
+* [Architecture Overview](3%20VolumetricSceneController.md)
+* [Extension-Based Architecture Diagram](3%20VolumetricSceneController.md)
+* [Core Properties and State](3%20VolumetricSceneController.md)
+* [Internal Rendering State](3%20VolumetricSceneController.md)
+* [Published Observable State](3%20VolumetricSceneController.md)
+* [Initialization Lifecycle](3%20VolumetricSceneController.md)
+* [Initialization Sequence Diagram](3%20VolumetricSceneController.md)
+* [Initialization Code Path](3%20VolumetricSceneController.md)
+* [Backend Management](3%20VolumetricSceneController.md)
+* [Backend Architecture](3%20VolumetricSceneController.md)
+* [Backend Switching Logic](3%20VolumetricSceneController.md)
+* [Scene Graph Structure](3%20VolumetricSceneController.md)
+* [SceneKit Hierarchy](3%20VolumetricSceneController.md)
+* [Node Visibility Management](3%20VolumetricSceneController.md)
+* [Protocol Conformance](3%20VolumetricSceneController.md)
+* [VolumetricSceneControlling Protocol](3%20VolumetricSceneController.md)
+* [ObservableObject Protocol](3%20VolumetricSceneController.md)
+* [Error Handling](3%20VolumetricSceneController.md)
+* [Type Definitions](3%20VolumetricSceneController.md)
+* [Axis Enumeration](3%20VolumetricSceneController.md)
+* [SlabConfiguration](3%20VolumetricSceneController.md)
+* [DisplayConfiguration](3%20VolumetricSceneController.md)
+* [Platform Compatibility](3%20VolumetricSceneController.md)
+* [Key Design Patterns](3%20VolumetricSceneController.md)
+* [Extension-Based Modularity](3%20VolumetricSceneController.md)
+* [Shared Resource Optimization](3%20VolumetricSceneController.md)
+* [Reactive State Publication](3%20VolumetricSceneController.md)
+* [Graceful Degradation](3%20VolumetricSceneController.md)
+* [Testing Considerations](3%20VolumetricSceneController.md)
 
 Ask Devin about MTK

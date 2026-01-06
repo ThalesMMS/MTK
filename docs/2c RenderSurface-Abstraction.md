@@ -11,7 +11,7 @@
 
 The `RenderSurface` protocol decouples MTK's rendering infrastructure from specific UI framework implementations. This abstraction enables `VolumetricSceneController` to expose a unified rendering surface regardless of whether the active backend uses SceneKit's `SCNView` or Metal Performance Shaders with `MTKView`. The protocol allows SwiftUI views, adapter layers, and testing mocks to interact with rendering surfaces through a consistent interface without compile-time dependencies on specific view types.
 
-For information about the dual rendering backends that implement this protocol, see [Rendering Architecture](#2). For details on how SwiftUI integrates with RenderSurface, see [VolumetricDisplayContainer](#6.1).
+For information about the dual rendering backends that implement this protocol, see [Rendering Architecture](2%20Rendering-Architecture.md). For details on how SwiftUI integrates with RenderSurface, see [VolumetricDisplayContainer](6a%20VolumetricDisplayContainer.md).
 
 **Sources**: [SURFACE_ADAPTER_DELIVERABLES.txt L1-L14](https://github.com/ThalesMMS/MTK/blob/eda6f990/SURFACE_ADAPTER_DELIVERABLES.txt#L1-L14)
 
@@ -278,7 +278,7 @@ VolumetricDisplayContainer(controller: coordinator.controller)
 
 **Sources**: [Sources/MTKUI/VolumetricDisplayContainer.swift L1-L53](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricDisplayContainer.swift#L1-L53)
 
- [README.md L45-L71](https://github.com/ThalesMMS/MTK/blob/eda6f990/README.md#L45-L71)
+ README.md
 
 ---
 
@@ -494,9 +494,9 @@ Protocol-based design separates rendering logic from view implementation:
 
  [README.md L1-L18](https://github.com/ThalesMMS/MTK/blob/eda6f990/README.md#L1-L18)
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 

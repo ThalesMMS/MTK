@@ -7,7 +7,7 @@
 > * [SURFACE_ADAPTER_DELIVERABLES.txt](https://github.com/ThalesMMS/MTK/blob/eda6f990/SURFACE_ADAPTER_DELIVERABLES.txt)
 > * [Sources/MTKUI/VolumetricDisplayContainer.swift](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricDisplayContainer.swift)
 
-This page provides a step-by-step guide for integrating MTK into your application. It covers package installation, runtime environment checks, dataset creation, and the minimal setup required to display volumetric data. For advanced rendering configuration, see [Rendering Architecture](#2). For detailed controller API documentation, see [Interaction API](#3.1).
+This page provides a step-by-step guide for integrating MTK into your application. It covers package installation, runtime environment checks, dataset creation, and the minimal setup required to display volumetric data. For advanced rendering configuration, see [Rendering Architecture](2%20Rendering-Architecture.md). For detailed controller API documentation, see [Interaction API](3a%20Interaction-API.md).
 
 ---
 
@@ -24,14 +24,14 @@ This guide walks through:
 
 * DICOM file loading (see [DICOM Loading](#5.3))
 * Custom transfer functions and rendering parameters (see [Transfer Functions](#4.3))
-* Multi-planar reconstruction setup (see [Multi-Planar Reconstruction](#3.3))
-* Backend selection and performance tuning (see [Backend Resolution](#9.1))
+* Multi-planar reconstruction setup (see [Multi-Planar Reconstruction](3c%20Multi-Planar-Reconstruction-%28MPR%29.md))
+* Backend selection and performance tuning (see [Backend Resolution](9a%20Backend-Resolution-&-Metal-Detection.md))
 
 ---
 
 ## Package Installation
 
-MTK is distributed as a Swift Package with three library products corresponding to the module architecture described in [Module Structure](#1.1).
+MTK is distributed as a Swift Package with three library products corresponding to the module architecture described in [Module Structure](1a%20Module-Structure.md).
 
 ### Adding MTK to Your Project
 
@@ -285,7 +285,7 @@ import MTKUIimport Metal// Option 1: Default device and SceneKit backen
 | `.sceneKit` | SceneKit scene graph with custom Metal shaders | Metal-capable device | General-purpose volume/MPR rendering |
 | `.metalPerformanceShaders` | Direct Metal rendering with GPU ray casting | Metal + MPS support | High-performance volume rendering |
 
-For detailed backend comparison, see [Rendering Architecture](#2).
+For detailed backend comparison, see [Rendering Architecture](2%20Rendering-Architecture.md).
 
 **Sources:** [Sources/MTKUI/VolumetricSceneController.swift](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricSceneController.swift)
 
@@ -368,7 +368,7 @@ VolumetricDisplayContainer(controller: controller)
 VolumetricDisplayContainer(controller: controller) {    CrosshairOverlayView()    WindowLevelControlView()}
 ```
 
-**Sources:** [README.md L36-L72](https://github.com/ThalesMMS/MTK/blob/eda6f990/README.md#L36-L72)
+**Sources:** README.md
 
  [Sources/MTKUI/VolumetricDisplayContainer.swift](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricDisplayContainer.swift)
 
@@ -443,7 +443,7 @@ end
 import SwiftUIimport Metalimport MTKCoreimport MTKUI@mainstruct VolumeApp: App {    var body: some View {        ContentView()            .task {                // Check Metal availability at launch                guard BackendResolver.isMetalAvailable() else {                    print("Metal unavailable - volume rendering disabled")                    return                }            }    }}struct ContentView: View {    @StateObject private var coordinator = VolumetricSceneCoordinator()    @State private var isLoading = true        var body: some View {        Group {            if isLoading {                ProgressView("Initializing...")            } else {                VolumetricDisplayContainer(controller: coordinator.controller) {                    CrosshairOverlayView()                    OrientationOverlayView()                }                .volumeGestures(                    controller: coordinator.controller,                    state: $coordinator.gestureState                )            }        }        .task {            await initializeVolume()        }    }        private func initializeVolume() async {        // 1. Create dataset from raw data        let width = 256, height = 256, depth = 128        let voxelCount = width * height * depth        let voxelData = Data(            repeating: 0,            count: voxelCount * VolumePixelFormat.int16Signed.bytesPerVoxel        )                let dataset = VolumeDataset(            data: voxelData,            dimensions: VolumeDimensions(width: width, height: height, depth: depth),            spacing: VolumeSpacing(x: 0.001, y: 0.001, z: 0.0015),            pixelFormat: .int16Signed,            intensityRange: (-1024)...3071        )                // 2. Apply dataset to controller        coordinator.apply(dataset: dataset)                // 3. Configure rendering parameters        await coordinator.controller.setPreset(.softTissue)        coordinator.applyHuWindow(min: -500, max: 1200)        await coordinator.controller.setDisplayConfiguration(.volume)                isLoading = false    }}
 ```
 
-**Sources:** [README.md L36-L72](https://github.com/ThalesMMS/MTK/blob/eda6f990/README.md#L36-L72)
+**Sources:** README.md
 
 ---
 
@@ -451,9 +451,9 @@ import SwiftUIimport Metalimport MTKCoreimport MTKUI@mainstruct VolumeApp:�
 
 After completing this basic setup, explore:
 
-* **[Rendering Architecture](#2)** — Understand SceneKit vs MPS backend differences
-* **[Interaction API](#3.1)** — Learn all controller methods for camera control, display configuration, and rendering parameters
-* **[Multi-Planar Reconstruction](#3.3)** — Set up synchronized axial/coronal/sagittal slice views
+* **[Rendering Architecture](2%20Rendering-Architecture.md)** — Understand SceneKit vs MPS backend differences
+* **[Interaction API](3a%20Interaction-API.md)** — Learn all controller methods for camera control, display configuration, and rendering parameters
+* **[Multi-Planar Reconstruction](3c%20Multi-Planar-Reconstruction-%28MPR%29.md)** — Set up synchronized axial/coronal/sagittal slice views
 * **[Transfer Functions](#4.3)** — Customize color and opacity mapping
 * **[DICOM Loading](#5.3)** — Load volumetric data from DICOM series
 
@@ -496,42 +496,43 @@ After completing this basic setup, explore:
 * Verify controller initialization with valid `MTLDevice`
 * Check console logs for shader compilation errors
 
-**Sources:** [README.md L73-L87](https://github.com/ThalesMMS/MTK/blob/eda6f990/README.md#L73-L87)
+**Sources:** README.md
 
  [BACKEND_RESOLVER_USAGE.md L34-L56](https://github.com/ThalesMMS/MTK/blob/eda6f990/BACKEND_RESOLVER_USAGE.md#L34-L56)
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 
-* [Getting Started](#1.2-getting-started)
-* [Purpose and Scope](#1.2-purpose-and-scope)
-* [Package Installation](#1.2-package-installation)
-* [Adding MTK to Your Project](#1.2-adding-mtk-to-your-project)
-* [Module Selection Guidelines](#1.2-module-selection-guidelines)
-* [Metal Availability Check](#1.2-metal-availability-check)
-* [BackendResolver Architecture](#1.2-backendresolver-architecture)
-* [Implementation](#1.2-implementation)
-* [UserDefaults Keys](#1.2-userdefaults-keys)
-* [Creating Volume Datasets](#1.2-creating-volume-datasets)
-* [Dataset Creation Paths](#1.2-dataset-creation-paths)
-* [From Raw Voxel Data](#1.2-from-raw-voxel-data)
-* [From Built-in Presets](#1.2-from-built-in-presets)
-* [Initializing VolumetricSceneController](#1.2-initializing-volumetricscenecontroller)
-* [Controller Initialization Sequence](#1.2-controller-initialization-sequence)
-* [Basic Initialization](#1.2-basic-initialization)
-* [SwiftUI Integration](#1.2-swiftui-integration)
-* [Display Container Architecture](#1.2-display-container-architecture)
-* [Minimal SwiftUI Example](#1.2-minimal-swiftui-example)
-* [VolumetricDisplayContainer Generic Parameter](#1.2-volumetricdisplaycontainer-generic-parameter)
-* [Complete Initialization Example](#1.2-complete-initialization-example)
-* [Full Code Example](#1.2-full-code-example)
-* [Next Steps](#1.2-next-steps)
-* [Troubleshooting](#1.2-troubleshooting)
-* [Metal Unavailable Error](#1.2-metal-unavailable-error)
-* [Preset Data Not Found](#1.2-preset-data-not-found)
-* [Empty Rendering Surface](#1.2-empty-rendering-surface)
+- [Getting Started](#getting-started)
+  - [Purpose and Scope](#purpose-and-scope)
+  - [Package Installation](#package-installation)
+    - [Adding MTK to Your Project](#adding-mtk-to-your-project)
+    - [Module Selection Guidelines](#module-selection-guidelines)
+  - [Metal Availability Check](#metal-availability-check)
+    - [BackendResolver Architecture](#backendresolver-architecture)
+    - [Implementation](#implementation)
+    - [UserDefaults Keys](#userdefaults-keys)
+  - [Creating Volume Datasets](#creating-volume-datasets)
+    - [Dataset Creation Paths](#dataset-creation-paths)
+    - [From Raw Voxel Data](#from-raw-voxel-data)
+    - [From Built-in Presets](#from-built-in-presets)
+  - [Initializing VolumetricSceneController](#initializing-volumetricscenecontroller)
+    - [Controller Initialization Sequence](#controller-initialization-sequence)
+    - [Basic Initialization](#basic-initialization)
+  - [SwiftUI Integration](#swiftui-integration)
+    - [Display Container Architecture](#display-container-architecture)
+    - [Minimal SwiftUI Example](#minimal-swiftui-example)
+    - [VolumetricDisplayContainer Generic Parameter](#volumetricdisplaycontainer-generic-parameter)
+  - [Complete Initialization Example](#complete-initialization-example)
+    - [Full Code Example](#full-code-example)
+  - [Next Steps](#next-steps)
+  - [Troubleshooting](#troubleshooting)
+    - [Metal Unavailable Error](#metal-unavailable-error)
+    - [Preset Data Not Found](#preset-data-not-found)
+    - [Empty Rendering Surface](#empty-rendering-surface)
+    - [On this page](#on-this-page)
 
 Ask Devin about MTK

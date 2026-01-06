@@ -20,8 +20,8 @@ This page documents the **Metal availability detection system** and **backend re
 
 **Related pages**:
 
-* For dual-backend rendering architecture and MPS vs SceneKit selection, see [Rendering Architecture](#2)
-* For the RenderSurface abstraction that enables backend swapping, see [RenderSurface Abstraction](#2.3)
+* For dual-backend rendering architecture and MPS vs SceneKit selection, see [Rendering Architecture](2%20Rendering-Architecture.md)
+* For the RenderSurface abstraction that enables backend swapping, see [RenderSurface Abstraction](2c%20RenderSurface-Abstraction.md)
 * For runtime diagnostics and profiling tools, see README.md's "Runtime checks and diagnostics" section
 
 ---
@@ -204,7 +204,7 @@ This prevents instantiation of `VolumetricSceneController` or SceneKit views on 
 
 **Sources**: [BACKEND_RESOLVER_USAGE.md L34-L50](https://github.com/ThalesMMS/MTK/blob/eda6f990/BACKEND_RESOLVER_USAGE.md#L34-L50)
 
- [README.md L78-L79](https://github.com/ThalesMMS/MTK/blob/eda6f990/README.md#L78-L79)
+ README.md
 
 ### Non-Throwing Conditional Rendering
 
@@ -454,7 +454,7 @@ MTK's test suite handles Metal unavailability gracefully:
 
 Tests that require Metal use `XCTSkip` to avoid spurious failures on unsupported devices (e.g., CI runners without GPU access).
 
-**Sources**: [README.md L82-L83](https://github.com/ThalesMMS/MTK/blob/eda6f990/README.md#L82-L83)
+**Sources**: README.md
 
 ### Manual Validation
 
@@ -489,9 +489,9 @@ To verify fallback behavior during development:
 
  [VolumetricSceneController L463-L519](https://github.com/ThalesMMS/MTK/blob/eda6f990/VolumetricSceneController+Interaction.swift#L463-L519)
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 

@@ -5,7 +5,7 @@
 
 This document provides an overview of the SceneKit material system used for volumetric rendering in MTK. Materials encapsulate custom Metal shaders, manage GPU resources (textures and buffers), and expose high-level controls for rendering configuration. The primary material is `VolumeCubeMaterial`, which implements direct volume rendering (DVR), maximum intensity projection (MIP), and other visualization techniques through fragment shader ray marching.
 
-For comprehensive details on `VolumeCubeMaterial` configuration, see [VolumeCubeMaterial](#4.1). For transfer function management, see [Transfer Functions](#4.2). For upstream texture generation, see [VolumeDataset and VolumeTextureFactory](#5.1). For the rendering backend that consumes these materials, see [SceneKit Backend](#2.1).
+For comprehensive details on `VolumeCubeMaterial` configuration, see [VolumeCubeMaterial](4a%20VolumeCubeMaterial.md). For transfer function management, see [Transfer Functions](4b%20Transfer-Functions.md). For upstream texture generation, see [VolumeDataset and VolumeTextureFactory](5a%20VolumeDataset-and-VolumeTextureFactory.md). For the rendering backend that consumes these materials, see [SceneKit Backend](2a%20SceneKit-Backend.md).
 
 ---
 
@@ -650,28 +650,28 @@ The controller creates a `VolumeCubeMaterial` instance [Sources/MTKSceneKit/Mate
 
  during initialization and attaches it to `volumeNode.geometry.firstMaterial`. Configuration methods like `applyDataset()`, `setTransferFunction()`, `setHuWindow()` internally call the corresponding material methods.
 
-For detailed information on how the controller orchestrates material configuration, see [VolumetricSceneController](#3) and [Interaction API](#3.1).
+For detailed information on how the controller orchestrates material configuration, see [VolumetricSceneController](3%20VolumetricSceneController.md) and [Interaction API](3a%20Interaction-API.md).
 
 **Sources:**
 
 * [Sources/MTKSceneKit/Materials/VolumeCubeMaterial.swift L143-L175](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKSceneKit/Materials/VolumeCubeMaterial.swift#L143-L175)
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 
-* [Materials and Shaders](#4-materials-and-shaders)
-* [Material System Architecture](#4-material-system-architecture)
-* [SCNProgram Integration and Shader Binding](#4-scnprogram-integration-and-shader-binding)
-* [Uniforms Structure and Shader Communication](#4-uniforms-structure-and-shader-communication)
-* [Rendering Methods](#4-rendering-methods)
-* [Texture Management](#4-texture-management)
-* [HU Windowing System](#4-hu-windowing-system)
-* [State Management and Dataset Application](#4-state-management-and-dataset-application)
-* [Configuration Methods Summary](#4-configuration-methods-summary)
-* [Material Initialization and Lifecycle](#4-material-initialization-and-lifecycle)
-* [Integration with VolumetricSceneController](#4-integration-with-volumetricscenecontroller)
+* [Materials and Shaders](4%20Materials-and-Shaders.md)
+* [Material System Architecture](4%20Materials-and-Shaders.md)
+* [SCNProgram Integration and Shader Binding](4%20Materials-and-Shaders.md)
+* [Uniforms Structure and Shader Communication](4%20Materials-and-Shaders.md)
+* [Rendering Methods](4%20Materials-and-Shaders.md)
+* [Texture Management](4%20Materials-and-Shaders.md)
+* [HU Windowing System](4%20Materials-and-Shaders.md)
+* [State Management and Dataset Application](4%20Materials-and-Shaders.md)
+* [Configuration Methods Summary](4%20Materials-and-Shaders.md)
+* [Material Initialization and Lifecycle](4%20Materials-and-Shaders.md)
+* [Integration with VolumetricSceneController](4%20Materials-and-Shaders.md)
 
 Ask Devin about MTK

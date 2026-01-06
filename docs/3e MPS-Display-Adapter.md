@@ -7,7 +7,7 @@
 
 The **MPS Display Adapter** is a nested class within `VolumetricSceneController` that manages the Metal Performance Shaders (MPS) rendering backend's display surface. It implements the `RenderSurface` protocol to provide framework-agnostic image display capabilities and the `MTKViewDelegate` protocol to manage Metal rendering lifecycle. The adapter's primary responsibility is calculating **dynamic clear colors** that provide visual feedback about the current rendering state, including histogram analysis, adaptive sampling status, and ray casting cache information.
 
-This document focuses on the `MPSDisplayAdapter` class implementation. For information about the MPS rendering pipeline itself, see [Metal Performance Shaders Backend](#2.2). For the dual-backend architecture that switches between SceneKit and MPS, see [Rendering Architecture](#2). For the broader VolumetricSceneController architecture, see [VolumetricSceneController](#3).
+This document focuses on the `MPSDisplayAdapter` class implementation. For information about the MPS rendering pipeline itself, see [Metal Performance Shaders Backend](2b%20Metal-Performance-Shaders-Backend.md). For the dual-backend architecture that switches between SceneKit and MPS, see [Rendering Architecture](2%20Rendering-Architecture.md). For the broader VolumetricSceneController architecture, see [VolumetricSceneController](3%20VolumetricSceneController.md).
 
 **Sources**: [Sources/MTKUI/VolumetricSceneController L1-L334](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricSceneController+MPS.swift#L1-L334)
 
@@ -572,9 +572,9 @@ The dynamic clear color system is particularly noteworthy, using **HSB color spa
 
 **Sources**: [Sources/MTKUI/VolumetricSceneController L1-L334](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricSceneController+MPS.swift#L1-L334)
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 

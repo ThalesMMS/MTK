@@ -8,7 +8,7 @@
 
 Transfer functions map volumetric intensity values (typically Hounsfield Units in CT data) to RGBA color and opacity values for rendering. This page documents the transfer function system in MTK: its data structure, the preset library, 1D texture generation for GPU consumption, shift adjustments for dynamic windowing, and integration with volume materials and the MPS backend.
 
-For information about how transfer functions are consumed by fragment shaders during ray marching, see [VolumeCubeMaterial](#4.1). For HU windowing mechanics that normalize intensity ranges before transfer function lookup, see [VolumeCubeMaterial](#4.1). For the complete rendering parameter flow from high-level configuration to shader execution, see Diagram 5 in the system architecture overview.
+For information about how transfer functions are consumed by fragment shaders during ray marching, see [VolumeCubeMaterial](4a%20VolumeCubeMaterial.md). For HU windowing mechanics that normalize intensity ranges before transfer function lookup, see [VolumeCubeMaterial](4a%20VolumeCubeMaterial.md). For the complete rendering parameter flow from high-level configuration to shader execution, see Diagram 5 in the system architecture overview.
 
 ---
 
@@ -561,9 +561,9 @@ This ensures the volume is immediately visible with reasonable settings. The bas
 
  [Sources/MTKUI/VolumetricSceneController L69-L70](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricSceneController+Interaction.swift#L69-L70)
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 

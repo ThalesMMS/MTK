@@ -12,7 +12,7 @@ This document provides an overview of MTK's low-level Metal rendering infrastruc
 * **ArgumentEncoderManager** - Manages Metal argument buffer encoding, resource binding, and dirty-state tracking across 19 shader resource slots
 * **MPSVolumeRenderer** - Provides Metal Performance Shaders-accelerated rendering with histogram analysis and optimized ray casting
 
-For detailed implementation of the adapter, see [MetalVolumeRenderingAdapter](#7.1). For argument buffer mechanics, see [ArgumentEncoderManager](#7.2). For MPS-specific rendering, see [MPSVolumeRenderer](#7.3). For the rendering backend abstraction, see [VolumeRenderingPort](#8.1). For higher-level orchestration, see [Rendering Architecture](#2).
+For detailed implementation of the adapter, see [MetalVolumeRenderingAdapter](7a%20MetalVolumeRenderingAdapter.md). For argument buffer mechanics, see [ArgumentEncoderManager](7b%20ArgumentEncoderManager.md). For MPS-specific rendering, see [MPSVolumeRenderer](7c%20MPSVolumeRenderer.md). For the rendering backend abstraction, see [VolumeRenderingPort](8a%20VolumeRenderingPort.md). For higher-level orchestration, see [Rendering Architecture](2%20Rendering-Architecture.md).
 
 ---
 
@@ -125,7 +125,7 @@ An actor-isolated implementation of `VolumeRenderingPort` providing compute-shad
 
 **Key entry points:** `renderImage(using:)`, `send(_:)`, `updatePreset(_:for:)`, `refreshHistogram(for:descriptor:transferFunction:)`
 
-See [MetalVolumeRenderingAdapter](#7.1) for detailed implementation.
+See [MetalVolumeRenderingAdapter](7a%20MetalVolumeRenderingAdapter.md) for detailed implementation.
 
 **Sources:** [Sources/MTKCore/Adapters/MetalVolumeRenderingAdapter.swift L41-L283](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKCore/Adapters/MetalVolumeRenderingAdapter.swift#L41-L283)
 
@@ -143,7 +143,7 @@ Manages the Metal argument buffer encoding 19 shader resource slots with automat
 
 **Resource slots:** 19 total (textures: 6, buffers: 12, sampler: 1)
 
-See [ArgumentEncoderManager](#7.2) for resource encoding mechanics.
+See [ArgumentEncoderManager](7b%20ArgumentEncoderManager.md) for resource encoding mechanics.
 
 **Sources:** [Sources/MTKCore/Rendering/ArgumentEncoderManager.swift L15-L136](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKCore/Rendering/ArgumentEncoderManager.swift#L15-L136)
 
@@ -160,7 +160,7 @@ Provides Metal Performance Shaders-based volume rendering with GPU-accelerated h
 
 **Integration:** Used by `VolumetricSceneController+MPS` extension via `MPSDisplayAdapter` nested class.
 
-See [MPSVolumeRenderer](#7.3) for MPS-specific rendering details.
+See [MPSVolumeRenderer](7c%20MPSVolumeRenderer.md) for MPS-specific rendering details.
 
 **Sources:** Referenced in system diagrams (implementation details in page 7.3)
 
@@ -704,34 +704,34 @@ This summary aids in debugging resource lifecycle issues and identifying stale a
 
  [Sources/MTKCore/Rendering/ArgumentEncoderManager.swift L145-L415](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKCore/Rendering/ArgumentEncoderManager.swift#L145-L415)
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 
-* [Metal Rendering Infrastructure](#7-metal-rendering-infrastructure)
-* [Purpose and Scope](#7-purpose-and-scope)
-* [System Architecture](#7-system-architecture)
-* [Component Overview](#7-component-overview)
-* [MetalVolumeRenderingAdapter](#7-metalvolumerenderingadapter)
-* [ArgumentEncoderManager](#7-argumentencodermanager)
-* [MPSVolumeRenderer](#7-mpsvolumerenderer)
-* [Rendering Pipelines](#7-rendering-pipelines)
-* [Compute Shader Pipeline](#7-compute-shader-pipeline)
-* [MPS Accelerated Pipeline](#7-mps-accelerated-pipeline)
-* [CPU Fallback Pipeline](#7-cpu-fallback-pipeline)
-* [Argument Buffer System](#7-argument-buffer-system)
-* [Resource Encoding](#7-resource-encoding)
-* [Resource Management](#7-resource-management)
-* [Cache Invalidation](#7-cache-invalidation)
-* [State and Command Management](#7-state-and-command-management)
-* [Command Interface](#7-command-interface)
-* [State Priority](#7-state-priority)
-* [Integration with Higher Layers](#7-integration-with-higher-layers)
-* [VolumeRenderingPort Protocol](#7-volumerenderingport-protocol)
-* [Resource Factory Integration](#7-resource-factory-integration)
-* [Controller Access Patterns](#7-controller-access-patterns)
-* [Diagnostic Logging](#7-diagnostic-logging)
+* [Metal Rendering Infrastructure](7%20Metal-Rendering-Infrastructure.md)
+* [Purpose and Scope](7%20Metal-Rendering-Infrastructure.md)
+* [System Architecture](7%20Metal-Rendering-Infrastructure.md)
+* [Component Overview](7%20Metal-Rendering-Infrastructure.md)
+* [MetalVolumeRenderingAdapter](7%20Metal-Rendering-Infrastructure.md)
+* [ArgumentEncoderManager](7%20Metal-Rendering-Infrastructure.md)
+* [MPSVolumeRenderer](7%20Metal-Rendering-Infrastructure.md)
+* [Rendering Pipelines](7%20Metal-Rendering-Infrastructure.md)
+* [Compute Shader Pipeline](7%20Metal-Rendering-Infrastructure.md)
+* [MPS Accelerated Pipeline](7%20Metal-Rendering-Infrastructure.md)
+* [CPU Fallback Pipeline](7%20Metal-Rendering-Infrastructure.md)
+* [Argument Buffer System](7%20Metal-Rendering-Infrastructure.md)
+* [Resource Encoding](7%20Metal-Rendering-Infrastructure.md)
+* [Resource Management](7%20Metal-Rendering-Infrastructure.md)
+* [Cache Invalidation](7%20Metal-Rendering-Infrastructure.md)
+* [State and Command Management](7%20Metal-Rendering-Infrastructure.md)
+* [Command Interface](7%20Metal-Rendering-Infrastructure.md)
+* [State Priority](7%20Metal-Rendering-Infrastructure.md)
+* [Integration with Higher Layers](7%20Metal-Rendering-Infrastructure.md)
+* [VolumeRenderingPort Protocol](7%20Metal-Rendering-Infrastructure.md)
+* [Resource Factory Integration](7%20Metal-Rendering-Infrastructure.md)
+* [Controller Access Patterns](7%20Metal-Rendering-Infrastructure.md)
+* [Diagnostic Logging](7%20Metal-Rendering-Infrastructure.md)
 
 Ask Devin about MTK

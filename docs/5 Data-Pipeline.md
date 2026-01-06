@@ -9,7 +9,7 @@
 
 The data pipeline transforms raw volumetric data from various sources into GPU-ready Metal textures suitable for rendering. This document covers the multi-stage conversion process from input data (DICOM files, raw voxel buffers, or built-in presets) through domain model normalization to 3D texture generation and consumption by rendering components.
 
-For information about how transfer functions are applied to volume data, see [Transfer Functions](#4.3). For details on the rendering components that consume pipeline outputs, see [Materials and Shaders](#4). For DICOM-specific loading workflows, see [DICOM Loading](#5.3).
+For information about how transfer functions are applied to volume data, see [Transfer Functions](#4.3). For details on the rendering components that consume pipeline outputs, see [Materials and Shaders](4%20Materials-and-Shaders.md). For DICOM-specific loading workflows, see [DICOM Loading](#5.3).
 
 ---
 
@@ -124,13 +124,13 @@ Applications can directly construct `VolumeDataset` from a `Data` buffer contain
 let voxelCount = 256 * 256 * 128let voxels = Data(repeating: 0, count: voxelCount * VolumePixelFormat.int16Signed.bytesPerVoxel)let dataset = VolumeDataset(    data: voxels,    dimensions: VolumeDimensions(width: 256, height: 256, depth: 128),    spacing: VolumeSpacing(x: 0.001, y: 0.001, z: 0.0015),    pixelFormat: .int16Signed,    intensityRange: (-1024)...3071)let factory = VolumeTextureFactory(dataset: dataset)
 ```
 
-**Sources:** [README.md L54-L62](https://github.com/ThalesMMS/MTK/blob/eda6f990/README.md#L54-L62)
+**Sources:** README.md
 
 ### DICOM Archives
 
 DICOM volume loading is orchestrated by `DicomVolumeLoader`, which handles ZIP extraction and delegates slice parsing to an injected `DicomSeriesLoading` implementation. This path is covered in detail in [DICOM Loading](#5.3).
 
-**Sources:** [README.md L74-L75](https://github.com/ThalesMMS/MTK/blob/eda6f990/README.md#L74-L75)
+**Sources:** README.md
 
 ---
 
@@ -497,38 +497,38 @@ For details on transfer function generation and preset management, see [Transfer
 
 **Sources:** Referenced in high-level diagrams (Diagram 3, Diagram 5)
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 
-* [Data Pipeline](#5-data-pipeline)
-* [Pipeline Overview](#5-pipeline-overview)
-* [Data Sources and Input Formats](#5-data-sources-and-input-formats)
-* [Built-in Presets](#5-built-in-presets)
-* [Raw Voxel Buffers](#5-raw-voxel-buffers)
-* [DICOM Archives](#5-dicom-archives)
-* [VolumeDataset: The Normalized Domain Model](#5-volumedataset-the-normalized-domain-model)
-* [Key Properties](#5-key-properties)
-* [Pixel Format Mapping](#5-pixel-format-mapping)
-* [GPU Texture Generation](#5-gpu-texture-generation)
-* [VolumeTextureFactory](#5-volumetexturefactory)
-* [Texture Generation Process](#5-texture-generation-process)
-* [Factory Usage Patterns](#5-factory-usage-patterns)
-* [Rendering Integration](#5-rendering-integration)
-* [Material Binding](#5-material-binding)
-* [MPS Backend Integration](#5-mps-backend-integration)
-* [Adapter Caching](#5-adapter-caching)
-* [Error Handling and Fallbacks](#5-error-handling-and-fallbacks)
-* [Preset Loading Failures](#5-preset-loading-failures)
-* [Texture Generation Failures](#5-texture-generation-failures)
-* [Archive Extraction Failures](#5-archive-extraction-failures)
-* [Logging Infrastructure](#5-logging-infrastructure)
-* [Performance Considerations](#5-performance-considerations)
-* [Memory Layout](#5-memory-layout)
-* [Texture Reuse](#5-texture-reuse)
-* [GPU Memory Constraints](#5-gpu-memory-constraints)
-* [Integration with Transfer Functions](#5-integration-with-transfer-functions)
+* [Data Pipeline](5%20Data-Pipeline.md)
+* [Pipeline Overview](5%20Data-Pipeline.md)
+* [Data Sources and Input Formats](5%20Data-Pipeline.md)
+* [Built-in Presets](5%20Data-Pipeline.md)
+* [Raw Voxel Buffers](5%20Data-Pipeline.md)
+* [DICOM Archives](5%20Data-Pipeline.md)
+* [VolumeDataset: The Normalized Domain Model](5%20Data-Pipeline.md)
+* [Key Properties](5%20Data-Pipeline.md)
+* [Pixel Format Mapping](5%20Data-Pipeline.md)
+* [GPU Texture Generation](5%20Data-Pipeline.md)
+* [VolumeTextureFactory](5%20Data-Pipeline.md)
+* [Texture Generation Process](5%20Data-Pipeline.md)
+* [Factory Usage Patterns](5%20Data-Pipeline.md)
+* [Rendering Integration](5%20Data-Pipeline.md)
+* [Material Binding](5%20Data-Pipeline.md)
+* [MPS Backend Integration](5%20Data-Pipeline.md)
+* [Adapter Caching](5%20Data-Pipeline.md)
+* [Error Handling and Fallbacks](5%20Data-Pipeline.md)
+* [Preset Loading Failures](5%20Data-Pipeline.md)
+* [Texture Generation Failures](5%20Data-Pipeline.md)
+* [Archive Extraction Failures](5%20Data-Pipeline.md)
+* [Logging Infrastructure](5%20Data-Pipeline.md)
+* [Performance Considerations](5%20Data-Pipeline.md)
+* [Memory Layout](5%20Data-Pipeline.md)
+* [Texture Reuse](5%20Data-Pipeline.md)
+* [GPU Memory Constraints](5%20Data-Pipeline.md)
+* [Integration with Transfer Functions](5%20Data-Pipeline.md)
 
 Ask Devin about MTK

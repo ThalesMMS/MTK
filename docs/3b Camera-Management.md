@@ -7,7 +7,7 @@
 
 This document covers the camera management subsystem within `VolumetricSceneController`, responsible for initializing, configuring, and manipulating the 3D camera that views volumetric datasets. The system handles patient orientation alignment from DICOM geometry, interactive camera transformations with constraints, clipping plane computation, and integration with the MPS ray casting pipeline.
 
-For interactive camera manipulation through the public API (rotate, pan, dolly methods), see [Interaction API](#3.1). For MPR-specific plane computation and oblique reformatting, see [Multi-Planar Reconstruction](#3.3). For state publication to SwiftUI views, see [State Management & Reactivity](#3.4).
+For interactive camera manipulation through the public API (rotate, pan, dolly methods), see [Interaction API](3a%20Interaction-API.md). For MPR-specific plane computation and oblique reformatting, see [Multi-Planar Reconstruction](3c%20Multi-Planar-Reconstruction-%28MPR%29.md). For state publication to SwiftUI views, see [State Management & Reactivity](3d%20State-Management-&-Reactivity.md).
 
 **Sources:** [Sources/MTKUI/VolumetricSceneController L1-L722](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricSceneController+Camera.swift#L1-L722)
 
@@ -660,9 +660,9 @@ This allows `VolumetricSceneController+Interaction` to manually update `cameraTa
 
 **Sources:** [Sources/MTKUI/VolumetricSceneController L220-L234](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricSceneController+Camera.swift#L220-L234)
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 

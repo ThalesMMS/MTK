@@ -5,7 +5,7 @@
 
 **Purpose**: This document describes `VolumetricDisplayContainer`, the primary SwiftUI view component for displaying volumetric rendering surfaces with optional overlay compositions. It provides a generic container that hosts render surfaces from either backend (SceneKit or MPS) and enables composable UI overlay integration.
 
-**Scope**: This page covers the container's generic design, view hierarchy composition, size monitoring system, and integration patterns. For the underlying render surface abstraction, see [RenderSurface Abstraction](#2.3). For the coordinator pattern and reactive state management, see [Coordinator Pattern & State Flow](#6.2). For specific overlay implementations, see [UI Overlays and Gestures](#6.3).
+**Scope**: This page covers the container's generic design, view hierarchy composition, size monitoring system, and integration patterns. For the underlying render surface abstraction, see [RenderSurface Abstraction](2c%20RenderSurface-Abstraction.md). For the coordinator pattern and reactive state management, see [Coordinator Pattern & State Flow](6b%20Coordinator-Pattern-&-State-Flow.md). For specific overlay implementations, see [UI Overlays and Gestures](6c%20UI-Overlays-and-Gestures.md).
 
 ---
 
@@ -294,7 +294,7 @@ The container remains **completely agnostic** of which backend is active:
 * **Testability**: Can inject mock `RenderSurface` implementations for testing
 * **Future-proofing**: New backends can be added without modifying the container
 
-For details on the `RenderSurface` abstraction, see [RenderSurface Abstraction](#2.3).
+For details on the `RenderSurface` abstraction, see [RenderSurface Abstraction](2c%20RenderSurface-Abstraction.md).
 
 **Sources**: [Sources/MTKUI/VolumetricDisplayContainer.swift L26-L27](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricDisplayContainer.swift#L26-L27)
 
@@ -506,18 +506,18 @@ Controller -.->|"await MainActor"| Published
 
 | Component | Purpose | Reference |
 | --- | --- | --- |
-| `RenderSurfaceView` | Wraps `RenderSurface` in SwiftUI view | Section [2.3](#2.3) |
-| `VolumetricSceneController` | Manages rendering state and backends | Section [3](#3) |
-| `VolumetricSceneCoordinator` | SwiftUI state management wrapper | Section [6.2](#6.2) |
-| `CrosshairOverlayView` | Built-in crosshair overlay | Section [6.3](#6.3) |
-| `OrientationOverlayView` | Built-in orientation labels | Section [6.3](#6.3) |
-| `WindowLevelControlView` | Built-in HU windowing controls | Section [6.3](#6.3) |
+| `RenderSurfaceView` | Wraps `RenderSurface` in SwiftUI view | Section [2.3](2c%20RenderSurface-Abstraction.md) |
+| `VolumetricSceneController` | Manages rendering state and backends | [VolumetricSceneController](3%20VolumetricSceneController.md) |
+| `VolumetricSceneCoordinator` | SwiftUI state management wrapper | Section [6.2](6b%20Coordinator-Pattern-&-State-Flow.md) |
+| `CrosshairOverlayView` | Built-in crosshair overlay | Section [6.3](6c%20UI-Overlays-and-Gestures.md) |
+| `OrientationOverlayView` | Built-in orientation labels | Section [6.3](6c%20UI-Overlays-and-Gestures.md) |
+| `WindowLevelControlView` | Built-in HU windowing controls | Section [6.3](6c%20UI-Overlays-and-Gestures.md) |
 
 **Sources**: [Sources/MTKUI/VolumetricDisplayContainer.swift L1-L54](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricDisplayContainer.swift#L1-L54)
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 

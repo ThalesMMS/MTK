@@ -8,7 +8,7 @@
 
 The MPS Ray Casting Cache is a performance optimization system that pre-computes ray-bounding box intersection data for the current camera view when using the Metal Performance Shaders rendering backend. This cache stores entry/exit distances for rays cast from the camera through the volume's bounding box, enabling the MPS renderer to skip empty space and focus GPU resources on regions containing actual volumetric data.
 
-This page covers the cache update mechanism, camera ray generation, coordinate space transformations, and bounding box intersection tests. For information about the MPS rendering backend itself, see [Metal Performance Shaders Backend](#2.2). For coordinate system transformations in general, see [Coordinate System Transformations](#9.5).
+This page covers the cache update mechanism, camera ray generation, coordinate space transformations, and bounding box intersection tests. For information about the MPS rendering backend itself, see [Metal Performance Shaders Backend](2b%20Metal-Performance-Shaders-Backend.md). For coordinate system transformations in general, see [Coordinate System Transformations](9e%20Coordinate-System-Transformations.md).
 
 **Sources:** [Sources/MTKUI/VolumetricSceneController L414-L525](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricSceneController+Camera.swift#L414-L525)
 
@@ -408,7 +408,7 @@ The cached ray casting samples are propagated to the MPS display adapter to info
 mpsDisplay?.updateRayCasting(samples: samples)
 ```
 
-The `MPSDisplayAdapter` (documented in [MPS Display Adapter](#3.5)) uses these samples to:
+The `MPSDisplayAdapter` (documented in [MPS Display Adapter](3e%20MPS-Display-Adapter.md)) uses these samples to:
 
 1. **Skip Empty Space**: Start ray marching at the entry distance rather than from the camera
 2. **Optimize Sample Step**: Adjust sampling density based on entry/exit distance ranges
@@ -461,9 +461,9 @@ The cache update is effectively constant-time since the number of rays is fixed 
 
  [Sources/MTKCore/Rendering/MPSVolumeRenderer.swift L239-L260](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKCore/Rendering/MPSVolumeRenderer.swift#L239-L260)
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 

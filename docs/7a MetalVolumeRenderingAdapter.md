@@ -5,9 +5,9 @@
 
 ## Purpose and Scope
 
-The `MetalVolumeRenderingAdapter` is the primary implementation of the `VolumeRenderingPort` protocol (see [VolumeRenderingPort](#8.1)) that provides GPU-accelerated volume rendering via Metal compute shaders. This actor-based class manages the complete Metal rendering pipeline, including device initialization, texture caching, compute shader dispatch, and CPU fallback rendering when GPU resources are unavailable.
+The `MetalVolumeRenderingAdapter` is the primary implementation of the `VolumeRenderingPort` protocol (see [VolumeRenderingPort](8a%20VolumeRenderingPort.md)) that provides GPU-accelerated volume rendering via Metal compute shaders. This actor-based class manages the complete Metal rendering pipeline, including device initialization, texture caching, compute shader dispatch, and CPU fallback rendering when GPU resources are unavailable.
 
-The adapter serves as the bridge between high-level rendering requests and low-level Metal API calls. It coordinates with the `ArgumentEncoderManager` (see [ArgumentEncoderManager](#7.2)) for buffer management and the `VolumeTextureFactory` (see [VolumeTextureFactory](#5.2)) for texture generation. For shader compilation and loading details, see [Shader System](#7.3).
+The adapter serves as the bridge between high-level rendering requests and low-level Metal API calls. It coordinates with the `ArgumentEncoderManager` (see [ArgumentEncoderManager](7b%20ArgumentEncoderManager.md)) for buffer management and the `VolumeTextureFactory` (see [VolumeTextureFactory](5b%20DICOM-Loading.md)) for texture generation. For shader compilation and loading details, see [Shader System](7c%20MPSVolumeRenderer.md).
 
 **Sources:** [Sources/MTKCore/Adapters/MetalVolumeRenderingAdapter.swift L1-L123](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKCore/Adapters/MetalVolumeRenderingAdapter.swift#L1-L123)
 
@@ -633,7 +633,7 @@ This diagnostic mode is crucial for debugging rendering issues and understanding
 
 ### VolumeRenderingPort Protocol
 
-The adapter is the primary concrete implementation of `VolumeRenderingPort`. For protocol details, see [VolumeRenderingPort](#8.1).
+The adapter is the primary concrete implementation of `VolumeRenderingPort`. For protocol details, see [VolumeRenderingPort](8a%20VolumeRenderingPort.md).
 
 **Implemented methods:**
 
@@ -646,7 +646,7 @@ The adapter is the primary concrete implementation of `VolumeRenderingPort`. For
 
 ### ArgumentEncoderManager
 
-The adapter uses `ArgumentEncoderManager` to encode all shader parameters into an argument buffer. See [ArgumentEncoderManager](#7.2) for buffer management details.
+The adapter uses `ArgumentEncoderManager` to encode all shader parameters into an argument buffer. See [ArgumentEncoderManager](7b%20ArgumentEncoderManager.md) for buffer management details.
 
 **Sources:** [Sources/MTKCore/Adapters/MetalVolumeRenderingAdapter.swift L100](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKCore/Adapters/MetalVolumeRenderingAdapter.swift#L100-L100)
 
@@ -654,19 +654,19 @@ The adapter uses `ArgumentEncoderManager` to encode all shader parameters into a
 
 ### VolumeTextureFactory
 
-Dataset-to-texture conversion is delegated to `VolumeTextureFactory`. See [VolumeTextureFactory](#5.2) for texture generation details.
+Dataset-to-texture conversion is delegated to `VolumeTextureFactory`. See [VolumeTextureFactory](5b%20DICOM-Loading.md) for texture generation details.
 
 **Sources:** [Sources/MTKCore/Adapters/MetalVolumeRenderingAdapter.swift L435-L436](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKCore/Adapters/MetalVolumeRenderingAdapter.swift#L435-L436)
 
 ### ShaderLibraryLoader
 
-Shader compilation and loading is handled by `ShaderLibraryLoader`. See [Shader System](#7.3) for shader loading details.
+Shader compilation and loading is handled by `ShaderLibraryLoader`. See [Shader System](7c%20MPSVolumeRenderer.md) for shader loading details.
 
 **Sources:** [Sources/MTKCore/Adapters/MetalVolumeRenderingAdapter.swift L311-L325](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKCore/Adapters/MetalVolumeRenderingAdapter.swift#L311-L325)
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 

@@ -11,7 +11,7 @@
 
 This document explains how MTK implements the **Coordinator pattern** for SwiftUI integration and how **reactive state flows** from the rendering controller to UI components through Combine's `@Published` properties. It covers the state structures, the `VolumetricSceneController` as an `ObservableObject`, state recording mechanisms, and the `VolumetricSceneCoordinator` wrapper that simplifies SwiftUI integration.
 
-For the view component that displays the render surface and overlays, see [VolumetricDisplayContainer](#6.1). For gesture handling and overlay components, see [UI Overlays and Gestures](#6.3). For the controller's interaction API, see [Interaction API](#3.1). For general state management concepts, see [State Management & Reactivity](#3.4).
+For the view component that displays the render surface and overlays, see [VolumetricDisplayContainer](6a%20VolumetricDisplayContainer.md). For gesture handling and overlay components, see [UI Overlays and Gestures](6c%20UI-Overlays-and-Gestures.md). For the controller's interaction API, see [Interaction API](3a%20Interaction-API.md). For general state management concepts, see [State Management & Reactivity](3d%20State-Management-&-Reactivity.md).
 
 ---
 
@@ -259,7 +259,7 @@ struct VolumePreview: View {    @StateObject private var coordinator 
 
 The coordinator exposes the underlying `controller` property for direct access when needed, but provides **convenience methods** for common operations like `apply(dataset:)` and `applyHuWindow(min:max:)`.
 
-**Sources:** [README.md L44-L70](https://github.com/ThalesMMS/MTK/blob/eda6f990/README.md#L44-L70)
+**Sources:** README.md
 
 ---
 
@@ -447,7 +447,7 @@ For example, the Camera extension updates camera state after computing new trans
 
 ## Integration with VolumetricDisplayContainer
 
-The `VolumetricDisplayContainer` (see [VolumetricDisplayContainer](#6.1)) displays the active render surface and provides a `@ViewBuilder` slot for overlays. These overlays can observe the controller's published state:
+The `VolumetricDisplayContainer` (see [VolumetricDisplayContainer](6a%20VolumetricDisplayContainer.md)) displays the active render surface and provides a `@ViewBuilder` slot for overlays. These overlays can observe the controller's published state:
 
 ```
 VolumetricDisplayContainer(controller: coordinator.controller) {    // Observes cameraState for anatomical labels    OrientationOverlayView()        // Observes windowLevelState for slider positions    WindowLevelControlView(controller: coordinator.controller)        // Observes sliceState for slice indicators    if case .mpr = currentDisplay {        MPRSliceIndicator(controller: coordinator.controller)    }}
@@ -455,7 +455,7 @@ VolumetricDisplayContainer(controller: coordinator.controller) {    // Ob
 
 The container itself **does not observe state**—it only displays the render surface. The overlays are responsible for their own state observation.
 
-**Sources:** [README.md L44-L72](https://github.com/ThalesMMS/MTK/blob/eda6f990/README.md#L44-L72)
+**Sources:** README.md
 
  [SURFACE_ADAPTER_DELIVERABLES.txt L13-L16](https://github.com/ThalesMMS/MTK/blob/eda6f990/SURFACE_ADAPTER_DELIVERABLES.txt#L13-L16)
 
@@ -476,9 +476,9 @@ All state flows **unidirectionally** from the controller to SwiftUI views. Views
 
  [Sources/MTKUI/VolumetricSceneController.swift L91-L134](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricSceneController.swift#L91-L134)
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 

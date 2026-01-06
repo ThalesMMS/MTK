@@ -8,7 +8,7 @@
 
 Domain contracts define the framework-agnostic interfaces and types that establish the rendering API boundary in MTK. These contracts specify how presentation layers request volumetric rendering operations without coupling to Metal, SceneKit, or SwiftUI implementation details. This page documents the domain types, their relationships, and the architectural role they serve in decoupling presentation from infrastructure.
 
-For the complete protocol specification, see [VolumeRenderingPort](#8.1). For detailed documentation of request and result structures, see [Rendering Request Model](#8.2).
+For the complete protocol specification, see [VolumeRenderingPort](8a%20VolumeRenderingPort.md). For detailed documentation of request and result structures, see [Rendering Request Model](8b%20Rendering-Request-Model.md).
 
 ## Overview
 
@@ -354,32 +354,32 @@ Domain contracts in MTK provide a framework-agnostic rendering API that:
 
 The primary domain types (`VolumeRenderRequest`, `VolumeRenderResult`, `VolumeTransferFunction`, `VolumeRenderingPreset`) define the rendering vocabulary. The `VolumeRenderingPort` protocol specifies the operations (render, update preset, refresh histogram, send command). The `MetalVolumeRenderingAdapter` actor provides the production implementation using Metal compute shaders.
 
-For detailed documentation of the protocol methods, see [VolumeRenderingPort](#8.1). For the structure of request and result types, see [Rendering Request Model](#8.2).
+For detailed documentation of the protocol methods, see [VolumeRenderingPort](8a%20VolumeRenderingPort.md). For the structure of request and result types, see [Rendering Request Model](8b%20Rendering-Request-Model.md).
 
 **Sources:**
 
 * [Sources/MTKCore/Domain/VolumeRenderingPort.swift L1-L213](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKCore/Domain/VolumeRenderingPort.swift#L1-L213)
 * [Sources/MTKCore/Adapters/MetalVolumeRenderingAdapter.swift L1-L912](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKCore/Adapters/MetalVolumeRenderingAdapter.swift#L1-L912)
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 
-* [Domain Contracts](#8-domain-contracts)
-* [Purpose and Scope](#8-purpose-and-scope)
-* [Overview](#8-overview)
-* [Core Domain Types](#8-core-domain-types)
-* [Domain Type Relationships](#8-domain-type-relationships)
-* [Architectural Role: Decoupling Presentation from Infrastructure](#8-architectural-role-decoupling-presentation-from-infrastructure)
-* [Benefits of Domain Abstraction](#8-benefits-of-domain-abstraction)
-* [Request-Response Flow](#8-request-response-flow)
-* [Command Pattern for State Mutations](#8-command-pattern-for-state-mutations)
-* [Concurrency Model](#8-concurrency-model)
-* [Actor Isolation](#8-actor-isolation)
-* [Sendable Propagation](#8-sendable-propagation)
-* [Testing Surface](#8-testing-surface)
-* [Summary](#8-summary)
+* [Domain Contracts](8%20Domain-Contracts.md)
+* [Purpose and Scope](8%20Domain-Contracts.md)
+* [Overview](8%20Domain-Contracts.md)
+* [Core Domain Types](8%20Domain-Contracts.md)
+* [Domain Type Relationships](8%20Domain-Contracts.md)
+* [Architectural Role: Decoupling Presentation from Infrastructure](8%20Domain-Contracts.md)
+* [Benefits of Domain Abstraction](8%20Domain-Contracts.md)
+* [Request-Response Flow](8%20Domain-Contracts.md)
+* [Command Pattern for State Mutations](8%20Domain-Contracts.md)
+* [Concurrency Model](8%20Domain-Contracts.md)
+* [Actor Isolation](8%20Domain-Contracts.md)
+* [Sendable Propagation](8%20Domain-Contracts.md)
+* [Testing Surface](8%20Domain-Contracts.md)
+* [Summary](8%20Domain-Contracts.md)
 
 Ask Devin about MTK

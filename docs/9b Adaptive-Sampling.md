@@ -8,7 +8,7 @@
 
 This document explains the **adaptive sampling** system in MTK, which dynamically reduces rendering quality during user interactions to maintain responsive frame rates. When users manipulate the camera or volume through gestures, the system temporarily increases the sampling step size (reducing ray marching accuracy) and restores full quality when interaction completes.
 
-For information about the base sampling step configuration, see [Interaction API](#3.1). For details on how sampling affects the ray marching algorithm, see [VolumeCubeMaterial](#4.1).
+For information about the base sampling step configuration, see [Interaction API](3a%20Interaction-API.md). For details on how sampling affects the ray marching algorithm, see [VolumeCubeMaterial](4a%20VolumeCubeMaterial.md).
 
 **Sources:** [Sources/MTKUI/VolumetricSceneController L313-L333](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricSceneController+Interaction.swift#L313-L333)
 
@@ -555,9 +555,9 @@ When switching rendering backends via `setRenderingBackend()`, the adaptive samp
 
  [Sources/MTKUI/VolumetricSceneController L313-L324](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricSceneController+Interaction.swift#L313-L324)
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 

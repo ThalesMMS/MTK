@@ -8,7 +8,7 @@
 
 This document explains how MTK integrates with SwiftUI using reactive state management patterns. It covers the `ObservableObject` architecture, published state streams, the generic display container, and the `RenderSurface` abstraction that decouples rendering from UI frameworks.
 
-For detailed information about the underlying rendering backends, see [Rendering Architecture](#2). For the complete interaction API exposed to SwiftUI views, see [Interaction API](#3.1). For UI overlay components and gesture handling, see [UI Overlays and Gestures](#6.3).
+For detailed information about the underlying rendering backends, see [Rendering Architecture](2%20Rendering-Architecture.md). For the complete interaction API exposed to SwiftUI views, see [Interaction API](3a%20Interaction-API.md). For UI overlay components and gesture handling, see [UI Overlays and Gestures](6c%20UI-Overlays-and-Gestures.md).
 
 **Sources**:
 
@@ -294,7 +294,7 @@ The `RenderSurface` protocol decouples rendering from specific UI frameworks. Th
 
 ```
 
-For detailed information about the `RenderSurface` protocol and its implementations, see [RenderSurface Abstraction](#2.3).
+For detailed information about the `RenderSurface` protocol and its implementations, see [RenderSurface Abstraction](2c%20RenderSurface-Abstraction.md).
 
 **Sources**:
 
@@ -443,31 +443,31 @@ The render mode is controlled via `setRenderMode(_:)` [Sources/MTKUI/VolumetricS
 * Sources/MTKUI/VolumetricSceneController.swift:65-68
 * Sources/MTKUI/VolumetricSceneController.swift:165
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 
-* [SwiftUI Integration](#6-swiftui-integration)
-* [Purpose and Scope](#6-purpose-and-scope)
-* [Reactive Architecture Overview](#6-reactive-architecture-overview)
-* [ObservableObject Conformance](#6-observableobject-conformance)
-* [Published State Streams](#6-published-state-streams)
-* [State Structure Definitions](#6-state-structure-definitions)
-* [State Publishing Mechanism](#6-state-publishing-mechanism)
-* [VolumetricDisplayContainer](#6-volumetricdisplaycontainer)
-* [Generic Design](#6-generic-design)
-* [View Implementation](#6-view-implementation)
-* [Convenience Initializer](#6-convenience-initializer)
-* [RenderSurface Abstraction](#6-rendersurface-abstraction)
-* [Integration Pattern](#6-integration-pattern)
-* [Typical Usage](#6-typical-usage)
-* [State Flow Diagram](#6-state-flow-diagram)
-* [Platform Abstraction](#6-platform-abstraction)
-* [Platform Variants](#6-platform-variants)
-* [Backend Selection State](#6-backend-selection-state)
-* [Thread Safety and Actor Isolation](#6-thread-safety-and-actor-isolation)
-* [Render Mode Control](#6-render-mode-control)
+* [SwiftUI Integration](6%20SwiftUI-Integration.md)
+* [Purpose and Scope](6%20SwiftUI-Integration.md)
+* [Reactive Architecture Overview](6%20SwiftUI-Integration.md)
+* [ObservableObject Conformance](6%20SwiftUI-Integration.md)
+* [Published State Streams](6%20SwiftUI-Integration.md)
+* [State Structure Definitions](6%20SwiftUI-Integration.md)
+* [State Publishing Mechanism](6%20SwiftUI-Integration.md)
+* [VolumetricDisplayContainer](6%20SwiftUI-Integration.md)
+* [Generic Design](6%20SwiftUI-Integration.md)
+* [View Implementation](6%20SwiftUI-Integration.md)
+* [Convenience Initializer](6%20SwiftUI-Integration.md)
+* [RenderSurface Abstraction](6%20SwiftUI-Integration.md)
+* [Integration Pattern](6%20SwiftUI-Integration.md)
+* [Typical Usage](6%20SwiftUI-Integration.md)
+* [State Flow Diagram](6%20SwiftUI-Integration.md)
+* [Platform Abstraction](6%20SwiftUI-Integration.md)
+* [Platform Variants](6%20SwiftUI-Integration.md)
+* [Backend Selection State](6%20SwiftUI-Integration.md)
+* [Thread Safety and Actor Isolation](6%20SwiftUI-Integration.md)
+* [Render Mode Control](6%20SwiftUI-Integration.md)
 
 Ask Devin about MTK

@@ -8,7 +8,7 @@
 
 ## Purpose and Scope
 
-This document details MTK's three-tier module architecture: **MTKCore**, **MTKSceneKit**, and **MTKUI**. It explains the dependency flow between modules, the types and responsibilities within each layer, and how to integrate specific modules based on your application's requirements. For information about the rendering backends themselves, see [Rendering Architecture](#2). For SwiftUI integration patterns, see [SwiftUI Integration](#6).
+This document details MTK's three-tier module architecture: **MTKCore**, **MTKSceneKit**, and **MTKUI**. It explains the dependency flow between modules, the types and responsibilities within each layer, and how to integrate specific modules based on your application's requirements. For information about the rendering backends themselves, see [Rendering Architecture](2%20Rendering-Architecture.md). For SwiftUI integration patterns, see [SwiftUI Integration](6%20SwiftUI-Integration.md).
 
 ---
 
@@ -370,7 +370,7 @@ Full SwiftUI application using all three modules:
 import SwiftUIimport MTKCoreimport MTKSceneKitimport MTKUI@mainstruct VolumeViewerApp: App {    var body: some Scene {        WindowGroup {            ContentView()        }    }}struct ContentView: View {    @StateObject private var coordinator = VolumetricSceneCoordinator.shared        var body: some View {        VolumetricDisplayContainer(controller: coordinator.controller) {            // Composable overlays            CrosshairOverlayView()            OrientationOverlayView()            WindowLevelControlView(controller: coordinator.controller)        }        .volumeGestures(            controller: coordinator.controller,            state: GestureStateHolder()        )        .task {            await loadAndConfigureVolume()        }    }        func loadAndConfigureVolume() async {        let dataset = VolumeDataset(/* ... */)        coordinator.apply(dataset: dataset)        coordinator.applyHuWindow(min: -500, max: 1200)        await coordinator.controller.setPreset(.softTissue)    }}
 ```
 
-**Sources**: [README.md L36-L72](https://github.com/ThalesMMS/MTK/blob/eda6f990/README.md#L36-L72)
+**Sources**: README.md
 
 ---
 
@@ -454,7 +454,7 @@ Choose the appropriate module combination based on your application's requiremen
 
 **Sources**: [README.md L17-L29](https://github.com/ThalesMMS/MTK/blob/eda6f990/README.md#L17-L29)
 
- [README.md L36-L72](https://github.com/ThalesMMS/MTK/blob/eda6f990/README.md#L36-L72)
+ README.md
 
 ---
 
@@ -545,13 +545,13 @@ Tests/
 
 **DICOM Test Fixtures**: DICOM-related tests expect fixtures under `MTK-Demo/DICOM_Example` (not committed). Tests skip when fixtures are absent.
 
-**Sources**: [README.md L81-L83](https://github.com/ThalesMMS/MTK/blob/eda6f990/README.md#L81-L83)
+**Sources**: README.md
 
  [DOCUMENTATION_STANDARD.md L26-L28](https://github.com/ThalesMMS/MTK/blob/eda6f990/DOCUMENTATION_STANDARD.md#L26-L28)
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 

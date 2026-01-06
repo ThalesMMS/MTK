@@ -6,7 +6,7 @@
 
 This document describes the SwiftUI overlay components and gesture recognition system that enable interactive volumetric visualization. Overlays react to published state from `VolumetricSceneController` to display diagnostic information, manipulation controls, and multi-plane layouts. Gestures translate user input into camera transformations and adaptive sampling optimizations.
 
-For details on the container that hosts overlays, see [VolumetricDisplayContainer](#6.1). For the coordinator that manages controller lifecycle and state synchronization, see [VolumetricSceneCoordinator](#6.2). For the underlying camera manipulation logic, see [Camera Management](#3.2).
+For details on the container that hosts overlays, see [VolumetricDisplayContainer](6a%20VolumetricDisplayContainer.md). For the coordinator that manages controller lifecycle and state synchronization, see [VolumetricSceneCoordinator](6b%20Coordinator-Pattern-&-State-Flow.md). For the underlying camera manipulation logic, see [Camera Management](3b%20Camera-Management.md).
 
 ---
 
@@ -740,9 +740,9 @@ The MTK overlay and gesture system provides:
 
 The architecture decouples overlay rendering from controller internals through Combine publishers, allowing flexible UI composition without modifying core rendering logic.
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 

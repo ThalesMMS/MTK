@@ -11,7 +11,7 @@ This document explains how MTK calculates volumetric bounding geometry, manages 
 2. **Dynamic near/far plane adjustment** to prevent clipping artifacts
 3. **Camera constraint enforcement** to keep the view centered on the volume
 
-For camera initialization and transformation details, see [Camera Management](#3.2). For MPS-specific ray casting bounds, see [MPS Ray Casting Cache](#9.3). For coordinate space transformations, see [Coordinate System Transformations](#9.5).
+For camera initialization and transformation details, see [Camera Management](3b%20Camera-Management.md). For MPS-specific ray casting bounds, see [MPS Ray Casting Cache](9c%20MPS-Ray-Casting-Cache.md). For coordinate space transformations, see [Coordinate System Transformations](9e%20Coordinate-System-Transformations.md).
 
 ---
 
@@ -317,7 +317,7 @@ func recordCameraState(position: SIMD3<Float>,                
 
 The `CameraStateSnapshot.Bounds` struct captures the computed constraints for UI display and debugging.
 
-**Sources:** Related to [State Management & Reactivity](#3.4)
+**Sources:** Related to [State Management & Reactivity](3d%20State-Management-&-Reactivity.md)
 
 ### Bounds Update Triggers
 
@@ -429,11 +429,11 @@ Constraints -.-> Clipping
 
 The entire system operates transparently during normal camera manipulation, ensuring valid viewing positions without manual intervention.
 
-**Sources:** Related to [Interaction API](#3.1)
+**Sources:** Related to [Interaction API](3a%20Interaction-API.md)
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 

@@ -9,7 +9,7 @@ This page documents the mathematical and geometric utility functions used throug
 
  and helper functions in [Sources/MTKUI/VolumetricSceneController+Camera.swift](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricSceneController+Camera.swift)
 
-For information about how these utilities are used in camera operations, see [Camera Management](#3.2). For coordinate system concepts and transformations, see [Coordinate Systems](#9.5).
+For information about how these utilities are used in camera operations, see [Camera Management](3b%20Camera-Management.md). For coordinate system concepts and transformations, see [Coordinate Systems](9e%20Coordinate-System-Transformations.md).
 
 ---
 
@@ -764,9 +764,9 @@ Fallback -.-> Return
 
  [Sources/MTKUI/VolumetricSceneController L199-L218](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKUI/VolumetricSceneController+Camera.swift#L199-L218)
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 

@@ -16,9 +16,9 @@ This document describes the domain model for volumetric data (`VolumeDataset`) a
 
 **Related Pages:**
 
-* For DICOM file loading into `VolumeDataset`, see [DICOM Loading](#5.2)
-* For how textures are bound to rendering materials, see [VolumeCubeMaterial](#4.1)
-* For argument buffer encoding of textures, see [ArgumentEncoderManager](#7.2)
+* For DICOM file loading into `VolumeDataset`, see [DICOM Loading](5b%20DICOM-Loading.md)
+* For how textures are bound to rendering materials, see [VolumeCubeMaterial](4a%20VolumeCubeMaterial.md)
+* For argument buffer encoding of textures, see [ArgumentEncoderManager](7b%20ArgumentEncoderManager.md)
 
 ---
 
@@ -500,16 +500,16 @@ factory.update(dataset: newDataset)if let newTexture = factory.generate(dev
 The generated `MTLTexture` flows through the rendering system as follows:
 
 1. **Factory Generation**: `VolumeTextureFactory.generate()` creates texture
-2. **Material Binding**: Texture assigned to `VolumeCubeMaterial` or `MPRPlaneMaterial` (see [VolumeCubeMaterial](#4.1))
-3. **Argument Encoding**: Texture encoded into argument buffer slot 0 by `ArgumentEncoderManager` (see [ArgumentEncoderManager](#7.2))
+2. **Material Binding**: Texture assigned to `VolumeCubeMaterial` or `MPRPlaneMaterial` (see [VolumeCubeMaterial](4a%20VolumeCubeMaterial.md))
+3. **Argument Encoding**: Texture encoded into argument buffer slot 0 by `ArgumentEncoderManager` (see [ArgumentEncoderManager](7b%20ArgumentEncoderManager.md))
 4. **Shader Access**: Compute or fragment shaders read texture via `[[texture(0)]]` attribute
 5. **Rendering**: Ray marching or slice rendering samples the 3D texture
 
 **Sources:** [Sources/MTKCore/Metal/VolumeTextureFactory.swift L38-L68](https://github.com/ThalesMMS/MTK/blob/eda6f990/Sources/MTKCore/Metal/VolumeTextureFactory.swift#L38-L68)
 
-Refresh this wiki
 
-Last indexed: 2 January 2026 ([eda6f9](https://github.com/ThalesMMS/MTK/commit/eda6f990))
+
+
 
 ### On this page
 
