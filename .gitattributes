@@ -1,6 +1,2 @@
 # Auto detect text files and perform LF normalization
 * text=auto
-scripts/*.sh linguist-vendored linguist-detectable=false
-scripts/*.bash linguist-vendored linguist-detectable=false
-Tooling/**/*.sh linguist-vendored linguist-detectable=false
-Tests/** linguist-vendored linguist-detectable=false
