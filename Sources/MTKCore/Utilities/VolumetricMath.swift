@@ -32,6 +32,65 @@ public struct VolumetricMath {
         Swift.max(min, Swift.min(value, max))
     }
 
+    /// Clamp a float value between lower and upper bounds
+    public static func clampFloat(_ value: Float, lower: Float, upper: Float) -> Float {
+        Swift.max(lower, Swift.min(upper, value))
+    }
+
+    /// Clamp a SIMD3<Float> value component-wise
+    public static func clampSIMD3(_ value: SIMD3<Float>, min lower: SIMD3<Float>, max upper: SIMD3<Float>) -> SIMD3<Float> {
+        SIMD3<Float>(
+            Swift.max(lower.x, Swift.min(upper.x, value.x)),
+            Swift.max(lower.y, Swift.min(upper.y, value.y)),
+            Swift.max(lower.z, Swift.min(upper.z, value.z))
+        )
+    }
+
+    /// Sanitize viewport size to ensure minimum dimensions
+    /// - Parameter size: The viewport size to sanitize
+    /// - Returns: Tuple of (width, height) with minimum value of 1
+    public static func clampViewportSize(_ size: CGSize) -> (width: Int, height: Int) {
+        let width = Swift.max(1, Int(size.width.rounded(.toNearestOrEven)))
+        let height = Swift.max(1, Int(size.height.rounded(.toNearestOrEven)))
+        return (width, height)
+    }
+
+    /// Clamp histogram bin count to valid range [64, 4096]
+    public static func clampBinCount(_ value: Int) -> Int {
+        Swift.max(64, Swift.min(value, 4096))
+    }
+
+    /// Clamp Hounsfield Unit value to valid range [-1024, 3071]
+    /// - Parameter value: HU value as Int32
+    /// - Returns: Clamped value as Int16
+    public static func clampHU(_ value: Int32) -> Int16 {
+        let clampMin: Int32 = -1024
+        let clampMax: Int32 = 3071
+        let huClamped = Swift.max(clampMin, Swift.min(clampMax, value))
+        return Int16(truncatingIfNeeded: huClamped)
+    }
+
+    /// Sanitize slab thickness value to ensure non-negative
+    /// - Parameter value: Thickness value in voxels
+    /// - Returns: Sanitized thickness with minimum value of 0
+    public static func sanitizeThickness(_ value: Int) -> Int {
+        Swift.max(0, value)
+    }
+
+    /// Sanitize slab steps value to ensure positive count
+    /// - Parameter value: Number of sampling steps
+    /// - Returns: Sanitized steps with minimum value of 1
+    public static func sanitizeSteps(_ value: Int) -> Int {
+        Swift.max(1, value)
+    }
+
+    /// Sanitize viewport size to ensure minimum dimensions
+    /// - Parameter size: The viewport size to sanitize
+    /// - Returns: Tuple of (width, height) with minimum value of 1
+    public static func sanitizeViewportSize(_ size: CGSize) -> (width: Int, height: Int) {
+        clampViewportSize(size)
+    }
+
     /// Smooth Hermite interpolation
     public static func smoothstep(_ edge0: Float, _ edge1: Float, _ x: Float) -> Float {
         let t = clamp((x - edge0) / (edge1 - edge0), min: 0.0, max: 1.0)

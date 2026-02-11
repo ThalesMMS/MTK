@@ -24,13 +24,15 @@ let package = Package(
         )
     ],
     dependencies: [
-        .package(url: "https://github.com/weichsel/ZIPFoundation.git", from: "0.9.19")
+        .package(url: "https://github.com/weichsel/ZIPFoundation.git", from: "0.9.19"),
+        .package(path: "../DICOM-Decoder")
     ],
     targets: [
         .target(
             name: "MTKCore",
             dependencies: [
-                .product(name: "ZIPFoundation", package: "ZIPFoundation")
+                .product(name: "ZIPFoundation", package: "ZIPFoundation"),
+                .product(name: "DicomCore", package: "DICOM-Decoder")
             ],
             path: "Sources/MTKCore",
             resources: [

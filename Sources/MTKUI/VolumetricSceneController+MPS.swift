@@ -256,7 +256,7 @@ public extension VolumetricSceneController {
             let adaptiveAdjustment: Float = adaptiveSamplingEnabled ? 0 : -0.1
             let interactionAdjustment: Float = adaptiveInteractionActive ? -0.25 : 0
             let projectionAdjustment: Float = projectionsUseTransferFunction ? 0.1 : 0
-            let saturation = clampFloat(base + gateAdjustment + adaptiveAdjustment + interactionAdjustment + projectionAdjustment,
+            let saturation = VolumetricMath.clampFloat(base + gateAdjustment + adaptiveAdjustment + interactionAdjustment + projectionAdjustment,
                                        lower: Float(0.05),
                                        upper: Float(1))
             return saturation
@@ -264,14 +264,14 @@ public extension VolumetricSceneController {
 
         private func resolvedBrightness() -> Float {
             let mean = histogramMean()
-            let shift = clampFloat((transferFunction?.shift ?? 0 + 1024) / 4096, lower: 0, upper: 1)
+            let shift = VolumetricMath.clampFloat((transferFunction?.shift ?? 0 + 1024) / 4096, lower: 0, upper: 1)
             let lighting: Float = lightingEnabled ? 0.12 : -0.08
             let adaptive: Float = adaptiveInteractionActive ? 0.2 : 0
-            let stepImpact = clampFloat(1 - (adaptiveSamplingStep / max(samplingStep, 1)), lower: 0, upper: Float(0.25))
+            let stepImpact = VolumetricMath.clampFloat(1 - (adaptiveSamplingStep / max(samplingStep, 1)), lower: 0, upper: Float(0.25))
             let rayContribution: Float = raySamples.isEmpty ? 0 : min(Float(0.15), averageRayEntry())
             let base = Float(0.35) + mean * Float(0.45) + shift * Float(0.25)
             let contributions = lighting + adaptive + stepImpact + rayContribution
-            let brightness = clampFloat(base + contributions,
+            let brightness = VolumetricMath.clampFloat(base + contributions,
                                         lower: Float(0.1),
                                         upper: Float(1))
             return brightness
@@ -281,7 +281,7 @@ public extension VolumetricSceneController {
             guard !raySamples.isEmpty else { return 0 }
             let total = raySamples.reduce(0) { $0 + $1.entryDistance }
             let average = total / Float(raySamples.count)
-            let normalized = clampFloat(average / max(1, adaptiveSamplingStep), lower: 0, upper: 1)
+            let normalized = VolumetricMath.clampFloat(average / max(1, adaptiveSamplingStep), lower: 0, upper: 1)
             return normalized * 0.5
         }
 
@@ -299,7 +299,7 @@ public extension VolumetricSceneController {
             }
             let mean = weighted / total
             let normalized = (mean - histogram.intensityRange.lowerBound) / range
-            return clampFloat(normalized, lower: 0, upper: 1)
+            return VolumetricMath.clampFloat(normalized, lower: 0, upper: 1)
         }
 
         private func hsbToRGB(hue: Float, saturation: Float, brightness: Float) -> (r: Float, g: Float, b: Float) {

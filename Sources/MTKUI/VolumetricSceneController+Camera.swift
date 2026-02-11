@@ -24,367 +24,289 @@ import MTKCore
 import MTKSceneKit
 
 @MainActor public extension VolumetricSceneController {
-    func applyPatientOrientationIfNeeded() {
-        guard let geometry else {
-            volumeNode.simdOrientation = simd_quatf()
-            return
-        }
-        let basis = patientBasis(from: geometry)
-        let quaternion = simd_normalize(simd_quatf(basis))
-        volumeNode.simdOrientation = quaternion
-    }
+    // MARK: - Camera Controller Delegation
 
     @discardableResult
     func ensureCameraNode() -> SCNNode {
-        if let existing = sceneView.pointOfView {
-            if existing.parent == nil {
-                rootNode.addChildNode(existing)
-            }
-            sceneView.defaultCameraController.pointOfView = existing
-            return existing
-        }
-
-        let cameraNode = SCNNode()
-        cameraNode.name = "Volumetric.Camera"
-        cameraNode.camera = SCNCamera()
-        cameraNode.position = SCNVector3(x: 0, y: 0, z: 2)
-        cameraNode.eulerAngles = SCNVector3(x: 0, y: 0, z: 0)
-        rootNode.addChildNode(cameraNode)
-        sceneView.pointOfView = cameraNode
-        sceneView.defaultCameraController.pointOfView = cameraNode
-        updateCameraClippingPlanes(cameraNode.camera,
-                                   radius: volumeBoundingRadius,
-                                   offsetLength: simd_length(cameraOffset))
-        return cameraNode
+        return cameraController.ensureCameraNode(
+            volumeBoundingRadius: volumeBoundingRadius,
+            cameraOffset: cameraOffset
+        )
     }
 
-    /// Usa a geometria extraída do dataset para posicionar a câmera sobre o
-    /// volume: o normal define o eixo de observação, a coluna define o `up`, e
-    /// ambos alimentam o estado interativo e o transform de fallback gravado
-    /// para futuras reativações da cena.
     func configureCamera(using geometry: DICOMGeometry) {
-        let cameraNode = ensureCameraNode()
         updateVolumeBounds()
-        let center = volumeWorldCenter
-        let normal = safeNormalize(geometry.iopNorm, fallback: SIMD3<Float>(0, 0, 1))
-        let up = safeNormalize(geometry.iopCol, fallback: SIMD3<Float>(0, 1, 0))
-        let radius = max(volumeBoundingRadius, 1e-3)
-        let distance = max(radius * defaultCameraDistanceFactor, radius * 1.25)
-        let position = center + normal * distance
-        let transform = makeLookAtTransform(position: position, target: center, up: up)
-
-        cameraNode.simdTransform = transform
-        fallbackCameraTransform = transform
-        initialCameraTransform = transform
-        fallbackWorldUp = up
-        fallbackCameraTarget = center
-        patientLongitudinalAxis = safeNormalize(normal, fallback: patientLongitudinalAxis)
-        sceneView.defaultCameraController.pointOfView = cameraNode
-        updateInteractiveCameraState(target: center, up: up, cameraNode: cameraNode, radius: radius)
-        defaultCameraTarget = SCNVector3(x: SCNFloat(center.x),
-                                         y: SCNFloat(center.y),
-                                         z: SCNFloat(center.z))
-        prepareCameraControllerForExternalGestures(worldUp: up)
-        updateCameraClippingPlanes(cameraNode.camera,
-                                   radius: radius,
-                                   offsetLength: simd_length(cameraOffset))
+        _ = cameraController.configureCamera(
+            using: geometry,
+            volumeWorldCenter: volumeWorldCenter,
+            volumeBoundingRadius: volumeBoundingRadius,
+            defaultCameraDistanceFactor: defaultCameraDistanceFactor,
+            updateState: { [weak self] (cameraTarget: SIMD3<Float>, cameraOffset: SIMD3<Float>, cameraUpVector: SIMD3<Float>, fallbackCameraTransform: simd_float4x4, initialCameraTransform: simd_float4x4, fallbackWorldUp: SIMD3<Float>, fallbackCameraTarget: SIMD3<Float>, patientLongitudinalAxis: SIMD3<Float>, defaultCameraTarget: SCNVector3, cameraDistanceLimits: ClosedRange<Float>) in
+                guard let self else { return }
+                self.cameraTarget = cameraTarget
+                self.cameraOffset = cameraOffset
+                self.cameraUpVector = cameraUpVector
+                self.fallbackCameraTransform = fallbackCameraTransform
+                self.initialCameraTransform = initialCameraTransform
+                self.fallbackWorldUp = fallbackWorldUp
+                self.fallbackCameraTarget = fallbackCameraTarget
+                self.patientLongitudinalAxis = patientLongitudinalAxis
+                self.defaultCameraTarget = defaultCameraTarget
+                self.cameraDistanceLimits = cameraDistanceLimits
+            }
+        )
     }
 
     func restoreFallbackCamera() {
-        let cameraNode = ensureCameraNode()
         updateVolumeBounds()
-        if let transform = fallbackCameraTransform {
-            cameraNode.simdTransform = transform
-        }
-        sceneView.defaultCameraController.pointOfView = cameraNode
-        let radius = max(volumeBoundingRadius, 1e-3)
-        updateInteractiveCameraState(target: fallbackCameraTarget,
-                                      up: fallbackWorldUp,
-                                      cameraNode: cameraNode,
-                                      radius: radius)
-        defaultCameraTarget = SCNVector3(x: SCNFloat(fallbackCameraTarget.x),
-                                         y: SCNFloat(fallbackCameraTarget.y),
-                                         z: SCNFloat(fallbackCameraTarget.z))
-        prepareCameraControllerForExternalGestures()
-    }
-
-    func synchronizeMprNodeTransform() {
-        mprNode.simdTransform = volumeNode.simdTransform
+        _ = cameraController.restoreFallbackCamera(
+            fallbackCameraTransform: fallbackCameraTransform,
+            fallbackCameraTarget: fallbackCameraTarget,
+            fallbackWorldUp: fallbackWorldUp,
+            volumeBoundingRadius: volumeBoundingRadius,
+            updateState: { [weak self] (cameraTarget: SIMD3<Float>, cameraOffset: SIMD3<Float>, cameraUpVector: SIMD3<Float>, defaultCameraTarget: SCNVector3, cameraDistanceLimits: ClosedRange<Float>) in
+                guard let self else { return }
+                self.cameraTarget = cameraTarget
+                self.cameraOffset = cameraOffset
+                self.cameraUpVector = cameraUpVector
+                self.defaultCameraTarget = defaultCameraTarget
+                self.cameraDistanceLimits = cameraDistanceLimits
+            }
+        )
     }
 
     func updateInteractiveCameraState(target: SIMD3<Float>,
                                       up: SIMD3<Float>,
                                       cameraNode: SCNNode,
                                       radius: Float) {
-        cameraDistanceLimits = makeCameraDistanceLimits(radius: radius)
-        let clampedTarget = clampCameraTarget(target)
-        cameraTarget = clampedTarget
-        cameraUpVector = safeNormalize(up, fallback: fallbackWorldUp)
-        cameraOffset = cameraNode.simdWorldPosition - clampedTarget
-        cameraOffset = clampCameraOffset(cameraOffset)
-        defaultCameraTarget = SCNVector3(x: SCNFloat(cameraTarget.x),
-                                         y: SCNFloat(cameraTarget.y),
-                                         z: SCNFloat(cameraTarget.z))
-        fallbackWorldUp = cameraUpVector
-        updateCameraControllerTargets()
-        updateCameraClippingPlanes(cameraNode.camera,
-                                   radius: radius,
-                                   offsetLength: simd_length(cameraOffset))
-        recordCameraState(position: cameraTarget + cameraOffset,
-                           target: cameraTarget,
-                           up: cameraUpVector)
+        cameraController.updateInteractiveCameraState(
+            target: target,
+            up: up,
+            cameraNode: cameraNode,
+            radius: radius,
+            clampTargetFn: { [weak self] (target: SIMD3<Float>) in
+                guard let self else { return target }
+                return self.clampCameraTarget(target)
+            },
+            fallbackWorldUp: fallbackWorldUp,
+            updateState: { [weak self] (cameraTarget: SIMD3<Float>, cameraUpVector: SIMD3<Float>, cameraOffset: SIMD3<Float>, defaultCameraTarget: SCNVector3, cameraDistanceLimits: ClosedRange<Float>, fallbackWorldUp: SIMD3<Float>) in
+                guard let self else { return }
+                self.cameraTarget = cameraTarget
+                self.cameraUpVector = cameraUpVector
+                self.cameraOffset = cameraOffset
+                self.defaultCameraTarget = defaultCameraTarget
+                self.cameraDistanceLimits = cameraDistanceLimits
+                self.fallbackWorldUp = fallbackWorldUp
+            }
+        )
     }
 
     func applyInteractiveCameraTransform(_ cameraNode: SCNNode) {
-        cameraTarget = clampCameraTarget(cameraTarget)
-        cameraOffset = clampCameraOffset(cameraOffset)
-        let position = cameraTarget + cameraOffset
-        let forward = safeNormalize(cameraTarget - position, fallback: SIMD3<Float>(0, 0, -1))
-        var up = safeNormalize(cameraUpVector, fallback: fallbackWorldUp)
-        if abs(simd_dot(forward, up)) > 0.999 {
-            up = safePerpendicular(to: forward)
-        }
-        let right = safeNormalize(simd_cross(forward, up), fallback: safePerpendicular(to: forward))
-        up = safeNormalize(simd_cross(right, forward), fallback: up)
-        cameraUpVector = up
-        var transform = matrix_identity_float4x4
-        transform.columns.0 = SIMD4<Float>(right.x, right.y, right.z, 0)
-        transform.columns.1 = SIMD4<Float>(up.x, up.y, up.z, 0)
-        transform.columns.2 = SIMD4<Float>(-forward.x, -forward.y, -forward.z, 0)
-        transform.columns.3 = SIMD4<Float>(position.x, position.y, position.z, 1)
-        cameraNode.simdTransform = transform
-        defaultCameraTarget = SCNVector3(x: SCNFloat(cameraTarget.x),
-                                         y: SCNFloat(cameraTarget.y),
-                                         z: SCNFloat(cameraTarget.z))
-        updateCameraControllerTargets()
-        updateCameraClippingPlanes(cameraNode.camera,
-                                   radius: volumeBoundingRadius,
-                                   offsetLength: simd_length(cameraOffset))
+        cameraController.applyInteractiveCameraTransform(
+            cameraNode,
+            cameraTarget: cameraTarget,
+            cameraOffset: cameraOffset,
+            cameraUpVector: cameraUpVector,
+            volumeBoundingRadius: volumeBoundingRadius,
+            fallbackWorldUp: fallbackWorldUp,
+            clampTargetFn: { [weak self] (target: SIMD3<Float>) in
+                guard let self else { return target }
+                return self.clampCameraTarget(target)
+            },
+            clampOffsetFn: { [weak self] (offset: SIMD3<Float>) in
+                guard let self else { return offset }
+                return self.clampCameraOffset(offset)
+            },
+            updateState: { [weak self] (cameraTarget: SIMD3<Float>, cameraUpVector: SIMD3<Float>, cameraOffset: SIMD3<Float>, defaultCameraTarget: SCNVector3) in
+                guard let self else { return }
+                self.cameraTarget = cameraTarget
+                self.cameraUpVector = cameraUpVector
+                self.cameraOffset = cameraOffset
+                self.defaultCameraTarget = defaultCameraTarget
+            },
+            updateRayCastingCache: { [weak self] in
 #if canImport(MetalPerformanceShaders)
-        if renderingBackend == .metalPerformanceShaders {
-            updateRayCastingCache(cameraNode: cameraNode)
-        }
+                guard let self, self.renderingBackend == .metalPerformanceShaders else { return }
+                self.updateRayCastingCache(cameraNode: cameraNode)
 #endif
-        recordCameraState(position: position, target: cameraTarget, up: up)
+            }
+        )
     }
 
     func clampCameraOffset(_ offset: SIMD3<Float>) -> SIMD3<Float> {
-        let length = simd_length(offset)
-        guard length > Float.ulpOfOne else {
-            let fallbackDistance = max(cameraDistanceLimits.lowerBound, 0.1)
-            return SIMD3<Float>(0, 0, fallbackDistance)
-        }
-        let clamped = max(cameraDistanceLimits.lowerBound, min(length, cameraDistanceLimits.upperBound))
-        let normalized = offset / length
-        return normalized * clamped
+        return cameraController.clampCameraOffset(offset, distanceLimits: cameraDistanceLimits)
     }
 
     func makeCameraDistanceLimits(radius: Float) -> ClosedRange<Float> {
-        let minimum = max(radius * 0.25, 0.1)
-        let maximum = max(radius * 12, minimum + 0.5)
-        return minimum...maximum
+        return cameraController.makeCameraDistanceLimits(radius: radius)
     }
 
     func updateCameraControllerTargets() {
-        let controller = sceneView.defaultCameraController
-        guard controller.pointOfView != nil else { return }
-        controller.target = SCNVector3(x: SCNFloat(cameraTarget.x),
-                                       y: SCNFloat(cameraTarget.y),
-                                       z: SCNFloat(cameraTarget.z))
-        controller.worldUp = SCNVector3(x: SCNFloat(cameraUpVector.x),
-                                        y: SCNFloat(cameraUpVector.y),
-                                        z: SCNFloat(cameraUpVector.z))
+        cameraController.updateCameraControllerTargets(cameraTarget: cameraTarget, cameraUpVector: cameraUpVector)
     }
 
     func screenSpaceScale(distance: Float, cameraNode: SCNNode) -> (horizontal: Float, vertical: Float) {
-        let bounds = sceneView.bounds
-        let width = max(Float(bounds.width), 1)
-        let height = max(Float(bounds.height), 1)
-        let fallback: Float = 0.002
-        guard height > Float.ulpOfOne else { return (fallback, fallback) }
-
-        let fovDegrees = Float(cameraNode.camera?.fieldOfView ?? 60)
-        let clampedFov = max(min(fovDegrees, 179), 1)
-        let radians = clampedFov * Float.pi / 180
-        let tangent = tan(Double(radians) / 2)
-        let verticalScale = 2 * distance * Float(tangent) / height
-        let aspect = width / height
-        let horizontalScale = verticalScale * aspect
-
-        if !verticalScale.isFinite || !horizontalScale.isFinite || verticalScale <= 0 || horizontalScale <= 0 {
-            return (fallback, fallback)
-        }
-        return (horizontalScale, verticalScale)
+        return cameraController.screenSpaceScale(distance: distance, cameraNode: cameraNode)
     }
 
     func prepareCameraControllerForExternalGestures(worldUp: SIMD3<Float>? = nil) {
-        sceneView.allowsCameraControl = false
-        let cameraNode = ensureCameraNode()
-        let controller = sceneView.defaultCameraController
-        controller.inertiaEnabled = false
-        if controller.pointOfView !== cameraNode {
-            controller.pointOfView = cameraNode
-        }
-        controller.target = defaultCameraTarget
-        let resolvedWorldUp = worldUp ?? cameraUpVector
-        controller.worldUp = SCNVector3(x: SCNFloat(resolvedWorldUp.x),
-                                        y: SCNFloat(resolvedWorldUp.y),
-                                        z: SCNFloat(resolvedWorldUp.z))
-        controller.clearRoll()
-    }
-
-    func updateVolumeBounds() {
-        let node = volumeNode
-        let worldTransform = node.simdWorldTransform
-
-        let sphere = node.boundingSphere
-        let localCenter = SIMD4<Float>(Float(sphere.center.x),
-                                       Float(sphere.center.y),
-                                       Float(sphere.center.z),
-                                       1)
-        var worldCenter = worldTransform * localCenter
-        if !worldCenter.x.isFinite || !worldCenter.y.isFinite || !worldCenter.z.isFinite {
-            worldCenter = worldTransform * SIMD4<Float>(0, 0, 0, 1)
-        }
-        volumeWorldCenter = SIMD3<Float>(worldCenter.x, worldCenter.y, worldCenter.z)
-
-        let axisX = SIMD3<Float>(worldTransform.columns.0.x,
-                                 worldTransform.columns.0.y,
-                                 worldTransform.columns.0.z)
-        let axisY = SIMD3<Float>(worldTransform.columns.1.x,
-                                 worldTransform.columns.1.y,
-                                 worldTransform.columns.1.z)
-        let axisZ = SIMD3<Float>(worldTransform.columns.2.x,
-                                 worldTransform.columns.2.y,
-                                 worldTransform.columns.2.z)
-        patientLongitudinalAxis = safeNormalize(axisZ, fallback: patientLongitudinalAxis)
-
-        let lengthX = simd_length(axisX)
-        let lengthY = simd_length(axisY)
-        let lengthZ = simd_length(axisZ)
-
-        let diagonalSquared = lengthX * lengthX + lengthY * lengthY + lengthZ * lengthZ
-        var radius: Float = 0
-        if diagonalSquared > Float.ulpOfOne {
-            radius = 0.5 * sqrt(diagonalSquared)
-        }
-
-        if radius <= Float.ulpOfOne {
-            let boundingBox = node.boundingBox
-            let localMin = boundingBox.min
-            let localMax = boundingBox.max
-
-            if localMin.x <= localMax.x &&
-                localMin.y <= localMax.y &&
-                localMin.z <= localMax.z {
-                let corners: [SIMD4<Float>] = [
-                    SIMD4<Float>(Float(localMin.x), Float(localMin.y), Float(localMin.z), 1),
-                    SIMD4<Float>(Float(localMin.x), Float(localMin.y), Float(localMax.z), 1),
-                    SIMD4<Float>(Float(localMin.x), Float(localMax.y), Float(localMin.z), 1),
-                    SIMD4<Float>(Float(localMin.x), Float(localMax.y), Float(localMax.z), 1),
-                    SIMD4<Float>(Float(localMax.x), Float(localMin.y), Float(localMin.z), 1),
-                    SIMD4<Float>(Float(localMax.x), Float(localMin.y), Float(localMax.z), 1),
-                    SIMD4<Float>(Float(localMax.x), Float(localMax.y), Float(localMin.z), 1),
-                    SIMD4<Float>(Float(localMax.x), Float(localMax.y), Float(localMax.z), 1)
-                ]
-
-                for corner in corners {
-                    let worldCorner = worldTransform * corner
-                    let offset = SIMD3<Float>(worldCorner.x, worldCorner.y, worldCorner.z) - volumeWorldCenter
-                    radius = max(radius, simd_length(offset))
-                }
-            }
-        }
-
-        if radius <= Float.ulpOfOne {
-            let maxScale = max(lengthX, max(lengthY, lengthZ))
-            if maxScale > Float.ulpOfOne {
-                radius = Float(sphere.radius) * maxScale
-            }
-        }
-
-        if radius <= Float.ulpOfOne {
-            let scale = volumeMaterial.scale
-            let diagonal = simd_length(scale)
-            if diagonal > Float.ulpOfOne {
-                radius = 0.5 * diagonal
-            }
-        }
-
-        volumeBoundingRadius = max(radius, 1e-3)
-    }
-
-    func clampCameraTarget(_ target: SIMD3<Float>) -> SIMD3<Float> {
-        let offset = target - volumeWorldCenter
-        let limit = max(volumeBoundingRadius * maximumPanDistanceMultiplier, 1.0)
-        let distance = simd_length(offset)
-        guard distance > limit else { return target }
-        if distance <= Float.ulpOfOne {
-            return volumeWorldCenter
-        }
-        return volumeWorldCenter + (offset / distance) * limit
+        cameraController.prepareCameraControllerForExternalGestures(
+            worldUp: worldUp,
+            defaultCameraTarget: defaultCameraTarget
+        )
     }
 
     func updateCameraClippingPlanes(_ camera: SCNCamera?, radius: Float, offsetLength: Float) {
-        guard let camera else { return }
-
-        let safeRadius = max(radius, 1e-3)
-        let safeDistance = max(offsetLength, 1e-3)
-        let margin = max(safeRadius * 0.05, 0.01)
-        let near: Float
-        if safeDistance <= safeRadius {
-            near = max(0.01, safeDistance * 0.1)
-        } else {
-            near = max(0.01, safeDistance - safeRadius - margin)
-        }
-
-        let far = max(near + margin, safeDistance + safeRadius + margin)
-
-        camera.zNear = Double(near)
-        camera.zFar = Double(far)
-    }
-
-    func patientBasis(from geometry: DICOMGeometry) -> simd_float3x3 {
-        let row = safeNormalize(geometry.iopRow, fallback: SIMD3<Float>(1, 0, 0))
-        var column = safeNormalize(geometry.iopCol, fallback: SIMD3<Float>(0, 1, 0))
-        let cross = simd_cross(row, column)
-        if simd_length_squared(cross) <= Float.ulpOfOne {
-            column = safePerpendicular(to: row)
-        }
-        var normal = simd_cross(row, column)
-        if simd_length_squared(normal) <= Float.ulpOfOne {
-            normal = SIMD3<Float>(0, 0, 1)
-        }
-        normal = safeNormalize(normal, fallback: SIMD3<Float>(0, 0, 1))
-        column = safeNormalize(simd_cross(normal, row), fallback: SIMD3<Float>(0, 1, 0))
-        return simd_float3x3(columns: (row, column, normal))
+        cameraController.updateCameraClippingPlanes(camera, radius: radius, offsetLength: offsetLength)
     }
 
     func makeLookAtTransform(position: SIMD3<Float>, target: SIMD3<Float>, up: SIMD3<Float>) -> simd_float4x4 {
-        let forward = safeNormalize(target - position, fallback: SIMD3<Float>(0, 0, -1))
-        var right = simd_cross(up, forward)
-        right = safeNormalize(right, fallback: safePerpendicular(to: forward))
-        let correctedUp = safeNormalize(simd_cross(forward, right), fallback: SIMD3<Float>(0, 1, 0))
-        let rotation = simd_float3x3(columns: (right, correctedUp, -forward))
-        var transform = matrix_identity_float4x4
-        transform.columns.0 = SIMD4<Float>(rotation.columns.0.x, rotation.columns.0.y, rotation.columns.0.z, 0)
-        transform.columns.1 = SIMD4<Float>(rotation.columns.1.x, rotation.columns.1.y, rotation.columns.1.z, 0)
-        transform.columns.2 = SIMD4<Float>(rotation.columns.2.x, rotation.columns.2.y, rotation.columns.2.z, 0)
-        transform.columns.3 = SIMD4<Float>(position.x, position.y, position.z, 1)
-        return transform
+        return cameraController.makeLookAtTransform(position: position, target: target, up: up)
     }
 
     func safeNormalize(_ vector: SIMD3<Float>, fallback: SIMD3<Float>) -> SIMD3<Float> {
-        let lengthSquared = simd_length_squared(vector)
-        guard lengthSquared > Float.ulpOfOne else { return fallback }
-        return vector / sqrt(lengthSquared)
+        return cameraController.safeNormalize(vector, fallback: fallback)
     }
 
     func safePerpendicular(to vector: SIMD3<Float>) -> SIMD3<Float> {
-        let axis = abs(vector.x) < 0.9 ? SIMD3<Float>(1, 0, 0) : SIMD3<Float>(0, 1, 0)
-        let perpendicular = simd_cross(vector, axis)
-        return safeNormalize(perpendicular, fallback: SIMD3<Float>(0, 0, 1))
+        return cameraController.safePerpendicular(to: vector)
     }
+
+    // MARK: - Volume Geometry Delegation
+
+    func updateVolumeBounds() {
+        volumeGeometry.updateVolumeBounds(
+            patientLongitudinalAxis: patientLongitudinalAxis,
+            updateState: { [weak self] (volumeWorldCenter: SIMD3<Float>, volumeBoundingRadius: Float, patientLongitudinalAxis: SIMD3<Float>) in
+                guard let self else { return }
+                self.volumeWorldCenter = volumeWorldCenter
+                self.volumeBoundingRadius = volumeBoundingRadius
+                self.patientLongitudinalAxis = patientLongitudinalAxis
+            }
+        )
+    }
+
+    func clampCameraTarget(_ target: SIMD3<Float>) -> SIMD3<Float> {
+        return volumeGeometry.clampCameraTarget(
+            target,
+            volumeWorldCenter: volumeWorldCenter,
+            volumeBoundingRadius: volumeBoundingRadius,
+            maximumPanDistanceMultiplier: maximumPanDistanceMultiplier
+        )
+    }
+
+    func patientBasis(from geometry: DICOMGeometry) -> simd_float3x3 {
+        return volumeGeometry.patientBasis(from: geometry)
+    }
+
+    func makeGeometry(from dataset: VolumeDataset) -> DICOMGeometry {
+        return volumeGeometry.makeGeometry(from: dataset)
+    }
+
+    // MARK: - MPR Controller Delegation
+
+    func applyPatientOrientationIfNeeded() {
+        mprController.applyPatientOrientationIfNeeded(geometry: geometry)
+    }
+
+    func synchronizeMprNodeTransform() {
+        mprController.synchronizeMprNodeTransform()
+    }
+
+    func normalizedPosition(for axis: Axis, index: Int) -> Float {
+        return mprController.normalizedPosition(for: axis, index: index)
+    }
+
+    func indexPosition(for axis: Axis, normalized: Float) -> Int {
+        return mprController.indexPosition(for: axis, normalized: normalized)
+    }
+
+    func clampedIndex(for axis: Axis, index: Int) -> Int {
+        return mprController.clampedIndex(for: axis, index: index)
+    }
+
+    func applyMprOrientation() {
+        mprController.applyMprOrientation(
+            datasetApplied: datasetApplied,
+            currentMprAxis: currentMprAxis,
+            mprPlaneIndex: mprPlaneIndex,
+            mprEuler: mprEuler,
+            geometry: geometry,
+            fallbackWorldUp: fallbackWorldUp,
+            volumeWorldCenter: volumeWorldCenter,
+            volumeBoundingRadius: volumeBoundingRadius,
+            defaultCameraDistanceFactor: defaultCameraDistanceFactor,
+            updateState: { [weak self] (fallbackCameraTransform: simd_float4x4,
+                                        initialCameraTransform: simd_float4x4,
+                                        defaultCameraTarget: SCNVector3) in
+                guard let self else { return }
+                self.fallbackCameraTransform = fallbackCameraTransform
+                self.initialCameraTransform = initialCameraTransform
+                self.defaultCameraTarget = defaultCameraTarget
+            }
+        )
+    }
+
+    func alignCameraToMpr(normal: SIMD3<Float>, up: SIMD3<Float>) {
+        updateVolumeBounds()
+        mprController.alignCameraToMpr(
+            normal: normal,
+            up: up,
+            volumeWorldCenter: volumeWorldCenter,
+            volumeBoundingRadius: volumeBoundingRadius,
+            defaultCameraDistanceFactor: defaultCameraDistanceFactor,
+            fallbackWorldUp: fallbackWorldUp,
+            updateState: { [weak self] (fallbackCameraTransform: simd_float4x4,
+                                        initialCameraTransform: simd_float4x4,
+                                        defaultCameraTarget: SCNVector3) in
+                guard let self else { return }
+                self.fallbackCameraTransform = fallbackCameraTransform
+                self.initialCameraTransform = initialCameraTransform
+                self.defaultCameraTarget = defaultCameraTarget
+            }
+        )
+    }
+
+    func rotationQuaternion(for euler: SIMD3<Float>) -> simd_quatf {
+        return mprController.rotationQuaternion(for: euler)
+    }
+
+    func datasetDimensions() -> SIMD3<Float> {
+        return mprController.datasetDimensions()
+    }
+
+    func configureMPR(axis: Axis, index: Int, blend: MPRPlaneMaterial.BlendMode, slab: SlabConfiguration?) {
+        mprController.configureMPR(
+            axis: axis,
+            index: index,
+            blend: blend,
+            slab: slab,
+            datasetApplied: datasetApplied,
+            geometry: geometry,
+            fallbackWorldUp: fallbackWorldUp,
+            volumeWorldCenter: volumeWorldCenter,
+            volumeBoundingRadius: volumeBoundingRadius,
+            defaultCameraDistanceFactor: defaultCameraDistanceFactor,
+            updateState: { [weak self] (currentMprAxis: VolumetricSceneController.Axis,
+                                        mprPlaneIndex: Int,
+                                        mprNormalizedPosition: Float,
+                                        mprEuler: SIMD3<Float>,
+                                        fallbackCameraTransform: simd_float4x4,
+                                        initialCameraTransform: simd_float4x4,
+                                        defaultCameraTarget: SCNVector3) in
+                guard let self else { return }
+                self.currentMprAxis = currentMprAxis
+                self.mprPlaneIndex = mprPlaneIndex
+                self.mprNormalizedPosition = mprNormalizedPosition
+                self.mprEuler = mprEuler
+                self.fallbackCameraTransform = fallbackCameraTransform
+                self.initialCameraTransform = initialCameraTransform
+                self.defaultCameraTarget = defaultCameraTarget
+            }
+        )
+    }
+
+    // MARK: - MPS Raycasting Support
 
 #if canImport(MetalPerformanceShaders)
     func prepareMpsResourcesForDataset(_ dataset: VolumeDataset) {
@@ -525,136 +447,8 @@ import MTKSceneKit
     }
 #endif
 
-    func normalizedPosition(for axis: Axis, index: Int) -> Float {
-        let dim = mprMaterial.dimension
-        let maxIndex: Float
-        switch axis {
-        case .x:
-            maxIndex = max(1.0, Float(dim.x - 1))
-        case .y:
-            maxIndex = max(1.0, Float(dim.y - 1))
-        case .z:
-            maxIndex = max(1.0, Float(dim.z - 1))
-        }
-        let clamped = Float(index)
-        return clampFloat(clamped / maxIndex, lower: 0.0, upper: 1.0)
-    }
+    // MARK: - Adaptive Sampling Support
 
-    func indexPosition(for axis: Axis, normalized: Float) -> Int {
-        let clamped = clampFloat(normalized, lower: 0.0, upper: 1.0)
-        let dim = mprMaterial.dimension
-        switch axis {
-        case .x:
-            return Int(round(clamped * Float(max(0, dim.x - 1))))
-        case .y:
-            return Int(round(clamped * Float(max(0, dim.y - 1))))
-        case .z:
-            return Int(round(clamped * Float(max(0, dim.z - 1))))
-        }
-    }
-
-    func clampedIndex(for axis: Axis, index: Int) -> Int {
-        let dim = mprMaterial.dimension
-        switch axis {
-        case .x:
-            return max(0, min(Int(dim.x) - 1, index))
-        case .y:
-            return max(0, min(Int(dim.y) - 1, index))
-        case .z:
-            return max(0, min(Int(dim.z) - 1, index))
-        }
-    }
-
-    func applyMprOrientation() {
-        guard datasetApplied, let axis = currentMprAxis else { return }
-        let rotation = rotationQuaternion(for: mprEuler)
-        let dims = datasetDimensions()
-        let plane = MprPlaneComputation.make(
-            axis: axis,
-            index: mprPlaneIndex,
-            dims: dims,
-            rotation: rotation
-        )
-
-        let normal: SIMD3<Float>
-        let up: SIMD3<Float>
-
-        mprMaterial.setVerticalFlip(axis == .z)
-
-        if let geometry {
-            let world = plane.world(using: geometry)
-            let (originTex, axisUT, axisVT) = geometry.planeWorldToTex(
-                originW: world.origin,
-                axisUW: world.axisU,
-                axisVW: world.axisV
-            )
-
-            mprMaterial.setOblique(origin: originTex, axisU: axisUT, axisV: axisVT)
-            mprNode.setTransformFromBasisTex(originTex: originTex, axisUTex: axisUT, axisVTex: axisVT)
-
-            normal = safeNormalize(simd_cross(world.axisU, world.axisV), fallback: fallbackWorldUp)
-            up = safeNormalize(world.axisV, fallback: fallbackWorldUp)
-        } else {
-            mprNode.simdOrientation = rotation
-            let fallback = plane.tex(dims: dims)
-            mprMaterial.setOblique(origin: fallback.origin, axisU: fallback.axisU, axisV: fallback.axisV)
-
-            normal = safeNormalize(simd_cross(fallback.axisU, fallback.axisV), fallback: SIMD3<Float>(0, 0, 1))
-            up = safeNormalize(fallback.axisV, fallback: SIMD3<Float>(0, 1, 0))
-        }
-
-        alignCameraToMpr(normal: normal, up: up)
-    }
-
-    func alignCameraToMpr(normal: SIMD3<Float>, up: SIMD3<Float>) {
-        let cameraNode = ensureCameraNode()
-
-        let safeNormal = safeNormalize(normal, fallback: SIMD3<Float>(0, 0, 1))
-        let safeUp = safeNormalize(up, fallback: fallbackWorldUp)
-        updateVolumeBounds()
-        let center = volumeWorldCenter
-        let radius = max(volumeBoundingRadius, 1e-3)
-        let distance = max(radius * defaultCameraDistanceFactor, radius * 1.25)
-        let position = center + safeNormal * distance
-        let transform = makeLookAtTransform(position: position, target: center, up: safeUp)
-
-        cameraNode.simdTransform = transform
-        fallbackCameraTransform = transform
-        initialCameraTransform = transform
-        fallbackWorldUp = safeUp
-        sceneView.defaultCameraController.pointOfView = cameraNode
-        defaultCameraTarget = SCNVector3(center)
-        sceneView.defaultCameraController.target = defaultCameraTarget
-        sceneView.defaultCameraController.worldUp = SCNVector3(safeUp)
-        sceneView.defaultCameraController.clearRoll()
-    }
-
-    func rotationQuaternion(for euler: SIMD3<Float>) -> simd_quatf {
-        let qx = simd_quatf(angle: euler.x, axis: SIMD3<Float>(1, 0, 0))
-        let qy = simd_quatf(angle: euler.y, axis: SIMD3<Float>(0, 1, 0))
-        let qz = simd_quatf(angle: euler.z, axis: SIMD3<Float>(0, 0, 1))
-        return simd_normalize(qz * qy * qx)
-    }
-
-    func datasetDimensions() -> SIMD3<Float> {
-        let dims = mprMaterial.dimension
-        return MprPlaneComputation.datasetDimensions(width: Int(dims.x), height: Int(dims.y), depth: Int(dims.z))
-    }
-
-    func makeGeometry(from dataset: VolumeDataset) -> DICOMGeometry {
-        let orientation = dataset.orientation
-        return DICOMGeometry(
-            cols: Int32(dataset.dimensions.width),
-            rows: Int32(dataset.dimensions.height),
-            slices: Int32(dataset.dimensions.depth),
-            spacingX: Float(dataset.spacing.x),
-            spacingY: Float(dataset.spacing.y),
-            spacingZ: Float(dataset.spacing.z),
-            iopRow: orientation.row,
-            iopCol: orientation.column,
-            ipp0: orientation.origin
-        )
-    }
 #if canImport(UIKit)
     func attachAdaptiveHandlersIfNeeded() {
         guard let recognizers = sceneView.gestureRecognizers else { return }
@@ -702,21 +496,6 @@ import MTKSceneKit
 #if canImport(MetalPerformanceShaders) && canImport(MetalKit)
         mpsDisplay?.updateAdaptiveSamplingStep(baseSamplingStep)
 #endif
-    }
-
-    func configureMPR(axis: Axis, index: Int, blend: MPRPlaneMaterial.BlendMode, slab: SlabConfiguration?) {
-        currentMprAxis = axis
-        mprMaterial.setBlend(blend)
-        if let slab {
-            mprMaterial.setSlab(thicknessInVoxels: slab.thickness, axis: axis.rawValue, steps: slab.steps)
-        } else {
-            mprMaterial.setSlab(thicknessInVoxels: 1, axis: axis.rawValue, steps: 1)
-        }
-
-        mprPlaneIndex = clampedIndex(for: axis, index: index)
-        mprNormalizedPosition = normalizedPosition(for: axis, index: mprPlaneIndex)
-        mprEuler = .zero
-        applyMprOrientation()
     }
 }
 #endif

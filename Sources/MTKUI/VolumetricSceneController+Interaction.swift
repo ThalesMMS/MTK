@@ -311,7 +311,7 @@ import MTKSceneKit
     }
 
     public func setAdaptiveSampling(_ enabled: Bool) async {
-        setAdaptiveSamplingFlag(enabled)
+        statePublisher.setAdaptiveSamplingFlag(enabled)
         if !enabled {
             restoreSamplingStep()
         }
@@ -360,7 +360,7 @@ import MTKSceneKit
     public func setMprPlane(axis: Axis, normalized: Float) async {
         guard datasetApplied else { return }
         guard currentMprAxis == axis else { return }
-        let clamped = clampFloat(normalized, lower: 0.0, upper: 1.0)
+        let clamped = VolumetricMath.clampFloat(normalized, lower: 0.0, upper: 1.0)
         let targetIndex = indexPosition(for: axis, normalized: clamped)
         // Convertendo para índice inteiro e depois de volta para normalizado
         // garantimos que tanto o plano do SceneKit quanto o renderer MPS usem
@@ -369,7 +369,7 @@ import MTKSceneKit
         mprPlaneIndex = clampedIndex(for: axis, index: targetIndex)
         mprNormalizedPosition = normalizedPosition(for: axis, index: mprPlaneIndex)
         applyMprOrientation()
-        recordSliceState(axis: axis, normalized: mprNormalizedPosition)
+        statePublisher.recordSliceState(axis: axis, normalized: mprNormalizedPosition)
     }
 
     public func translate(axis: Axis, deltaNormalized: Float) async {
@@ -442,7 +442,7 @@ import MTKSceneKit
 #if canImport(MetalPerformanceShaders) && canImport(MetalKit)
         mpsDisplay?.updateHuWindow(min: window.minHU, max: window.maxHU)
 #endif
-        recordWindowLevelState(window)
+        statePublisher.recordWindowLevelState(window)
     }
 
     public func setRenderMode(_ mode: VolumetricRenderMode) async {

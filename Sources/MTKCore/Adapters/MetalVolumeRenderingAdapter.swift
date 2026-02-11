@@ -28,7 +28,7 @@ public struct ExtendedRenderingState: Sendable {
     var adaptiveEnabled: Bool = false
     var adaptiveThreshold: Float = 0
     var jitterAmount: Float = 0
-    var earlyTerminationThreshold: Float = 0.99
+    var earlyTerminationThreshold: Float = 0.95
     var channelIntensities: SIMD4<Float> = SIMD4<Float>(repeating: 1)
     var toneCurvePoints: [Int: [SIMD2<Float>]] = [:]
     var toneCurvePresetKeys: [Int: String] = [:]
@@ -229,7 +229,7 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
                 let binWidth = span / Float(binCount)
 
                 reader.forEachIntensity { sample in
-                    let clamped = min(max(sample, lowerBound), upperBound)
+                    let clamped = VolumetricMath.clampFloat(sample, lower: lowerBound, upper: upperBound)
                     var index = Int((clamped - lowerBound) / binWidth)
                     if index >= binCount {
                         index = binCount - 1
@@ -365,7 +365,7 @@ private extension MetalVolumeRenderingAdapter {
 
     private func renderWithMetal(state: MetalState,
                                  request: VolumeRenderRequest) async throws -> VolumeRenderResult {
-        let viewport = sanitizedViewportSize(request.viewportSize)
+        let viewport = VolumetricMath.clampViewportSize(request.viewportSize)
         guard viewport.width > 0, viewport.height > 0 else {
             throw RenderingError.outputTextureUnavailable
         }
@@ -416,12 +416,6 @@ private extension MetalVolumeRenderingAdapter {
         return VolumeRenderResult(cgImage: image,
                                   metalTexture: outputTexture,
                                   metadata: metadata)
-    }
-
-    private func sanitizedViewportSize(_ size: CGSize) -> (width: Int, height: Int) {
-        let width = max(1, Int(size.width.rounded(.toNearestOrEven)))
-        let height = max(1, Int(size.height.rounded(.toNearestOrEven)))
-        return (width, height)
     }
 
     private func prepareDatasetTexture(for dataset: VolumeDataset,
@@ -561,8 +555,8 @@ private extension MetalVolumeRenderingAdapter {
         uniforms.dimY = Int32(dataset.dimensions.height)
         uniforms.dimZ = Int32(dataset.dimensions.depth)
 
-        let steps = max(1, Int32(roundf(1.0 / max(request.samplingDistance, 1e-5))))
-        uniforms.renderingQuality = steps
+        let rawSteps = Int(roundf(1.0 / max(request.samplingDistance, 1e-5)))
+        uniforms.renderingQuality = Int32(VolumetricMath.sanitizeSteps(rawSteps))
 
         switch request.compositing {
         case .maximumIntensity:
@@ -792,7 +786,7 @@ private extension MetalVolumeRenderingAdapter {
                     }
 
                     var normalized = (shiftAdjusted - lower) / span
-                    normalized = max(0, min(1, normalized))
+                    normalized = VolumetricMath.clampFloat(normalized, lower: 0, upper: 1)
                     normalized = Self.applyToneCurve(normalized,
                                                      points: state.toneCurvePoints[0] ?? [],
                                                      gain: state.toneCurveGains[0] ?? 1)
@@ -804,7 +798,7 @@ private extension MetalVolumeRenderingAdapter {
                         normalized *= 0.5
                     }
 
-                    let clamped = max(0, min(1, normalized))
+                    let clamped = VolumetricMath.clampFloat(normalized, lower: 0, upper: 1)
                     pixels[y * width + x] = UInt8(clamping: Int(round(clamped * 255)))
                 }
             }
@@ -833,7 +827,7 @@ private extension MetalVolumeRenderingAdapter {
         guard !points.isEmpty else { return value * gain }
         let safeGain = max(gain, 0)
         let sorted = points.sorted { $0.x < $1.x }
-        let clampedValue = max(sorted.first!.x, min(sorted.last!.x, value))
+        let clampedValue = VolumetricMath.clampFloat(value, lower: sorted.first!.x, upper: sorted.last!.x)
 
         for index in 0..<(sorted.count - 1) {
             let start = sorted[index]
@@ -841,7 +835,7 @@ private extension MetalVolumeRenderingAdapter {
             if clampedValue >= start.x && clampedValue <= end.x {
                 let t = (clampedValue - start.x) / max(end.x - start.x, 1e-6)
                 let mixed = start.y + t * (end.y - start.y)
-                return max(0, min(1, mixed)) * safeGain
+                return VolumetricMath.clampFloat(mixed, lower: 0, upper: 1) * safeGain
             }
         }
         return clampedValue * safeGain

@@ -177,7 +177,7 @@ public final class DicomVolumeLoader {
                                         let huRounded = Int32(lround(huDouble))
                                         minHU = min(minHU, huRounded)
                                         maxHU = max(maxHU, huRounded)
-                                        destPtr[offset + index] = Self.clampedHU(huRounded)
+                                        destPtr[offset + index] = VolumetricMath.clampHU(huRounded)
                                     }
                                 } else {
                                     let source = rawBuffer.bindMemory(to: UInt16.self)
@@ -187,7 +187,7 @@ public final class DicomVolumeLoader {
                                         let huRounded = Int32(lround(huDouble))
                                         minHU = min(minHU, huRounded)
                                         maxHU = max(maxHU, huRounded)
-                                        destPtr[offset + index] = Self.clampedHU(huRounded)
+                                        destPtr[offset + index] = VolumetricMath.clampHU(huRounded)
                                     }
                                 }
                             }
@@ -304,16 +304,6 @@ public final class DicomVolumeLoader {
 }
 
 private extension DicomVolumeLoader {
-    static func clampedHU(_ value: Int32) -> Int16 {
-        let clampMin: Int32 = -1024
-        let clampMax: Int32 = 3071
-        let huClamped = max(clampMin, min(clampMax, value))
-        let int16Min = Int32(Int16.min)
-        let int16Max = Int32(Int16.max)
-        let clamped = max(int16Min, min(int16Max, huClamped))
-        return Int16(clamped)
-    }
-
     static func intensityRange(minHU: Int32, maxHU: Int32) -> ClosedRange<Int32> {
         var minHU = minHU
         var maxHU = maxHU
@@ -323,8 +313,8 @@ private extension DicomVolumeLoader {
             minHU = clampMin
             maxHU = clampMax
         } else {
-            minHU = max(minHU, clampMin)
-            maxHU = min(maxHU, clampMax)
+            minHU = Swift.max(minHU, clampMin)
+            maxHU = Swift.min(maxHU, clampMax)
         }
         return minHU...maxHU
     }
@@ -368,5 +358,10 @@ public extension DicomVolumeLoader {
         case .reading(let fraction):
             return .reading(fraction)
         }
+    }
+
+    /// Convenience initializer using the default Swift DICOM decoder
+    convenience init() {
+        self.init(seriesLoader: DicomDecoderSeriesLoader())
     }
 }

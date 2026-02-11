@@ -67,7 +67,7 @@ struct RenderingParameters: Sizeable {
     var pointY: Float = 0
     var alphaPower: UInt8 = 1
     var renderingStep: Float = 1 / 512
-    var earlyTerminationThreshold: Float = 0.99
+    var earlyTerminationThreshold: Float = 0.95
     var adaptiveGradientThreshold: Float = 0.1
     var jitterAmount: Float = 0
     var intensityRatio: SIMD4<Float> = SIMD4<Float>(1, 0, 0, 0)

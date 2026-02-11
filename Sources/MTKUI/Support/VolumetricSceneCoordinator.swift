@@ -168,7 +168,7 @@ public final class VolumetricSceneCoordinator: ObservableObject {
                                     slab: VolumetricSceneController.SlabConfiguration? = nil,
                                     normalizedPosition: Float = 0.5) {
         guard isMetalAvailable else { return }
-        let clamped = clamp(normalizedPosition, lower: 0, upper: 1)
+        let clamped = VolumetricMath.clampFloat(normalizedPosition, lower: 0, upper: 1)
         mprConfigurations[axis] = MprConfiguration(blend: blend,
                                                    slab: slab,
                                                    normalizedPosition: clamped)
@@ -184,7 +184,7 @@ public final class VolumetricSceneCoordinator: ObservableObject {
     ///   - normalizedPosition: Normalized position along axis (0...1)
     public func setMprPlane(axis: VolumetricSceneController.Axis, normalizedPosition: Float) {
         guard isMetalAvailable else { return }
-        let clamped = clamp(normalizedPosition, lower: 0, upper: 1)
+        let clamped = VolumetricMath.clampFloat(normalizedPosition, lower: 0, upper: 1)
         if var config = mprConfigurations[axis] {
             config.normalizedPosition = clamped
             mprConfigurations[axis] = config
@@ -298,17 +298,12 @@ public final class VolumetricSceneCoordinator: ObservableObject {
         return Int(round(normalized * Float(voxelCount)))
     }
 
-    @inline(__always)
-    private func clamp(_ value: Float, lower: Float, upper: Float) -> Float {
-        return min(max(value, lower), upper)
-    }
-
     private func attachObservers(to controller: VolumetricSceneController,
                                  surface: SurfaceKey) {
         var cancellables = Set<AnyCancellable>()
 
         if case .volume = surface {
-            controller.$windowLevelState
+            controller.statePublisher.$windowLevelState
                 .sink { [weak self] state in
                     guard let self else { return }
                     let minHU = Int32((state.level - state.window / 2).rounded())
@@ -329,7 +324,7 @@ public final class VolumetricSceneCoordinator: ObservableObject {
         }
 
         if case let .mpr(axis) = surface {
-            controller.$sliceState
+            controller.statePublisher.$sliceState
                 .sink { [weak self] slice in
                     guard let self else { return }
                     updateRendererState { state in

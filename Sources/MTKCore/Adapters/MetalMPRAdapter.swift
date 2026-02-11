@@ -37,8 +37,8 @@ public actor MetalMPRAdapter: MPRReslicePort {
                          steps: Int,
                          blend: MPRBlendMode) async throws -> MPRSlice {
         let effectiveBlend = overrides.blend ?? blend
-        let effectiveThickness = Self.sanitizeThickness(overrides.slabThickness ?? thickness)
-        let effectiveSteps = Self.sanitizeSteps(overrides.slabSteps ?? steps)
+        let effectiveThickness = VolumetricMath.sanitizeThickness(overrides.slabThickness ?? thickness)
+        let effectiveSteps = VolumetricMath.sanitizeSteps(overrides.slabSteps ?? steps)
 
         let slice = try await Task.detached(priority: .userInitiated) {
             dataset.data.withUnsafeBytes { buffer -> MPRSlice in
@@ -116,8 +116,8 @@ public actor MetalMPRAdapter: MPRReslicePort {
         case .setBlend(let mode):
             overrides.blend = mode
         case .setSlab(let thickness, let steps):
-            overrides.slabThickness = max(0, thickness)
-            overrides.slabSteps = max(1, steps)
+            overrides.slabThickness = VolumetricMath.sanitizeThickness(thickness)
+            overrides.slabSteps = VolumetricMath.sanitizeSteps(steps)
         }
     }
 }
@@ -135,14 +135,6 @@ extension MetalMPRAdapter {
 // MARK: - Helpers
 
 private extension MetalMPRAdapter {
-    static func sanitizeThickness(_ value: Int) -> Int {
-        max(0, value)
-    }
-
-    static func sanitizeSteps(_ value: Int) -> Int {
-        max(1, value)
-    }
-
     static func dominantAxis(for plane: MPRPlaneGeometry) -> MPRPlaneAxis {
         let normal = plane.normalWorld
         let components = [abs(normal.x), abs(normal.y), abs(normal.z)]

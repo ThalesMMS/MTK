@@ -23,7 +23,7 @@ import OSLog
                                 requestedBins: Int,
                                 defaultBinCount: Int,
                                 maxThreadgroupMemoryLength: Int) -> HistogramDispatchPlan {
-        let bins = VolumeHistogramCalculator.clampBinCount(requestedBins > 0 ? requestedBins : defaultBinCount)
+        let bins = VolumetricMath.clampBinCount(requestedBins > 0 ? requestedBins : defaultBinCount)
         let clampedChannels = max(1, min(channelCount, 4))
         let bufferLength = clampedChannels * bins * MemoryLayout<UInt32>.stride
         let usesThreadgroupMemory = bufferLength <= max(0, maxThreadgroupMemoryLength)
@@ -65,10 +65,6 @@ public final class VolumeHistogramCalculator {
         self.commandQueue = commandQueue
         self.library = library
         self.debugOptions = debugOptions
-    }
-
-    public static func clampBinCount(_ value: Int) -> Int {
-        max(64, min(value, 4096))
     }
 
     public func computeHistogram(for texture: any MTLTexture,

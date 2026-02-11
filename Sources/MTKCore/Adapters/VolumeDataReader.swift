@@ -44,9 +44,9 @@ struct VolumeDataReader {
     }
 
     func intensity(x: Int, y: Int, z: Int) -> Float {
-        let clampedX = max(0, min(width - 1, x))
-        let clampedY = max(0, min(height - 1, y))
-        let clampedZ = max(0, min(depth - 1, z))
+        let clampedX = VolumetricMath.clamp(x, min: 0, max: width - 1)
+        let clampedY = VolumetricMath.clamp(y, min: 0, max: height - 1)
+        let clampedZ = VolumetricMath.clamp(z, min: 0, max: depth - 1)
         let index = linearIndex(x: clampedX, y: clampedY, z: clampedZ)
         return intensity(atLinearIndex: index)
     }
@@ -54,11 +54,11 @@ struct VolumeDataReader {
     func intensity(at position: SIMD3<Float>) -> Float {
         if width == 0 || height == 0 || depth == 0 { return 0 }
 
-        let clamped = clamp(position,
-                            min: SIMD3<Float>(repeating: 0),
-                            max: SIMD3<Float>(Float(width - 1),
-                                               Float(height - 1),
-                                               Float(depth - 1)))
+        let clamped = VolumetricMath.clampSIMD3(position,
+                                                  min: SIMD3<Float>(repeating: 0),
+                                                  max: SIMD3<Float>(Float(width - 1),
+                                                                     Float(height - 1),
+                                                                     Float(depth - 1)))
 
         let x0 = Int(floor(clamped.x))
         let y0 = Int(floor(clamped.y))
@@ -109,14 +109,6 @@ struct VolumeDataReader {
 private extension VolumeDataReader {
     func linearIndex(x: Int, y: Int, z: Int) -> Int {
         z * width * height + y * width + x
-    }
-
-    func clamp(_ value: SIMD3<Float>, min lower: SIMD3<Float>, max upper: SIMD3<Float>) -> SIMD3<Float> {
-        SIMD3<Float>(
-            Swift.max(lower.x, Swift.min(upper.x, value.x)),
-            Swift.max(lower.y, Swift.min(upper.y, value.y)),
-            Swift.max(lower.z, Swift.min(upper.z, value.z))
-        )
     }
 
     func lerp(_ a: Float, _ b: Float, _ t: Float) -> Float {

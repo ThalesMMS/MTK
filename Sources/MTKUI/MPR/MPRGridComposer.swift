@@ -52,7 +52,7 @@ public struct MPRGridComposer: View {
             windowLevel = WindowLevelShift(window: axialController.windowLevelState.window,
                                            level: axialController.windowLevelState.level)
         }
-        .onReceive(axialController.$windowLevelState) { state in
+        .onReceive(axialController.statePublisher.$windowLevelState) { state in
             windowLevel = WindowLevelShift(window: state.window, level: state.level)
         }
     }

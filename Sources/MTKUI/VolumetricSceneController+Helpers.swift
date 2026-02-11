@@ -53,8 +53,4 @@ extension SCNNode {
         }
     }
 }
-
-func clampFloat(_ value: Float, lower: Float, upper: Float) -> Float {
-    min(upper, max(lower, value))
-}
 #endif

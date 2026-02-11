@@ -1,4 +1,5 @@
 import XCTest
+import Metal
 @testable import MTKCore
 
 final class MTKCoreTests: XCTestCase {
@@ -18,5 +19,42 @@ final class MTKCoreTests: XCTestCase {
     func testTransferFunctionPresetAvailability() {
         let transfer = VolumeTransferFunctionLibrary.transferFunction(for: VolumeRenderingBuiltinPreset.ctEntire)
         XCTAssertNotNil(transfer)
+    }
+
+    @MainActor
+    func testAllBuiltinPresetsLoadFromBundleResources() throws {
+        let allPresets = VolumeRenderingBuiltinPreset.allCases
+        XCTAssertEqual(allPresets.count, 12, "Expected 12 builtin presets")
+
+        let device = MTLCreateSystemDefaultDevice()
+        let metalAvailable = device != nil
+
+        for preset in allPresets {
+            guard let transfer = TransferFunctionPresetLoader.load(preset) else {
+                XCTFail("Failed to load preset \(preset.rawValue) from bundle resources")
+                continue
+            }
+
+            XCTAssertFalse(transfer.name.isEmpty,
+                           "Preset \(preset.rawValue) has empty name")
+            XCTAssertFalse(transfer.colourPoints.isEmpty,
+                           "Preset \(preset.rawValue) has no colour points")
+            XCTAssertFalse(transfer.alphaPoints.isEmpty,
+                           "Preset \(preset.rawValue) has no alpha points")
+            XCTAssertLessThan(transfer.minimumValue, transfer.maximumValue,
+                              "Preset \(preset.rawValue) has invalid range (\(transfer.minimumValue) >= \(transfer.maximumValue))")
+
+            if metalAvailable, let device = device {
+                let texture = transfer.makeTexture(device: device)
+                XCTAssertNotNil(texture,
+                                "Failed to create Metal texture for preset \(preset.rawValue)")
+                if let texture = texture {
+                    XCTAssertGreaterThan(texture.width, 0,
+                                         "Preset \(preset.rawValue) created texture with zero width")
+                    XCTAssertGreaterThan(texture.height, 0,
+                                         "Preset \(preset.rawValue) created texture with zero height")
+                }
+            }
+        }
     }
 }

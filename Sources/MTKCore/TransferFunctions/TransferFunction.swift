@@ -124,7 +124,7 @@ public extension TransferFunction {
             .filter { $0.dataValue.isFinite }
             .map { point -> ColorPoint in
                 var adjusted = point
-                adjusted.dataValue = clamp(adjusted.dataValue, lower: minimumValue, upper: maximumValue)
+                adjusted.dataValue = VolumetricMath.clampFloat(adjusted.dataValue, lower: minimumValue, upper: maximumValue)
                 return adjusted
             }
             .sorted { $0.dataValue < $1.dataValue }
@@ -159,8 +159,8 @@ public extension TransferFunction {
             .filter { $0.dataValue.isFinite && $0.alphaValue.isFinite }
             .map { point -> AlphaPoint in
                 var adjusted = point
-                adjusted.dataValue = clamp(adjusted.dataValue, lower: minimumValue, upper: maximumValue)
-                adjusted.alphaValue = clamp(adjusted.alphaValue,
+                adjusted.dataValue = VolumetricMath.clampFloat(adjusted.dataValue, lower: minimumValue, upper: maximumValue)
+                adjusted.alphaValue = VolumetricMath.clampFloat(adjusted.alphaValue,
                                             lower: defaultRange.0,
                                             upper: defaultRange.1)
                 return adjusted
@@ -194,10 +194,6 @@ public extension TransferFunction {
 }
 
 private extension TransferFunction {
-    func clamp(_ value: Float, lower: Float, upper: Float) -> Float {
-        Swift.max(lower, Swift.min(value, upper))
-    }
-
     func deduplicate(points: [ColorPoint]) -> [ColorPoint] {
         var result: [ColorPoint] = []
         for point in points {
