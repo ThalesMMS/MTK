@@ -80,10 +80,19 @@ public:
         return inside.x * inside.y;
     }
     
-    static float3 getViewRayDir(float3 vertexLocal, NodeBuffer node, SCNSceneBuffer scene)
-    { // TODO: Implement when orthographic
-        return normalize(ObjSpaceViewDir(float4(vertexLocal, 1.0f),
-                                         node, scene)); // when perspective
+    static float3 getViewRayDir(float3 vertexLocal, NodeBuffer node, SCNSceneBuffer scene, bool isOrthographic)
+    {
+        if (isOrthographic) {
+            // Orthographic: all rays are parallel to camera forward direction
+            // Camera looks down -Z in view space, transform to object space
+            float3 viewForward = float3(0.0f, 0.0f, -1.0f);
+            float3 objSpaceDir = (node.inverseModelViewTransform * float4(viewForward, 0.0f)).xyz;
+            return normalize(objSpaceDir);
+        } else {
+            // Perspective: ray from camera to vertex
+            return normalize(ObjSpaceViewDir(float4(vertexLocal, 1.0f),
+                                             node, scene));
+        }
     }
 };
 
@@ -203,8 +212,13 @@ public:
                                     SCNSceneBuffer scene)
     {
         RayInfo ray;
+        // Detect projection type by examining projection matrix
+        // Orthographic: projectionTransform[2][3] == 0.0
+        // Perspective:  projectionTransform[2][3] == -1.0
+        bool isOrthographic = (scene.projectionTransform[2][3] == 0.0f);
+
         ray.direction = Unity::getViewRayDir(vertexLocal,
-                                             node, scene);
+                                             node, scene, isOrthographic);
         ray.startPosition = vertexLocal + float3(0.5f, 0.5f, 0.5f);
         ray.aabbIntersection = intersectAABB(ray.startPosition,
                                              ray.direction,

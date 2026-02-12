@@ -16,7 +16,7 @@ public struct VolumeRenderingDebugOptions: Sendable {
     public var enableDensityDebug: Bool
 
     public init(isDebugMode: Bool = false,
-                histogramBinCount: Int = 512,
+                histogramBinCount: Int = 256,
                 enableDensityDebug: Bool = false) {
         self.isDebugMode = isDebugMode
         self.histogramBinCount = histogramBinCount

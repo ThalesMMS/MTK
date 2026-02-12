@@ -88,6 +88,7 @@ struct CameraUniforms {
     float4x4 inverseViewProjectionMatrix;
     float3   cameraPositionLocal;
     uint     frameIndex;
+    uint     projectionType;
     uint     padding;
 };
 

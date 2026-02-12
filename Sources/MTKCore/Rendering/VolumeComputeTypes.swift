@@ -8,6 +8,11 @@
 
 import simd
 
+public enum ProjectionType: UInt32, Codable, Sendable {
+    case perspective = 0
+    case orthographic = 1
+}
+
 struct VolumeUniforms: Sizeable {
     var isLightingOn: Int32 = 1
     var isBackwardOn: Int32 = 0
@@ -90,5 +95,6 @@ struct CameraUniforms: Sizeable {
     var inverseViewProjectionMatrix: simd_float4x4 = matrix_identity_float4x4
     var cameraPositionLocal: SIMD3<Float> = .zero
     var frameIndex: UInt32 = 0
+    var projectionType: UInt32 = 0
     var padding: UInt32 = 0
 }

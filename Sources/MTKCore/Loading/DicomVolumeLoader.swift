@@ -8,6 +8,7 @@
 //
 
 import Foundation
+import Metal
 import OSLog
 import simd
 import ZIPFoundation
@@ -40,6 +41,7 @@ public enum DicomVolumeLoaderError: Error {
     case securityScopeUnavailable
     case unsupportedBitDepth
     case missingResult
+    case pathTraversal
     case bridgeError(NSError)
 }
 
@@ -52,6 +54,8 @@ extension DicomVolumeLoaderError: LocalizedError {
             return "Apenas séries DICOM escalares de 16 bits são suportadas no momento."
         case .missingResult:
             return "A conversão da série DICOM não retornou dados."
+        case .pathTraversal:
+            return "O arquivo contém caminhos inválidos que tentam acessar diretórios externos."
         case .bridgeError(let nsError):
             let description = nsError.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
             return description.isEmpty ? "Falha ao processar a série DICOM." : description
@@ -88,11 +92,36 @@ public enum DicomVolumeUIProgress {
 public final class DicomVolumeLoader {
     private let logger = Logger(subsystem: "com.mtk.dicom", category: "Loader")
     private let loader: DicomSeriesLoading
-    
+
+    /// Optional Metal device for GPU-accelerated statistics computation
+    private let device: (any MTLDevice)?
+
+    /// Optional command queue for GPU-accelerated statistics computation
+    private let commandQueue: (any MTLCommandQueue)?
+
+    /// Optional histogram calculator for GPU-accelerated histogram computation
+    public var histogramCalculator: VolumeHistogramCalculator?
+
+    /// Optional statistics calculator for GPU-accelerated percentile and Otsu computations
+    public var statisticsCalculator: VolumeStatisticsCalculator?
+
     /// Initialize with a custom series loader
-    /// - Parameter seriesLoader: DICOM series loading implementation
-    public init(seriesLoader: DicomSeriesLoading) {
+    /// - Parameters:
+    ///   - seriesLoader: DICOM series loading implementation
+    ///   - device: Optional Metal device for GPU-accelerated statistics
+    ///   - commandQueue: Optional command queue for GPU operations
+    ///   - histogramCalculator: Optional histogram calculator for auto-windowing
+    ///   - statisticsCalculator: Optional statistics calculator for auto-windowing
+    public init(seriesLoader: DicomSeriesLoading,
+                device: (any MTLDevice)? = nil,
+                commandQueue: (any MTLCommandQueue)? = nil,
+                histogramCalculator: VolumeHistogramCalculator? = nil,
+                statisticsCalculator: VolumeStatisticsCalculator? = nil) {
         self.loader = seriesLoader
+        self.device = device
+        self.commandQueue = commandQueue
+        self.histogramCalculator = histogramCalculator
+        self.statisticsCalculator = statisticsCalculator
     }
     
     private struct PreparedDirectory {
@@ -211,7 +240,7 @@ public final class DicomVolumeLoader {
                 }
 
                 let range = Self.intensityRange(minHU: minHU, maxHU: maxHU)
-                let dataset = self.makeDataset(data: convertedData,
+                var dataset = self.makeDataset(data: convertedData,
                                                width: Int(dimensions.x),
                                                height: Int(dimensions.y),
                                                depth: Int(dimensions.z),
@@ -224,13 +253,20 @@ public final class DicomVolumeLoader {
                     try? FileManager.default.removeItem(at: cleanupRoot)
                 }
 
-                let result = DicomImportResult(dataset: dataset,
-                                               sourceURL: url,
-                                               seriesDescription: (volume as? any DICOMSeriesVolumeProtocol)?.seriesDescription ?? "")
+                self.computeRecommendedWindow(for: dataset,
+                                              intensityRange: range) { updatedDataset in
+                    if let updatedDataset {
+                        dataset = updatedDataset
+                    }
 
-                self.logger.info("DICOM import completed for \(sourceURL.lastPathComponent) (\(dimensions.x)x\(dimensions.y)x\(dimensions.z))")
-                DispatchQueue.main.async {
-                    completion(.success(result))
+                    let result = DicomImportResult(dataset: dataset,
+                                                   sourceURL: url,
+                                                   seriesDescription: (volume as? any DICOMSeriesVolumeProtocol)?.seriesDescription ?? "")
+
+                    self.logger.info("DICOM import completed for \(sourceURL.lastPathComponent) (\(dimensions.x)x\(dimensions.y)x\(dimensions.z))")
+                    DispatchQueue.main.async {
+                        completion(.success(result))
+                    }
                 }
             } catch let error as NSError {
                 self.logger.error("DICOM import failed for \(sourceURL.lastPathComponent): \(error.localizedDescription)")
@@ -283,7 +319,9 @@ public final class DicomVolumeLoader {
 
         var extractedEntries = 0
         for entry in archive {
-            let destinationURL = temporaryDirectory.appendingPathComponent(entry.path)
+            // Validate entry path to prevent path traversal attacks
+            let sanitizedPath = try Self.sanitizeZipEntryPath(entry.path)
+            let destinationURL = temporaryDirectory.appendingPathComponent(sanitizedPath)
             let destinationDir = destinationURL.deletingLastPathComponent()
             try FileManager.default.createDirectory(at: destinationDir, withIntermediateDirectories: true)
             _ = try archive.extract(entry, to: destinationURL)
@@ -304,6 +342,38 @@ public final class DicomVolumeLoader {
 }
 
 private extension DicomVolumeLoader {
+    /// Validate and sanitize ZIP entry path to prevent path traversal attacks
+    /// - Parameter entryPath: Raw path from ZIP entry
+    /// - Returns: Sanitized path safe for extraction
+    /// - Throws: DicomVolumeLoaderError.pathTraversal if path is malicious
+    static func sanitizeZipEntryPath(_ entryPath: String) throws -> String {
+        // Reject absolute paths
+        guard !entryPath.hasPrefix("/") else {
+            throw DicomVolumeLoaderError.pathTraversal
+        }
+
+        // Normalize path components and check for traversal attempts
+        let components = entryPath.split(separator: "/").map(String.init)
+        for component in components {
+            // Reject parent directory references
+            if component == ".." {
+                throw DicomVolumeLoaderError.pathTraversal
+            }
+            // Reject hidden files/directories (security best practice)
+            if component.hasPrefix(".") && component != "." {
+                throw DicomVolumeLoaderError.pathTraversal
+            }
+        }
+
+        // Filter out current directory references and join
+        let sanitizedComponents = components.filter { $0 != "." }
+        guard !sanitizedComponents.isEmpty else {
+            throw DicomVolumeLoaderError.pathTraversal
+        }
+
+        return sanitizedComponents.joined(separator: "/")
+    }
+
     static func intensityRange(minHU: Int32, maxHU: Int32) -> ClosedRange<Int32> {
         var minHU = minHU
         var maxHU = maxHU
@@ -326,7 +396,8 @@ private extension DicomVolumeLoader {
                      spacing: SIMD3<Float>,
                      orientationMatrix: simd_float3x3,
                      origin: SIMD3<Float>,
-                     intensityRange: ClosedRange<Int32>) -> VolumeDataset {
+                     intensityRange: ClosedRange<Int32>,
+                     recommendedWindow: ClosedRange<Int32>? = nil) -> VolumeDataset {
         let volumeDimensions = VolumeDimensions(width: width, height: height, depth: depth)
         let volumeSpacing = VolumeSpacing(x: Double(spacing.x),
                                           y: Double(spacing.y),
@@ -343,7 +414,89 @@ private extension DicomVolumeLoader {
                              spacing: volumeSpacing,
                              pixelFormat: .int16Signed,
                              intensityRange: intensityRange,
-                             orientation: orientation)
+                             orientation: orientation,
+                             recommendedWindow: recommendedWindow)
+    }
+
+    func computeRecommendedWindow(for dataset: VolumeDataset,
+                                  intensityRange: ClosedRange<Int32>,
+                                  completion: @escaping (VolumeDataset?) -> Void) {
+        guard let histogramCalculator,
+              let statisticsCalculator,
+              let device,
+              let commandQueue else {
+            completion(nil)
+            return
+        }
+
+        let factory = VolumeTextureFactory(dataset: dataset)
+        guard let volumeTexture = factory.generate(device: device) else {
+            logger.warning("Failed to create Metal texture for histogram computation")
+            completion(nil)
+            return
+        }
+        volumeTexture.label = "VolumeTexture3D.Histogram"
+
+        let channelCount = 1
+        let voxelMin = Int32(intensityRange.lowerBound)
+        let voxelMax = Int32(intensityRange.upperBound)
+
+        histogramCalculator.computeHistogram(for: volumeTexture,
+                                             channelCount: channelCount,
+                                             voxelMin: voxelMin,
+                                             voxelMax: voxelMax,
+                                             bins: 0) { [weak self] histogramResult in
+            guard let self else {
+                completion(nil)
+                return
+            }
+
+            switch histogramResult {
+            case .success(let histograms):
+                let percentiles: [Float] = [0.02, 0.98]
+                statisticsCalculator.computePercentiles(from: histograms,
+                                                       percentiles: percentiles) { [weak self] percentilesResult in
+                    guard let self else {
+                        completion(nil)
+                        return
+                    }
+
+                    switch percentilesResult {
+                    case .success(let percentileBins):
+                        guard percentileBins.count == 2 else {
+                            self.logger.warning("Expected 2 percentile bins, got \(percentileBins.count)")
+                            completion(nil)
+                            return
+                        }
+
+                        let binToHU = { (bin: UInt32) -> Int32 in
+                            let binCount = histograms[0].count
+                            let normalizedBin = Float(bin) / Float(binCount - 1)
+                            let huValue = Float(voxelMin) + normalizedBin * Float(voxelMax - voxelMin)
+                            return Int32(huValue.rounded())
+                        }
+
+                        let minHU = binToHU(percentileBins[0])
+                        let maxHU = binToHU(percentileBins[1])
+                        let recommendedWindow = minHU...maxHU
+
+                        var updatedDataset = dataset
+                        updatedDataset.recommendedWindow = recommendedWindow
+
+                        self.logger.info("Computed recommended window: [\(minHU), \(maxHU)] from percentiles [2%, 98%]")
+                        completion(updatedDataset)
+
+                    case .failure(let error):
+                        self.logger.warning("Failed to compute percentiles: \(error.localizedDescription)")
+                        completion(nil)
+                    }
+                }
+
+            case .failure(let error):
+                self.logger.warning("Failed to compute histogram: \(error.localizedDescription)")
+                completion(nil)
+            }
+        }
     }
 }
 

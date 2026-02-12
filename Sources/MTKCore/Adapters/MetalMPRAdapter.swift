@@ -2,12 +2,16 @@
 //  MetalMPRAdapter.swift
 //  MetalVolumetrics
 //
-//  CPU reference implementation of the multi-planar reconstruction adapter.
-//  It operates on raw voxel buffers and supports blend modes to validate the
-//  domain contract without depending on GPU availability.
+//  Multi-planar reconstruction adapter with GPU acceleration and CPU fallback.
+//  Leverages Metal compute shaders for high-performance slab generation when
+//  available, while maintaining a robust CPU reference implementation for
+//  compatibility and testing.
 //
+//  Thales Matheus Mendonça Santos — February 2026
 
 import Foundation
+import Metal
+import OSLog
 import simd
 
 @preconcurrency
@@ -29,7 +33,43 @@ public actor MetalMPRAdapter: MPRReslicePort {
     private var overrides = Overrides()
     private var lastSnapshot: SliceSnapshot?
 
+    // GPU acceleration
+    private var gpuAdapter: MetalMPRComputeAdapter?
+    private var forceCPU: Bool = false
+    private let logger = Logger(subsystem: "com.mtk.volumerendering",
+                                category: "MetalMPRAdapter")
+
     public init() {}
+
+    /// Initialize with Metal device for GPU acceleration
+    /// - Parameters:
+    ///   - device: Metal device for GPU compute
+    ///   - commandQueue: Optional command queue (will be created if nil)
+    ///   - library: Optional Metal library (will be loaded if nil)
+    ///   - debugOptions: Debug configuration options
+    public init(device: any MTLDevice,
+                commandQueue: (any MTLCommandQueue)? = nil,
+                library: (any MTLLibrary)? = nil,
+                debugOptions: VolumeRenderingDebugOptions = VolumeRenderingDebugOptions()) {
+        let queue = commandQueue ?? device.makeCommandQueue()
+        let lib = library ?? ShaderLibraryLoader.makeDefaultLibrary(on: device) { message in
+            Logger(subsystem: "com.mtk.volumerendering", category: "ShaderLoader").info("\(message)")
+        }
+
+        if let queue = queue, let lib = lib {
+            let featureFlags = FeatureFlags.evaluate(for: device)
+            self.gpuAdapter = MetalMPRComputeAdapter(
+                device: device,
+                commandQueue: queue,
+                library: lib,
+                featureFlags: featureFlags,
+                debugOptions: debugOptions
+            )
+            logger.info("MetalMPRAdapter initialized with GPU acceleration")
+        } else {
+            logger.warning("MetalMPRAdapter: Failed to initialize GPU adapter, using CPU fallback")
+        }
+    }
 
     public func makeSlab(dataset: VolumeDataset,
                          plane: MPRPlaneGeometry,
@@ -40,7 +80,127 @@ public actor MetalMPRAdapter: MPRReslicePort {
         let effectiveThickness = VolumetricMath.sanitizeThickness(overrides.slabThickness ?? thickness)
         let effectiveSteps = VolumetricMath.sanitizeSteps(overrides.slabSteps ?? steps)
 
-        let slice = try await Task.detached(priority: .userInitiated) {
+        // Try GPU path first if available and not forced to CPU
+        if shouldUseGPU(for: dataset) {
+            let startTime = CFAbsoluteTimeGetCurrent()
+            do {
+                let slice = try await gpuAdapter!.makeSlab(
+                    dataset: dataset,
+                    plane: plane,
+                    thickness: effectiveThickness,
+                    steps: effectiveSteps,
+                    blend: effectiveBlend
+                )
+
+                let duration = CFAbsoluteTimeGetCurrent() - startTime
+                logger.info("MPR slab generation completed via GPU path: \(String(format: "%.2f", duration * 1000))ms blend=\(effectiveBlend) thickness=\(effectiveThickness) steps=\(effectiveSteps)")
+
+                let axis = Self.dominantAxis(for: plane)
+                lastSnapshot = SliceSnapshot(axis: axis,
+                                             intensityRange: slice.intensityRange,
+                                             blend: effectiveBlend,
+                                             thickness: effectiveThickness,
+                                             steps: effectiveSteps)
+
+                overrides.blend = nil
+                overrides.slabThickness = nil
+                overrides.slabSteps = nil
+
+                return slice
+            } catch {
+                let duration = CFAbsoluteTimeGetCurrent() - startTime
+                logger.warning("GPU slab generation failed after \(String(format: "%.2f", duration * 1000))ms: \(error.localizedDescription), falling back to CPU")
+            }
+        }
+
+        // CPU fallback path
+        let startTime = CFAbsoluteTimeGetCurrent()
+        let slice = try await makeSlabOnCPU(
+            dataset: dataset,
+            plane: plane,
+            thickness: effectiveThickness,
+            steps: effectiveSteps,
+            blend: effectiveBlend
+        )
+
+        let duration = CFAbsoluteTimeGetCurrent() - startTime
+        logger.info("MPR slab generation completed via CPU path: \(String(format: "%.2f", duration * 1000))ms blend=\(effectiveBlend) thickness=\(effectiveThickness) steps=\(effectiveSteps)")
+
+        let axis = Self.dominantAxis(for: plane)
+        lastSnapshot = SliceSnapshot(axis: axis,
+                                     intensityRange: slice.intensityRange,
+                                     blend: effectiveBlend,
+                                     thickness: effectiveThickness,
+                                     steps: effectiveSteps)
+
+        overrides.blend = nil
+        overrides.slabThickness = nil
+        overrides.slabSteps = nil
+
+        return slice
+    }
+
+    public func send(_ command: MPRResliceCommand) async throws {
+        // Forward to GPU adapter if available
+        if let adapter = gpuAdapter {
+            try await adapter.send(command)
+        }
+
+        // Also update local overrides for CPU fallback
+        switch command {
+        case .setBlend(let mode):
+            overrides.blend = mode
+        case .setSlab(let thickness, let steps):
+            overrides.slabThickness = VolumetricMath.sanitizeThickness(thickness)
+            overrides.slabSteps = VolumetricMath.sanitizeSteps(steps)
+        }
+    }
+
+    /// Force CPU rendering path for testing or compatibility
+    /// - Parameter force: If true, GPU acceleration will be disabled
+    public func setForceCPU(_ force: Bool) {
+        forceCPU = force
+        if force {
+            logger.info("Forcing CPU rendering path")
+        } else if gpuAdapter != nil {
+            logger.info("GPU rendering path enabled")
+        }
+    }
+}
+
+// MARK: - Testing SPI
+
+extension MetalMPRAdapter {
+    @_spi(Testing)
+    public var debugOverrides: Overrides { overrides }
+
+    @_spi(Testing)
+    public var debugLastSnapshot: SliceSnapshot? { lastSnapshot }
+
+    @_spi(Testing)
+    public var debugGPUAvailable: Bool { gpuAdapter != nil }
+
+    @_spi(Testing)
+    public var debugForceCPU: Bool { forceCPU }
+}
+
+// MARK: - GPU/CPU Path Selection
+
+private extension MetalMPRAdapter {
+    /// Determines whether to use GPU compute path based on availability and configuration
+    func shouldUseGPU(for dataset: VolumeDataset) -> Bool {
+        guard !forceCPU else { return false }
+        guard gpuAdapter != nil else { return false }
+        return true
+    }
+
+    /// CPU-based slab generation (reference implementation)
+    func makeSlabOnCPU(dataset: VolumeDataset,
+                       plane: MPRPlaneGeometry,
+                       thickness: Int,
+                       steps: Int,
+                       blend: MPRBlendMode) async throws -> MPRSlice {
+        try await Task.detached(priority: .userInitiated) {
             dataset.data.withUnsafeBytes { buffer -> MPRSlice in
                 guard let reader = VolumeDataReader(dataset: dataset, buffer: buffer) else {
                     return Self.emptySlice(dataset: dataset)
@@ -51,7 +211,7 @@ public actor MetalMPRAdapter: MPRReslicePort {
                 var pixels = Data(count: width * height * bytesPerPixel)
 
                 let normal = Self.normalVector(for: plane, dataset: dataset)
-                let offsets = Self.sampleOffsets(thickness: effectiveThickness, steps: effectiveSteps)
+                let offsets = Self.sampleOffsets(thickness: thickness, steps: steps)
 
                 pixels.withUnsafeMutableBytes { rawBuffer in
                     switch dataset.pixelFormat {
@@ -64,7 +224,7 @@ public actor MetalMPRAdapter: MPRReslicePort {
                                            plane: plane,
                                            normal: normal,
                                            offsets: offsets,
-                                           blend: effectiveBlend,
+                                           blend: blend,
                                            intensityRange: dataset.intensityRange)
                     case .int16Unsigned:
                         let pointer = rawBuffer.bindMemory(to: UInt16.self)
@@ -75,7 +235,7 @@ public actor MetalMPRAdapter: MPRReslicePort {
                                            plane: plane,
                                            normal: normal,
                                            offsets: offsets,
-                                           blend: effectiveBlend,
+                                           blend: blend,
                                            intensityRange: dataset.intensityRange)
                     }
                 }
@@ -96,40 +256,7 @@ public actor MetalMPRAdapter: MPRReslicePort {
                                 pixelSpacing: pixelSpacing)
             }
         }.value
-
-        let axis = Self.dominantAxis(for: plane)
-        lastSnapshot = SliceSnapshot(axis: axis,
-                                     intensityRange: slice.intensityRange,
-                                     blend: effectiveBlend,
-                                     thickness: effectiveThickness,
-                                     steps: effectiveSteps)
-
-        overrides.blend = nil
-        overrides.slabThickness = nil
-        overrides.slabSteps = nil
-
-        return slice
     }
-
-    public func send(_ command: MPRResliceCommand) async throws {
-        switch command {
-        case .setBlend(let mode):
-            overrides.blend = mode
-        case .setSlab(let thickness, let steps):
-            overrides.slabThickness = VolumetricMath.sanitizeThickness(thickness)
-            overrides.slabSteps = VolumetricMath.sanitizeSteps(steps)
-        }
-    }
-}
-
-// MARK: - Testing SPI
-
-extension MetalMPRAdapter {
-    @_spi(Testing)
-    public var debugOverrides: Overrides { overrides }
-
-    @_spi(Testing)
-    public var debugLastSnapshot: SliceSnapshot? { lastSnapshot }
 }
 
 // MARK: - Helpers

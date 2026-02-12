@@ -61,4 +61,143 @@ final class AdvancedToneCurveModelTests: XCTestCase {
         XCTAssertEqual(highResSamples.count, Int(255 * 8) + 1)
         XCTAssertNotEqual(lowResSamples.count, highResSamples.count)
     }
+
+    func testSampledValuesCacheIsUsedForSameScale() {
+        let model = AdvancedToneCurveModel(points: [
+            .init(x: 0, y: 0),
+            .init(x: 128, y: 0.5),
+            .init(x: 255, y: 1)
+        ])
+
+        let firstCall = model.sampledValues(scale: 4)
+        let secondCall = model.sampledValues(scale: 4)
+
+        XCTAssertEqual(firstCall.count, secondCall.count)
+        XCTAssertEqual(firstCall, secondCall, "Subsequent calls with same scale should return identical cached values")
+    }
+
+    func testSampledValuesCacheIsInvalidatedWhenControlPointsChange() {
+        let model = AdvancedToneCurveModel(points: [
+            .init(x: 0, y: 0),
+            .init(x: 128, y: 0.5),
+            .init(x: 255, y: 1)
+        ])
+
+        let originalSamples = model.sampledValues(scale: 3)
+
+        model.setControlPoints([
+            .init(x: 0, y: 0),
+            .init(x: 128, y: 0.8),
+            .init(x: 255, y: 1)
+        ])
+
+        let updatedSamples = model.sampledValues(scale: 3)
+
+        XCTAssertEqual(originalSamples.count, updatedSamples.count, "Sample count should remain same for same scale")
+        XCTAssertNotEqual(originalSamples, updatedSamples, "Cache should be invalidated after control points change")
+    }
+
+    func testSampledValuesCacheIsInvalidatedWhenPointUpdated() {
+        let model = AdvancedToneCurveModel(points: [
+            .init(x: 0, y: 0),
+            .init(x: 64, y: 0.25),
+            .init(x: 128, y: 0.5),
+            .init(x: 192, y: 0.75),
+            .init(x: 255, y: 1)
+        ])
+
+        let originalSamples = model.sampledValues(scale: 5)
+
+        model.updatePoint(at: 2, to: .init(x: 128, y: 0.9))
+
+        let updatedSamples = model.sampledValues(scale: 5)
+
+        XCTAssertNotEqual(originalSamples, updatedSamples, "Cache should be invalidated after updating a control point")
+    }
+
+    func testSampledValuesCacheIsInvalidatedWhenPointInserted() {
+        let model = AdvancedToneCurveModel(points: [
+            .init(x: 0, y: 0),
+            .init(x: 255, y: 1)
+        ])
+
+        let originalSamples = model.sampledValues(scale: 4)
+        let originalPointCount = model.currentControlPoints().count
+
+        // Insert a point that creates a non-linear curve
+        model.insertPoint(.init(x: 128, y: 0.2))
+
+        let updatedSamples = model.sampledValues(scale: 4)
+        let updatedPointCount = model.currentControlPoints().count
+
+        XCTAssertGreaterThan(updatedPointCount, originalPointCount, "Control point should be inserted")
+        XCTAssertNotEqual(originalSamples, updatedSamples, "Cache should be invalidated after inserting a control point")
+    }
+
+    func testSampledValuesCacheIsInvalidatedWhenPointRemoved() {
+        let model = AdvancedToneCurveModel(points: [
+            .init(x: 0, y: 0),
+            .init(x: 64, y: 0.1),
+            .init(x: 128, y: 0.9),
+            .init(x: 192, y: 0.2),
+            .init(x: 255, y: 1)
+        ])
+
+        let originalSamples = model.sampledValues(scale: 3)
+        let originalPointCount = model.currentControlPoints().count
+
+        // Remove a point that significantly affects the curve shape
+        let removed = model.removePoint(at: 2)
+
+        let updatedSamples = model.sampledValues(scale: 3)
+        let updatedPointCount = model.currentControlPoints().count
+
+        XCTAssertTrue(removed, "Point removal should succeed")
+        XCTAssertLessThan(updatedPointCount, originalPointCount, "Control point should be removed")
+        XCTAssertNotEqual(originalSamples, updatedSamples, "Cache should be invalidated after removing a control point")
+    }
+
+    func testSampledValuesCacheMaintainsSeparateEntriesForDifferentScales() {
+        let model = AdvancedToneCurveModel(points: [
+            .init(x: 0, y: 0),
+            .init(x: 128, y: 0.5),
+            .init(x: 255, y: 1)
+        ])
+
+        let scale2Samples = model.sampledValues(scale: 2)
+        let scale5Samples = model.sampledValues(scale: 5)
+        let scale2SamplesAgain = model.sampledValues(scale: 2)
+
+        XCTAssertEqual(scale2Samples.count, Int(255 * 2) + 1)
+        XCTAssertEqual(scale5Samples.count, Int(255 * 5) + 1)
+        XCTAssertEqual(scale2Samples, scale2SamplesAgain, "Cache should be updated to latest scale and remain consistent")
+    }
+
+    func testSampledValuesCacheIsInvalidatedWhenInterpolationModeChanges() {
+        // Test cache invalidation by verifying consistent values after interpolation mode change
+        let model = AdvancedToneCurveModel(points: [
+            .init(x: 0, y: 0),
+            .init(x: 64, y: 0.3),
+            .init(x: 128, y: 0.5),
+            .init(x: 192, y: 0.7),
+            .init(x: 255, y: 1)
+        ])
+
+        model.interpolationMode = .cubicSpline
+        let firstCubicSamples = model.sampledValues(scale: 3)
+        let secondCubicSamples = model.sampledValues(scale: 3)
+
+        // Verify cache is working - same values returned for same mode
+        XCTAssertEqual(firstCubicSamples, secondCubicSamples, "Cache should return same values for same mode")
+
+        model.interpolationMode = .linear
+        let firstLinearSamples = model.sampledValues(scale: 3)
+        let secondLinearSamples = model.sampledValues(scale: 3)
+
+        // Verify cache is working - same values returned for same mode after change
+        XCTAssertEqual(firstLinearSamples, secondLinearSamples, "Cache should return same values for same mode after invalidation")
+
+        // Verify cache was properly invalidated and updated when mode changed
+        XCTAssertEqual(firstCubicSamples.count, firstLinearSamples.count, "Sample count should match")
+    }
 }

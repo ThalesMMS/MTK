@@ -105,6 +105,8 @@ public final class AdvancedToneCurveModel {
     }
 
     private var cachedSmoothedHistogram: [Double]?
+    private var cachedSampledValues: [Float]?
+    private var cachedSampledValuesScale: Int?
 
     /// Current interpolation mode (linear or cubic spline)
     public var interpolationMode: CubicSplineInterpolator.InterpolationMode = .cubicSpline {
@@ -188,6 +190,15 @@ public final class AdvancedToneCurveModel {
         }
 
         let clampedScale = max(1, scale)
+
+        // Return cached values if available and scale matches
+        if let cached = cachedSampledValues,
+           let cachedScale = cachedSampledValuesScale,
+           cachedScale == clampedScale {
+            return cached
+        }
+
+        // Compute new sampled values
         let sampleCount = Int(255 * clampedScale) + 1
         let step = 1.0 / Float(clampedScale)
 
@@ -202,6 +213,11 @@ public final class AdvancedToneCurveModel {
             values.append(value)
             x += step
         }
+
+        // Cache the computed values
+        cachedSampledValues = values
+        cachedSampledValuesScale = clampedScale
+
         return values
     }
 
@@ -313,6 +329,10 @@ private extension AdvancedToneCurveModel {
         }
 
         spline?.mode = interpolationMode
+
+        // Invalidate cached sampled values when spline changes
+        cachedSampledValues = nil
+        cachedSampledValuesScale = nil
     }
 
     func smoothedHistogram(radius: Int) -> [Double] {

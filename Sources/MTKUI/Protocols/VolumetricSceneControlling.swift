@@ -11,6 +11,7 @@
 //
 
 import Foundation
+import MTKCore
 
 // MARK: - Supporting Types
 
@@ -20,13 +21,16 @@ public struct VolumetricCameraState: Equatable {
     public var position: SIMD3<Float>
     public var target: SIMD3<Float>
     public var up: SIMD3<Float>
+    public var projectionType: ProjectionType
 
     public init(position: SIMD3<Float> = .zero,
                 target: SIMD3<Float> = .zero,
-                up: SIMD3<Float> = SIMD3<Float>(0, 1, 0)) {
+                up: SIMD3<Float> = SIMD3<Float>(0, 1, 0),
+                projectionType: ProjectionType = .perspective) {
         self.position = position
         self.target = target
         self.up = up
+        self.projectionType = projectionType
     }
 }
 

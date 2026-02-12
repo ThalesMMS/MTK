@@ -14,6 +14,7 @@ import Foundation
 import CoreGraphics
 import simd
 import SceneKit
+import MTKCore
 
 // MARK: - CameraPose
 
@@ -24,6 +25,7 @@ import SceneKit
 /// - `target`: The point in space the camera is looking at
 /// - `up`: The up vector defining camera roll
 /// - `fieldOfView`: The vertical field of view in degrees
+/// - `projectionType`: The projection type (perspective or orthographic)
 ///
 /// The struct conforms to `Equatable` for comparisons and `Codable` for serialization.
 public struct CameraPose: Equatable, Codable {
@@ -39,6 +41,9 @@ public struct CameraPose: Equatable, Codable {
     /// The vertical field of view in degrees
     public var fieldOfView: Float
 
+    /// The projection type (perspective or orthographic)
+    public var projectionType: ProjectionType
+
     /// Initializes a new camera pose.
     ///
     /// - Parameters:
@@ -46,11 +51,13 @@ public struct CameraPose: Equatable, Codable {
     ///   - target: The point the camera is looking at
     ///   - up: The up vector defining camera roll
     ///   - fieldOfView: The vertical field of view in degrees
-    public init(position: SIMD3<Float>, target: SIMD3<Float>, up: SIMD3<Float>, fieldOfView: Float) {
+    ///   - projectionType: The projection type (defaults to perspective)
+    public init(position: SIMD3<Float>, target: SIMD3<Float>, up: SIMD3<Float>, fieldOfView: Float, projectionType: ProjectionType = .perspective) {
         self.position = position
         self.target = target
         self.up = up
         self.fieldOfView = fieldOfView
+        self.projectionType = projectionType
     }
 
     // MARK: - SceneKit Integration
@@ -185,6 +192,25 @@ public struct CameraPose: Equatable, Codable {
             simd_float4(0, f, 0, 0),
             simd_float4(0, 0, (farPlane + nearPlane) / range, -1),
             simd_float4(0, 0, (2 * farPlane * nearPlane) / range, 0)
+        )
+    }
+
+    /// Converts the camera pose to an orthographic projection matrix.
+    ///
+    /// - Parameters:
+    ///   - viewWidth: The width of the orthographic view volume
+    ///   - viewHeight: The height of the orthographic view volume
+    ///   - nearPlane: The distance to the near clipping plane
+    ///   - farPlane: The distance to the far clipping plane
+    /// - Returns: A 4x4 orthographic projection matrix in column-major order
+    public func toOrthographicProjectionMatrix(viewWidth: Float, viewHeight: Float, nearPlane: Float = 0.1, farPlane: Float = 100.0) -> simd_float4x4 {
+        let range = farPlane - nearPlane
+
+        return simd_float4x4(
+            simd_float4(2.0 / viewWidth, 0, 0, 0),
+            simd_float4(0, 2.0 / viewHeight, 0, 0),
+            simd_float4(0, 0, -2.0 / range, 0),
+            simd_float4(0, 0, -(farPlane + nearPlane) / range, 1)
         )
     }
 

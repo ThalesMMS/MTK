@@ -21,7 +21,7 @@ public struct VolumetricConfiguration {
     }
 
     /// Default GPU histogram bin count for volume rendering
-    public static let HISTOGRAM_BIN_COUNT: Int = 512
+    public static let HISTOGRAM_BIN_COUNT: Int = 256
 
     /// Enable extended density visualization (diagnostics only)
     public static var ENABLE_DENSITY_DEBUG: Bool = false

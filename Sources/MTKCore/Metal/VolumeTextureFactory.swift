@@ -13,6 +13,13 @@ import simd
 import ZIPFoundation
 
 public final class VolumeTextureFactory {
+    public enum TextureUploadError: Error {
+        case textureCreationFailed
+        case bufferAllocationFailed
+        case commandBufferCreationFailed
+        case blitEncoderCreationFailed
+    }
+
     private(set) public var dataset: VolumeDataset
     private let logger = Logger(subsystem: "com.mtk.volumerendering",
                                 category: "VolumeTextureFactory")
@@ -65,6 +72,75 @@ public final class VolumeTextureFactory {
         }
 
         return texture
+    }
+
+    public func generateAsync(device: any MTLDevice,
+                             commandQueue: any MTLCommandQueue) async throws -> any MTLTexture {
+        let descriptor = MTLTextureDescriptor()
+        descriptor.textureType = .type3D
+        descriptor.pixelFormat = dataset.pixelFormat.metalPixelFormat
+        descriptor.usage = [.shaderRead, .pixelFormatView]
+        descriptor.width = dataset.dimensions.width
+        descriptor.height = dataset.dimensions.height
+        descriptor.depth = dataset.dimensions.depth
+
+        guard let texture = device.makeTexture(descriptor: descriptor) else {
+            logger.error("Failed to create 3D texture (\(descriptor.width)x\(descriptor.height)x\(descriptor.depth))")
+            throw TextureUploadError.textureCreationFailed
+        }
+        texture.label = "VolumeTexture3D"
+
+        let bytesPerRow = dataset.pixelFormat.bytesPerVoxel * descriptor.width
+        let bytesPerImage = bytesPerRow * descriptor.height
+        let bufferLength = dataset.data.count
+
+        guard let stagingBuffer = device.makeBuffer(length: bufferLength, options: .storageModeShared) else {
+            logger.error("Failed to allocate staging buffer (\(bufferLength) bytes)")
+            throw TextureUploadError.bufferAllocationFailed
+        }
+        stagingBuffer.label = "VolumeStagingBuffer"
+
+        dataset.data.withUnsafeBytes { buffer in
+            guard let baseAddress = buffer.baseAddress else { return }
+            memcpy(stagingBuffer.contents(), baseAddress, bufferLength)
+        }
+
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
+            logger.error("Failed to create command buffer for texture upload")
+            throw TextureUploadError.commandBufferCreationFailed
+        }
+        commandBuffer.label = "VolumeTextureUpload"
+
+        guard let blitEncoder = commandBuffer.makeBlitCommandEncoder() else {
+            logger.error("Failed to create blit command encoder")
+            throw TextureUploadError.blitEncoderCreationFailed
+        }
+        blitEncoder.label = "VolumeTextureUpload"
+
+        blitEncoder.copy(
+            from: stagingBuffer,
+            sourceOffset: 0,
+            sourceBytesPerRow: bytesPerRow,
+            sourceBytesPerImage: bytesPerImage,
+            sourceSize: MTLSize(width: descriptor.width, height: descriptor.height, depth: descriptor.depth),
+            to: texture,
+            destinationSlice: 0,
+            destinationLevel: 0,
+            destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0)
+        )
+
+        blitEncoder.endEncoding()
+
+        return try await withCheckedThrowingContinuation { continuation in
+            commandBuffer.addCompletedHandler { buffer in
+                if let error = buffer.error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume(returning: texture)
+                }
+            }
+            commandBuffer.commit()
+        }
     }
 }
 

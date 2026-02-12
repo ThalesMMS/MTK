@@ -22,15 +22,18 @@ public struct VolumeRenderRequest: Sendable, Equatable {
         public var target: SIMD3<Float>
         public var up: SIMD3<Float>
         public var fieldOfView: Float
+        public var projectionType: ProjectionType
 
         public init(position: SIMD3<Float>,
                     target: SIMD3<Float>,
                     up: SIMD3<Float>,
-                    fieldOfView: Float) {
+                    fieldOfView: Float,
+                    projectionType: ProjectionType = .perspective) {
             self.position = position
             self.target = target
             self.up = up
             self.fieldOfView = fieldOfView
+            self.projectionType = projectionType
         }
     }
 

@@ -48,7 +48,7 @@ public final class VolumetricCameraController {
     /// Ensures a camera node exists in the scene, creating one if necessary.
     /// Returns the existing or newly created camera node.
     @discardableResult
-    public func ensureCameraNode(volumeBoundingRadius: Float, cameraOffset: SIMD3<Float>) -> SCNNode {
+    public func ensureCameraNode(volumeBoundingRadius: Float, cameraOffset: SIMD3<Float>, projectionType: ProjectionType = .perspective) -> SCNNode {
         guard let sceneView, let rootNode else {
             fatalError("VolumetricCameraController: sceneView or rootNode is nil")
         }
@@ -58,6 +58,7 @@ public final class VolumetricCameraController {
                 rootNode.addChildNode(existing)
             }
             sceneView.defaultCameraController.pointOfView = existing
+            configureCameraProjection(existing.camera, projectionType: projectionType, volumeBoundingRadius: volumeBoundingRadius)
             return existing
         }
 
@@ -69,6 +70,7 @@ public final class VolumetricCameraController {
         rootNode.addChildNode(cameraNode)
         sceneView.pointOfView = cameraNode
         sceneView.defaultCameraController.pointOfView = cameraNode
+        configureCameraProjection(cameraNode.camera, projectionType: projectionType, volumeBoundingRadius: volumeBoundingRadius)
         updateCameraClippingPlanes(cameraNode.camera,
                                    radius: volumeBoundingRadius,
                                    offsetLength: simd_length(cameraOffset))
@@ -84,6 +86,7 @@ public final class VolumetricCameraController {
         volumeWorldCenter: SIMD3<Float>,
         volumeBoundingRadius: Float,
         defaultCameraDistanceFactor: Float,
+        projectionType: ProjectionType = .perspective,
         updateState: (_ cameraTarget: SIMD3<Float>,
                       _ cameraOffset: SIMD3<Float>,
                       _ cameraUpVector: SIMD3<Float>,
@@ -107,7 +110,7 @@ public final class VolumetricCameraController {
         let position = center + normal * distance
         let transform = makeLookAtTransform(position: position, target: center, up: up)
 
-        let cameraNode = ensureCameraNode(volumeBoundingRadius: radius, cameraOffset: position - center)
+        let cameraNode = ensureCameraNode(volumeBoundingRadius: radius, cameraOffset: position - center, projectionType: projectionType)
         cameraNode.simdTransform = transform
 
         sceneView.defaultCameraController.pointOfView = cameraNode
@@ -149,6 +152,7 @@ public final class VolumetricCameraController {
         fallbackCameraTarget: SIMD3<Float>,
         fallbackWorldUp: SIMD3<Float>,
         volumeBoundingRadius: Float,
+        projectionType: ProjectionType = .perspective,
         updateState: (_ cameraTarget: SIMD3<Float>,
                       _ cameraOffset: SIMD3<Float>,
                       _ cameraUpVector: SIMD3<Float>,
@@ -159,7 +163,7 @@ public final class VolumetricCameraController {
             fatalError("VolumetricCameraController: sceneView is nil")
         }
 
-        let cameraNode = ensureCameraNode(volumeBoundingRadius: volumeBoundingRadius, cameraOffset: SIMD3<Float>(0, 0, 1))
+        let cameraNode = ensureCameraNode(volumeBoundingRadius: volumeBoundingRadius, cameraOffset: SIMD3<Float>(0, 0, 1), projectionType: projectionType)
         if let transform = fallbackCameraTransform {
             cameraNode.simdTransform = transform
         }
@@ -372,6 +376,26 @@ public final class VolumetricCameraController {
 
         camera.zNear = Double(near)
         camera.zFar = Double(far)
+    }
+
+    // MARK: - Projection Configuration
+
+    /// Configures the camera's projection type (perspective or orthographic).
+    /// For orthographic projection, sets appropriate scale based on volume bounds.
+    public func configureCameraProjection(_ camera: SCNCamera?, projectionType: ProjectionType, volumeBoundingRadius: Float) {
+        guard let camera else { return }
+
+        switch projectionType {
+        case .perspective:
+            camera.usesOrthographicProjection = false
+
+        case .orthographic:
+            camera.usesOrthographicProjection = true
+            // Set orthographic scale to encompass volume with margin
+            // Scale represents half the view height in world units
+            let safeRadius = max(volumeBoundingRadius, 1e-3)
+            camera.orthographicScale = Double(safeRadius * 1.5)
+        }
     }
 
     // MARK: - Screen Space Calculations

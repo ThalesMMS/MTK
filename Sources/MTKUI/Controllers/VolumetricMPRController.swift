@@ -213,7 +213,8 @@ public final class VolumetricMPRController {
 
         let cameraNode = cameraController.ensureCameraNode(
             volumeBoundingRadius: volumeBoundingRadius,
-            cameraOffset: SIMD3<Float>(0, 0, 0)
+            cameraOffset: SIMD3<Float>(0, 0, 0),
+            projectionType: .orthographic
         )
 
         let safeNormal = cameraController.safeNormalize(normal, fallback: SIMD3<Float>(0, 0, 1))

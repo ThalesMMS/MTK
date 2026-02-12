@@ -328,7 +328,7 @@ private extension MetalVolumeRenderingAdapter {
             let pipeline = try await device.makeComputePipelineState(function: function)
             let debugOptions = VolumeRenderingDebugOptions(
                 isDebugMode: diagnosticLoggingEnabled,
-                histogramBinCount: 512,
+                histogramBinCount: 256,
                 enableDensityDebug: false
             )
 
@@ -714,6 +714,7 @@ private extension MetalVolumeRenderingAdapter {
                                                                              viewportSize: viewportSize)
         camera.cameraPositionLocal = request.camera.position
         camera.frameIndex = frameIndex
+        camera.projectionType = request.camera.projectionType.rawValue
         return camera
     }
 
@@ -730,18 +731,28 @@ private extension MetalVolumeRenderingAdapter {
         let nearZ: Float = 0.01
         let farZ = max(distanceToCenter + farPadding, nearZ + 100.0)
 
-        let projection = simd_float4x4(perspectiveFovY: max(camera.fieldOfView * .pi / 180, 0.01),
+        let projection: simd_float4x4
+        if camera.projectionType == .orthographic {
+            let viewHeight: Float = 2.0
+            let viewWidth = viewHeight * aspect
+            projection = simd_float4x4(orthographicWidth: viewWidth,
+                                       height: viewHeight,
+                                       nearZ: nearZ,
+                                       farZ: farZ)
+        } else {
+            projection = simd_float4x4(perspectiveFovY: max(camera.fieldOfView * .pi / 180, 0.01),
                                        aspect: aspect,
                                        nearZ: nearZ,
                                        farZ: farZ)
+        }
         let matrix = projection * view
-        
+
         if diagnosticLoggingEnabled {
             logger.info("[DIAG] View Matrix:\n\(view.debugDescription)")
             logger.info("[DIAG] Projection Matrix:\n\(projection.debugDescription)")
             logger.info("[DIAG] InvViewProj Matrix:\n\(simd_inverse(matrix).debugDescription)")
         }
-        
+
         return simd_inverse(matrix)
     }
 
@@ -894,6 +905,20 @@ private extension simd_float4x4 {
             SIMD4<Float>(0, yScale, 0, 0),
             SIMD4<Float>(0, 0, z, -1),
             SIMD4<Float>(0, 0, wz, 0)
+        ))
+    }
+
+    init(orthographicWidth width: Float,
+         height: Float,
+         nearZ: Float,
+         farZ: Float) {
+        let range = farZ - nearZ
+
+        self = simd_float4x4(columns: (
+            SIMD4<Float>(2.0 / width, 0, 0, 0),
+            SIMD4<Float>(0, 2.0 / height, 0, 0),
+            SIMD4<Float>(0, 0, -2.0 / range, 0),
+            SIMD4<Float>(0, 0, -(farZ + nearZ) / range, 1)
         ))
     }
 }
