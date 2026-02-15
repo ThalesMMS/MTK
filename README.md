@@ -1,5 +1,11 @@
 # MTK — Metal Toolkit for volumetric rendering
 
+![Swift 5.10](https://img.shields.io/badge/Swift-5.10-orange.svg)
+![Xcode 16](https://img.shields.io/badge/Xcode-16-blue.svg)
+![iOS 17+](https://img.shields.io/badge/iOS-17%2B-lightgrey.svg)
+![macOS 14+](https://img.shields.io/badge/macOS-14%2B-lightgrey.svg)
+![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)
+
 Swift Package with Metal/SceneKit/SwiftUI helpers used by the Metal-MPR-VR stack. The code currently ships the rendering pipelines, materials, SwiftUI overlays, and DICOM loader bridge used by the demo app—no legacy migration notes or placeholder APIs.
 
 ![UI Screenshot](screenshots/ui.png)
@@ -83,6 +89,18 @@ Add gesture handling with `volumeGestures(controller:state:configuration:)` and 
 ## Testing notes
 - `swift test` requires a Metal-capable host; GPU-dependent suites skip automatically when no device is available.
 - DICOM-related tests expect fixtures under `MTK-Demo/DICOM_Example` (not committed). Tests will skip when fixtures or the native bridge are missing.
+
+## Documentation
+
+DocC documentation covers the three modules (MTKCore, MTKSceneKit, MTKUI) with API reference, conceptual guides, and a Getting Started tutorial. Runnable examples are in the `Examples/` directory.
+
+Generate documentation locally:
+
+```bash
+bash Tooling/build_docs.sh
+```
+
+This creates `.doccarchive` files in the `docs/` directory that can be opened in Xcode or hosted as static HTML.
 
 ## License
 Apache 2.0. See `LICENSE`.

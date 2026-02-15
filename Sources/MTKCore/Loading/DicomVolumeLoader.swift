@@ -13,35 +13,176 @@ import OSLog
 import simd
 import ZIPFoundation
 
-/// Protocol for DICOM series volume data abstraction
+/// Protocol abstraction for DICOM series volume metadata and pixel data.
+///
+/// Bridges DICOM-specific volume representations (from GDCM, DICOM-Decoder, or custom parsers)
+/// into a unified interface consumed by ``DicomVolumeLoader``. Implementations provide spatial
+/// metadata (dimensions, spacing, orientation), rescale parameters for Hounsfield Unit conversion,
+/// and pixel format information.
+///
+/// ## Topics
+///
+/// ### Dimensions and Spacing
+/// - ``width``
+/// - ``height``
+/// - ``depth``
+/// - ``spacingX``
+/// - ``spacingY``
+/// - ``spacingZ``
+///
+/// ### Spatial Orientation
+/// - ``orientation``
+/// - ``origin``
+///
+/// ### Pixel Format and Rescale
+/// - ``bitsAllocated``
+/// - ``isSignedPixel``
+/// - ``rescaleSlope``
+/// - ``rescaleIntercept``
+///
+/// ### Metadata
+/// - ``seriesDescription``
 public protocol DICOMSeriesVolumeProtocol {
+    /// Bits allocated per pixel sample (typically 8 or 16 for medical imaging).
     var bitsAllocated: Int { get }
+
+    /// Width of each slice in pixels (DICOM Columns).
     var width: Int { get }
+
+    /// Height of each slice in pixels (DICOM Rows).
     var height: Int { get }
+
+    /// Number of slices in the series (volume depth).
     var depth: Int { get }
+
+    /// Physical spacing between pixel centers along the row direction (millimeters).
     var spacingX: Double { get }
+
+    /// Physical spacing between pixel centers along the column direction (millimeters).
     var spacingY: Double { get }
+
+    /// Physical spacing between slice centers (millimeters).
     var spacingZ: Double { get }
+
+    /// 3×3 orientation matrix mapping voxel indices to patient coordinate system.
+    ///
+    /// Columns correspond to row direction, column direction, and slice normal direction in patient space.
+    /// Follows DICOM Image Orientation Patient (0020,0037) conventions.
     var orientation: simd_float3x3 { get }
+
+    /// Origin position of the first voxel in patient coordinate system (millimeters).
+    ///
+    /// Corresponds to DICOM Image Position Patient (0020,0032).
     var origin: SIMD3<Float> { get }
+
+    /// Rescale slope for converting stored pixel values to modality units (Hounsfield Units for CT).
+    ///
+    /// `HU = slope * pixelValue + intercept`
     var rescaleSlope: Double { get }
+
+    /// Rescale intercept for converting stored pixel values to modality units.
+    ///
+    /// `HU = slope * pixelValue + intercept`
     var rescaleIntercept: Double { get }
+
+    /// Whether pixel data is stored as signed integers (true) or unsigned integers (false).
     var isSignedPixel: Bool { get }
+
+    /// Human-readable series description from DICOM metadata (0008,103E).
     var seriesDescription: String { get }
 }
 
-/// Protocol for DICOM series loading abstraction
+/// Protocol abstraction for DICOM series loading implementations.
+///
+/// Decouples ``DicomVolumeLoader`` from specific DICOM parsing libraries (GDCM, DICOM-Decoder, dcmtk).
+/// Implementations parse DICOM files in a directory, sort slices by Image Position Patient, and stream
+/// slice data incrementally via progress callbacks.
+///
+/// ## Example Implementation
+///
+/// ```swift
+/// final class CustomDicomLoader: DicomSeriesLoading {
+///     func loadSeries(at url: URL,
+///                     progress: ((Double, UInt, Data?, Any) -> Void)?) throws -> Any {
+///         // Parse DICOM files in directory
+///         let slices = try parseDicomDirectory(url)
+///         var voxelBuffer = Data(count: totalVoxelCount * 2)
+///
+///         for (index, slice) in slices.enumerated() {
+///             let sliceData = try slice.pixelData()
+///             // Copy slice into voxelBuffer
+///             let fraction = Double(index + 1) / Double(slices.count)
+///             let volume = makePartialVolume(...)
+///             progress?(fraction, UInt(index + 1), sliceData, volume)
+///         }
+///
+///         return makeFinalVolume(...)
+///     }
+/// }
+/// ```
+///
+/// ## Topics
+///
+/// ### Loading Series
+/// - ``loadSeries(at:progress:)``
 public protocol DicomSeriesLoading: AnyObject {
+    /// Load a DICOM series from a directory, providing incremental progress updates.
+    ///
+    /// - Parameters:
+    ///   - url: Directory containing DICOM files (*.dcm, or any recognized DICOM format)
+    ///   - progress: Optional callback receiving (completion fraction, slices loaded, latest slice data, partial volume)
+    ///
+    /// - Returns: Final volume object conforming to ``DICOMSeriesVolumeProtocol``
+    ///
+    /// - Throws: Parser-specific errors for I/O failures, invalid DICOM data, or unsupported formats
+    ///
+    /// - Note: Progress callback receives the partial volume after each slice is loaded. The `Any` return type
+    ///   allows implementations to return library-specific volume types that are then cast to ``DICOMSeriesVolumeProtocol``.
     func loadSeries(at url: URL,
                     progress: ((Double, UInt, Data?, Any) -> Void)?) throws -> Any
 }
 
-/// Errors that can occur during DICOM volume loading
+/// Errors that can occur during DICOM volume loading.
+///
+/// Covers validation failures, security checks, unsupported formats, and bridge-layer exceptions.
+///
+/// ## Topics
+///
+/// ### Error Cases
+/// - ``securityScopeUnavailable``
+/// - ``unsupportedBitDepth``
+/// - ``missingResult``
+/// - ``pathTraversal``
+/// - ``bridgeError(_:)``
 public enum DicomVolumeLoaderError: Error {
+    /// Unable to access the security-scoped resource (App Sandbox).
+    ///
+    /// Occurs when accessing files selected via `NSOpenPanel` or drag-and-drop without
+    /// valid security-scoped bookmark data.
     case securityScopeUnavailable
+
+    /// DICOM series uses unsupported pixel bit depth.
+    ///
+    /// Only 16-bit scalar volumes (signed or unsigned) are currently supported. 8-bit, 12-bit,
+    /// or multi-component (RGB) volumes will trigger this error.
     case unsupportedBitDepth
+
+    /// DICOM parser returned nil or empty volume data.
+    ///
+    /// Indicates the series loader completed without producing voxel data, possibly due to
+    /// empty directory or all-invalid DICOM files.
     case missingResult
+
+    /// ZIP archive contains malicious path traversal entries.
+    ///
+    /// Detected when archive entries contain ".." components or absolute paths attempting
+    /// to escape extraction directory.
     case pathTraversal
+
+    /// Error from underlying DICOM parsing library.
+    ///
+    /// Wraps exceptions from GDCM, DICOM-Decoder, or custom loaders. Original error preserved
+    /// in associated `NSError` for debugging.
     case bridgeError(NSError)
 }
 
@@ -63,12 +204,44 @@ extension DicomVolumeLoaderError: LocalizedError {
     }
 }
 
-/// Result of a successful DICOM import operation
+/// Result of a successful DICOM import operation.
+///
+/// Encapsulates the loaded ``VolumeDataset`` along with source metadata for UI display and persistence.
+/// Returned by ``DicomVolumeLoader/loadVolume(from:progress:completion:)`` after successful parsing
+/// and Hounsfield Unit conversion.
+///
+/// ## Topics
+///
+/// ### Properties
+/// - ``dataset``
+/// - ``sourceURL``
+/// - ``seriesDescription``
+///
+/// ### Initialization
+/// - ``init(dataset:sourceURL:seriesDescription:)``
 public struct DicomImportResult {
+    /// Loaded volume dataset ready for rendering.
+    ///
+    /// Voxel data is stored as `Int16` in Hounsfield Units, with spacing and orientation
+    /// derived from DICOM spatial metadata.
     public let dataset: VolumeDataset
+
+    /// Original source URL (directory, ZIP, or single file).
+    ///
+    /// Used for UI display ("Loaded from...") and relative path resolution when saving projects.
     public let sourceURL: URL
+
+    /// Human-readable series description from DICOM metadata (0008,103E).
+    ///
+    /// Typical values: "CT Head", "MR T2 FLAIR", "Chest CTA". Empty string if tag is missing.
     public let seriesDescription: String
-    
+
+    /// Create a DICOM import result.
+    ///
+    /// - Parameters:
+    ///   - dataset: Loaded volume dataset
+    ///   - sourceURL: Original source URL
+    ///   - seriesDescription: Series description from DICOM metadata
     public init(dataset: VolumeDataset, sourceURL: URL, seriesDescription: String) {
         self.dataset = dataset
         self.sourceURL = sourceURL
@@ -76,42 +249,136 @@ public struct DicomImportResult {
     }
 }
 
-/// Progress updates during DICOM volume loading
+/// Progress updates during DICOM volume loading.
+///
+/// Emitted by ``DicomVolumeLoader/loadVolume(from:progress:completion:)`` to track parsing and
+/// Hounsfield Unit conversion progress.
+///
+/// ## Example
+///
+/// ```swift
+/// loader.loadVolume(from: url, progress: { update in
+///     switch update {
+///     case .started(let totalSlices):
+///         print("Loading \(totalSlices) slices")
+///     case .reading(let fraction):
+///         progressView.progress = fraction
+///     }
+/// }, completion: { result in
+///     // Handle result
+/// })
+/// ```
+///
+/// ## Topics
+///
+/// ### Cases
+/// - ``started(totalSlices:)``
+/// - ``reading(_:)``
 public enum DicomVolumeProgress {
+    /// Loading started with known total slice count.
+    ///
+    /// Emitted after parsing first slice and determining volume dimensions.
     case started(totalSlices: Int)
+
+    /// Incremental progress during slice reading and HU conversion.
+    ///
+    /// Associated value is completion fraction in range 0.0...1.0.
     case reading(Double)
 }
 
-/// UI-friendly progress updates
+/// UI-friendly progress updates for DICOM loading.
+///
+/// Transformed from ``DicomVolumeProgress`` via ``DicomVolumeLoader/uiUpdate(from:)`` for
+/// SwiftUI `ProgressView` bindings or AppKit progress indicators.
+///
+/// ## Topics
+///
+/// ### Cases
+/// - ``started(totalSlices:)``
+/// - ``reading(_:)``
 public enum DicomVolumeUIProgress {
+    /// UI notification that loading started with total slice count.
     case started(totalSlices: Int)
+
+    /// UI progress fraction update (0.0...1.0).
     case reading(Double)
 }
 
-/// DICOM volume loader with async progress tracking
+/// Orchestrates DICOM volume loading from directories, ZIP archives, or individual files.
+///
+/// Handles ZIP extraction, delegates DICOM parsing to a ``DicomSeriesLoading`` implementation,
+/// converts pixel values to Hounsfield Units, and optionally computes GPU-accelerated window/level
+/// recommendations via histogram percentiles.
+///
+/// ## Example
+///
+/// ```swift
+/// let loader = DicomVolumeLoader() // Uses DicomDecoderSeriesLoader by default
+///
+/// loader.loadVolume(from: folderURL, progress: { update in
+///     switch update {
+///     case .started(let totalSlices):
+///         print("Loading \(totalSlices) DICOM slices")
+///     case .reading(let fraction):
+///         progressBar.doubleValue = fraction
+///     }
+/// }, completion: { result in
+///     switch result {
+///     case .success(let importResult):
+///         applyDataset(importResult.dataset)
+///         print("Loaded: \(importResult.seriesDescription)")
+///     case .failure(let error):
+///         showError(error)
+///     }
+/// })
+/// ```
+///
+/// ## Topics
+///
+/// ### Initialization
+/// - ``init(seriesLoader:device:commandQueue:histogramCalculator:statisticsCalculator:)``
+/// - ``init()``
+///
+/// ### Loading Volumes
+/// - ``loadVolume(from:progress:completion:)``
+///
+/// ### GPU Acceleration
+/// - ``histogramCalculator``
+/// - ``statisticsCalculator``
+///
+/// ### Progress Translation
+/// - ``uiUpdate(from:)``
 public final class DicomVolumeLoader {
     private let logger = Logger(subsystem: "com.mtk.dicom", category: "Loader")
     private let loader: DicomSeriesLoading
 
-    /// Optional Metal device for GPU-accelerated statistics computation
+    /// Optional Metal device for GPU-accelerated statistics computation.
     private let device: (any MTLDevice)?
 
-    /// Optional command queue for GPU-accelerated statistics computation
+    /// Optional command queue for GPU-accelerated statistics computation.
     private let commandQueue: (any MTLCommandQueue)?
 
-    /// Optional histogram calculator for GPU-accelerated histogram computation
+    /// Optional histogram calculator for GPU-accelerated histogram computation.
+    ///
+    /// When provided (along with ``statisticsCalculator``), auto-windowing computes 2nd/98th
+    /// percentile window recommendations from volume intensity histogram.
     public var histogramCalculator: VolumeHistogramCalculator?
 
-    /// Optional statistics calculator for GPU-accelerated percentile and Otsu computations
+    /// Optional statistics calculator for GPU-accelerated percentile and Otsu computations.
+    ///
+    /// Used with ``histogramCalculator`` to compute recommended window/level from histogram percentiles.
     public var statisticsCalculator: VolumeStatisticsCalculator?
 
-    /// Initialize with a custom series loader
+    /// Initialize with a custom DICOM series loader and optional GPU acceleration.
+    ///
     /// - Parameters:
-    ///   - seriesLoader: DICOM series loading implementation
-    ///   - device: Optional Metal device for GPU-accelerated statistics
+    ///   - seriesLoader: DICOM series loading implementation (``DicomDecoderSeriesLoader`` or custom bridge)
+    ///   - device: Optional Metal device for GPU-accelerated auto-windowing statistics
     ///   - commandQueue: Optional command queue for GPU operations
-    ///   - histogramCalculator: Optional histogram calculator for auto-windowing
-    ///   - statisticsCalculator: Optional statistics calculator for auto-windowing
+    ///   - histogramCalculator: Optional histogram calculator for intensity distribution analysis
+    ///   - statisticsCalculator: Optional statistics calculator for percentile-based window recommendations
+    ///
+    /// - Note: GPU parameters are optional. When omitted, window recommendations default to intensity range min/max.
     public init(seriesLoader: DicomSeriesLoading,
                 device: (any MTLDevice)? = nil,
                 commandQueue: (any MTLCommandQueue)? = nil,
@@ -129,11 +396,46 @@ public final class DicomVolumeLoader {
         let cleanupRoot: URL?
     }
     
-    /// Load a DICOM volume from a URL (directory, ZIP, or individual file)
+    /// Load a DICOM volume from a URL, supporting directories, ZIP archives, or individual files.
+    ///
+    /// Executes on a background queue. Progress callbacks and completion handler are dispatched to the main queue.
+    ///
+    /// ## Workflow
+    ///
+    /// 1. If source is a ZIP, extracts to temporary directory with path traversal validation
+    /// 2. Delegates DICOM parsing to ``DicomSeriesLoading`` implementation
+    /// 3. Converts pixel values to Hounsfield Units using DICOM Rescale Slope/Intercept
+    /// 4. Optionally computes 2nd/98th percentile window recommendation via GPU histogram
+    /// 5. Constructs ``VolumeDataset`` with spatial metadata from Image Orientation/Position Patient
+    ///
     /// - Parameters:
-    ///   - url: Source URL for DICOM data
-    ///   - progress: Progress callback with loading updates
-    ///   - completion: Completion handler with import result or error
+    ///   - url: Source URL (directory containing DICOM files, .zip archive, or single .dcm file)
+    ///   - progress: Progress callback receiving ``DicomVolumeProgress`` events on main queue
+    ///   - completion: Completion handler with ``DicomImportResult`` or ``DicomVolumeLoaderError`` on main queue
+    ///
+    /// ## Supported Formats
+    ///
+    /// - 16-bit scalar CT/MR volumes (signed or unsigned pixel representation)
+    /// - Standard DICOM files with Image Orientation Patient (0020,0037) and Image Position Patient (0020,0032)
+    /// - ZIP archives with DICOM files (nested directories supported)
+    ///
+    /// ## Example
+    ///
+    /// ```swift
+    /// let loader = DicomVolumeLoader()
+    /// loader.loadVolume(from: selectedURL, progress: { update in
+    ///     if case .reading(let fraction) = update {
+    ///         self.progressBar.doubleValue = fraction
+    ///     }
+    /// }, completion: { result in
+    ///     switch result {
+    ///     case .success(let importResult):
+    ///         self.applyDataset(importResult.dataset)
+    ///     case .failure(let error):
+    ///         self.presentError(error)
+    ///     }
+    /// })
+    /// ```
     public func loadVolume(from url: URL,
                     progress: @escaping (DicomVolumeProgress) -> Void,
                     completion: @escaping (Result<DicomImportResult, Error>) -> Void) {
@@ -501,9 +803,29 @@ private extension DicomVolumeLoader {
 }
 
 public extension DicomVolumeLoader {
-    /// Translate internal progress updates into UI-friendly events
-    /// - Parameter update: Internal progress update
-    /// - Returns: UI-friendly progress update
+    /// Translate internal progress updates into UI-friendly events.
+    ///
+    /// Maps ``DicomVolumeProgress`` cases to ``DicomVolumeUIProgress`` for consumption by
+    /// AppKit `NSProgressIndicator` or SwiftUI `ProgressView` bindings.
+    ///
+    /// - Parameter update: Internal progress update from ``loadVolume(from:progress:completion:)``
+    /// - Returns: UI-friendly progress update suitable for binding to progress views
+    ///
+    /// ## Example
+    ///
+    /// ```swift
+    /// loader.loadVolume(from: url, progress: { internalProgress in
+    ///     let uiProgress = DicomVolumeLoader.uiUpdate(from: internalProgress)
+    ///     switch uiProgress {
+    ///     case .started(let totalSlices):
+    ///         statusLabel.stringValue = "Loading \(totalSlices) slices..."
+    ///     case .reading(let fraction):
+    ///         progressBar.doubleValue = fraction * 100.0
+    ///     }
+    /// }, completion: { result in
+    ///     // Handle result
+    /// })
+    /// ```
     static func uiUpdate(from update: DicomVolumeProgress) -> DicomVolumeUIProgress {
         switch update {
         case .started(let total):
@@ -513,7 +835,19 @@ public extension DicomVolumeLoader {
         }
     }
 
-    /// Convenience initializer using the default Swift DICOM decoder
+    /// Convenience initializer using the default Swift-based DICOM decoder.
+    ///
+    /// Equivalent to `DicomVolumeLoader(seriesLoader: DicomDecoderSeriesLoader())`.
+    /// Uses the pure-Swift DICOM-Decoder package without GDCM dependencies.
+    ///
+    /// ## Example
+    ///
+    /// ```swift
+    /// let loader = DicomVolumeLoader() // Uses DicomDecoderSeriesLoader
+    /// loader.loadVolume(from: directoryURL, progress: { _ in }, completion: { result in
+    ///     // Handle result
+    /// })
+    /// ```
     convenience init() {
         self.init(seriesLoader: DicomDecoderSeriesLoader())
     }

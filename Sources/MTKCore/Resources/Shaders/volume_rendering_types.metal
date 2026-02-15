@@ -24,9 +24,9 @@ struct VolumeUniforms {
     int dimY;
     int dimZ;
     int useTFProj;
-    int _pad0;
-    int _pad1;
-    int _pad2;
+    float gradientMin;
+    float gradientMax;
+    int use2DTF;
 };
 
 struct PackedColor {
@@ -112,6 +112,7 @@ struct RenderingArguments {
     texture2d<float, access::sample> transferTextureCh2 [[id(16)]];
     texture2d<float, access::sample> transferTextureCh3 [[id(17)]];
     texture2d<float, access::sample> transferTextureCh4 [[id(18)]];
+    texture3d<half, access::sample> accelerationTexture [[id(19)]];
 };
 
 #endif

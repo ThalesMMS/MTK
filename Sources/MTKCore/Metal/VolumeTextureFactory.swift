@@ -12,36 +12,105 @@ import OSLog
 import simd
 import ZIPFoundation
 
+/// Factory for converting volumetric datasets into Metal 3D textures.
+///
+/// `VolumeTextureFactory` handles the creation of GPU-compatible 3D textures from `VolumeDataset` instances,
+/// supporting both synchronous CPU-based uploads and asynchronous GPU-accelerated transfers via blit encoders.
+/// It also provides built-in presets for common medical imaging datasets (head, chest).
+///
+/// ## Usage
+///
+/// Create a factory from a custom dataset:
+/// ```swift
+/// let dataset = VolumeDataset(data: voxelData, dimensions: dims, spacing: spacing, ...)
+/// let factory = VolumeTextureFactory(dataset: dataset)
+/// if let texture = factory.generate(device: device) {
+///     // Use texture in rendering pipeline
+/// }
+/// ```
+///
+/// Or use a built-in preset:
+/// ```swift
+/// let factory = VolumeTextureFactory(preset: .head)
+/// let texture = try await factory.generateAsync(device: device, commandQueue: queue)
+/// ```
+///
+/// - Note: Preset datasets are loaded from bundled `.raw.zip` resources. Missing resources fall back to a 1³ placeholder.
+/// - Important: Textures created by this factory use `.type3D` with pixel formats matching the dataset's `VolumePixelFormat`.
 public final class VolumeTextureFactory {
+    /// Errors that can occur during asynchronous texture upload.
     public enum TextureUploadError: Error {
+        /// Failed to create the Metal 3D texture descriptor.
         case textureCreationFailed
+        /// Failed to allocate the staging buffer for GPU transfer.
         case bufferAllocationFailed
+        /// Failed to create the Metal command buffer.
         case commandBufferCreationFailed
+        /// Failed to create the blit command encoder.
         case blitEncoderCreationFailed
     }
 
+    /// The volumetric dataset backing this factory.
+    ///
+    /// You can read this property to inspect the current dataset or call ``update(dataset:)`` to replace it.
     private(set) public var dataset: VolumeDataset
     private let logger = Logger(subsystem: "com.mtk.volumerendering",
                                 category: "VolumeTextureFactory")
     private static let resourceLogger = Logger(subsystem: "com.mtk.volumerendering",
                                                category: "VolumeResources")
 
+    /// Creates a factory from a custom volumetric dataset.
+    ///
+    /// - Parameter dataset: The `VolumeDataset` containing voxel data, dimensions, spacing, and pixel format.
     public init(dataset: VolumeDataset) {
         self.dataset = dataset
     }
 
+    /// Creates a factory from a built-in preset.
+    ///
+    /// Preset datasets are loaded from bundled `.raw.zip` resources in `Bundle.module`.
+    /// If the resource is missing, falls back to a 1³ placeholder dataset.
+    ///
+    /// - Parameter preset: The preset to load (`.head`, `.chest`, `.none`, or `.dicom`).
     public convenience init(preset: VolumeDatasetPreset) {
         self.init(dataset: VolumeTextureFactory.dataset(for: preset))
     }
 
+    /// The physical spacing of the volume in meters (x, y, z).
+    ///
+    /// Derived from `dataset.spacing` as a SIMD3 vector for shader uniform compatibility.
     public var resolution: SIMD3<Float> { dataset.spacing.simd3Value }
+
+    /// The voxel dimensions of the volume (width, height, depth).
+    ///
+    /// Derived from `dataset.dimensions` as a SIMD3 vector for shader uniform compatibility.
     public var dimension: SIMD3<Int32> { dataset.dimensions.simd3Value }
+
+    /// The world-space scale of the volume (normalized spacing vector).
+    ///
+    /// Derived from `dataset.scale` as a SIMD3 vector for shader uniform compatibility.
     public var scale: SIMD3<Float> { dataset.scale.simd3Value }
 
+    /// Replaces the current dataset with a new one.
+    ///
+    /// Call this method to swap datasets without recreating the factory. The next call to
+    /// ``generate(device:)`` or ``generateAsync(device:commandQueue:)`` will use the updated dataset.
+    ///
+    /// - Parameter dataset: The new `VolumeDataset` to use.
     public func update(dataset: VolumeDataset) {
         self.dataset = dataset
     }
 
+    /// Synchronously creates a 3D Metal texture from the current dataset using CPU-based upload.
+    ///
+    /// This method allocates a 3D texture matching the dataset's dimensions and pixel format, then uploads
+    /// the voxel data directly via `MTLTexture.replace(region:...)`. Suitable for small datasets or
+    /// environments where asynchronous uploads are not required.
+    ///
+    /// - Parameter device: The Metal device to allocate the texture on.
+    /// - Returns: A configured `MTLTexture`, or `nil` if texture creation failed.
+    ///
+    /// - Note: Logs errors via OSLog when texture creation fails.
     public func generate(device: any MTLDevice) -> (any MTLTexture)? {
         let descriptor = MTLTextureDescriptor()
         descriptor.textureType = .type3D
@@ -74,6 +143,26 @@ public final class VolumeTextureFactory {
         return texture
     }
 
+    /// Asynchronously creates a 3D Metal texture from the current dataset using GPU-accelerated blit transfer.
+    ///
+    /// This method allocates both a 3D texture and a staging buffer, copies voxel data to the staging buffer,
+    /// then uses a blit command encoder to transfer data to the GPU. Returns when the command buffer completes.
+    /// Recommended for large datasets (>64MB) or when pipeline stalls must be avoided.
+    ///
+    /// - Parameters:
+    ///   - device: The Metal device to allocate resources on.
+    ///   - commandQueue: The command queue to submit the blit operation.
+    ///
+    /// - Returns: A configured `MTLTexture` once the GPU transfer completes.
+    ///
+    /// - Throws: ``TextureUploadError`` if texture/buffer allocation or command encoding fails, or the underlying Metal error if the command buffer encounters an error.
+    ///
+    /// ## Example
+    /// ```swift
+    /// let factory = VolumeTextureFactory(preset: .head)
+    /// let texture = try await factory.generateAsync(device: device, commandQueue: queue)
+    /// // Texture is ready for immediate shader use
+    /// ```
     public func generateAsync(device: any MTLDevice,
                              commandQueue: any MTLCommandQueue) async throws -> any MTLTexture {
         let descriptor = MTLTextureDescriptor()

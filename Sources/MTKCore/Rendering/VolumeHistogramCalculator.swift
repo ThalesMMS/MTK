@@ -10,15 +10,52 @@ import Foundation
 import Metal
 import OSLog
 
+/// Encapsulates a Metal compute histogram dispatch configuration including kernel selection
+/// and threadgroup memory strategy.
+///
+/// This plan determines which Metal kernel to use (`computeHistogramThreadgroup` for fast
+/// shared memory path, or `computeHistogramLegacy` for devices with limited threadgroup memory)
+/// and pre-allocates buffer size based on channel count and bin requirements.
 @_spi(Testing) public struct HistogramDispatchPlan {
+    /// Number of histogram bins (intensity buckets) to allocate.
     public let bins: Int
+
+    /// Number of channels to compute histograms for (1-4, typically 1 for grayscale volumes).
     public let channelCount: Int
+
+    /// Total buffer size in bytes required to store all histogram data.
     public let bufferLength: Int
+
+    /// Whether the selected kernel uses threadgroup memory for atomic operations (faster)
+    /// or falls back to device memory (slower but more compatible).
     public let usesThreadgroupMemory: Bool
+
+    /// Name of the Metal compute kernel to dispatch (`computeHistogramThreadgroup` or `computeHistogramLegacy`).
     public let kernelName: String
 }
 
+/// Strategy for selecting optimal histogram compute kernel based on device capabilities
+/// and histogram requirements.
+///
+/// Determines whether to use the fast threadgroup-memory kernel or fallback legacy kernel
+/// based on threadgroup memory limits and buffer size requirements.
 @_spi(Testing) public enum HistogramKernelPlanner {
+    /// Creates a histogram dispatch plan by selecting the optimal Metal compute kernel
+    /// and memory strategy for the given device constraints.
+    ///
+    /// The planner attempts to use the fast `computeHistogramThreadgroup` kernel (atomic
+    /// operations in shared memory) when the required buffer fits within the device's
+    /// threadgroup memory limit. Otherwise, it falls back to `computeHistogramLegacy`
+    /// (slower device memory atomics).
+    ///
+    /// - Parameters:
+    ///   - channelCount: Number of histogram channels to compute (1-4, will be clamped).
+    ///   - requestedBins: Desired bin count, or 0 to use `defaultBinCount`.
+    ///   - defaultBinCount: Fallback bin count when `requestedBins` is zero or invalid.
+    ///   - maxThreadgroupMemoryLength: Device's maximum threadgroup memory size in bytes.
+    ///                                 Pass -1 to force legacy kernel selection.
+    ///
+    /// - Returns: A ``HistogramDispatchPlan`` with kernel name, buffer size, and memory strategy.
     public static func makePlan(channelCount: Int,
                                 requestedBins: Int,
                                 defaultBinCount: Int,
@@ -37,12 +74,77 @@ import OSLog
     }
 }
 
+/// GPU-accelerated histogram calculator for 3D volume textures.
+///
+/// Computes intensity distribution histograms using Metal compute shaders, enabling
+/// efficient auto-windowing, contrast analysis, and transfer function optimization
+/// for medical imaging workflows.
+///
+/// The calculator supports both fast threadgroup-memory kernels (for small histograms)
+/// and legacy device-memory kernels (for large histograms or limited devices), with
+/// automatic fallback based on device capabilities.
+///
+/// ## Features
+///
+/// - Multi-channel histogram support (1-4 channels)
+/// - Configurable bin count (validated and clamped to safe ranges)
+/// - Automatic kernel selection based on device threadgroup memory limits
+/// - Asynchronous computation with completion callbacks
+/// - Pipeline state caching for efficient reuse
+///
+/// ## Example
+///
+/// ```swift
+/// let calculator = VolumeHistogramCalculator(
+///     device: device,
+///     commandQueue: queue,
+///     library: library,
+///     featureFlags: flags,
+///     debugOptions: options
+/// )
+///
+/// calculator.computeHistogram(
+///     for: volumeTexture,
+///     channelCount: 1,
+///     voxelMin: -1024,
+///     voxelMax: 3071,
+///     bins: 256
+/// ) { result in
+///     switch result {
+///     case .success(let histograms):
+///         print("Channel 0 histogram: \(histograms[0])")
+///     case .failure(let error):
+///         print("Histogram computation failed: \(error)")
+///     }
+/// }
+/// ```
+///
+/// ## Topics
+///
+/// ### Initialization
+/// - ``init(device:commandQueue:library:featureFlags:debugOptions:)``
+///
+/// ### Computing Histograms
+/// - ``computeHistogram(for:channelCount:voxelMin:voxelMax:bins:completion:)``
+///
+/// ### Error Handling
+/// - ``HistogramError``
 public final class VolumeHistogramCalculator {
+    /// Errors that can occur during histogram computation.
     public enum HistogramError: Error {
+        /// The required Metal compute pipeline could not be created or loaded.
         case pipelineUnavailable
+
+        /// The Metal command queue is unavailable for submitting GPU work.
         case commandQueueUnavailable
+
+        /// Failed to create a command buffer for encoding GPU commands.
         case commandBufferCreationFailed
+
+        /// Failed to create a compute command encoder.
         case encoderCreationFailed
+
+        /// Failed to allocate a Metal buffer for histogram storage.
         case bufferAllocationFailed
     }
 
@@ -55,6 +157,15 @@ public final class VolumeHistogramCalculator {
     private let logger = Logger(subsystem: "com.mtk.volumerendering",
                                 category: "VolumeHistogram")
 
+    /// Creates a histogram calculator for GPU-accelerated volume intensity analysis.
+    ///
+    /// - Parameters:
+    ///   - device: Metal device for buffer allocation and pipeline creation.
+    ///   - commandQueue: Command queue for submitting GPU compute work.
+    ///   - library: Metal library containing histogram compute kernels
+    ///              (`computeHistogramThreadgroup` and `computeHistogramLegacy`).
+    ///   - featureFlags: Feature detection flags (used for non-uniform threadgroup dispatch).
+    ///   - debugOptions: Debug configuration including default bin count for histograms.
     public init(device: any MTLDevice,
                 commandQueue: any MTLCommandQueue,
                 library: any MTLLibrary,
@@ -67,6 +178,47 @@ public final class VolumeHistogramCalculator {
         self.debugOptions = debugOptions
     }
 
+    /// Computes an intensity histogram for a 3D volume texture using Metal compute shaders.
+    ///
+    /// Dispatches a GPU compute kernel that counts voxel intensities across configurable bins,
+    /// producing a histogram array for each channel. The calculation runs asynchronously on
+    /// the GPU with results delivered via a completion callback.
+    ///
+    /// The method automatically selects the optimal compute kernel based on device capabilities:
+    /// - **Fast path:** `computeHistogramThreadgroup` uses shared memory atomics when buffer size
+    ///   fits within device threadgroup memory limits (typical for ≤256 bins).
+    /// - **Fallback path:** `computeHistogramLegacy` uses device memory atomics for larger histograms
+    ///   or devices with limited threadgroup memory.
+    ///
+    /// - Parameters:
+    ///   - texture: Source 3D Metal texture containing voxel intensity data.
+    ///   - channelCount: Number of histogram channels to compute (1-4, will be clamped).
+    ///                   Use 1 for grayscale medical volumes.
+    ///   - voxelMin: Minimum intensity value in the volume (for histogram range mapping).
+    ///   - voxelMax: Maximum intensity value in the volume (for histogram range mapping).
+    ///   - requestedBins: Desired histogram bin count. Pass 0 to use debug options default.
+    ///                    Actual bin count will be clamped to safe ranges.
+    ///   - completion: Callback invoked on command buffer completion queue with
+    ///                 `.success([[UInt32]])` containing histogram arrays (one per channel),
+    ///                 or `.failure(Error)` if GPU computation fails.
+    ///
+    /// ## Example
+    ///
+    /// ```swift
+    /// calculator.computeHistogram(
+    ///     for: volumeTexture,
+    ///     channelCount: 1,
+    ///     voxelMin: -1024,  // CT air
+    ///     voxelMax: 3071,   // CT bone
+    ///     bins: 256
+    /// ) { result in
+    ///     if case .success(let histograms) = result {
+    ///         // histograms[0] contains 256 bins of UInt32 counts
+    ///         let peakBin = histograms[0].enumerated().max(by: { $0.element < $1.element })?.offset
+    ///         print("Peak intensity bin: \(peakBin ?? 0)")
+    ///     }
+    /// }
+    /// ```
     public func computeHistogram(for texture: any MTLTexture,
                                  channelCount: Int,
                                  voxelMin: Int32,
@@ -170,6 +322,17 @@ public final class VolumeHistogramCalculator {
 }
 
 private extension VolumeHistogramCalculator {
+    /// Retrieves or creates a cached Metal compute pipeline for the named histogram kernel.
+    ///
+    /// Implements lazy pipeline state creation with caching to avoid redundant compilation.
+    /// On first access for a given kernel name, creates the pipeline from the Metal library
+    /// and caches it for subsequent calls.
+    ///
+    /// - Parameter functionName: Name of the Metal compute function
+    ///                           (`computeHistogramThreadgroup` or `computeHistogramLegacy`).
+    ///
+    /// - Returns: Cached or newly created compute pipeline state, or `nil` if kernel
+    ///            function is missing or pipeline creation fails.
     func pipelineState(named functionName: String) -> MTLComputePipelineState? {
         if let cached = pipelineCache[functionName] {
             return cached

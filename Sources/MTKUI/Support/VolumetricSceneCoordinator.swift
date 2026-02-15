@@ -14,14 +14,117 @@ import Metal
 import MTKCore
 import MTKSceneKit
 
-/// Coordinator that manages MTK volumetric scene controllers
-/// Provides singleton access to MTK controllers for SwiftUI views
+/// Singleton coordinator managing volumetric scene controller lifecycle and state synchronization.
+///
+/// `VolumetricSceneCoordinator` provides centralized management of ``VolumetricSceneController`` instances
+/// for SwiftUI-based volumetric rendering applications. It handles controller pooling, dataset propagation,
+/// and synchronized state updates across multiple rendering surfaces (volume + tri-planar MPR views).
+///
+/// ## Overview
+///
+/// The coordinator maintains separate controller instances for:
+/// - **Volume rendering**: Primary 3D visualization with DVR/MIP/MinIP/AIP methods
+/// - **MPR planes**: Three orthogonal slice views (axial, sagittal, coronal)
+///
+/// All controllers share synchronized dataset, transfer function, and HU window state, ensuring
+/// consistent visualization across different views.
+///
+/// ## Usage
+///
+/// ### Basic Setup
+///
+/// ```swift
+/// import MTKUI
+///
+/// struct VolumeViewer: View {
+///     @StateObject private var coordinator = VolumetricSceneCoordinator.shared
+///
+///     var body: some View {
+///         VolumetricDisplayContainer(controller: coordinator.controller) {
+///             OrientationOverlayView()
+///             CrosshairOverlayView()
+///         }
+///         .task {
+///             // Load and apply dataset
+///             let dataset = try await loadDicomVolume()
+///             coordinator.apply(dataset: dataset)
+///
+///             // Configure window/level
+///             coordinator.applyHuWindow(min: -500, max: 1200)
+///
+///             // Set transfer function preset
+///             await coordinator.controller.setPreset(.softTissue)
+///         }
+///     }
+/// }
+/// ```
+///
+/// ### Multi-Planar Reconstruction (MPR)
+///
+/// ```swift
+/// struct MPRGridView: View {
+///     @StateObject private var coordinator = VolumetricSceneCoordinator.shared
+///
+///     var body: some View {
+///         MPRGridComposer(
+///             axialController: coordinator.controller(for: .z),
+///             sagittalController: coordinator.controller(for: .x),
+///             coronalController: coordinator.controller(for: .y)
+///         )
+///         .task {
+///             coordinator.apply(dataset: volumeDataset)
+///
+///             // Configure individual MPR planes
+///             coordinator.configureMPRDisplay(
+///                 axis: .z,
+///                 blend: .average,
+///                 slab: VolumetricSceneController.SlabConfiguration(
+///                     thickness: 10,
+///                     steps: 5
+///                 ),
+///                 normalizedPosition: 0.5
+///             )
+///         }
+///     }
+/// }
+/// ```
+///
+/// ## State Synchronization
+///
+/// The coordinator automatically synchronizes:
+/// - **Dataset**: Volume voxel data and geometry metadata
+/// - **Transfer functions**: Color/opacity mapping for tissue visualization
+/// - **HU window/level**: Medical imaging windowing parameters
+/// - **MPR positions**: Slice plane positions along each axis
+///
+/// State updates propagate to all active controllers asynchronously. Use ``rendererState`` publisher
+/// for observing consolidated rendering state in SwiftUI views.
+///
+/// ## Thread Safety
+///
+/// All public methods are marked `@MainActor` and must be called from the main thread.
+/// The coordinator uses Combine publishers for reactive state updates in SwiftUI.
+///
+/// ## Performance Considerations
+///
+/// - Controllers are created lazily on first access and reused across view updates
+/// - Dataset and transfer function state is cached to avoid redundant GPU uploads
+/// - State propagation uses `Task` for async/await coordination without blocking the main thread
+///
+/// - Important: Always use the shared singleton instance (``shared``) for consistent state management across your app.
 @MainActor
 public final class VolumetricSceneCoordinator: ObservableObject {
-    /// Shared singleton instance
+
+    /// Shared singleton coordinator instance.
+    ///
+    /// Use this instance across your app to ensure consistent volumetric rendering state.
+    /// Multiple coordinators would create isolated controller pools with independent state.
     public static let shared = VolumetricSceneCoordinator()
 
-    /// Whether a Metal device was successfully resolved
+    /// Indicates whether Metal GPU rendering is available on this device.
+    ///
+    /// Set to `false` on systems without Metal support (e.g., some simulators, legacy hardware).
+    /// When `false`, controllers fallback to stub implementations without GPU rendering.
     @Published public private(set) var isMetalAvailable: Bool
 
     private enum SurfaceKey: Hashable {
@@ -48,6 +151,26 @@ public final class VolumetricSceneCoordinator: ObservableObject {
     ]
     private let device: (any MTLDevice)?
     private var stubControllers: [SurfaceKey: VolumetricSceneController] = [:]
+    /// Consolidated rendering state published for SwiftUI observation.
+    ///
+    /// Contains snapshots of:
+    /// - Dataset metadata (dimensions, spacing, orientation)
+    /// - Active HU window mapping
+    /// - Transfer function reference
+    /// - Normalized MPR positions for all three axes
+    /// - Tone curve and clipping state
+    ///
+    /// Subscribe to this publisher in SwiftUI to reactively update UI based on rendering state:
+    /// ```swift
+    /// @StateObject var coordinator = VolumetricSceneCoordinator.shared
+    ///
+    /// var body: some View {
+    ///     Text("Dataset: \(coordinator.rendererState.dataset?.dimensions ?? .zero)")
+    ///         .onChange(of: coordinator.rendererState.huWindow) { window in
+    ///             // Update window/level UI controls
+    ///         }
+    /// }
+    /// ```
     @Published public private(set) var rendererState = VolumetricRendererState(
         normalizedMprPositions: [
             VolumetricSceneController.Axis.x: 0.5,
@@ -66,19 +189,53 @@ public final class VolumetricSceneCoordinator: ObservableObject {
         }
     }
 
-    /// Primary controller used for the preview overlay and volume rendering tile
+    /// Primary controller for volume rendering visualization.
+    ///
+    /// Returns the controller configured for 3D volume rendering (DVR/MIP/MinIP/AIP modes).
+    /// Use this controller with ``VolumetricDisplayContainer`` for the main volumetric view.
+    ///
+    /// ## Example
+    ///
+    /// ```swift
+    /// VolumetricDisplayContainer(controller: coordinator.controller) {
+    ///     OrientationOverlayView()
+    /// }
+    /// ```
     public var controller: VolumetricSceneController {
         controller(for: .volume)
     }
 
-    /// Returns (or creates) the controller dedicated to a specific MPR axis
-    /// - Parameter axis: The MPR axis (.x, .y, or .z)
-    /// - Returns: The volumetric scene controller for that axis
+    /// Returns the controller for a specific MPR axis (axial, sagittal, or coronal).
+    ///
+    /// Controllers are created lazily on first access and reused across subsequent calls.
+    /// Each axis maintains independent camera state but shares dataset and transfer function with other controllers.
+    ///
+    /// - Parameter axis: The anatomical axis for MPR slicing (`.x` = sagittal, `.y` = coronal, `.z` = axial).
+    /// - Returns: Controller configured for MPR rendering along the specified axis.
+    ///
+    /// ## Example
+    ///
+    /// ```swift
+    /// let axialController = coordinator.controller(for: .z)
+    /// let sagittalController = coordinator.controller(for: .x)
+    /// let coronalController = coordinator.controller(for: .y)
+    /// ```
     public func controller(for axis: VolumetricSceneController.Axis) -> VolumetricSceneController {
         controller(for: .mpr(axis))
     }
 
-    /// Clears all cached controllers (useful for tests)
+    /// Resets coordinator state and clears all cached controllers.
+    ///
+    /// Use this method for:
+    /// - Unit testing cleanup between tests
+    /// - Clearing application state when closing a volume
+    /// - Forcing controller recreation after major configuration changes
+    ///
+    /// All pending dataset, transfer function, and HU window state is discarded.
+    /// Controllers are deallocated and will be recreated on next access.
+    ///
+    /// - Important: This is a destructive operation. Active rendering views may become invalid.
+    ///   Ensure views are deallocated or will re-request controllers after reset.
     public func reset() {
         controllers.removeAll()
         controllerCancellables.removeAll()
@@ -104,8 +261,31 @@ public final class VolumetricSceneCoordinator: ObservableObject {
         }
     }
 
-    /// Applies a new dataset to all managed controllers, creating them on-demand
-    /// - Parameter dataset: The volume dataset to apply
+    /// Applies a volume dataset to all managed controllers.
+    ///
+    /// Propagates the dataset to all currently instantiated controllers (volume + MPR planes)
+    /// and caches it for future controller creation. Updates ``rendererState`` with dataset metadata.
+    ///
+    /// Controllers apply the dataset asynchronously using their GPU command queues.
+    /// This method returns immediately; dataset upload happens in the background.
+    ///
+    /// - Parameter dataset: Volume dataset containing voxel data, dimensions, spacing, and orientation.
+    ///
+    /// ## Example
+    ///
+    /// ```swift
+    /// let dataset = VolumeDataset(
+    ///     data: voxelData,
+    ///     dimensions: VolumeDimensions(width: 512, height: 512, depth: 300),
+    ///     spacing: VolumeSpacing(x: 0.001, y: 0.001, z: 0.0015),
+    ///     pixelFormat: .int16Signed,
+    ///     intensityRange: (-1024)...3071
+    /// )
+    /// coordinator.apply(dataset: dataset)
+    /// ```
+    ///
+    /// - Note: If Metal is unavailable (``isMetalAvailable`` is `false`), this method returns without error
+    ///   but no GPU textures are created.
     public func apply(dataset: VolumeDataset) {
         guard isMetalAvailable else { return }
         pendingDataset = dataset
@@ -122,8 +302,29 @@ public final class VolumetricSceneCoordinator: ObservableObject {
         }
     }
 
-    /// Propagates the active transfer function to all controllers (volume + MPR)
-    /// - Parameter transferFunction: The transfer function to apply (nil to clear)
+    /// Applies a transfer function to all managed controllers.
+    ///
+    /// Transfer functions define color and opacity mappings from voxel intensity to RGBA values.
+    /// This method synchronizes the transfer function across volume and MPR controllers, ensuring
+    /// consistent visualization.
+    ///
+    /// - Parameter transferFunction: Transfer function to apply, or `nil` to clear current mapping.
+    ///
+    /// ## Example
+    ///
+    /// ```swift
+    /// // Apply preset transfer function via controller
+    /// await coordinator.controller.setPreset(.softTissue)
+    ///
+    /// // Or load custom transfer function
+    /// let customTF = try TransferFunction(fileURL: tfURL)
+    /// coordinator.apply(transferFunction: customTF)
+    ///
+    /// // Clear transfer function (fallback to grayscale)
+    /// coordinator.apply(transferFunction: nil)
+    /// ```
+    ///
+    /// - Note: Transfer function state is cached and applied to controllers created after this call.
     public func apply(transferFunction: TransferFunction?) {
         guard isMetalAvailable else { return }
         pendingTransferFunction = transferFunction
@@ -133,10 +334,33 @@ public final class VolumetricSceneCoordinator: ObservableObject {
         }
     }
 
-    /// Synchronizes HU window and level with all registered controllers
+    /// Applies HU (Hounsfield Unit) window/level to all managed controllers.
+    ///
+    /// Window/level controls are fundamental to medical image visualization, mapping a subset
+    /// of the intensity range to display brightness. This method synchronizes windowing across
+    /// all rendering surfaces.
+    ///
     /// - Parameters:
-    ///   - min: Minimum HU value
-    ///   - max: Maximum HU value
+    ///   - min: Minimum HU value (lower bound of visible intensity range).
+    ///   - max: Maximum HU value (upper bound of visible intensity range).
+    ///
+    /// ## Example
+    ///
+    /// ```swift
+    /// // Soft tissue window (common CT preset)
+    /// coordinator.applyHuWindow(min: -500, max: 1200)
+    ///
+    /// // Bone window
+    /// coordinator.applyHuWindow(min: -200, max: 2000)
+    ///
+    /// // Lung window
+    /// coordinator.applyHuWindow(min: -1500, max: -400)
+    /// ```
+    ///
+    /// The window/level mapping is automatically converted to normalized transfer function coordinates
+    /// using the dataset's intensity range. Updates ``rendererState/huWindow``.
+    ///
+    /// - Note: HU windowing only affects visualization; the underlying voxel data is unchanged.
     public func applyHuWindow(min: Int32, max: Int32) {
         guard isMetalAvailable else { return }
         let mapping = makeHuMapping(min: min, max: max)
@@ -147,8 +371,28 @@ public final class VolumetricSceneCoordinator: ObservableObject {
         }
     }
 
-    /// Ensures the shared volume controller renders with the expected configuration (e.g., DVR)
-    /// - Parameter configuration: The display configuration to apply
+    /// Configures the primary volume controller's display mode.
+    ///
+    /// Sets rendering method for the volume controller (accessed via ``controller``).
+    /// Configuration is cached and applied when the volume controller is created or recreated.
+    ///
+    /// - Parameter configuration: Display configuration (volume rendering method or MPR mode).
+    ///
+    /// ## Example
+    ///
+    /// ```swift
+    /// // Direct Volume Rendering (DVR)
+    /// coordinator.configureVolumeDisplay(.volume(method: .dvr))
+    ///
+    /// // Maximum Intensity Projection (MIP)
+    /// coordinator.configureVolumeDisplay(.volume(method: .mip))
+    ///
+    /// // Average Intensity Projection (AIP)
+    /// coordinator.configureVolumeDisplay(.volume(method: .aip))
+    /// ```
+    ///
+    /// - Note: Typically you use this method to switch between volume rendering methods (DVR/MIP/MinIP/AIP).
+    ///   For MPR visualization, use ``controller(for:)`` to access dedicated MPR controllers.
     public func configureVolumeDisplay(_ configuration: VolumetricSceneController.DisplayConfiguration) {
         guard isMetalAvailable else { return }
         volumeConfiguration = configuration
@@ -157,12 +401,41 @@ public final class VolumetricSceneCoordinator: ObservableObject {
         }
     }
 
-    /// Registers the desired MPR display configuration for the specified axis
+    /// Configures MPR display settings for a specific anatomical axis.
+    ///
+    /// Sets blend mode, slab thickness, and initial slice position for an MPR controller.
+    /// Configuration is cached and applied when the MPR controller is accessed.
+    ///
     /// - Parameters:
-    ///   - axis: The MPR axis to configure
-    ///   - blend: The blend mode (default: .single)
-    ///   - slab: Optional slab configuration
-    ///   - normalizedPosition: Normalized position along axis (0...1, default: 0.5)
+    ///   - axis: Anatomical axis for MPR slicing (`.x` = sagittal, `.y` = coronal, `.z` = axial).
+    ///   - blend: Blend mode for multi-slice rendering (default: `.single` for sharp slices).
+    ///   - slab: Optional thick-slab configuration for noise reduction (default: `nil` for single slice).
+    ///   - normalizedPosition: Initial slice position along axis, range 0...1 (default: 0.5 for center).
+    ///
+    /// ## Example
+    ///
+    /// ```swift
+    /// // Single-slice axial MPR at center
+    /// coordinator.configureMPRDisplay(
+    ///     axis: .z,
+    ///     blend: .single,
+    ///     slab: nil,
+    ///     normalizedPosition: 0.5
+    /// )
+    ///
+    /// // Thick-slab coronal MPR with averaging (noise reduction)
+    /// coordinator.configureMPRDisplay(
+    ///     axis: .y,
+    ///     blend: .average,
+    ///     slab: VolumetricSceneController.SlabConfiguration(
+    ///         thickness: 10,  // 10 voxel thickness
+    ///         steps: 5        // 5 sampling steps
+    ///     ),
+    ///     normalizedPosition: 0.3
+    /// )
+    /// ```
+    ///
+    /// Normalized position is automatically clamped to [0, 1]. Updates ``rendererState/normalizedMprPositions``.
     public func configureMPRDisplay(axis: VolumetricSceneController.Axis,
                                     blend: MPRPlaneMaterial.BlendMode = .single,
                                     slab: VolumetricSceneController.SlabConfiguration? = nil,
@@ -178,10 +451,42 @@ public final class VolumetricSceneCoordinator: ObservableObject {
         }
     }
 
-    /// Updates the normalized MPR plane and notifies the controller immediately
+    /// Updates MPR slice position along a specific axis.
+    ///
+    /// Immediately updates the slice plane position for the MPR controller on the specified axis.
+    /// This method provides real-time slice scrolling without reconfiguring blend mode or slab settings.
+    ///
     /// - Parameters:
-    ///   - axis: The MPR axis to update
-    ///   - normalizedPosition: Normalized position along axis (0...1)
+    ///   - axis: Anatomical axis to update (`.x` = sagittal, `.y` = coronal, `.z` = axial).
+    ///   - normalizedPosition: Slice position along axis, range 0...1 (0 = start, 1 = end).
+    ///
+    /// ## Example
+    ///
+    /// ```swift
+    /// // Scroll axial slice to 75% through volume
+    /// coordinator.setMprPlane(axis: .z, normalizedPosition: 0.75)
+    ///
+    /// // Jump to first sagittal slice
+    /// coordinator.setMprPlane(axis: .x, normalizedPosition: 0.0)
+    ///
+    /// // Interactive scrolling with gesture
+    /// @GestureState var sliceOffset: Float = 0
+    ///
+    /// var body: some View {
+    ///     MPRPanelView(controller: coordinator.controller(for: .z))
+    ///         .gesture(
+    ///             DragGesture()
+    ///                 .updating($sliceOffset) { value, state, _ in
+    ///                     let delta = Float(value.translation.height) / 500
+    ///                     let newPosition = clamp(0.5 + delta, 0, 1)
+    ///                     coordinator.setMprPlane(axis: .z, normalizedPosition: newPosition)
+    ///                 }
+    ///         )
+    /// }
+    /// ```
+    ///
+    /// Normalized position is automatically clamped to [0, 1].
+    /// The method updates the cached configuration and notifies the active controller if instantiated.
     public func setMprPlane(axis: VolumetricSceneController.Axis, normalizedPosition: Float) {
         guard isMetalAvailable else { return }
         let clamped = VolumetricMath.clampFloat(normalizedPosition, lower: 0, upper: 1)
@@ -343,14 +648,84 @@ public final class VolumetricSceneCoordinator: ObservableObject {
         rendererState = snapshot
     }
 
+    /// Returns a snapshot of current renderer state.
+    ///
+    /// Provides immutable copy of rendering state including dataset metadata, HU window,
+    /// transfer function, MPR positions, tone curves, and clipping configuration.
+    ///
+    /// - Returns: Current renderer state snapshot.
+    ///
+    /// ## Example
+    ///
+    /// ```swift
+    /// let snapshot = coordinator.rendererStateSnapshot()
+    /// print("Dataset dimensions: \(snapshot.dataset?.dimensions ?? .zero)")
+    /// print("HU window: \(snapshot.huWindow?.minHU ?? 0)...\(snapshot.huWindow?.maxHU ?? 0)")
+    /// print("Axial position: \(snapshot.normalizedMprPositions[.z] ?? 0.5)")
+    /// ```
+    ///
+    /// - Note: This is a value-type snapshot. Subsequent state changes won't affect the returned copy.
+    ///   Use the ``rendererState`` publisher for reactive observation.
     public func rendererStateSnapshot() -> VolumetricRendererState {
         rendererState
     }
 
+    /// Updates tone curve configuration for advanced transfer function editing.
+    ///
+    /// Tone curves provide fine-grained control over color/opacity mapping beyond preset transfer functions.
+    /// Multiple curves can target different tissue types or intensity ranges.
+    ///
+    /// - Parameter snapshots: Array of tone curve configurations to apply.
+    ///
+    /// ## Example
+    ///
+    /// ```swift
+    /// let boneCurve = VolumetricRendererState.ToneCurveSnapshot(
+    ///     identifier: "bone",
+    ///     controlPoints: [(0.6, 0.0), (0.8, 0.5), (1.0, 1.0)],
+    ///     colorRamp: .grayscale
+    /// )
+    /// coordinator.updateToneCurves([boneCurve])
+    /// ```
+    ///
+    /// - Note: Tone curves are applied on top of the base transfer function.
+    ///   Clear curves by passing empty array: `coordinator.updateToneCurves([])`.
     public func updateToneCurves(_ snapshots: [VolumetricRendererState.ToneCurveSnapshot]) {
         updateRendererState { $0.toneCurves = snapshots }
     }
 
+    /// Updates clipping configuration for volume and plane clipping.
+    ///
+    /// Clipping controls visibility of voxels based on spatial bounds or arbitrary plane equations.
+    /// Use for cropping volumes, creating cutaway views, or focusing on regions of interest.
+    ///
+    /// - Parameters:
+    ///   - bounds: Optional axis-aligned bounding box clip (nil to disable bounds clipping).
+    ///   - plane: Optional arbitrary plane clip (nil to disable plane clipping).
+    ///
+    /// ## Example
+    ///
+    /// ```swift
+    /// // Clip to central 50% of volume in all dimensions
+    /// let bounds = ClipBoundsSnapshot(
+    ///     minX: 0.25, maxX: 0.75,
+    ///     minY: 0.25, maxY: 0.75,
+    ///     minZ: 0.25, maxZ: 0.75
+    /// )
+    /// coordinator.updateClipState(bounds: bounds, plane: nil)
+    ///
+    /// // Clear all clipping
+    /// coordinator.updateClipState(bounds: nil, plane: nil)
+    ///
+    /// // Plane-based clip (e.g., axial plane at Z=0.5)
+    /// let plane = ClipPlaneSnapshot(
+    ///     normal: SIMD3<Float>(0, 0, 1),
+    ///     distance: 0.5
+    /// )
+    /// coordinator.updateClipState(bounds: nil, plane: plane)
+    /// ```
+    ///
+    /// - Note: Both bounds and plane clipping can be active simultaneously (intersection of constraints).
     public func updateClipState(bounds: ClipBoundsSnapshot?, plane: ClipPlaneSnapshot?) {
         updateRendererState {
             $0.clipBounds = bounds

@@ -20,6 +20,7 @@ public final class ArgumentEncoderManager {
     public private(set) var argumentBuffer: MTLBuffer!
 
     private var buffers: [Int: MTLBuffer] = [:]
+    private var textures: [Int: ObjectIdentifier] = [:]
     private var needsUpdate: [Int: Bool] = [:]
 
     var currentPxByteSize: Int = 0
@@ -57,6 +58,7 @@ public final class ArgumentEncoderManager {
         case transferTextureCh2 = 16
         case transferTextureCh3 = 17
         case transferTextureCh4 = 18
+        case accelerationTexture = 19
 
         public var description: String {
             switch self {
@@ -79,11 +81,12 @@ public final class ArgumentEncoderManager {
             case .transferTextureCh2: return "transfer function ch2"
             case .transferTextureCh3: return "transfer function ch3"
             case .transferTextureCh4: return "transfer function ch4"
+            case .accelerationTexture: return "acceleration texture"
             }
         }
 
         static func validateShaderLayout(file: StaticString = #file, line: UInt = #line) {
-            assert(allCases.count == 19, "RenderingArguments defines 19 resources in volume_compute.metal", file: file, line: line)
+            assert(allCases.count == 20, "RenderingArguments defines 20 resources in volume_compute.metal", file: file, line: line)
             assert(ArgumentIndex.mainTexture.rawValue == 0, "volume_compute.metal expects volumeTexture at index 0", file: file, line: line)
             assert(ArgumentIndex.renderParams.rawValue == 1, "volume_compute.metal expects RenderingParameters at index 1", file: file, line: line)
             assert(ArgumentIndex.outputTexture.rawValue == 2, "volume_compute.metal expects outputTexture at index 2", file: file, line: line)
@@ -103,6 +106,7 @@ public final class ArgumentEncoderManager {
             assert(ArgumentIndex.transferTextureCh2.rawValue == 16, "volume_compute.metal expects transferTextureCh2 at index 16", file: file, line: line)
             assert(ArgumentIndex.transferTextureCh3.rawValue == 17, "volume_compute.metal expects transferTextureCh3 at index 17", file: file, line: line)
             assert(ArgumentIndex.transferTextureCh4.rawValue == 18, "volume_compute.metal expects transferTextureCh4 at index 18", file: file, line: line)
+            assert(ArgumentIndex.accelerationTexture.rawValue == 19, "volume_compute.metal expects accelerationTexture at index 19", file: file, line: line)
         }
     }
 
@@ -138,9 +142,13 @@ public final class ArgumentEncoderManager {
     public func encodeTexture(_ texture: MTLTexture, argumentIndex: ArgumentIndex) {
         let index = argumentIndex.rawValue
 
-        if needsUpdate[index] == true {
+        let identity = ObjectIdentifier(texture)
+        let shouldUpdate = needsUpdate[index] == true || textures[index] != identity
+
+        if shouldUpdate {
             argumentEncoder.setTexture(texture, index: index)
             needsUpdate[index] = false
+            textures[index] = identity
 
             if debugOptions.isDebugMode {
                 print("arg texture index:\(index) (\(argumentIndex.description)), \(String(describing: type(of: texture))), set")

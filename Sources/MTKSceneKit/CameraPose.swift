@@ -18,16 +18,46 @@ import MTKCore
 
 // MARK: - CameraPose
 
-/// Represents a camera's position and orientation in 3D space.
+/// Represents a camera's position and orientation in 3D space for volumetric rendering.
 ///
-/// This struct captures all essential camera parameters for volumetric rendering:
-/// - `position`: The world-space location of the camera
-/// - `target`: The point in space the camera is looking at
-/// - `up`: The up vector defining camera roll
-/// - `fieldOfView`: The vertical field of view in degrees
-/// - `projectionType`: The projection type (perspective or orthographic)
+/// This struct captures all essential camera parameters needed for 3D volumetric visualization:
+/// - ``position``: The world-space location of the camera
+/// - ``target``: The point in space the camera is looking at
+/// - ``up``: The up vector defining camera roll
+/// - ``fieldOfView``: The vertical field of view in degrees
+/// - ``projectionType``: The projection type (perspective or orthographic)
+///
+/// ## Overview
+///
+/// `CameraPose` provides a complete camera state representation with:
+/// - **SceneKit integration**: Create poses from SceneKit camera nodes via ``from(cameraNode:lookAtTarget:)``
+/// - **Matrix generation**: Convert to view and projection matrices for rendering pipelines
+/// - **Serialization**: `Codable` conformance enables save/load of camera states
+/// - **Preset configurations**: Factory methods for common viewing angles
+///
+/// ## Usage
+///
+/// ```swift
+/// // Create a camera pose
+/// let pose = CameraPose(
+///     position: SIMD3<Float>(0, 0, 5),
+///     target: SIMD3<Float>(0, 0, 0),
+///     up: SIMD3<Float>(0, 1, 0),
+///     fieldOfView: 60.0
+/// )
+///
+/// // Generate rendering matrices
+/// let viewMatrix = pose.toViewMatrix()
+/// let projectionMatrix = pose.toProjectionMatrix(aspectRatio: 16.0/9.0)
+///
+/// // Use preset configurations
+/// let frontView = CameraPose.frontView(distance: 3.0)
+/// ```
 ///
 /// The struct conforms to `Equatable` for comparisons and `Codable` for serialization.
+///
+/// - SeeAlso: ``VolumeCameraController``
+/// - SeeAlso: ``VolumetricCameraPoseProviding``
 public struct CameraPose: Equatable, Codable {
     /// The camera's position in world space
     public var position: SIMD3<Float>
@@ -241,10 +271,43 @@ public struct CameraPose: Equatable, Codable {
 
 /// Protocol for types that provide a camera pose for volumetric rendering.
 ///
+/// Adopt this protocol to expose camera state in a format compatible with MTK's
+/// rendering pipelines. The protocol requires a single computed property that
+/// returns a ``CameraPose`` instance representing the current camera configuration.
+///
+/// ## Conformance
+///
 /// Implementations should provide the current camera pose, which is essential
 /// for rendering engines that need to know the camera's spatial configuration.
+/// The pose should accurately reflect the camera's position, target, orientation,
+/// and field of view at the time of access.
+///
+/// ## Usage
+///
+/// ```swift
+/// final class MyVolumeRenderer: VolumetricCameraPoseProviding {
+///     private var position: SIMD3<Float> = .zero
+///     private var target: SIMD3<Float> = SIMD3<Float>(0, 0, -1)
+///     private var fov: Float = 60.0
+///
+///     var cameraPose: CameraPose {
+///         CameraPose(
+///             position: position,
+///             target: target,
+///             up: SIMD3<Float>(0, 1, 0),
+///             fieldOfView: fov
+///         )
+///     }
+/// }
+/// ```
+///
+/// - SeeAlso: ``CameraPose``
+/// - SeeAlso: ``VolumeCameraController``
 public protocol VolumetricCameraPoseProviding {
-    /// The current camera pose used for volumetric rendering
+    /// The current camera pose used for volumetric rendering.
+    ///
+    /// This property should return a ``CameraPose`` instance that accurately represents
+    /// the camera's current position, orientation, target, and field of view.
     var cameraPose: CameraPose { get }
 }
 

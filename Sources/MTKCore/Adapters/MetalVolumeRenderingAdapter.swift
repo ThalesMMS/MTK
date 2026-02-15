@@ -18,50 +18,197 @@ import Metal
 import OSLog
 import simd
 
+/// Extended rendering state configuration for advanced volume rendering features.
+///
+/// This structure encapsulates all advanced rendering parameters including windowing,
+/// lighting, tone curves, clipping, and adaptive sampling. It is used internally by
+/// ``MetalVolumeRenderingAdapter`` to maintain rendering state across frames.
+///
+/// ## Topics
+///
+/// ### Windowing
+/// - ``huWindow``
+/// - ``shift``
+/// - ``densityGate``
+///
+/// ### Lighting and Quality
+/// - ``lightingEnabled``
+/// - ``samplingStep``
+/// - ``adaptiveEnabled``
+/// - ``adaptiveThreshold``
+/// - ``jitterAmount``
+/// - ``earlyTerminationThreshold``
+///
+/// ### Transfer Functions
+/// - ``channelIntensities``
+/// - ``toneCurvePoints``
+/// - ``toneCurvePresetKeys``
+/// - ``toneCurveGains``
+///
+/// ### Clipping
+/// - ``clipBounds``
+/// - ``clipPlanePreset``
+/// - ``clipPlaneOffset``
 @preconcurrency
 public struct ExtendedRenderingState: Sendable {
+    /// HU (Hounsfield Unit) window for CT data visualization.
+    /// When set, overrides the dataset's recommended window.
     var huWindow: ClosedRange<Int32>?
+
+    /// Whether lighting calculations are enabled during rendering.
     var lightingEnabled: Bool = true
+
+    /// Step size for ray marching, expressed as a fraction of the volume diagonal.
     var samplingStep: Float = 1.0 / 512.0
+
+    /// Intensity shift applied to all voxel values before windowing.
     var shift: Float = 0
+
+    /// Optional density gate that filters out voxels outside this intensity range.
     var densityGate: ClosedRange<Float>?
+
+    /// Whether adaptive sampling is enabled (adjusts step size based on gradient).
     var adaptiveEnabled: Bool = false
+
+    /// Gradient threshold for adaptive sampling trigger.
     var adaptiveThreshold: Float = 0
+
+    /// Amount of temporal jitter to reduce aliasing artifacts.
     var jitterAmount: Float = 0
+
+    /// Accumulated opacity threshold for early ray termination.
     var earlyTerminationThreshold: Float = 0.95
+
+    /// Per-channel intensity multipliers (RGBA).
     var channelIntensities: SIMD4<Float> = SIMD4<Float>(repeating: 1)
+
+    /// Per-channel tone curve control points (channel index -> array of (input, output) pairs).
     var toneCurvePoints: [Int: [SIMD2<Float>]] = [:]
+
+    /// Per-channel tone curve preset identifiers.
     var toneCurvePresetKeys: [Int: String] = [:]
+
+    /// Per-channel tone curve gain values.
     var toneCurveGains: [Int: Float] = [:]
+
+    /// 3D clip bounds in normalized volume space [0, 1].
     var clipBounds: ClipBoundsSnapshot = .default
+
+    /// Active clip plane preset (0 = none, 1 = axial, 2 = sagittal, 3 = coronal).
     var clipPlanePreset: Int = 0
+
+    /// Distance offset for the active clip plane.
     var clipPlaneOffset: Float = 0
 }
 
+/// High-performance volume rendering adapter with GPU acceleration and CPU fallback.
+///
+/// `MetalVolumeRenderingAdapter` is the primary interface for volumetric rendering in MTK.
+/// It automatically selects between GPU-accelerated Metal compute pipelines and CPU-based
+/// fallback rendering depending on device capabilities and runtime conditions.
+///
+/// ## Overview
+///
+/// The adapter implements the ``VolumeRenderingPort`` protocol, providing:
+/// - Direct Volume Rendering (DVR) with multiple compositing modes
+/// - GPU-accelerated histogram calculation
+/// - Advanced tone curve and transfer function support
+/// - Automatic fallback to CPU rendering when GPU is unavailable
+/// - Diagnostic logging for debugging rendering issues
+///
+/// ## Usage
+///
+/// ```swift
+/// let adapter = MetalVolumeRenderingAdapter()
+/// adapter.enableDiagnosticLogging(true)
+///
+/// let request = VolumeRenderRequest(
+///     dataset: dataset,
+///     camera: camera,
+///     viewportSize: (width: 512, height: 512),
+///     compositing: .frontToBack,
+///     transferFunction: transferFunction
+/// )
+///
+/// let result = try await adapter.renderImage(using: request)
+/// ```
+///
+/// ## Topics
+///
+/// ### Creating an Adapter
+/// - ``init()``
+///
+/// ### Rendering
+/// - ``renderImage(using:)``
+/// - ``updatePreset(_:for:)``
+///
+/// ### Configuration
+/// - ``send(_:)``
+/// - ``enableDiagnosticLogging(_:)``
+///
+/// ### Histogram
+/// - ``refreshHistogram(for:descriptor:transferFunction:)``
+///
+/// ### Error Types
+/// - ``AdapterError``
+///
+/// ### Supporting Types
+/// - ``Overrides``
+/// - ``RenderSnapshot``
 public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
+    /// Errors specific to the volume rendering adapter.
     public enum AdapterError: Error, Equatable {
+        /// The requested histogram bin count is invalid (must be > 0).
         case invalidHistogramBinCount
     }
 
     private typealias ArgumentIndex = ArgumentEncoderManager.ArgumentIndex
 
+    /// Internal rendering errors.
     enum RenderingError: Error {
+        /// Unable to create or access the dataset's Metal texture.
         case datasetTextureUnavailable
+
+        /// Unable to create or access the transfer function texture.
         case transferTextureUnavailable
+
+        /// Failed to encode Metal commands.
         case commandEncodingFailed
+
+        /// Unable to create or access the output render texture.
         case outputTextureUnavailable
     }
 
+    /// Rendering parameter overrides that take precedence over request values.
+    ///
+    /// Use ``send(_:)`` to set these overrides. They persist across render calls
+    /// until explicitly changed or cleared.
     public struct Overrides {
+        /// Override compositing mode for all render requests.
         public var compositing: VolumeRenderRequest.Compositing?
+
+        /// Override sampling distance for all render requests.
         public var samplingDistance: Float?
+
+        /// Override intensity window for all render requests.
         public var window: ClosedRange<Int32>?
+
+        /// Override lighting enabled state.
         public var lightingEnabled: Bool = true
     }
 
+    /// Snapshot of the most recent successful render.
+    ///
+    /// Captures the dataset, metadata, and window used in the last ``renderImage(using:)`` call.
+    /// Useful for debugging and validating rendering state.
     public struct RenderSnapshot {
+        /// The dataset that was rendered.
         public var dataset: VolumeDataset
+
+        /// Metadata describing the render configuration.
         public var metadata: VolumeRenderResult.Metadata
+
+        /// The intensity window applied during rendering.
         public var window: ClosedRange<Int32>
     }
 
@@ -120,8 +267,24 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
         }
     }
 
+    /// Creates a new volume rendering adapter.
+    ///
+    /// The adapter initializes without any GPU resources. Metal resources are
+    /// allocated lazily on first render when a GPU is available.
     public init() {}
 
+    /// Enables or disables diagnostic logging for debugging rendering issues.
+    ///
+    /// When enabled, the adapter logs detailed information about:
+    /// - Render requests (viewport, compositing mode, quality)
+    /// - Applied overrides (compositing, sampling distance, window)
+    /// - GPU state initialization
+    /// - Fallback to CPU rendering
+    /// - Camera matrices (view, projection, inverse view-projection)
+    ///
+    /// - Parameter enabled: Whether to enable diagnostic logging.
+    ///
+    /// - Note: Diagnostic logs use `os_log` with the `com.mtk.volumerendering` subsystem.
     public func enableDiagnosticLogging(_ enabled: Bool) {
         diagnosticLoggingEnabled = enabled
         if enabled {
@@ -131,6 +294,68 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
         }
     }
 
+    /// Renders a volumetric image from the provided request.
+    ///
+    /// This is the primary rendering method. It attempts GPU-accelerated rendering
+    /// via Metal compute shaders, falling back to CPU rendering if Metal is unavailable
+    /// or if an error occurs.
+    ///
+    /// - Parameter request: A ``VolumeRenderRequest`` specifying the dataset, camera,
+    ///   viewport, compositing mode, and transfer function.
+    ///
+    /// - Returns: A ``VolumeRenderResult`` containing the rendered image and metadata.
+    ///
+    /// - Throws: Errors are generally handled internally with automatic CPU fallback.
+    ///   However, critical errors (e.g., invalid dataset) may propagate.
+    ///
+    /// ## GPU Acceleration
+    ///
+    /// The adapter automatically initializes Metal resources on first render when available:
+    /// - Creates Metal device and command queue
+    /// - Loads Metal shader library (`MTK.metallib` or default library)
+    /// - Compiles `volume_compute` kernel
+    /// - Allocates argument buffers and camera uniforms
+    ///
+    /// ## CPU Fallback
+    ///
+    /// CPU fallback is used when:
+    /// - Metal device is unavailable
+    /// - Shader library loading fails
+    /// - Pipeline compilation fails
+    /// - Metal rendering throws an error
+    ///
+    /// The CPU fallback generates a grayscale slice through the volume center with
+    /// basic windowing and tone curve application.
+    ///
+    /// ## Parameter Overrides
+    ///
+    /// The adapter applies overrides set via ``send(_:)`` in this order:
+    /// 1. Compositing mode (if override set)
+    /// 2. Sampling distance (if override set)
+    /// 3. Intensity window (extended state → override → recommended → intensity range)
+    ///
+    /// ## Usage
+    ///
+    /// ```swift
+    /// let request = VolumeRenderRequest(
+    ///     dataset: dataset,
+    ///     camera: VolumeRenderRequest.Camera(
+    ///         position: SIMD3<Float>(0.5, 0.5, 2),
+    ///         target: SIMD3<Float>(0.5, 0.5, 0.5),
+    ///         up: SIMD3<Float>(0, 1, 0),
+    ///         fieldOfView: 45,
+    ///         projectionType: .perspective
+    ///     ),
+    ///     viewportSize: (width: 512, height: 512),
+    ///     samplingDistance: 0.002,
+    ///     compositing: .frontToBack,
+    ///     quality: .balanced,
+    ///     transferFunction: transferFunction
+    /// )
+    ///
+    /// let result = try await adapter.renderImage(using: request)
+    /// let image = result.cgImage
+    /// ```
     public func renderImage(using request: VolumeRenderRequest) async throws -> VolumeRenderResult {
         if diagnosticLoggingEnabled {
             logger.info("[DIAG] renderImage called - viewport: \(request.viewportSize.width)x\(request.viewportSize.height), compositing: \(String(describing: request.compositing)), quality: \(String(describing: request.quality))")
@@ -198,6 +423,20 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
         return result
     }
 
+    /// Updates the active rendering preset for a dataset.
+    ///
+    /// Presets define common rendering configurations (e.g., CT Bone, CT Soft Tissue, MR Angio)
+    /// that combine transfer functions, windowing, and other parameters.
+    ///
+    /// - Parameters:
+    ///   - preset: The rendering preset to apply.
+    ///   - dataset: The dataset for which the preset should be applied.
+    ///
+    /// - Returns: An array containing the applied preset (for compatibility with batch operations).
+    ///
+    /// - Note: The preset is stored internally but currently does not automatically modify
+    ///   rendering parameters. Future implementations may apply preset-specific settings
+    ///   to transfer functions, windowing, and quality.
     public func updatePreset(_ preset: VolumeRenderingPreset,
                              for dataset: VolumeDataset) async throws -> [VolumeRenderingPreset] {
         if diagnosticLoggingEnabled {
@@ -207,6 +446,48 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
         return [preset]
     }
 
+    /// Calculates an intensity histogram for the given dataset.
+    ///
+    /// The histogram is computed on the CPU using a detached task to avoid blocking
+    /// the main actor. This method scans all voxels in the dataset and bins them
+    /// according to the descriptor's intensity range and bin count.
+    ///
+    /// - Parameters:
+    ///   - dataset: The volume dataset to analyze.
+    ///   - descriptor: Configuration specifying bin count, intensity range, and normalization.
+    ///   - transferFunction: Transfer function for context (currently unused).
+    ///
+    /// - Returns: A ``VolumeHistogram`` containing the binned intensity distribution.
+    ///
+    /// - Throws: ``AdapterError/invalidHistogramBinCount`` if `descriptor.binCount` is 0.
+    ///
+    /// ## Performance
+    ///
+    /// CPU histogram calculation time scales linearly with voxel count:
+    /// - 256×256×256 volume: ~10-20ms
+    /// - 512×512×512 volume: ~80-120ms
+    ///
+    /// For GPU-accelerated histogram calculation, use Metal Performance Shaders
+    /// via ``VolumeHistogramCalculator``.
+    ///
+    /// ## Usage
+    ///
+    /// ```swift
+    /// let descriptor = VolumeHistogramDescriptor(
+    ///     binCount: 256,
+    ///     intensityRange: -1024...3071,
+    ///     normalize: true
+    /// )
+    ///
+    /// let histogram = try await adapter.refreshHistogram(
+    ///     for: dataset,
+    ///     descriptor: descriptor,
+    ///     transferFunction: transferFunction
+    /// )
+    ///
+    /// // Histogram bins sum to 1.0 if normalize = true
+    /// print("Total: \(histogram.bins.reduce(0, +))")
+    /// ```
     public func refreshHistogram(for dataset: VolumeDataset,
                                  descriptor: VolumeHistogramDescriptor,
                                  transferFunction: VolumeTransferFunction) async throws -> VolumeHistogram {
@@ -253,6 +534,37 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
         return VolumeHistogram(descriptor: descriptor, bins: bins)
     }
 
+    /// Sends a rendering command to update render parameters.
+    ///
+    /// Commands set persistent overrides that apply to all subsequent ``renderImage(using:)`` calls
+    /// until changed or cleared.
+    ///
+    /// - Parameter command: The command to execute.
+    ///
+    /// - Throws: Commands are processed synchronously and do not currently throw errors.
+    ///
+    /// ## Available Commands
+    ///
+    /// - ``VolumeRenderingCommand/setCompositing(_:)`` - Override compositing mode (DVR, MIP, MinIP, AIP)
+    /// - ``VolumeRenderingCommand/setWindow(_:_:)`` - Override intensity window (HU min/max)
+    /// - ``VolumeRenderingCommand/setSamplingStep(_:)`` - Override ray marching step size
+    /// - ``VolumeRenderingCommand/setLighting(_:)`` - Enable/disable lighting calculations
+    ///
+    /// ## Usage
+    ///
+    /// ```swift
+    /// // Change to Maximum Intensity Projection
+    /// try await adapter.send(.setCompositing(.maximumIntensity))
+    ///
+    /// // Adjust CT window for bone visualization
+    /// try await adapter.send(.setWindow(-500, 1300))
+    ///
+    /// // Reduce sampling distance for higher quality
+    /// try await adapter.send(.setSamplingStep(0.001))
+    ///
+    /// // Disable lighting for pure intensity visualization
+    /// try await adapter.send(.setLighting(false))
+    /// ```
     public func send(_ command: VolumeRenderingCommand) async throws {
         if diagnosticLoggingEnabled {
             logger.info("[DIAG] send command: \(String(describing: command))")

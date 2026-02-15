@@ -1,0 +1,425 @@
+@Tutorial(time: 20) {
+    @Intro(title: "Getting Started with MTK") {
+        Learn how to build a volumetric medical imaging viewer using MTK's Metal-accelerated rendering pipeline.
+
+        This tutorial walks you through creating a basic SwiftUI application that loads volume data, configures rendering parameters, and adds interactive UI controls for medical visualization.
+
+        @Image(source: "volume-rendering-intro.png", alt: "A 3D volumetric rendering of a medical CT scan")
+    }
+
+    @Section(title: "Set up your project") {
+        @ContentAndMedia {
+            Add the MTK package to your project and verify Metal availability for GPU-accelerated volume rendering.
+
+            MTKCore requires a Metal-capable device and iOS 17+ / macOS 14+. The framework gracefully degrades when Metal is unavailable, but rendering features require GPU support.
+        }
+
+        @Steps {
+            @Step {
+                Add the MTK package dependency to your Swift package or Xcode project.
+
+                Point Swift Package Manager at the MTK directory (local checkout or Git URL) and depend on the library products you need.
+
+                ```swift
+                // swift-tools-version: 5.10
+                import PackageDescription
+
+                let package = Package(
+                    name: "VolumeViewer",
+                    platforms: [
+                        .iOS(.v17),
+                        .macOS(.v14)
+                    ],
+                    dependencies: [
+                        .package(path: "../MTK")
+                    ],
+                    targets: [
+                        .target(
+                            name: "VolumeViewer",
+                            dependencies: [
+                                .product(name: "MTKCore", package: "MTK"),
+                                .product(name: "MTKUI", package: "MTK")
+                            ]
+                        )
+                    ]
+                )
+                ```
+            }
+
+            @Step {
+                Import the MTK modules and verify Metal runtime availability.
+
+                Use `MetalRuntimeAvailability` to check for GPU support before initializing rendering components.
+
+                ```swift
+                import SwiftUI
+                import MTKCore
+                import MTKUI
+
+                @main
+                struct VolumeViewerApp: App {
+                    var body: some Scene {
+                        WindowGroup {
+                            if MetalRuntimeAvailability.isMetalAvailable {
+                                ContentView()
+                            } else {
+                                Text("Metal is required for volume rendering")
+                                    .foregroundColor(.red)
+                            }
+                        }
+                    }
+                }
+                ```
+            }
+
+            @Step {
+                Create a SwiftUI view with the volumetric scene coordinator.
+
+                `VolumetricSceneCoordinator` manages the rendering pipeline lifecycle and provides the main interface for volume operations.
+
+                ```swift
+                import SwiftUI
+                import MTKUI
+
+                struct ContentView: View {
+                    @StateObject private var coordinator = VolumetricSceneCoordinator.shared
+
+                    var body: some View {
+                        VolumetricDisplayContainer(controller: coordinator.controller) {
+                            // Overlays will be added here
+                        }
+                    }
+                }
+                ```
+            }
+        }
+    }
+
+    @Section(title: "Create and load a volume dataset") {
+        @ContentAndMedia {
+            Construct a `VolumeDataset` from your voxel data with spatial metadata.
+
+            Volume datasets encapsulate 3D medical imaging data with dimensions, spacing, pixel format, and intensity range information required for accurate rendering.
+        }
+
+        @Steps {
+            @Step {
+                Prepare your volume data as a `Data` buffer.
+
+                For this example, create a synthetic volume. In production, load from DICOM files using `DicomVolumeLoader` or from RAW binary files.
+
+                ```swift
+                import SwiftUI
+                import MTKCore
+                import MTKUI
+
+                struct ContentView: View {
+                    @StateObject private var coordinator = VolumetricSceneCoordinator.shared
+
+                    var body: some View {
+                        VolumetricDisplayContainer(controller: coordinator.controller) {
+                            // Overlays will be added here
+                        }
+                        .task {
+                            // Create synthetic volume data
+                            let dimensions = VolumeDimensions(width: 256, height: 256, depth: 128)
+                            let voxelCount = dimensions.width * dimensions.height * dimensions.depth
+                            let bytesPerVoxel = VolumePixelFormat.int16Signed.bytesPerVoxel
+                            let voxels = Data(repeating: 0, count: voxelCount * bytesPerVoxel)
+                        }
+                    }
+                }
+                ```
+            }
+
+            @Step {
+                Create a `VolumeDataset` with spatial metadata.
+
+                Specify dimensions in voxels, spacing in meters (or millimeters), pixel format, and intensity range. For CT data, intensity range is typically Hounsfield Units (-1024 to +3071).
+
+                ```swift
+                import SwiftUI
+                import MTKCore
+                import MTKUI
+
+                struct ContentView: View {
+                    @StateObject private var coordinator = VolumetricSceneCoordinator.shared
+
+                    var body: some View {
+                        VolumetricDisplayContainer(controller: coordinator.controller) {
+                            // Overlays will be added here
+                        }
+                        .task {
+                            let dimensions = VolumeDimensions(width: 256, height: 256, depth: 128)
+                            let voxelCount = dimensions.width * dimensions.height * dimensions.depth
+                            let bytesPerVoxel = VolumePixelFormat.int16Signed.bytesPerVoxel
+                            let voxels = Data(repeating: 0, count: voxelCount * bytesPerVoxel)
+
+                            let dataset = VolumeDataset(
+                                data: voxels,
+                                dimensions: dimensions,
+                                spacing: VolumeSpacing(x: 0.001, y: 0.001, z: 0.0015),
+                                pixelFormat: .int16Signed,
+                                intensityRange: (-1024)...3071
+                            )
+                        }
+                    }
+                }
+                ```
+            }
+
+            @Step {
+                Apply the dataset to the coordinator.
+
+                The coordinator handles Metal texture creation and pipeline configuration automatically.
+
+                ```swift
+                import SwiftUI
+                import MTKCore
+                import MTKUI
+
+                struct ContentView: View {
+                    @StateObject private var coordinator = VolumetricSceneCoordinator.shared
+
+                    var body: some View {
+                        VolumetricDisplayContainer(controller: coordinator.controller) {
+                            // Overlays will be added here
+                        }
+                        .task {
+                            let dimensions = VolumeDimensions(width: 256, height: 256, depth: 128)
+                            let voxelCount = dimensions.width * dimensions.height * dimensions.depth
+                            let bytesPerVoxel = VolumePixelFormat.int16Signed.bytesPerVoxel
+                            let voxels = Data(repeating: 0, count: voxelCount * bytesPerVoxel)
+
+                            let dataset = VolumeDataset(
+                                data: voxels,
+                                dimensions: dimensions,
+                                spacing: VolumeSpacing(x: 0.001, y: 0.001, z: 0.0015),
+                                pixelFormat: .int16Signed,
+                                intensityRange: (-1024)...3071
+                            )
+
+                            // Apply dataset to rendering pipeline
+                            coordinator.apply(dataset: dataset)
+                        }
+                    }
+                }
+                ```
+            }
+        }
+    }
+
+    @Section(title: "Configure rendering parameters") {
+        @ContentAndMedia {
+            Set up transfer functions and windowing parameters for medical visualization.
+
+            Transfer functions map volume intensities to color and opacity. MTKCore provides presets optimized for CT and MR imaging, plus support for custom Hounsfield unit windowing.
+        }
+
+        @Steps {
+            @Step {
+                Apply a Hounsfield unit (HU) window for CT visualization.
+
+                Windowing adjusts contrast by mapping a subset of intensity values to the visible range. Common CT windows: lung (-1500 to -400), soft tissue (-500 to 1200), bone (200 to 2000).
+
+                ```swift
+                .task {
+                    let dimensions = VolumeDimensions(width: 256, height: 256, depth: 128)
+                    let voxelCount = dimensions.width * dimensions.height * dimensions.depth
+                    let bytesPerVoxel = VolumePixelFormat.int16Signed.bytesPerVoxel
+                    let voxels = Data(repeating: 0, count: voxelCount * bytesPerVoxel)
+
+                    let dataset = VolumeDataset(
+                        data: voxels,
+                        dimensions: dimensions,
+                        spacing: VolumeSpacing(x: 0.001, y: 0.001, z: 0.0015),
+                        pixelFormat: .int16Signed,
+                        intensityRange: (-1024)...3071
+                    )
+
+                    coordinator.apply(dataset: dataset)
+
+                    // Apply soft tissue window (HU -500 to +1200)
+                    coordinator.applyHuWindow(min: -500, max: 1200)
+                }
+                ```
+            }
+
+            @Step {
+                Apply a medical imaging preset transfer function.
+
+                Presets provide clinically-validated color and opacity curves for specific tissue types. Available presets include `.softTissue`, `.bone`, `.angio`, `.lungCT`, and more.
+
+                ```swift
+                .task {
+                    let dimensions = VolumeDimensions(width: 256, height: 256, depth: 128)
+                    let voxelCount = dimensions.width * dimensions.height * dimensions.depth
+                    let bytesPerVoxel = VolumePixelFormat.int16Signed.bytesPerVoxel
+                    let voxels = Data(repeating: 0, count: voxelCount * bytesPerVoxel)
+
+                    let dataset = VolumeDataset(
+                        data: voxels,
+                        dimensions: dimensions,
+                        spacing: VolumeSpacing(x: 0.001, y: 0.001, z: 0.0015),
+                        pixelFormat: .int16Signed,
+                        intensityRange: (-1024)...3071
+                    )
+
+                    coordinator.apply(dataset: dataset)
+                    coordinator.applyHuWindow(min: -500, max: 1200)
+
+                    // Apply soft tissue preset transfer function
+                    await coordinator.controller.setPreset(.softTissue)
+                }
+                ```
+            }
+
+            @Step {
+                Optionally configure rendering mode and quality.
+
+                Choose from Direct Volume Rendering (DVR), Maximum Intensity Projection (MIP), Minimum Intensity Projection (MinIP), or Average Intensity Projection (AIP). Adjust quality for performance/detail tradeoff.
+
+                ```swift
+                .task {
+                    let dimensions = VolumeDimensions(width: 256, height: 256, depth: 128)
+                    let voxelCount = dimensions.width * dimensions.height * dimensions.depth
+                    let bytesPerVoxel = VolumePixelFormat.int16Signed.bytesPerVoxel
+                    let voxels = Data(repeating: 0, count: voxelCount * bytesPerVoxel)
+
+                    let dataset = VolumeDataset(
+                        data: voxels,
+                        dimensions: dimensions,
+                        spacing: VolumeSpacing(x: 0.001, y: 0.001, z: 0.0015),
+                        pixelFormat: .int16Signed,
+                        intensityRange: (-1024)...3071
+                    )
+
+                    coordinator.apply(dataset: dataset)
+                    coordinator.applyHuWindow(min: -500, max: 1200)
+                    await coordinator.controller.setPreset(.softTissue)
+
+                    // Configure rendering mode and quality
+                    coordinator.controller.renderingMode = .directVolumeRendering
+                    coordinator.controller.renderingQuality = .medium
+                }
+                ```
+            }
+        }
+    }
+
+    @Section(title: "Add interactive UI controls") {
+        @ContentAndMedia {
+            Enhance your viewer with gesture handling and visual overlays.
+
+            MTKUI provides SwiftUI modifiers for camera interaction and overlay components for orientation labels, crosshairs, and windowing controls.
+        }
+
+        @Steps {
+            @Step {
+                Add orientation and crosshair overlays.
+
+                `OrientationOverlayView` displays anatomical orientation labels (Anterior/Posterior, Superior/Inferior, Left/Right). `CrosshairOverlayView` shows the current slice intersection point.
+
+                ```swift
+                import SwiftUI
+                import MTKCore
+                import MTKUI
+
+                struct ContentView: View {
+                    @StateObject private var coordinator = VolumetricSceneCoordinator.shared
+
+                    var body: some View {
+                        VolumetricDisplayContainer(controller: coordinator.controller) {
+                            OrientationOverlayView()
+                            CrosshairOverlayView()
+                        }
+                        .task {
+                            // ... dataset creation and configuration ...
+                        }
+                    }
+                }
+                ```
+            }
+
+            @Step {
+                Enable gesture-based camera control.
+
+                Apply the `volumeGestures` modifier to enable rotation, panning, and zooming interactions with the volume.
+
+                ```swift
+                import SwiftUI
+                import MTKCore
+                import MTKUI
+
+                struct ContentView: View {
+                    @StateObject private var coordinator = VolumetricSceneCoordinator.shared
+                    @State private var cameraState = CameraPose()
+
+                    var body: some View {
+                        VolumetricDisplayContainer(controller: coordinator.controller) {
+                            OrientationOverlayView()
+                            CrosshairOverlayView()
+                        }
+                        .volumeGestures(
+                            controller: coordinator.controller,
+                            state: $cameraState
+                        )
+                        .task {
+                            // ... dataset creation and configuration ...
+                        }
+                    }
+                }
+                ```
+            }
+
+            @Step {
+                Add window/level controls for interactive contrast adjustment.
+
+                `WindowLevelControlView` provides real-time Hounsfield unit windowing with touch or mouse input.
+
+                ```swift
+                import SwiftUI
+                import MTKCore
+                import MTKUI
+
+                struct ContentView: View {
+                    @StateObject private var coordinator = VolumetricSceneCoordinator.shared
+                    @State private var cameraState = CameraPose()
+
+                    var body: some View {
+                        VolumetricDisplayContainer(controller: coordinator.controller) {
+                            OrientationOverlayView()
+                            CrosshairOverlayView()
+                            WindowLevelControlView(coordinator: coordinator)
+                        }
+                        .volumeGestures(
+                            controller: coordinator.controller,
+                            state: $cameraState
+                        )
+                        .task {
+                            let dimensions = VolumeDimensions(width: 256, height: 256, depth: 128)
+                            let voxelCount = dimensions.width * dimensions.height * dimensions.depth
+                            let bytesPerVoxel = VolumePixelFormat.int16Signed.bytesPerVoxel
+                            let voxels = Data(repeating: 0, count: voxelCount * bytesPerVoxel)
+
+                            let dataset = VolumeDataset(
+                                data: voxels,
+                                dimensions: dimensions,
+                                spacing: VolumeSpacing(x: 0.001, y: 0.001, z: 0.0015),
+                                pixelFormat: .int16Signed,
+                                intensityRange: (-1024)...3071
+                            )
+
+                            coordinator.apply(dataset: dataset)
+                            coordinator.applyHuWindow(min: -500, max: 1200)
+                            await coordinator.controller.setPreset(.softTissue)
+                            coordinator.controller.renderingMode = .directVolumeRendering
+                            coordinator.controller.renderingQuality = .medium
+                        }
+                    }
+                }
+                ```
+            }
+        }
+    }
+}

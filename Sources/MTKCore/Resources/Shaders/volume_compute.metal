@@ -2,6 +2,7 @@
 #include "../MPR/Shared.metal"
 #include "volume_rendering_types.metal"
 #include "volume_rendering_helpers.metal"
+#include "empty_space_acceleration.metal"
 
 using namespace metal;
 
@@ -155,6 +156,25 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
             continue;
         }
 
+        // MPS-accelerated empty space skipping (if available)
+        const bool accelerationEnabled = ((args.optionValue & VolumeCompute::OPTION_USE_ACCELERATION) != 0);
+        if (accelerationEnabled && args.accelerationTexture.get_width() > 0) {
+            uint maxMipLevel = args.accelerationTexture.get_num_mip_levels() - 1;
+            bool canSkip = ESS::sampleAccelerationStructure(args.accelerationTexture,
+                                                            args,
+                                                            samplePos,
+                                                            baseStep,
+                                                            maxMipLevel,
+                                                            args.volumeSampler);
+            if (canSkip) {
+                // Skip empty region with larger step
+                distanceTravelled += stepDistance * 2.0f;
+                distanceTravelled = min(distanceTravelled, totalDistance);
+                iteration++;
+                continue;
+            }
+        }
+
         const short hu = VR::getDensity(args.volumeTexture, samplePos);
         const short windowMin = (short)material.voxelMinValue;
         const short windowMax = (short)material.voxelMaxValue;
@@ -193,7 +213,8 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
         }
 
         float3 gradient = float3(0.0f);
-        if (adaptiveEnabled || material.isLightingOn != 0) {
+        const bool need2DTF = (material.use2DTF != 0);
+        if (adaptiveEnabled || material.isLightingOn != 0 || need2DTF) {
             gradient = VR::calGradient(args.volumeTexture, samplePos, dimension);
         }
 
@@ -208,9 +229,23 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
         const bool useTransfer = (material.useTFProj != 0 || material.method == 1);
         const float densityForColour = useTransfer ? densityDataset : densityWindow;
         const float windowIntensity = densityWindow;
+
+        float gradientMagnitude = 0.0f;
+        if (need2DTF) {
+            float rawGradMag = length(gradient);
+            float gradMin = material.gradientMin;
+            float gradMax = material.gradientMax;
+            if (gradMax > gradMin) {
+                gradientMagnitude = clamp((rawGradMag - gradMin) / (gradMax - gradMin), 0.0f, 1.0f);
+            } else {
+                gradientMagnitude = 0.0f;
+            }
+        }
+
         float4 sampleColour = VolumeCompute::compositeChannels(args,
                                                                args.params,
                                                                densityForColour,
+                                                               gradientMagnitude,
                                                                useTransfer);
 
         if (useTransfer) {

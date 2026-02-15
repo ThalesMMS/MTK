@@ -9,27 +9,81 @@
 
 import Foundation
 
-/// A point in a tone curve mapping
+/// A point in a tone curve mapping.
+///
+/// Represents a control point in the tone curve editor, mapping an input intensity value (x) to an output opacity value (y).
+/// Control points are interpolated using cubic spline interpolation to create smooth transitions.
+///
+/// ## Usage
+/// ```swift
+/// let point = AdvancedToneCurvePoint(x: 128, y: 0.5)
+/// ```
 public struct AdvancedToneCurvePoint: Codable, Equatable {
-    /// X coordinate (0...255)
+    /// X coordinate representing input intensity (0...255).
+    ///
+    /// Valid range is `AdvancedToneCurveModel.xRange` (0...255).
     public var x: Float
-    /// Y coordinate (0...1)
+
+    /// Y coordinate representing output opacity (0...1).
+    ///
+    /// Valid range is `AdvancedToneCurveModel.yRange` (0...1).
     public var y: Float
 
+    /// Initialize a tone curve control point.
+    /// - Parameters:
+    ///   - x: Input intensity value (0...255)
+    ///   - y: Output opacity value (0...1)
     public init(x: Float, y: Float) {
         self.x = x
         self.y = y
     }
 }
 
-/// Predefined auto-windowing presets for different anatomical regions
+/// Predefined auto-windowing presets for different anatomical regions.
+///
+/// Auto-window presets automatically adjust tone curve control points based on histogram analysis,
+/// optimizing visualization for specific tissue types or imaging protocols.
+///
+/// Presets support two windowing algorithms:
+/// - **Percentile-based**: Uses histogram percentiles to determine intensity range (e.g., abdomen, lung, bone)
+/// - **Otsu threshold**: Uses Otsu's method for automatic threshold detection (e.g., Otsu preset)
+///
+/// ## Usage
+/// ```swift
+/// let toneCurve = AdvancedToneCurveModel()
+/// toneCurve.setHistogram(histogramValues)
+/// toneCurve.applyAutoWindow(.abdomen)
+/// ```
 public struct ToneCurveAutoWindowPreset: Identifiable, Equatable {
+    /// Unique identifier for the preset.
     public let id: String
+
+    /// Human-readable title for the preset.
     public let title: String
+
+    /// Lower histogram percentile for percentile-based windowing (0.0...1.0).
+    ///
+    /// When `nil`, uses Otsu threshold algorithm instead of percentile-based windowing.
     public let lowerPercentile: Double?
+
+    /// Upper histogram percentile for percentile-based windowing (0.0...1.0).
+    ///
+    /// When `nil`, uses Otsu threshold algorithm instead of percentile-based windowing.
     public let upperPercentile: Double?
+
+    /// Smoothing radius for histogram filtering before windowing.
+    ///
+    /// Higher values produce smoother windowing but may reduce sensitivity to small peaks.
+    /// Typical values: 2-4 bins.
     public let smoothingRadius: Int
 
+    /// Initialize a custom auto-window preset.
+    /// - Parameters:
+    ///   - id: Unique identifier
+    ///   - title: Human-readable title
+    ///   - lowerPercentile: Lower histogram percentile (nil for Otsu mode)
+    ///   - upperPercentile: Upper histogram percentile (nil for Otsu mode)
+    ///   - smoothingRadius: Histogram smoothing radius in bins
     public init(id: String, title: String, lowerPercentile: Double?, upperPercentile: Double?, smoothingRadius: Int) {
         self.id = id
         self.title = title
@@ -38,7 +92,10 @@ public struct ToneCurveAutoWindowPreset: Identifiable, Equatable {
         self.smoothingRadius = smoothingRadius
     }
 
-    /// Abdomen CT auto-window preset
+    /// Abdomen CT auto-window preset.
+    ///
+    /// Optimized for abdominal CT scans with soft tissue and organ visualization.
+    /// Uses percentiles 0.10-0.90 with moderate smoothing (radius: 3).
     public static let abdomen = ToneCurveAutoWindowPreset(
         id: "auto.abdomen",
         title: "Abdomen CT",
@@ -47,7 +104,10 @@ public struct ToneCurveAutoWindowPreset: Identifiable, Equatable {
         smoothingRadius: 3
     )
 
-    /// Lung tissue auto-window preset
+    /// Lung tissue auto-window preset.
+    ///
+    /// Optimized for lung CT imaging, emphasizing air-filled regions and pulmonary vessels.
+    /// Uses percentiles 0.005-0.60 with higher smoothing (radius: 4) to handle air/tissue contrast.
     public static let lung = ToneCurveAutoWindowPreset(
         id: "auto.lung",
         title: "Lung",
@@ -56,7 +116,10 @@ public struct ToneCurveAutoWindowPreset: Identifiable, Equatable {
         smoothingRadius: 4
     )
 
-    /// Bone tissue auto-window preset
+    /// Bone tissue auto-window preset.
+    ///
+    /// Optimized for skeletal imaging, emphasizing high-density bone structures.
+    /// Uses percentiles 0.40-0.995 with minimal smoothing (radius: 2) to preserve detail.
     public static let bone = ToneCurveAutoWindowPreset(
         id: "auto.bone",
         title: "Bone",
@@ -65,7 +128,11 @@ public struct ToneCurveAutoWindowPreset: Identifiable, Equatable {
         smoothingRadius: 2
     )
 
-    /// Otsu threshold auto-window preset
+    /// Otsu threshold auto-window preset.
+    ///
+    /// Uses Otsu's automatic thresholding method to separate foreground from background.
+    /// Particularly effective for scans with bimodal histograms (e.g., contrast-enhanced imaging).
+    /// Does not use percentiles; instead computes optimal threshold via between-class variance.
     public static let otsu = ToneCurveAutoWindowPreset(
         id: "auto.otsu",
         title: "Otsu",
@@ -74,32 +141,90 @@ public struct ToneCurveAutoWindowPreset: Identifiable, Equatable {
         smoothingRadius: 3
     )
 
-    /// All available auto-window presets
+    /// All available auto-window presets.
+    ///
+    /// Array containing all predefined presets: abdomen, lung, bone, and Otsu.
     public static let allPresets: [ToneCurveAutoWindowPreset] = [.abdomen, .lung, .bone, .otsu]
 }
 
-/// Advanced tone curve model supporting cubic spline interpolation and auto-windowing
+/// Advanced tone curve model supporting cubic spline interpolation and auto-windowing.
+///
+/// `AdvancedToneCurveModel` provides a flexible tone curve editor for volume rendering transfer functions.
+/// It supports manual control point editing with cubic spline interpolation and automatic windowing
+/// based on histogram analysis.
+///
+/// ## Features
+/// - **Cubic spline interpolation**: Smooth curves between control points
+/// - **Auto-windowing**: Automatic window/level adjustment using histogram analysis
+/// - **Preset support**: Built-in presets for abdomen, lung, bone, and Otsu thresholding
+/// - **Histogram analysis**: Percentile-based and Otsu threshold algorithms
+///
+/// ## Usage
+/// ```swift
+/// let toneCurve = AdvancedToneCurveModel()
+///
+/// // Set histogram data from volume
+/// toneCurve.setHistogram(histogramValues)
+///
+/// // Apply auto-window preset
+/// toneCurve.applyAutoWindow(.abdomen)
+///
+/// // Or manually edit control points
+/// toneCurve.insertPoint(AdvancedToneCurvePoint(x: 100, y: 0.5))
+///
+/// // Generate sampled curve for rendering
+/// let samples = toneCurve.sampledValues()
+/// ```
 public final class AdvancedToneCurveModel {
-    /// Sampling scale for curve generation
+    /// Sampling scale for curve generation.
+    ///
+    /// Determines the resolution of the sampled curve. A value of 10 produces 2551 samples
+    /// (255 × 10 + 1), providing smooth interpolation for rendering.
     public static let sampleScale: Int = 10
 
-    /// Minimum delta between control points on X axis
+    /// Minimum delta between control points on X axis.
+    ///
+    /// Prevents control points from clustering too closely, which could cause numerical
+    /// instability in spline interpolation. Measured in normalized intensity units (0-255 scale).
     public static let minimumDeltaX: Float = 0.5
 
-    /// Valid range for X coordinates
+    /// Valid range for X coordinates.
+    ///
+    /// Control points must have X values within this range. Corresponds to normalized
+    /// intensity values from minimum (0) to maximum (255).
     public static let xRange: ClosedRange<Float> = 0...255
 
-    /// Valid range for Y coordinates
+    /// Valid range for Y coordinates.
+    ///
+    /// Control points must have Y values within this range. Corresponds to opacity
+    /// values from fully transparent (0) to fully opaque (1).
     public static let yRange: ClosedRange<Float> = 0...1
 
-    /// Number of samples in the generated curve
+    /// Number of samples in the generated curve.
+    ///
+    /// Calculated as `255 × sampleScale + 1`. With default `sampleScale` of 10,
+    /// this produces 2551 samples.
     public static var sampleCount: Int { Int(255 * sampleScale) + 1 }
 
+    /// Current control points defining the tone curve.
+    ///
+    /// Control points are automatically sanitized to ensure:
+    /// - Sorted by X coordinate
+    /// - Minimum spacing of `minimumDeltaX` between points
+    /// - First point at X=0, last point at X=255
+    /// - All values within valid ranges
+    ///
+    /// Modifying control points triggers spline rebuilding and cache invalidation.
     private(set) var controlPoints: [AdvancedToneCurvePoint] {
         didSet { rebuildSpline() }
     }
 
     private var spline: CubicSplineInterpolator?
+
+    /// Current histogram data used for auto-windowing.
+    ///
+    /// Histogram must have 256 or 512 bins. Set via `setHistogram(_:)`.
+    /// Modifying histogram invalidates smoothed histogram cache.
     private(set) var histogram: [UInt32] = [] {
         didSet { cachedSmoothedHistogram = nil }
     }
@@ -108,7 +233,12 @@ public final class AdvancedToneCurveModel {
     private var cachedSampledValues: [Float]?
     private var cachedSampledValuesScale: Int?
 
-    /// Current interpolation mode (linear or cubic spline)
+    /// Current interpolation mode (linear or cubic spline).
+    ///
+    /// - `.linear`: Linear interpolation between control points
+    /// - `.cubicSpline`: Smooth cubic spline interpolation (default)
+    ///
+    /// Changing this property triggers spline rebuilding.
     public var interpolationMode: CubicSplineInterpolator.InterpolationMode = .cubicSpline {
         didSet { rebuildSpline() }
     }
@@ -239,6 +369,19 @@ public final class AdvancedToneCurveModel {
 
 public extension AdvancedToneCurveModel {
     /// Canonical S-curve used when callers do not supply custom control points.
+    ///
+    /// Returns a standard 6-point S-shaped tone curve suitable for most volume rendering scenarios.
+    /// The curve provides smooth transitions with gentle contrast in shadows and highlights.
+    ///
+    /// ## Default Points
+    /// - (0, 0): Start at zero opacity
+    /// - (32, 0.05): Early shadow transition
+    /// - (96, 0.3): Mid-low contrast point
+    /// - (160, 0.7): Mid-high contrast point
+    /// - (224, 0.95): Late highlight transition
+    /// - (255, 1): Full opacity at maximum intensity
+    ///
+    /// - Returns: Array of 6 control points forming an S-curve
     static func defaultControlPoints() -> [AdvancedToneCurvePoint] {
         [
             .init(x: 0, y: 0),

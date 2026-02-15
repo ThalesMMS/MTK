@@ -8,8 +8,52 @@ import Foundation
 import Metal
 #endif
 
+/// Loader for MTKCore's bundled Metal shader libraries with multi-tier fallback strategy.
+///
+/// `ShaderLibraryLoader` attempts to load precompiled Metal libraries from `Bundle.module`,
+/// falling back to runtime compilation in DEBUG builds when the bundled `.metallib` is unavailable.
+/// This enables development workflows (Xcode, SwiftPM) to function without manual shader compilation
+/// while ensuring release builds enforce the presence of precompiled shaders.
+///
+/// ## Loading Strategy
+///
+/// The loader tries sources in order:
+/// 1. **Bundled metallib**: `VolumeRendering.metallib` in `Bundle.module` (compiled by `MTKShaderPlugin`)
+/// 2. **Module default library** (DEBUG only): Shaders compiled from source by SwiftPM/Xcode
+/// 3. **Main bundle default library** (DEBUG only): Fallback to app's default Metal library
+/// 4. **Runtime compilation** (DEBUG only): Concatenates all `.metal` sources and compiles on-the-fly
+///
+/// In release builds, only step 1 succeeds; missing libraries cause immediate failure.
+///
+/// ## Usage
+///
+/// Load a library for volumetric rendering pipelines:
+/// ```swift
+/// guard let library = ShaderLibraryLoader.makeDefaultLibrary(on: device) { message in
+///     print(message)
+/// } else {
+///     fatalError("Failed to load Metal shaders")
+/// }
+/// let function = library.makeFunction(name: "volume_raycaster")
+/// ```
+///
+/// - Note: The `diagnostics` closure receives log messages during fallback attempts.
+/// - Important: Requires Metal-capable device. On non-Metal platforms (macOS without GPU, iOS Simulator pre-Apple Silicon), returns `nil`.
 public enum ShaderLibraryLoader {
 #if canImport(Metal)
+    /// Loads the MTKCore Metal library using a multi-tier fallback strategy.
+    ///
+    /// Attempts to load the bundled `VolumeRendering.metallib` first, then falls back to module/main bundle
+    /// libraries or runtime compilation in DEBUG builds. Returns `nil` if all strategies fail.
+    ///
+    /// - Parameters:
+    ///   - device: The Metal device to compile/load the library for.
+    ///   - diagnostics: Closure receiving diagnostic messages during fallback attempts. Defaults to no-op.
+    ///
+    /// - Returns: A configured `MTLLibrary`, or `nil` if no shader sources could be loaded.
+    ///
+    /// - Note: In release builds, only the bundled `.metallib` is loaded. Missing libraries cause `nil` return with diagnostic error.
+    /// - Important: Diagnostics are essential for debugging shader loading failures; capture them in test/debug builds.
     public static func makeDefaultLibrary(on device: MTLDevice,
                                           diagnostics: (String) -> Void = { _ in }) -> MTLLibrary? {
         if let library = loadBundledMetallib(on: device, diagnostics: diagnostics) {
@@ -38,6 +82,15 @@ public enum ShaderLibraryLoader {
 #endif
     }
 #else
+    /// Platform fallback for non-Metal environments.
+    ///
+    /// Always returns `nil` and logs a diagnostic message on platforms without Metal support.
+    ///
+    /// - Parameters:
+    ///   - device: Placeholder device parameter (unused).
+    ///   - diagnostics: Closure receiving a diagnostic message. Defaults to no-op.
+    ///
+    /// - Returns: Always `nil`.
     public static func makeDefaultLibrary(on device: Any, diagnostics: (String) -> Void = { _ in }) -> Any? {
         diagnostics("[MTKCore] Metal unavailable on this platform")
         return nil

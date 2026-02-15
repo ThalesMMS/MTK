@@ -14,9 +14,64 @@ import SceneKit
 import simd
 import MTKCore
 
+/// SceneKit material that wraps Metal volume rendering shaders for volumetric visualization.
+///
+/// `VolumeCubeMaterial` generates a volumetric cube geometry used by direct volume rendering (DVR)
+/// and projection modes (MIP/MinIP/AIP). It exposes controls for lighting, Hounsfield Unit (HU) windowing,
+/// transfer functions, and quality settings. The material binds a 3D texture and uniform buffer to
+/// fragment shaders (`volume_vertex`, `volume_fragment`) that perform GPU-accelerated ray marching.
+///
+/// ## Overview
+///
+/// This material coordinates:
+/// - **Volume data**: 3D textures generated from `VolumeDataset` via `VolumeTextureFactory`
+/// - **Transfer functions**: 1D lookup textures mapping intensity to RGBA for tissue classification
+/// - **Uniforms**: GPU buffer containing rendering parameters (method, quality, HU windows, dimensions)
+/// - **Shader programs**: SceneKit SCNProgram wrapping Metal vertex/fragment functions
+///
+/// ## Usage
+///
+/// Attach this material to a cube geometry to render medical volumes:
+///
+/// ```swift
+/// let material = VolumeCubeMaterial(device: metalDevice)
+/// material.setDataset(device: metalDevice, dataset: dicomVolume)
+/// material.setPreset(device: metalDevice, preset: .softTissue)
+/// material.setMethod(.dvr)
+/// material.setHuWindow(minHU: -500, maxHU: 1200)
+///
+/// let cubeGeometry = SCNBox(width: 1, height: 1, length: 1, chamferRadius: 0)
+/// cubeGeometry.firstMaterial = material
+/// ```
+///
+/// ## Rendering Methods
+///
+/// The material supports multiple ray marching strategies via ``Method``:
+/// - `.dvr`: Direct Volume Rendering with transfer function compositing
+/// - `.mip`: Maximum Intensity Projection
+/// - `.minip`: Minimum Intensity Projection
+/// - `.avg`: Average Intensity Projection
+/// - `.surf`: Surface rendering (isosurface extraction)
+///
+/// ## Thread Safety
+///
+/// Methods marked `@MainActor` (texture operations) must run on the main thread.
+/// Uniform updates (`setHuWindow`, `setLighting`) are thread-safe when called sequentially.
+///
 public final class VolumeCubeMaterial: SCNMaterial, SCNProgramDelegate {
+    /// Alias for transfer function presets provided by `VolumeRenderingBuiltinPreset`.
     public typealias Preset = VolumeRenderingBuiltinPreset
 
+    /// Volume rendering method controlling the ray marching algorithm used by fragment shaders.
+    ///
+    /// Each method corresponds to a specialized Metal kernel in `volume_compute.metal`:
+    /// - `.surf`: Isosurface extraction using gradient-based detection
+    /// - `.dvr`: Direct volume rendering with transfer function compositing and opacity accumulation
+    /// - `.mip`: Maximum intensity projection (useful for angiography, bone visualization)
+    /// - `.minip`: Minimum intensity projection (useful for air/lung imaging)
+    /// - `.avg`: Average intensity projection (slab averaging)
+    ///
+    /// The selected method is passed to the GPU via the ``Uniforms/method`` field.
     public enum Method: String, CaseIterable, Identifiable {
         case surf
         case dvr
@@ -37,6 +92,10 @@ public final class VolumeCubeMaterial: SCNMaterial, SCNProgramDelegate {
         }
     }
 
+    /// Preset volumetric datasets for testing and fallback scenarios.
+    ///
+    /// Used by ``setPart(device:part:)`` to load synthetic or embedded volumes when
+    /// DICOM data is unavailable. The `.dicom` case represents user-loaded clinical data.
     public enum BodyPart: String, CaseIterable, Identifiable {
         case none
         case chest
@@ -136,10 +195,32 @@ public final class VolumeCubeMaterial: SCNMaterial, SCNProgramDelegate {
     private var datasetHuRange: ClosedRange<Int32> = (-1024)...3071
     private var huWindow: ClosedRange<Int32>?
 
+    /// Physical scale of the volume cube in SceneKit world coordinates.
+    ///
+    /// Derived from dataset spacing and dimensions via `VolumeTextureFactory`.
+    /// Useful for positioning overlays and calculating correct aspect ratios.
     public var scale: SIMD3<Float> { textureGenerator.scale }
+
+    /// Current ray marching sampling step count.
+    ///
+    /// Higher values increase quality at the cost of performance. Typical range: 256-1024.
     public var samplingStep: Float { Float(uniforms.renderingQuality) }
+
+    /// Full intensity range of the active dataset in Hounsfield Units.
+    ///
+    /// Represents the actual data bounds, not the current windowing. Use ``setHuWindow(minHU:maxHU:)``
+    /// to adjust the visible intensity range.
     public var datasetIntensityRange: ClosedRange<Int32> { datasetHuRange }
 
+    /// Initializes a volume material bound to the specified Metal device.
+    ///
+    /// Sets up SceneKit shader programs (`volume_vertex`, `volume_fragment`), allocates uniform buffers,
+    /// and loads a placeholder 1×1×1 volume until ``setDataset(device:dataset:volumeTexture:)`` is called.
+    ///
+    /// - Parameter device: Metal device for texture and buffer allocation. Must support Metal shading language.
+    ///
+    /// - Note: The initializer automatically calls ``setPart(device:part:)`` with `.none` to generate
+    ///         a synthetic fallback texture, ensuring the material is always renderable.
     public init(device: any MTLDevice) {
         self.device = device
         super.init()
@@ -179,26 +260,45 @@ public final class VolumeCubeMaterial: SCNMaterial, SCNProgramDelegate {
         fatalError("init(coder:) has not been implemented")
     }
 
+    /// Returns the currently bound 3D volume texture.
+    ///
+    /// - Returns: Metal texture in `.r16Sint` format containing voxel intensities, or `nil` if no dataset loaded.
     public func currentVolumeTexture() -> (any MTLTexture)? {
         dicomTexture
     }
 
+    /// Returns the currently bound 1D transfer function texture.
+    ///
+    /// - Returns: Metal texture mapping normalized intensity [0,1] to RGBA, or `nil` if no preset applied.
     public func currentTransferFunctionTexture() -> (any MTLTexture)? {
         transferFunctionTexture
     }
 
+    /// Volume dimensions (in voxels) and voxel spacing (in meters).
+    ///
+    /// Useful for MPR plane calculations and coordinate transformations.
     public var datasetMeta: (dimension: SIMD3<Int32>, resolution: SIMD3<Float>) {
         (textureGenerator.dimension, textureGenerator.resolution)
     }
 
+    /// The active `VolumeDataset` containing raw voxel data, spacing, and intensity metadata.
     public var currentDataset: VolumeDataset {
         textureGenerator.dataset
     }
 
+    /// Captures the current uniform buffer state for debugging or serialization.
+    ///
+    /// - Returns: Copy of ``Uniforms`` struct matching GPU-side buffer contents.
     public func snapshotUniforms() -> Uniforms {
         uniforms
     }
 
+    /// Sets the volume rendering method (DVR, MIP, MinIP, etc.).
+    ///
+    /// Updates the ``Uniforms/method`` field and pushes uniforms to the GPU. The fragment shader
+    /// reads this value to dispatch the appropriate ray marching kernel.
+    ///
+    /// - Parameter method: Desired rendering algorithm from ``Method`` enum.
     public func setMethod(_ method: Method) {
         uniforms.method = method.idInt32
 
@@ -252,16 +352,36 @@ public final class VolumeCubeMaterial: SCNMaterial, SCNProgramDelegate {
         updateTransferFunctionDomain()
     }
 
+    /// Enables or disables Phong lighting calculations during volume rendering.
+    ///
+    /// When enabled, the fragment shader computes diffuse and specular lighting based on
+    /// gradient-derived surface normals. Useful for enhancing depth perception in DVR mode.
+    ///
+    /// - Parameter on: `true` to enable lighting, `false` for unlit compositing.
     public func setLighting(on: Bool) {
         uniforms.isLightingOn = on ? 1 : 0
         pushUniforms()
     }
 
+    /// Sets the ray marching step count (rendering quality).
+    ///
+    /// Higher step counts produce smoother gradients and more accurate opacity accumulation
+    /// at the cost of performance. Typical values: 256 (fast), 512 (balanced), 1024 (high quality).
+    ///
+    /// - Parameter step: Number of samples along each ray. Must be positive.
     public func setStep(_ step: Float) {
         uniforms.renderingQuality = Int32(step)
         pushUniforms()
     }
 
+    /// Shifts the transfer function along the intensity axis without rebuilding the preset.
+    ///
+    /// Regenerates the 1D transfer function texture with the specified offset, allowing
+    /// real-time windowing adjustments without modifying the underlying curve.
+    ///
+    /// - Parameters:
+    ///   - device: Metal device for texture allocation.
+    ///   - shift: Intensity offset applied to the transfer function domain.
     @MainActor
     public func setShift(device: any MTLDevice, shift: Float) {
         tf?.shift = shift
@@ -270,26 +390,50 @@ public final class VolumeCubeMaterial: SCNMaterial, SCNProgramDelegate {
         updateTransferFunctionDomain()
     }
 
+    /// Sets normalized density gating thresholds for projection rendering modes.
+    ///
+    /// Used by thick slab projections (MIP/MinIP/AIP) to clamp accumulated density values.
+    /// Values are clamped to [0,1] range, with `ceil` forced to be ≥ `floor`.
+    ///
+    /// - Parameters:
+    ///   - floor: Minimum normalized density (default: 0.02).
+    ///   - ceil: Maximum normalized density (default: 1.0).
     public func setDensityGate(floor: Float, ceil: Float) {
         uniforms.densityFloor = max(0, min(1, floor))
         uniforms.densityCeil = max(uniforms.densityFloor, min(1, ceil))
         pushUniforms()
     }
 
+    /// Controls whether projection modes (MIP/MinIP/AIP) apply the transfer function.
+    ///
+    /// When enabled, projected intensities are mapped through the active transfer function
+    /// before display. When disabled, raw intensity values are used.
+    ///
+    /// - Parameter on: `true` to enable transfer function lookups in projections.
     public func setUseTFOnProjections(_ on: Bool) {
         uniforms.useTFProj = on ? 1 : 0
         pushUniforms()
     }
 
+    /// Enables or disables Hounsfield Unit gating during ray marching.
+    ///
+    /// When enabled, voxels outside ``Uniforms/gateHuMin`` and ``Uniforms/gateHuMax``
+    /// are discarded before transfer function evaluation. Useful for isolating specific
+    /// tissue types (e.g., bone, air).
+    ///
+    /// - Parameter enabled: `true` to activate HU-based gating.
     public func setHuGate(enabled: Bool) {
         uniforms.useHuGate = enabled ? 1 : 0
         pushUniforms()
     }
 
-    /// Aplica um mapeamento HU->TF pré-calculado, sincronizando os campos de
-    /// gating e a faixa `voxelMin/Max` consumida pelo shader. A chamada também
-    /// força uma atualização do buffer, o que impacta qualquer captura Metal
-    /// aberta.
+    /// Applies a pre-computed HU-to-transfer-function mapping.
+    ///
+    /// Synchronizes gating fields (``Uniforms/gateHuMin``, ``Uniforms/gateHuMax``) and
+    /// visible intensity range (``Uniforms/voxelMinValue``, ``Uniforms/voxelMaxValue``)
+    /// with the provided mapping. Forces a uniform buffer update.
+    ///
+    /// - Parameter window: ``HuWindowMapping`` containing absolute HU bounds and normalized TF coordinates.
     public func setHuWindow(_ window: HuWindowMapping) {
         huWindow = window.minHU...window.maxHU
         uniforms.gateHuMin = window.minHU
@@ -299,10 +443,15 @@ public final class VolumeCubeMaterial: SCNMaterial, SCNProgramDelegate {
         pushUniforms()
     }
 
-    /// Calcula um `HuWindowMapping` a partir de intensidades absolutas,
-    /// respeitando o range do dataset atual e o domínio vigente da transfer
-    /// function. Serve como API amigável quando a camada superior manipula HU
-    /// puros.
+    /// Sets the visible HU window using absolute intensity values.
+    ///
+    /// Computes a ``HuWindowMapping`` that respects the dataset's intensity range and
+    /// the active transfer function domain. Provides a convenient API when working with
+    /// raw Hounsfield Units (e.g., from DICOM Window Center/Width tags).
+    ///
+    /// - Parameters:
+    ///   - minHU: Minimum visible intensity (typically -1024 for air).
+    ///   - maxHU: Maximum visible intensity (e.g., 3071 for dense bone/metal).
     public func setHuWindow(minHU: Int32, maxHU: Int32) {
         let mapping = VolumeCubeMaterial.makeHuWindowMapping(
             minHU: minHU,
@@ -313,12 +462,38 @@ public final class VolumeCubeMaterial: SCNMaterial, SCNProgramDelegate {
         setHuWindow(mapping)
     }
 
+    /// Mapping between absolute Hounsfield Units and normalized transfer function coordinates.
+    ///
+    /// Used to synchronize HU windowing parameters with transfer function sampling.
+    /// The `tfMin`/`tfMax` fields represent normalized [0,1] coordinates into the 1D transfer function texture,
+    /// while `minHU`/`maxHU` represent the corresponding absolute intensity values in Hounsfield Units.
+    ///
+    /// ## Example
+    ///
+    /// ```swift
+    /// let mapping = HuWindowMapping(minHU: -500, maxHU: 1200, tfMin: 0.25, tfMax: 0.75)
+    /// material.setHuWindow(mapping)
+    /// ```
     public struct HuWindowMapping: Equatable {
+        /// Minimum Hounsfield Unit value for the visible window.
         public var minHU: Int32
+
+        /// Maximum Hounsfield Unit value for the visible window.
         public var maxHU: Int32
+
+        /// Normalized transfer function coordinate [0,1] corresponding to `minHU`.
         public var tfMin: Float
+
+        /// Normalized transfer function coordinate [0,1] corresponding to `maxHU`.
         public var tfMax: Float
 
+        /// Creates a new HU-to-TF mapping.
+        ///
+        /// - Parameters:
+        ///   - minHU: Lower intensity bound in Hounsfield Units.
+        ///   - maxHU: Upper intensity bound in Hounsfield Units.
+        ///   - tfMin: Normalized TF coordinate for `minHU`.
+        ///   - tfMax: Normalized TF coordinate for `maxHU`.
         public init(minHU: Int32, maxHU: Int32, tfMin: Float, tfMax: Float) {
             self.minHU = minHU
             self.maxHU = maxHU
@@ -327,6 +502,19 @@ public final class VolumeCubeMaterial: SCNMaterial, SCNProgramDelegate {
         }
     }
 
+    /// Creates a ``HuWindowMapping`` from absolute HU values, clamping to dataset and transfer function domains.
+    ///
+    /// Normalizes the requested HU window against the dataset's intensity range, then maps it into
+    /// the transfer function's coordinate space. Ensures numerical stability when the dataset range
+    /// is degenerate or the window is out-of-bounds.
+    ///
+    /// - Parameters:
+    ///   - minHU: Requested minimum intensity.
+    ///   - maxHU: Requested maximum intensity.
+    ///   - datasetRange: Actual intensity range of the loaded volume.
+    ///   - transferDomain: Intensity domain covered by the active transfer function, or `nil` to use `datasetRange`.
+    ///
+    /// - Returns: A clamped and normalized ``HuWindowMapping`` suitable for ``setHuWindow(_:)``.
     public static func makeHuWindowMapping(minHU: Int32,
                                            maxHU: Int32,
                                            datasetRange: ClosedRange<Int32>,
@@ -368,6 +556,17 @@ public final class VolumeCubeMaterial: SCNMaterial, SCNProgramDelegate {
         )
     }
 
+    /// Clamps and normalizes an HU window to ensure it falls within the dataset's intensity range.
+    ///
+    /// Handles edge cases where the requested window is inverted, out-of-bounds, or degenerate.
+    /// Guarantees a non-empty range is returned even when input parameters are invalid.
+    ///
+    /// - Parameters:
+    ///   - minHU: Requested lower bound.
+    ///   - maxHU: Requested upper bound.
+    ///   - datasetRange: Valid intensity range of the volume.
+    ///
+    /// - Returns: A clamped range where `lowerBound < upperBound`, or a minimally expanded range if input is degenerate.
     static func normalizedWindow(minHU: Int32, maxHU: Int32, datasetRange: ClosedRange<Int32>) -> ClosedRange<Int32> {
         let clampedMin = max(datasetRange.lowerBound, min(minHU, datasetRange.upperBound))
         let candidateMax = max(datasetRange.lowerBound, min(maxHU, datasetRange.upperBound))

@@ -13,6 +13,7 @@ constant uint kToneSampleCount = 2551u;
 constant float kToneLookupScale = 2550.0f;
 [[maybe_unused]] constant ushort OPTION_ADAPTIVE = 1u << 2;
 [[maybe_unused]] constant ushort OPTION_DEBUG_DENSITY = 1u << 3;
+[[maybe_unused]] constant ushort OPTION_USE_ACCELERATION = 1u << 4;
 
 [[maybe_unused]] static inline float3 computeRayDirection(float3 cameraLocal01,
                                                           float3 pixelLocal01)
@@ -22,12 +23,13 @@ constant float kToneLookupScale = 2550.0f;
 
 static inline float4 sampleTransfer(texture2d<float, access::sample> transfer,
                                     float density,
+                                    float gradient,
                                     bool useTransfer)
 {
     if (!useTransfer) {
         return float4(density, density, density, density);
     }
-    return VR::getTfColour(transfer, density);
+    return VR::getTfColour(transfer, density, gradient);
 }
 
 static inline float sampleTone(device float *toneBuffer,
@@ -61,6 +63,7 @@ static inline float sampleTone(device float *toneBuffer,
 static inline float4 sampleChannel(texture2d<float, access::sample> transfer,
                                    device float *toneBuffer,
                                    float density,
+                                   float gradient,
                                    bool useTransfer,
                                    float weight)
 {
@@ -68,7 +71,7 @@ static inline float4 sampleChannel(texture2d<float, access::sample> transfer,
         return float4(0.0f);
     }
     float tone = sampleTone(toneBuffer, density);
-    float4 colour = sampleTransfer(transfer, density, useTransfer);
+    float4 colour = sampleTransfer(transfer, density, gradient, useTransfer);
     colour.rgb *= weight;
     colour.a = clamp(colour.a * weight * tone, 0.0f, 1.0f);
     return clamp(colour, float4(0.0f), float4(1.0f));
@@ -77,15 +80,16 @@ static inline float4 sampleChannel(texture2d<float, access::sample> transfer,
 [[maybe_unused]] static inline float4 compositeChannels(constant RenderingArguments& args,
                                                         constant RenderingParameters& params,
                                                         float density,
+                                                        float gradient,
                                                         bool useTransfer)
 {
     const float4 weights = params.intensityRatio;
 
     float4 channels[4];
-    channels[0] = sampleChannel(args.transferTextureCh1, args.toneBufferCh1, density, useTransfer, weights.x);
-    channels[1] = sampleChannel(args.transferTextureCh2, args.toneBufferCh2, density, useTransfer, weights.y);
-    channels[2] = sampleChannel(args.transferTextureCh3, args.toneBufferCh3, density, useTransfer, weights.z);
-    channels[3] = sampleChannel(args.transferTextureCh4, args.toneBufferCh4, density, useTransfer, weights.w);
+    channels[0] = sampleChannel(args.transferTextureCh1, args.toneBufferCh1, density, gradient, useTransfer, weights.x);
+    channels[1] = sampleChannel(args.transferTextureCh2, args.toneBufferCh2, density, gradient, useTransfer, weights.y);
+    channels[2] = sampleChannel(args.transferTextureCh3, args.toneBufferCh3, density, gradient, useTransfer, weights.z);
+    channels[3] = sampleChannel(args.transferTextureCh4, args.toneBufferCh4, density, gradient, useTransfer, weights.w);
 
     float alpha = 0.0f;
     float3 premult = float3(0.0f);

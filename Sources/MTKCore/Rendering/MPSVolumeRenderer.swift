@@ -56,17 +56,21 @@ public final class MPSVolumeRenderer {
 
     private let device: any MTLDevice
     private let commandQueue: any MTLCommandQueue
+    private let resolvedLibrary: (any MTLLibrary)?
     private let logger = Logger(subsystem: "com.mtk.volumerendering",
                                 category: "MPSVolumeRenderer")
     private var histogramInfo: MPSImageHistogramInfo
     private let histogramKernel: MPSImageHistogram
 
-    public init?(device: any MTLDevice, commandQueue: (any MTLCommandQueue)? = nil) {
+    public init?(device: any MTLDevice,
+                 commandQueue: (any MTLCommandQueue)? = nil,
+                 library: (any MTLLibrary)? = nil) {
         guard MPSSupportsMTLDevice(device) else { return nil }
         guard let queue = commandQueue ?? device.makeCommandQueue() else { return nil }
 
         self.device = device
         self.commandQueue = queue
+        self.resolvedLibrary = Self.resolveLibrary(device: device, preferred: library)
 
         var histogramInfo = MPSImageHistogramInfo(
             numberOfHistogramEntries: 4096,
@@ -236,6 +240,11 @@ public final class MPSVolumeRenderer {
         return volumeTexture
     }
 
+    /// Computes entry and exit distances where each ray intersects the dataset's axis-aligned bounding box.
+    /// - Parameters:
+    ///   - dataset: The volume dataset whose bounding box is used for intersection tests.
+    ///   - rays: An array of rays expressed in the dataset's coordinate space to test for intersection.
+    /// - Returns: An array of `RayCastingSample` for rays that intersect the bounding box; `entryDistance` is clamped to be at least 0 and `exitDistance` is guaranteed to be greater than or equal to `entryDistance`.
     public func performBoundingBoxRayCast(dataset: VolumeDataset,
                                            rays: [Ray]) throws -> [RayCastingSample] {
         guard !rays.isEmpty else { return [] }
@@ -258,9 +267,45 @@ public final class MPSVolumeRenderer {
 
         return samples
     }
+
+    /// Creates an empty-space acceleration texture for the provided volume dataset.
+    /// - Parameters:
+    ///   - dataset: The volume dataset to generate the empty-space accelerator for.
+    ///   - library: Optional Metal shader library override. If `nil`, uses the renderer's resolved library from initialization.
+    /// - Returns: An `MTLTexture` containing the empty-space acceleration data, or `nil` if the accelerator is unavailable on the device or generation of the acceleration structure fails.
+    public func prepareEmptySpaceAcceleration(dataset: VolumeDataset,
+                                              library: (any MTLLibrary)? = nil) -> (any MTLTexture)? {
+        let resolvedLibrary = library ?? self.resolvedLibrary
+        return MPSEmptySpaceAccelerator.generateTexture(device: device,
+                                                        commandQueue: commandQueue,
+                                                        library: resolvedLibrary,
+                                                        dataset: dataset,
+                                                        logger: logger)
+    }
 }
 
 private extension MPSVolumeRenderer {
+    /// Resolves a Metal shader library using the same priority order as `MetalRaycaster`
+    /// to keep acceleration kernels consistent across rendering paths.
+    static func resolveLibrary(device: any MTLDevice,
+                               preferred explicitLibrary: (any MTLLibrary)? = nil) -> (any MTLLibrary)? {
+        if let explicitLibrary {
+            return explicitLibrary
+        }
+        if let url = Bundle.module.url(forResource: "MTK", withExtension: "metallib"),
+           let bundledLibrary = try? device.makeLibrary(URL: url) {
+            return bundledLibrary
+        }
+        if let defaultLibrary = device.makeDefaultLibrary() {
+            return defaultLibrary
+        }
+        if #available(iOS 13.0, tvOS 13.0, macOS 11.0, *),
+           let bundleLibrary = try? device.makeDefaultLibrary(bundle: Bundle.module) {
+            return bundleLibrary
+        }
+        return nil
+    }
+
     private func shouldUseGPUHistogram(for dataset: VolumeDataset) -> Bool {
         switch dataset.pixelFormat {
         case .int16Signed, .int16Unsigned:

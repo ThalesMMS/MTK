@@ -31,9 +31,9 @@ struct VolumeUniforms: Sizeable {
     var dimY: Int32 = 1
     var dimZ: Int32 = 1
     var useTFProj: Int32 = 1
-    var _pad0: Int32 = 0
-    var _pad1: Int32 = 0
-    var _pad2: Int32 = 0
+    var gradientMin: Float = 0.0
+    var gradientMax: Float = 1000.0
+    var use2DTF: Int32 = 0
 }
 
 struct PackedColor: Sizeable {
