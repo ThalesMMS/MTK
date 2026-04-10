@@ -21,6 +21,11 @@ Swift Package with Metal/SceneKit/SwiftUI helpers used by the Metal-MPR-VR stack
 - Metal-capable device (tests skip when Metal is unavailable)
 - Metal Performance Shaders unlock histogram/gaussian paths but the stack falls back when MPS is absent
 
+## Intended use and safety
+MTK is a rendering and UI toolkit for research, education, and prototype applications involving volumetric medical-image data on Apple platforms. It is **not** a medical device, has **not** been validated for clinical decision-making, and should not be the sole basis for diagnosis, treatment, or patient triage.
+
+If you load real DICOM studies, keep PHI handling, local security, and institutional review requirements in mind. The repository demonstrates rendering infrastructure and loading patterns; it does not claim regulatory clearance, dataset-wide clinical validation, or diagnostic performance.
+
 ## Add via Swift Package Manager
 Point Xcode/SwiftPM at the `MTK` directory (local checkout or Git URL) and depend on the library products you need:
 
@@ -35,6 +40,33 @@ Point Xcode/SwiftPM at the `MTK` directory (local checkout or Git URL) and depen
     ]
 )
 ```
+
+## Reproducible local setup
+`Package.swift` currently declares `DICOM-Decoder` as a local path dependency (`../DICOM-Decoder`). For a clean checkout, place the repositories side by side before resolving dependencies:
+
+```bash
+mkdir mtk-workspace
+cd mtk-workspace
+git clone https://github.com/ThalesMMS/DICOM-Decoder.git
+git clone https://github.com/ThalesMMS/MTK.git
+cd MTK
+swift package resolve
+swift build
+```
+
+Minimal smoke test that does not require private fixtures:
+
+```bash
+swift test --filter DicomVolumeLoaderSecurityTests
+```
+
+For broader testing on a Metal-capable Mac:
+
+```bash
+swift test
+```
+
+Some DICOM-oriented tests rely on optional local fixtures from `MTK-Demo/DICOM_Example` that are **not** committed to this repository. To use them, clone the demo repository as a sibling checkout with `git clone https://github.com/ThalesMMS/MTK-Demo.git ../MTK-Demo`. Those suites skip when fixtures or the native bridge are unavailable, so a passing run may still be partial on a fresh machine.
 
 ## Shaders and resources
 - Build-tool plugin `MTKShaderPlugin` compiles `Sources/MTKCore/Resources/Shaders/*.metal` into `MTK.metallib` during the build. At runtime `ShaderLibraryLoader` first looks for a bundled `VolumeRendering.metallib`, then falls back to the module’s default library or runtime compilation of the shader sources.
@@ -82,13 +114,34 @@ Add gesture handling with `volumeGestures(controller:state:configuration:)` and 
 ## Loading DICOM volumes
 `DicomVolumeLoader` orchestrates ZIP extraction and dataset construction but expects a `DicomSeriesLoading` implementation to feed slice data (see `LegacyDicomSeriesLoader` in MTK-Demo for a GDCM-backed bridge). Progress updates can be mapped to UI with `DicomVolumeLoader.uiUpdate(from:)`.
 
+## Expected inputs and outputs
+**Typical inputs**
+- A synthetic or programmatically generated voxel buffer wrapped in `VolumeDataset`
+- A DICOM directory, ZIP archive, or individual file routed through `DicomVolumeLoader`
+- 16-bit scalar volume data with spatial metadata available for reconstruction
+
+**Typical outputs**
+- An in-memory `VolumeDataset` ready for rendering
+- `DicomImportResult` metadata such as `sourceURL` and `seriesDescription`
+- SwiftUI / SceneKit rendering surfaces, MPR views, overlays, and transfer-function-driven visualization
+
+MTK does **not** produce segmentation masks, classification labels, radiology reports, or treatment recommendations by itself. In other words, the package is a visualization/loading substrate, not a diagnostic model.
+
 ## Runtime checks and diagnostics
 - `BackendResolver` and `MetalRuntimeAvailability` gate Metal usage before creating controllers.
 - `CommandBufferProfiler`, `MetalRuntimeGuard`, and `VolumeRenderingDebugOptions` help surface GPU/runtime capabilities during development.
 
 ## Testing notes
 - `swift test` requires a Metal-capable host; GPU-dependent suites skip automatically when no device is available.
-- DICOM-related tests expect fixtures under `MTK-Demo/DICOM_Example` (not committed). Tests will skip when fixtures or the native bridge are missing.
+- DICOM-related tests can use optional fixtures under `MTK-Demo/DICOM_Example` from `https://github.com/ThalesMMS/MTK-Demo`; clone it as a sibling checkout with `git clone https://github.com/ThalesMMS/MTK-Demo.git ../MTK-Demo`. Tests will skip when fixtures or the native bridge are missing.
+- Security coverage includes ZIP path-traversal regression tests for `DicomVolumeLoader`; visual-quality checks compare accelerated and non-accelerated rendering paths on synthetic datasets.
+
+## Limitations and evaluation caveats
+- The package targets Apple-platform rendering workflows; it is not a cross-platform PACS, archive, or viewer.
+- Clean reproducibility currently depends on a sibling checkout of `DICOM-Decoder` because the dependency is path-based.
+- Public examples and tests mostly exercise synthetic datasets, renderer behaviors, and optional local fixtures rather than a versioned benchmark corpus committed in this repository.
+- Rendering correctness checks and visual-regression tests are useful engineering signals, but they are **not** the same thing as clinical validation or reader-study evidence.
+- DICOM import support depends on the available loader implementation and metadata quality; malformed studies, unsupported encodings, missing tags, or non-16-bit inputs may fail or degrade gracefully rather than producing a clinically usable view.
 
 ## Documentation
 
