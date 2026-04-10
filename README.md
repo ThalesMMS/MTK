@@ -80,7 +80,7 @@ struct VolumePreview: View {
 Add gesture handling with `volumeGestures(controller:state:configuration:)` and multi-plane layouts with `MPRGridComposer` when you need synchronized axial/coronal/sagittal slices.
 
 ## Loading DICOM volumes
-`DicomVolumeLoader` orchestrates ZIP extraction and dataset construction but expects a `DicomSeriesLoading` implementation to feed slice data (see `LegacyDicomSeriesLoader` in [MTK-Demo](https://github.com/ThalesMMS/MTK-Demo) for a GDCM-backed bridge). Optional DICOM fixtures live in that repository under `DICOM_Example`; retrieve them with `git clone https://github.com/ThalesMMS/MTK-Demo.git ../MTK-Demo` when you need fixture-backed local tests. Progress updates can be mapped to UI with `DicomVolumeLoader.uiUpdate(from:)`.
+`DicomVolumeLoader` orchestrates ZIP extraction and dataset construction but expects a `DicomSeriesLoading` implementation to feed slice data (see `LegacyDicomSeriesLoader` in MTK-Demo for a GDCM-backed bridge). Progress updates can be mapped to UI with `DicomVolumeLoader.uiUpdate(from:)`.
 
 ## Runtime checks and diagnostics
 - `BackendResolver` and `MetalRuntimeAvailability` gate Metal usage before creating controllers.
@@ -88,7 +88,7 @@ Add gesture handling with `volumeGestures(controller:state:configuration:)` and 
 
 ## Testing notes
 - `swift test` requires a Metal-capable host; GPU-dependent suites skip automatically when no device is available.
-- DICOM-related tests use optional fixtures under `MTK-Demo/DICOM_Example`, which are not committed here. Retrieve them by cloning the demo repository next to this checkout with `git clone https://github.com/ThalesMMS/MTK-Demo.git ../MTK-Demo`; tests skip when fixtures or the native bridge are missing.
+- DICOM-related tests expect fixtures under `MTK-Demo/DICOM_Example` (not committed). Tests will skip when fixtures or the native bridge are missing.
 
 ## Documentation
 
