@@ -66,7 +66,7 @@ For broader testing on a Metal-capable Mac:
 swift test
 ```
 
-Some DICOM-oriented tests rely on optional local fixtures from `MTK-Demo/DICOM_Example` that are **not** committed to this repository. Those suites skip when fixtures or the native bridge are unavailable, so a passing run may still be partial on a fresh machine.
+Some DICOM-oriented tests rely on optional local fixtures from `MTK-Demo/DICOM_Example` that are **not** committed to this repository. To use them, clone the demo repository as a sibling checkout with `git clone https://github.com/ThalesMMS/MTK-Demo.git ../MTK-Demo`. Those suites skip when fixtures or the native bridge are unavailable, so a passing run may still be partial on a fresh machine.
 
 ## Shaders and resources
 - Build-tool plugin `MTKShaderPlugin` compiles `Sources/MTKCore/Resources/Shaders/*.metal` into `MTK.metallib` during the build. At runtime `ShaderLibraryLoader` first looks for a bundled `VolumeRendering.metallib`, then falls back to the module’s default library or runtime compilation of the shader sources.
@@ -133,7 +133,7 @@ MTK does **not** produce segmentation masks, classification labels, radiology re
 
 ## Testing notes
 - `swift test` requires a Metal-capable host; GPU-dependent suites skip automatically when no device is available.
-- DICOM-related tests expect fixtures under `MTK-Demo/DICOM_Example` (not committed). Tests will skip when fixtures or the native bridge are missing.
+- DICOM-related tests can use optional fixtures under `MTK-Demo/DICOM_Example` from `https://github.com/ThalesMMS/MTK-Demo`; clone it as a sibling checkout with `git clone https://github.com/ThalesMMS/MTK-Demo.git ../MTK-Demo`. Tests will skip when fixtures or the native bridge are missing.
 - Security coverage includes ZIP path-traversal regression tests for `DicomVolumeLoader`; visual-quality checks compare accelerated and non-accelerated rendering paths on synthetic datasets.
 
 ## Limitations and evaluation caveats
