@@ -102,13 +102,17 @@ struct BasicDicomLoaderExample: View {
     /// Load DICOM volume from a URL with progress tracking
     ///
     /// Demonstrates the complete DICOM loading workflow:
-    /// 1. Create ``DicomVolumeLoader`` with series loader implementation
+    /// 1. Create ``DicomVolumeLoader`` with its default Swift series loader
     /// 2. Call ``loadVolume(from:progress:completion:)`` with progress callback
     /// 3. Update UI with ``DicomVolumeProgress`` events
     /// 4. Apply loaded dataset to coordinator
     /// 5. Configure window/level and transfer function
     ///
-    /// - Parameter url: Source URL (directory, ZIP, or DICOM file)
+    /// Starts loading a DICOM volume from the provided URL and updates the view's loading state and progress.
+    /// 
+    /// If `url` is `nil`, sets `errorMessage` to indicate no source was selected and returns without starting a load.
+    /// While loading, `isLoading`, `loadingProgress`, and `totalSlices` are updated; progress and completion updates are routed to `handleProgress(_:)` and `handleLoadResult(_:)` respectively. The loader used is the default `DicomVolumeLoader`.
+    /// - Parameter url: Filesystem URL pointing to a DICOM directory, archive, or file to load. If omitted, no load is attempted and an error message is set.
     private func loadDicomVolume(from url: URL? = nil) async {
         guard let url else {
             // In a real app, this would come from NSOpenPanel or UIDocumentPickerViewController
@@ -121,8 +125,8 @@ struct BasicDicomLoaderExample: View {
         totalSlices = 0
         defer { isLoading = false }
 
-        // Step 1: Create loader with DicomSeriesLoading implementation
-        // DicomVolumeLoader uses DicomDecoderSeriesLoader by default (pure Swift, no GDCM)
+        // Step 1: Create loader with the canonical Swift DICOM implementation
+        // DicomVolumeLoader uses DicomDecoderSeriesLoader by default.
         let loader = DicomVolumeLoader()
 
         // Step 2: Load volume with progress tracking
@@ -165,7 +169,13 @@ struct BasicDicomLoaderExample: View {
     /// - Displays localized error message
     /// - Offers retry option
     ///
-    /// - Parameter result: Loading result with dataset or error
+    /// Handle the completion result of a DICOM volume load and update the coordinator and UI state accordingly.
+    /// 
+    /// On success, applies the imported dataset to the shared coordinator, sets an HU window using the dataset's
+    /// recommended window when available (otherwise applies a soft-tissue fallback of -160 to 240), and applies
+    /// the `.softTissue` transfer preset to the coordinator's controller. Logs series description, source filename,
+    /// and dataset dimensions. On failure, stores the error's localized description in `errorMessage`.
+    /// - Parameter result: The completion `Result` from the DICOM loader; contains a `DicomImportResult` on success or an `Error` on failure.
     private func handleLoadResult(_ result: Result<DicomImportResult, Error>) {
         switch result {
         case .success(let importResult):
@@ -198,13 +208,13 @@ struct BasicDicomLoaderExample: View {
     }
 }
 
-// MARK: - Advanced DICOM Loading with Custom Implementation
+// MARK: - Advanced DICOM Loading with an Injected Implementation
 
 /// Advanced example showing custom ``DicomSeriesLoading`` implementation pattern
 ///
-/// This demonstrates how to create a custom DICOM loader bridge for third-party
-/// parsing libraries (GDCM, dcmtk, or custom parsers). The example follows the
-/// architecture used by ``DicomDecoderSeriesLoader``.
+/// This demonstrates how to create an injected series loader for tests or
+/// package-level integrations outside the demo runtime. The example follows
+/// the architecture used by ``DicomDecoderSeriesLoader``.
 ///
 /// ## Implementation Requirements
 ///
@@ -236,17 +246,20 @@ struct CustomDicomLoaderExample: View {
         }
     }
 
-    /// Load DICOM volume using a custom series loader implementation
+    /// Load DICOM volume using an injected test/integration series loader
     ///
     /// Demonstrates injecting a custom ``DicomSeriesLoading`` implementation
-    /// into ``DicomVolumeLoader`` for alternative DICOM parsing backends.
+    /// into ``DicomVolumeLoader`` outside the demo's canonical loader path.
     ///
-    /// - Parameter url: DICOM source URL
+    /// Loads a DICOM volume from the given URL using a custom injected series loader and applies the result to the coordinator.
+    /// 
+    /// While loading, the view's `isLoading` state is set to `true` and is reset when loading finishes. Progress updates that report a reading fraction are printed as percent to the console. On successful load the loader's dataset is applied to `coordinator` and the controller's transfer preset is set to `.softTissue`. On failure `errorMessage` is populated with the error's localized description.
+    /// - Parameter url: File or directory URL pointing to the DICOM source (directory, archive, or file) to load.
     private func loadWithCustomImplementation(from url: URL) async {
         isLoading = true
         defer { isLoading = false }
 
-        // Create custom series loader implementation
+        // Create injected series loader for this example
         // See CustomDicomSeriesLoader below for implementation pattern
         let customSeriesLoader = CustomDicomSeriesLoader()
 
@@ -272,10 +285,10 @@ struct CustomDicomLoaderExample: View {
 
 // MARK: - Custom DicomSeriesLoading Implementation Pattern
 
-/// Example custom DICOM series loader implementation
+/// Example injected DICOM series loader
 ///
-/// This demonstrates the pattern for bridging third-party DICOM libraries
-/// (GDCM, dcmtk, or custom parsers) into MTK's loading pipeline.
+/// This demonstrates the pattern for feeding externally parsed DICOM slices
+/// into MTK's loading pipeline when a test or package integration needs it.
 ///
 /// ## Implementation Steps
 ///
@@ -379,9 +392,14 @@ final class CustomDicomSeriesLoader: DicomSeriesLoading {
         return []
     }
 
+    /// Parse a single DICOM file and produce a ParsedSlice containing its metadata and raw pixel buffer.
+    /// - Parameters:
+    ///   - url: The file URL of the DICOM slice to parse.
+    /// - Returns: A `ParsedSlice` with width, height, pixel data, spacing, orientation, origin, rescale slope/intercept, signedness, and series description extracted from the file.
+    /// - Throws: An error if the file cannot be read or cannot be parsed as a valid DICOM slice.
     private func parseDicomSlice(url: URL) throws -> ParsedSlice {
         // Implementation: Parse DICOM file and extract metadata + pixel data
-        // Use GDCM, dcmtk, or custom parser
+        // using the integration-specific parser.
         throw NSError(domain: "CustomDicomLoader", code: 2,
                      userInfo: [NSLocalizedDescriptionKey: "Not implemented"])
     }
@@ -737,13 +755,14 @@ struct DicomErrorHandlingExample: View {
  ## Default DICOM Loader
 
  ``DicomVolumeLoader()`` uses ``DicomDecoderSeriesLoader`` by default:
- - Pure Swift implementation (no GDCM or native dependencies)
+ - Pure Swift implementation
  - Automatic IPP-based slice sorting
  - Support for standard CT/MR DICOM files
 
- ## Custom DICOM Loaders
+ ## DICOM Loader Injection Seam
 
- Implement ``DicomSeriesLoading`` to bridge alternative DICOM libraries:
+ Implement ``DicomSeriesLoading`` when tests or package integrations need to
+ feed externally parsed slices into ``DicomVolumeLoader``:
 
  ```swift
  final class MyCustomLoader: DicomSeriesLoading {
@@ -799,7 +818,7 @@ struct DicomErrorHandlingExample: View {
 
  - **Pixel Representation**: 16-bit signed or unsigned
  - **Photometric Interpretation**: MONOCHROME1, MONOCHROME2
- - **Transfer Syntax**: Uncompressed, JPEG Lossless, JPEG 2000 (depends on loader implementation)
+ - **Transfer Syntax**: Uncompressed, JPEG Lossless, JPEG 2000 (depends on Swift decoder support)
  - **Modality**: CT, MR, PET, etc. (any with spatial metadata)
 
  ## Required DICOM Tags

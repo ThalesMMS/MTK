@@ -2,11 +2,9 @@
 //  VolumetricSceneController.swift
 //  MetalVolumetrics
 //
-//  SceneKit controller that orchestrates volumetric rendering and MPS prototypes.
+//  Scene controller that orchestrates volumetric rendering and MPS prototypes.
 //  Coordinates Metal materials, dataset application, and exposes an async API to
-//  the presentation layer. This mirrors the legacy controller that previously
-//  lived inside the application target but without the deprecated runtime
-//  dependencies.
+//  the presentation layer for both volume and MPR displays.
 //
 //  Thales Matheus Mendonça Santos - September 2025
 //

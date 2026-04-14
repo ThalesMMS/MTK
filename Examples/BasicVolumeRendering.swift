@@ -78,8 +78,8 @@ struct BasicVolumeRenderingView: View {
 
 /// Example showing how to load a DICOM dataset
 ///
-/// Note: Requires a DicomSeriesLoading implementation (e.g., LegacyDicomSeriesLoader)
-/// See MTK-Demo for complete DICOM loading example
+/// Note: The demo uses DicomDecoderSeriesLoader as its canonical DICOM loader.
+/// See MTK-Demo for the complete DICOM loading flow.
 struct DicomLoadingExample: View {
 
     @StateObject private var coordinator = VolumetricSceneCoordinator.shared
@@ -193,12 +193,24 @@ struct AvailabilityCheckExample: View {
 
  ## Multi-Plane Reconstruction (MPR)
 
- For axial/coronal/sagittal views, use MPRGridComposer:
+ For axial/coronal/sagittal review without a 3D pane, use TriplanarMPRComposer:
+
+ ```swift
+ TriplanarMPRComposer(
+     axialController: coordinator.controller(for: .z),
+     coronalController: coordinator.controller(for: .y),
+     sagittalController: coordinator.controller(for: .x)
+ )
+ ```
+
+ For the 2×2 layout with tri-planar MPR plus 3D context, use MPRGridComposer:
 
  ```swift
  MPRGridComposer(
-     controller: coordinator.controller,
-     orientation: .axial
+     volumeController: coordinator.controller,
+     axialController: coordinator.controller(for: .z),
+     coronalController: coordinator.controller(for: .y),
+     sagittalController: coordinator.controller(for: .x)
  )
  ```
 

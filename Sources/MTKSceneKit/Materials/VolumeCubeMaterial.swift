@@ -148,7 +148,7 @@ public final class VolumeCubeMaterial: SCNMaterial, SCNProgramDelegate {
         public var datasetMaxValue: Int32 = 3071
 
         /// Faixa de densidade normalizada mantida para gating de projeções
-        /// legacy (slabs espessos).
+        /// espessas.
         public var densityFloor: Float = 0.02
         public var densityCeil: Float = 1.0
 

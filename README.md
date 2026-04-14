@@ -66,7 +66,7 @@ For broader testing on a Metal-capable Mac:
 swift test
 ```
 
-Some DICOM-oriented tests rely on optional local fixtures from `MTK-Demo/DICOM_Example` that are **not** committed to this repository. To use them, clone the demo repository as a sibling checkout with `git clone https://github.com/ThalesMMS/MTK-Demo.git ../MTK-Demo`. Those suites skip when fixtures or the native bridge are unavailable, so a passing run may still be partial on a fresh machine.
+Some DICOM-oriented tests rely on optional local fixtures from `MTK-Demo/DICOM_Example` that are **not** committed to this repository. To use them, clone the demo repository as a sibling checkout with `git clone https://github.com/ThalesMMS/MTK-Demo.git ../MTK-Demo`. Those suites skip when fixtures are unavailable, so a passing run may still be partial on a fresh machine.
 
 ## Shaders and resources
 - Build-tool plugin `MTKShaderPlugin` compiles `Sources/MTKCore/Resources/Shaders/*.metal` into `MTK.metallib` during the build. At runtime `ShaderLibraryLoader` first looks for a bundled `VolumeRendering.metallib`, then falls back to the module’s default library or runtime compilation of the shader sources.
@@ -112,7 +112,7 @@ struct VolumePreview: View {
 Add gesture handling with `volumeGestures(controller:state:configuration:)` and multi-plane layouts with `MPRGridComposer` when you need synchronized axial/coronal/sagittal slices.
 
 ## Loading DICOM volumes
-`DicomVolumeLoader` orchestrates ZIP extraction and dataset construction but expects a `DicomSeriesLoading` implementation to feed slice data (see `LegacyDicomSeriesLoader` in MTK-Demo for a GDCM-backed bridge). Progress updates can be mapped to UI with `DicomVolumeLoader.uiUpdate(from:)`.
+`DicomVolumeLoader` orchestrates ZIP extraction and dataset construction through the pure-Swift `DicomDecoderSeriesLoader`, the canonical `DicomSeriesLoading` implementation for this package and demo. The protocol remains in place so tests and package integrators can inject mock or specialized loaders, but the demo does not use it for runtime backend switching. Progress updates can be mapped to UI with `DicomVolumeLoader.uiUpdate(from:)`.
 
 ## Expected inputs and outputs
 **Typical inputs**
@@ -133,7 +133,7 @@ MTK does **not** produce segmentation masks, classification labels, radiology re
 
 ## Testing notes
 - `swift test` requires a Metal-capable host; GPU-dependent suites skip automatically when no device is available.
-- DICOM-related tests can use optional fixtures under `MTK-Demo/DICOM_Example` from `https://github.com/ThalesMMS/MTK-Demo`; clone it as a sibling checkout with `git clone https://github.com/ThalesMMS/MTK-Demo.git ../MTK-Demo`. Tests will skip when fixtures or the native bridge are missing.
+- DICOM-related tests can use optional fixtures under `MTK-Demo/DICOM_Example` from `https://github.com/ThalesMMS/MTK-Demo`; clone it as a sibling checkout with `git clone https://github.com/ThalesMMS/MTK-Demo.git ../MTK-Demo`. Tests will skip when fixtures are missing.
 - Security coverage includes ZIP path-traversal regression tests for `DicomVolumeLoader`; visual-quality checks compare accelerated and non-accelerated rendering paths on synthetic datasets.
 
 ## Limitations and evaluation caveats
@@ -141,7 +141,7 @@ MTK does **not** produce segmentation masks, classification labels, radiology re
 - Clean reproducibility currently depends on a sibling checkout of `DICOM-Decoder` because the dependency is path-based.
 - Public examples and tests mostly exercise synthetic datasets, renderer behaviors, and optional local fixtures rather than a versioned benchmark corpus committed in this repository.
 - Rendering correctness checks and visual-regression tests are useful engineering signals, but they are **not** the same thing as clinical validation or reader-study evidence.
-- DICOM import support depends on the available loader implementation and metadata quality; malformed studies, unsupported encodings, missing tags, or non-16-bit inputs may fail or degrade gracefully rather than producing a clinically usable view.
+- DICOM import support depends on the Swift decoder's metadata coverage and input quality; malformed studies, unsupported encodings, missing tags, or non-16-bit inputs may fail or degrade gracefully rather than producing a clinically usable view.
 
 ## Documentation
 

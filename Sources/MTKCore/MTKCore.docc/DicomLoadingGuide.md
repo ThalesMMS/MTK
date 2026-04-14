@@ -1,18 +1,18 @@
 # DICOM Loading
 
-Guide to loading DICOM volumes with ZIP extraction, progress tracking, and protocol-based series loading.
+Guide to loading DICOM volumes with ZIP extraction, progress tracking, and the Swift DICOM decoder.
 
 ## Overview
 
-MTKCore provides a DICOM loading pipeline that handles ZIP archives, sorts slices by spatial position, converts pixel values to Hounsfield Units, and computes recommended window/level settings. The architecture decouples DICOM parsing from volume construction through protocol abstraction, allowing pure-Swift implementations or native library bridges.
+MTKCore provides a DICOM loading pipeline that handles ZIP archives, sorts slices by spatial position, converts pixel values to Hounsfield Units, and computes recommended window/level settings. The repository ships `DicomDecoderSeriesLoader` as the canonical parser implementation, backed by the pure-Swift DICOM-Decoder package.
 
 The DICOM loading system consists of three key components:
 
 - **``DicomVolumeLoader``**: Orchestrates ZIP extraction, delegates parsing, performs HU conversion, and constructs ``VolumeDataset``
-- **``DicomSeriesLoading``**: Protocol abstraction for DICOM parsing implementations (GDCM, DICOM-Decoder, custom parsers)
-- **``DicomDecoderSeriesLoader``**: Default pure-Swift implementation backed by the DICOM-Decoder package
+- **``DicomSeriesLoading``**: Protocol seam used by the loader for test doubles and package-level integration points
+- **``DicomDecoderSeriesLoader``**: Canonical pure-Swift implementation backed by the DICOM-Decoder package
 
-This separation enables testing without native dependencies, supports multiple parser backends, and provides incremental progress updates suitable for UI binding.
+This separation keeps tests injectable without adding alternate demo backends, and provides incremental progress updates suitable for UI binding.
 
 ## Quick Start
 
@@ -309,7 +309,7 @@ let volume = try loader.loadSeries(at: directoryURL, progress: { fraction, slice
 
 ### Custom Implementation Example
 
-Implement ``DicomSeriesLoading`` to bridge GDCM, dcmtk, or proprietary parsers:
+Implement ``DicomSeriesLoading`` when a test double or package-level adapter needs to feed slices into ``DicomVolumeLoader``:
 
 ```swift
 final class CustomDicomLoader: DicomSeriesLoading {
@@ -502,7 +502,7 @@ loader.loadVolume(from: url, progress: { update in
 ## See Also
 
 - ``DicomVolumeLoader`` — Main DICOM loading orchestrator
-- ``DicomSeriesLoading`` — Protocol for custom parser implementations
+- ``DicomSeriesLoading`` — Protocol seam for injected test or integration loaders
 - ``DicomDecoderSeriesLoader`` — Default pure-Swift loader
 - ``VolumeDataset`` — Loaded volume representation
 - ``VolumeHistogramCalculator`` — GPU-accelerated histogram computation

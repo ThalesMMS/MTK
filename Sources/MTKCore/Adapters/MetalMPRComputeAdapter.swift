@@ -16,6 +16,48 @@ import MetalPerformanceShaders
 import OSLog
 import simd
 
+private struct DatasetIdentity: Equatable, Sendable {
+    let pointer: UInt
+    let count: Int
+    let dimensions: VolumeDimensions
+    let pixelFormat: VolumePixelFormat
+    let contentFingerprint: UInt64
+
+    init(dataset: VolumeDataset) {
+        self.count = dataset.data.count
+        self.dimensions = dataset.dimensions
+        self.pixelFormat = dataset.pixelFormat
+        self.pointer = dataset.data.withUnsafeBytes { buffer in
+            buffer.baseAddress.map { UInt(bitPattern: $0) } ?? 0
+        }
+        self.contentFingerprint = Self.makeContentFingerprint(for: dataset.data)
+    }
+
+    static func == (lhs: DatasetIdentity, rhs: DatasetIdentity) -> Bool {
+        lhs.count == rhs.count &&
+        lhs.dimensions == rhs.dimensions &&
+        lhs.pixelFormat == rhs.pixelFormat &&
+        lhs.contentFingerprint == rhs.contentFingerprint
+    }
+
+    private static func makeContentFingerprint(for data: Data) -> UInt64 {
+        data.withUnsafeBytes { buffer in
+            var hash: UInt64 = 14_695_981_039_346_656_037
+            for byte in buffer {
+                hash ^= UInt64(byte)
+                hash &*= 1_099_511_628_211
+            }
+            return hash
+        }
+    }
+}
+
+private struct OutputTextureShape: Equatable, Sendable {
+    let width: Int
+    let height: Int
+    let pixelFormat: VolumePixelFormat
+}
+
 @preconcurrency
 public actor MetalMPRComputeAdapter: MPRReslicePort {
     public enum ComputeError: Error {
@@ -48,6 +90,13 @@ public actor MetalMPRComputeAdapter: MPRReslicePort {
     private let library: any MTLLibrary
     private let debugOptions: VolumeRenderingDebugOptions
     private var pipelineCache: MTLComputePipelineState?
+    private var cachedVolumeTexture: (any MTLTexture)?
+    private var cachedDatasetIdentity: DatasetIdentity?
+    private(set) var textureUploadCount: Int = 0
+    private var cachedOutputTexture: (any MTLTexture)?
+    private var cachedOutputShape: OutputTextureShape?
+    private var outputTextureInFlight = false
+    private var outputTextureAllocationCount = 0
     private var overrides = Overrides()
     private var lastSnapshot: SliceSnapshot?
     private let mpsAvailable: Bool
@@ -73,6 +122,15 @@ public actor MetalMPRComputeAdapter: MPRReslicePort {
         #endif
     }
 
+    /// Generate an MPR slab image from a volumetric dataset for a specified plane.
+    /// - Parameters:
+    ///   - dataset: The source volumetric dataset to sample from.
+    ///   - plane: The plane geometry defining the slice origin and axes.
+    ///   - thickness: Slab thickness in voxels (will be sanitized before use).
+    ///   - steps: Number of sampling steps through the slab (will be sanitized before use).
+    ///   - blend: The blending mode to apply across the slab.
+    /// - Returns: An `MPRSlice` containing the computed pixel buffer, dimensions, bytes-per-row, pixel format, intensity range, and pixel spacing.
+    /// - Throws: `ComputeError` or underlying Metal errors when pipeline creation, texture allocation, command encoding/dispatch, or readback fails.
     public func makeSlab(dataset: VolumeDataset,
                          plane: MPRPlaneGeometry,
                          thickness: Int,
@@ -85,16 +143,25 @@ public actor MetalMPRComputeAdapter: MPRReslicePort {
         // Get or create pipeline
         let pipeline = try await getPipelineState()
 
-        // Create volume texture from dataset
-        let volumeTexture = try createVolumeTexture(from: dataset)
+        // Reuse the dataset-scoped volume texture when the dataset layout and payload are unchanged.
+        let volumeTexture = try provideVolumeTexture(for: dataset)
 
         // Calculate output dimensions
         let (width, height) = sliceDimensions(for: plane)
 
-        // Create output texture
-        let outputTexture = try createOutputTexture(width: width,
+        // Reuse the output texture when the requested shape is unchanged and not already in flight.
+        let outputTexture = try provideOutputTexture(width: width,
                                                      height: height,
                                                      pixelFormat: dataset.pixelFormat)
+        let outputTextureUsesCache = isCachedOutputTexture(outputTexture)
+        if outputTextureUsesCache {
+            outputTextureInFlight = true
+        }
+        defer {
+            if outputTextureUsesCache {
+                outputTextureInFlight = false
+            }
+        }
 
         // Prepare uniforms
         var uniforms = try createUniforms(dataset: dataset,
@@ -157,6 +224,44 @@ extension MetalMPRComputeAdapter {
 
     @_spi(Testing)
     public var debugMPSAvailable: Bool { mpsAvailable }
+
+    @_spi(Testing)
+    public var debugTextureUploadCount: Int { textureUploadCount }
+
+    @_spi(Testing)
+    public var debugOutputTextureAllocationCount: Int { outputTextureAllocationCount }
+
+    @_spi(Testing)
+    public var debugCachedOutputTextureShape: (
+        width: Int,
+        height: Int,
+        pixelFormat: VolumePixelFormat
+    )? {
+        guard let cachedOutputShape else { return nil }
+        return (
+            width: cachedOutputShape.width,
+            height: cachedOutputShape.height,
+            pixelFormat: cachedOutputShape.pixelFormat
+        )
+    }
+
+    @_spi(Testing)
+    public var debugCachedDatasetIdentity: (
+        pointer: UInt,
+        count: Int,
+        dimensions: VolumeDimensions,
+        pixelFormat: VolumePixelFormat,
+        contentFingerprint: UInt64
+    )? {
+        guard let cachedDatasetIdentity else { return nil }
+        return (
+            pointer: cachedDatasetIdentity.pointer,
+            count: cachedDatasetIdentity.count,
+            dimensions: cachedDatasetIdentity.dimensions,
+            pixelFormat: cachedDatasetIdentity.pixelFormat,
+            contentFingerprint: cachedDatasetIdentity.contentFingerprint
+        )
+    }
 }
 
 // MARK: - Pipeline Management
@@ -193,35 +298,56 @@ private extension MetalMPRComputeAdapter {
 // MARK: - Texture Creation
 
 private extension MetalMPRComputeAdapter {
-    func createVolumeTexture(from dataset: VolumeDataset) throws -> any MTLTexture {
-        let descriptor = MTLTextureDescriptor()
-        descriptor.textureType = .type3D
-        descriptor.pixelFormat = dataset.pixelFormat.metalPixelFormat
-        descriptor.usage = [.shaderRead]
-        descriptor.width = dataset.dimensions.width
-        descriptor.height = dataset.dimensions.height
-        descriptor.depth = dataset.dimensions.depth
+    /// Provide a 3D Metal texture for the given dataset, reusing a cached texture when the dataset identity is unchanged.
+    /// - Parameters:
+    ///   - dataset: The volume dataset to produce a Metal 3D texture for; its identity is used to decide cache reuse.
+    /// - Returns: A Metal texture representing the dataset volume.
+    /// - Throws: `ComputeError.volumeTextureCreationFailed` if a new volume texture cannot be created.
+    func provideVolumeTexture(for dataset: VolumeDataset) throws -> any MTLTexture {
+        let identity = DatasetIdentity(dataset: dataset)
+        if let cachedVolumeTexture, cachedDatasetIdentity == identity {
+            return cachedVolumeTexture
+        }
 
-        guard let texture = device.makeTexture(descriptor: descriptor) else {
+        let factory = VolumeTextureFactory(dataset: dataset)
+        guard let texture = factory.generate(device: device) else {
             logger.error("Failed to create volume texture")
             throw ComputeError.volumeTextureCreationFailed
         }
         texture.label = "MPR.volumeTexture"
 
-        let bytesPerRow = dataset.pixelFormat.bytesPerVoxel * descriptor.width
-        let bytesPerImage = bytesPerRow * descriptor.height
+        cachedVolumeTexture = texture
+        cachedDatasetIdentity = identity
+        textureUploadCount += 1
 
-        dataset.data.withUnsafeBytes { buffer in
-            guard let baseAddress = buffer.baseAddress else { return }
-            texture.replace(
-                region: MTLRegionMake3D(0, 0, 0, descriptor.width, descriptor.height, descriptor.depth),
-                mipmapLevel: 0,
-                slice: 0,
-                withBytes: baseAddress,
-                bytesPerRow: bytesPerRow,
-                bytesPerImage: bytesPerImage
-            )
+        return texture
+    }
+
+    func provideOutputTexture(width: Int,
+                              height: Int,
+                              pixelFormat: VolumePixelFormat) throws -> any MTLTexture {
+        let shape = OutputTextureShape(width: width,
+                                       height: height,
+                                       pixelFormat: pixelFormat)
+
+        if let cachedOutputTexture,
+           cachedOutputShape == shape,
+           !outputTextureInFlight {
+            return cachedOutputTexture
         }
+
+        // Do not replace the cached texture while a command buffer may still be writing to it.
+        if outputTextureInFlight {
+            return try createOutputTexture(width: width,
+                                           height: height,
+                                           pixelFormat: pixelFormat)
+        }
+
+        let texture = try createOutputTexture(width: width,
+                                              height: height,
+                                              pixelFormat: pixelFormat)
+        cachedOutputTexture = texture
+        cachedOutputShape = shape
 
         return texture
     }
@@ -240,9 +366,15 @@ private extension MetalMPRComputeAdapter {
             logger.error("Failed to create output texture (\(width)x\(height))")
             throw ComputeError.outputTextureCreationFailed
         }
+        outputTextureAllocationCount += 1
         texture.label = "MPR.outputTexture"
 
         return texture
+    }
+
+    func isCachedOutputTexture(_ texture: any MTLTexture) -> Bool {
+        guard let cachedOutputTexture else { return false }
+        return (texture as AnyObject) === (cachedOutputTexture as AnyObject)
     }
 }
 

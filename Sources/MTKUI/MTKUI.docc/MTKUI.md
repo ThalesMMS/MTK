@@ -40,6 +40,7 @@ Scene controllers orchestrate volumetric rendering, camera interaction, and volu
 SwiftUI views and containers for embedding volumetric rendering into your application.
 
 - ``VolumetricDisplayContainer``
+- ``TriplanarMPRComposer``
 - ``MPRGridComposer``
 - ``MPRPanelView``
 - ``ToneCurveEditor``
@@ -96,6 +97,8 @@ import MTKCore
 
 struct VolumetricView: View {
     @StateObject private var controller = VolumetricSceneController()
+    @State private var level: Double = 40
+    @State private var window: Double = 400
 
     var body: some View {
         VolumetricDisplayContainer(controller: controller) {
@@ -103,8 +106,8 @@ struct VolumetricView: View {
             VStack {
                 Spacer()
                 WindowLevelControlView(
-                    level: $controller.windowLevel,
-                    window: $controller.windowWidth
+                    level: $level,
+                    window: $window
                 )
             }
         }
@@ -118,33 +121,77 @@ struct VolumetricView: View {
     func loadDataset() async {
         // Create and configure your volume dataset
         // Then apply it to the controller
-        await controller.setDataset(myDataset)
+        await controller.applyDataset(myDataset)
     }
 }
 ```
 
-Create an MPR grid layout:
+Create an MPR layout:
+
+### Tri-Planar Only
+
+Use ``TriplanarMPRComposer`` when the interface needs axial, coronal, and sagittal
+review without a 3D pane. This path provisions only the three MPR controllers,
+which reduces memory footprint and keeps setup focused on orthogonal slice review.
 
 ```swift
 import SwiftUI
 import MTKUI
 
-struct MPRView: View {
+struct TriplanarMPRView: View {
     let coordinator = VolumetricSceneCoordinator.shared
 
     var body: some View {
-        MPRGridComposer(
-            volumeController: coordinator.volumeController(),
-            axialController: coordinator.mprController(for: .z),
-            coronalController: coordinator.mprController(for: .y),
-            sagittalController: coordinator.mprController(for: .x)
+        TriplanarMPRComposer(
+            axialController: coordinator.controller(for: .z),
+            coronalController: coordinator.controller(for: .y),
+            sagittalController: coordinator.controller(for: .x),
+            layout: .grid
         )
         .task {
-            await coordinator.setDataset(myDataset)
+            await coordinator.controller(for: .z).applyDataset(myDataset)
+            await coordinator.controller(for: .y).applyDataset(myDataset)
+            await coordinator.controller(for: .x).applyDataset(myDataset)
         }
     }
 }
 ```
+
+### Tri-Planar + 3D
+
+Use ``MPRGridComposer`` when a 3D volume pane provides useful anatomical context
+beside the three orthogonal MPR planes. This layout provisions a volume controller
+plus the three MPR controllers.
+
+```swift
+import SwiftUI
+import MTKUI
+
+struct MPRGridView: View {
+    let coordinator = VolumetricSceneCoordinator.shared
+
+    var body: some View {
+        MPRGridComposer(
+            volumeController: coordinator.controller,
+            axialController: coordinator.controller(for: .z),
+            coronalController: coordinator.controller(for: .y),
+            sagittalController: coordinator.controller(for: .x)
+        )
+        .task {
+            let dataset = myDataset
+
+            await coordinator.controller.applyDataset(dataset)
+            await coordinator.controller(for: .z).applyDataset(dataset)
+            await coordinator.controller(for: .y).applyDataset(dataset)
+            await coordinator.controller(for: .x).applyDataset(dataset)
+        }
+    }
+}
+```
+
+Choose ``TriplanarMPRComposer`` for simpler MPR-only setup and lower memory usage.
+Choose ``MPRGridComposer`` when the 3D pane is part of the clinical or review
+workflow.
 
 ## Architecture
 

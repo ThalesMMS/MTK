@@ -3,8 +3,7 @@
 //  MTKUI
 //
 //  Coordinator for volumetric scene controller instances.
-//  Manages MTK controller instances for MPR and volume rendering with comprehensive state synchronization.
-//  Originally from MTK-Demo MTKOverlayCoordinator — Promoted to MTKUI for reusability.
+//  Manages the MTK-native controller pool for volume rendering and tri-planar MPR.
 //  Thales Matheus Mendonça Santos — November 2025
 //
 
@@ -25,6 +24,11 @@ import MTKSceneKit
 /// The coordinator maintains separate controller instances for:
 /// - **Volume rendering**: Primary 3D visualization with DVR/MIP/MinIP/AIP methods
 /// - **MPR planes**: Three orthogonal slice views (axial, sagittal, coronal)
+///
+/// Controller instances are created lazily. A tri-planar-only consumer that requests
+/// `controller(for: .z)`, `controller(for: .y)`, and `controller(for: .x)` creates only
+/// those three MPR controllers. The volume controller is created only when ``controller``
+/// is accessed, which keeps MPR-only workflows from provisioning a 3D render surface.
 ///
 /// All controllers share synchronized dataset, transfer function, and HU window state, ensuring
 /// consistent visualization across different views.
@@ -59,20 +63,22 @@ import MTKSceneKit
 /// }
 /// ```
 ///
-/// ### Multi-Planar Reconstruction (MPR)
+/// ### Tri-Planar MPR
 ///
 /// ```swift
-/// struct MPRGridView: View {
+/// struct TriplanarMPRView: View {
 ///     @StateObject private var coordinator = VolumetricSceneCoordinator.shared
 ///
 ///     var body: some View {
-///         MPRGridComposer(
+///         TriplanarMPRComposer(
 ///             axialController: coordinator.controller(for: .z),
-///             sagittalController: coordinator.controller(for: .x),
-///             coronalController: coordinator.controller(for: .y)
+///             coronalController: coordinator.controller(for: .y),
+///             sagittalController: coordinator.controller(for: .x)
 ///         )
 ///         .task {
-///             coordinator.apply(dataset: volumeDataset)
+///             await coordinator.controller(for: .z).applyDataset(volumeDataset)
+///             await coordinator.controller(for: .y).applyDataset(volumeDataset)
+///             await coordinator.controller(for: .x).applyDataset(volumeDataset)
 ///
 ///             // Configure individual MPR planes
 ///             coordinator.configureMPRDisplay(
@@ -88,6 +94,9 @@ import MTKSceneKit
 ///     }
 /// }
 /// ```
+///
+/// - Note: The primary ``controller`` property creates the 3D volume-rendering controller.
+///   Request it only when the UI includes a 3D pane, such as a ``MPRGridComposer`` layout.
 ///
 /// ## State Synchronization
 ///
@@ -123,7 +132,7 @@ public final class VolumetricSceneCoordinator: ObservableObject {
 
     /// Indicates whether Metal GPU rendering is available on this device.
     ///
-    /// Set to `false` on systems without Metal support (e.g., some simulators, legacy hardware).
+    /// Set to `false` on systems without Metal support (e.g., some simulators or older hardware).
     /// When `false`, controllers fallback to stub implementations without GPU rendering.
     @Published public private(set) var isMetalAvailable: Bool
 
@@ -151,6 +160,32 @@ public final class VolumetricSceneCoordinator: ObservableObject {
     ]
     private let device: (any MTLDevice)?
     private var stubControllers: [SurfaceKey: VolumetricSceneController] = [:]
+
+    /// Testing-only surface identifiers for lazily instantiated controllers.
+    ///
+    /// - SPI: Testing
+    /// - Returns: Active controller surface identifiers such as `"volume"`, `"mpr.x"`,
+    ///   `"mpr.y"`, and `"mpr.z"`.
+    @_spi(Testing)
+    public var debugControllerSurfaceIdentifiers: [String] {
+        controllers.keys.map { surface in
+            switch surface {
+            case .volume:
+                return "volume"
+            case let .mpr(axis):
+                switch axis {
+                case .x:
+                    return "mpr.x"
+                case .y:
+                    return "mpr.y"
+                case .z:
+                    return "mpr.z"
+                }
+            }
+        }
+        .sorted()
+    }
+
     /// Consolidated rendering state published for SwiftUI observation.
     ///
     /// Contains snapshots of:

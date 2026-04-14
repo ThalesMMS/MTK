@@ -13,6 +13,9 @@ import simd
 @_spi(Testing) @testable import MTKCore
 
 final class MetalMPRComputeAdapterTests: XCTestCase {
+    private enum TestHelperError: Error {
+        case sharedDataAllocationFailed(byteCount: Int)
+    }
 
     private var device: MTLDevice!
     private var commandQueue: MTLCommandQueue!
@@ -351,6 +354,428 @@ final class MetalMPRComputeAdapterTests: XCTestCase {
         XCTAssertFalse(slice.pixels.isEmpty)
     }
 
+    // MARK: - Texture Cache Tests
+
+    func test_makeSlabReusesTextureForSameDataset() async throws {
+        let dataset = makeTestDataset()
+        let plane = makeTestPlaneGeometry(for: dataset)
+
+        _ = try await adapter.makeSlab(
+            dataset: dataset,
+            plane: plane,
+            thickness: 5,
+            steps: 5,
+            blend: .average
+        )
+
+        let cachedIdentity = await adapter.debugCachedDatasetIdentity
+        XCTAssertNotNil(cachedIdentity)
+        XCTAssertEqual(cachedIdentity?.count, dataset.data.count)
+        XCTAssertEqual(cachedIdentity?.dimensions, dataset.dimensions)
+        XCTAssertEqual(cachedIdentity?.pixelFormat, dataset.pixelFormat)
+
+        _ = try await adapter.makeSlab(
+            dataset: dataset,
+            plane: plane,
+            thickness: 5,
+            steps: 5,
+            blend: .maximum
+        )
+
+        let uploadCount = await adapter.debugTextureUploadCount
+        XCTAssertEqual(uploadCount, 1)
+    }
+
+    func test_cachedTextureReuseAcrossIterations() async throws {
+        let dataset = makeTestDataset(pixelFormat: .int16Signed)
+        let plane = makeTestPlaneGeometry(for: dataset)
+
+        for _ in 0..<10 {
+            let slice = try await adapter.makeSlab(
+                dataset: dataset,
+                plane: plane,
+                thickness: 5,
+                steps: 5,
+                blend: .average
+            )
+            assertValidSlice(slice, expectedWidth: 64, expectedHeight: 64)
+        }
+
+        let uploadCount = await adapter.debugTextureUploadCount
+        XCTAssertEqual(uploadCount, 1)
+
+        let outputAllocationCount = await adapter.debugOutputTextureAllocationCount
+        XCTAssertEqual(outputAllocationCount, 1)
+    }
+
+    func test_makeSlabReusesOutputTextureForSameGeometry() async throws {
+        let dataset = makeTestDataset()
+        let plane = makeTestPlaneGeometry(for: dataset)
+
+        for _ in 0..<3 {
+            let slice = try await adapter.makeSlab(
+                dataset: dataset,
+                plane: plane,
+                thickness: 5,
+                steps: 5,
+                blend: .average
+            )
+            assertValidSlice(slice, expectedWidth: 64, expectedHeight: 64)
+        }
+
+        let allocationCount = await adapter.debugOutputTextureAllocationCount
+        XCTAssertEqual(allocationCount, 1)
+
+        let cachedShape = await adapter.debugCachedOutputTextureShape
+        XCTAssertEqual(cachedShape?.width, 64)
+        XCTAssertEqual(cachedShape?.height, 64)
+        XCTAssertEqual(cachedShape?.pixelFormat, dataset.pixelFormat)
+    }
+
+    func test_outputTextureReuseAcrossIterations() async throws {
+        let dataset = makeTestDataset(pixelFormat: .int16Signed)
+        let plane = makeTestPlaneGeometry(for: dataset)
+
+        for _ in 0..<10 {
+            let slice = try await adapter.makeSlab(
+                dataset: dataset,
+                plane: plane,
+                thickness: 5,
+                steps: 5,
+                blend: .average
+            )
+            assertValidSlice(slice, expectedWidth: 64, expectedHeight: 64)
+        }
+
+        let allocationCount = await adapter.debugOutputTextureAllocationCount
+        XCTAssertEqual(allocationCount, 1)
+    }
+
+    func test_outputTextureReuseAcrossBlendModes() async throws {
+        let dataset = makeTestDataset(pixelFormat: .int16Signed, seed: 7)
+        let plane = makeTestPlaneGeometry(for: dataset)
+
+        for blendMode in MPRBlendMode.allCases {
+            let thickness = blendMode == .single ? 1 : 5
+            let steps = blendMode == .single ? 1 : 5
+
+            let slice = try await adapter.makeSlab(
+                dataset: dataset,
+                plane: plane,
+                thickness: thickness,
+                steps: steps,
+                blend: blendMode
+            )
+            assertValidSlice(slice, expectedWidth: 64, expectedHeight: 64)
+        }
+
+        let allocationCount = await adapter.debugOutputTextureAllocationCount
+        XCTAssertEqual(allocationCount, 1)
+
+        let cachedShape = await adapter.debugCachedOutputTextureShape
+        XCTAssertEqual(cachedShape?.width, 64)
+        XCTAssertEqual(cachedShape?.height, 64)
+        XCTAssertEqual(cachedShape?.pixelFormat, dataset.pixelFormat)
+    }
+
+    func test_concurrentMakeSlabUsesTemporaryOutputTextureFallback() async throws {
+        let dataset = makeTestDataset(
+            dimensions: VolumeDimensions(width: 96, height: 96, depth: 96),
+            pixelFormat: .int16Signed,
+            seed: 29
+        )
+        let plane = makeTestPlaneGeometry(for: dataset)
+
+        async let firstSlice = adapter.makeSlab(
+            dataset: dataset,
+            plane: plane,
+            thickness: 16,
+            steps: 64,
+            blend: .average
+        )
+        async let secondSlice = adapter.makeSlab(
+            dataset: dataset,
+            plane: plane,
+            thickness: 16,
+            steps: 64,
+            blend: .average
+        )
+
+        let (first, second) = try await (firstSlice, secondSlice)
+        assertValidSlice(first, expectedWidth: 96, expectedHeight: 96)
+        assertValidSlice(second, expectedWidth: 96, expectedHeight: 96)
+
+        let allocationCount = await adapter.debugOutputTextureAllocationCount
+        XCTAssertEqual(allocationCount, 2)
+
+        let cachedShape = await adapter.debugCachedOutputTextureShape
+        XCTAssertEqual(cachedShape?.width, 96)
+        XCTAssertEqual(cachedShape?.height, 96)
+        XCTAssertEqual(cachedShape?.pixelFormat, dataset.pixelFormat)
+    }
+
+    func test_outputTextureInvalidatesOnDimensionChange() async throws {
+        let dataset = makeTestDataset(
+            dimensions: VolumeDimensions(width: 48, height: 32, depth: 24),
+            pixelFormat: .int16Signed,
+            seed: 5
+        )
+        let axialPlane = makeTestPlaneGeometry(for: dataset, axis: .z)
+        let sagittalPlane = makeTestPlaneGeometry(for: dataset, axis: .x)
+
+        let axialSlice = try await adapter.makeSlab(
+            dataset: dataset,
+            plane: axialPlane,
+            thickness: 1,
+            steps: 1,
+            blend: .single
+        )
+        assertValidSlice(axialSlice, expectedWidth: 48, expectedHeight: 32)
+
+        let sagittalSlice = try await adapter.makeSlab(
+            dataset: dataset,
+            plane: sagittalPlane,
+            thickness: 1,
+            steps: 1,
+            blend: .single
+        )
+        assertValidSlice(sagittalSlice, expectedWidth: 32, expectedHeight: 24)
+
+        let allocationCount = await adapter.debugOutputTextureAllocationCount
+        XCTAssertEqual(allocationCount, 2)
+
+        let cachedShape = await adapter.debugCachedOutputTextureShape
+        XCTAssertEqual(cachedShape?.width, 32)
+        XCTAssertEqual(cachedShape?.height, 24)
+        XCTAssertEqual(cachedShape?.pixelFormat, dataset.pixelFormat)
+    }
+
+    func test_outputTextureShapeUpdatesOnInvalidation() async throws {
+        let dataset = makeTestDataset(
+            dimensions: VolumeDimensions(width: 48, height: 32, depth: 24),
+            pixelFormat: .int16Unsigned,
+            seed: 19
+        )
+        let axialPlane = makeTestPlaneGeometry(for: dataset, axis: .z)
+        let sagittalPlane = makeTestPlaneGeometry(for: dataset, axis: .x)
+
+        _ = try await adapter.makeSlab(
+            dataset: dataset,
+            plane: axialPlane,
+            thickness: 1,
+            steps: 1,
+            blend: .single
+        )
+
+        let initialShape = await adapter.debugCachedOutputTextureShape
+        XCTAssertEqual(initialShape?.width, 48)
+        XCTAssertEqual(initialShape?.height, 32)
+        XCTAssertEqual(initialShape?.pixelFormat, dataset.pixelFormat)
+
+        _ = try await adapter.makeSlab(
+            dataset: dataset,
+            plane: sagittalPlane,
+            thickness: 1,
+            steps: 1,
+            blend: .single
+        )
+
+        let updatedShape = await adapter.debugCachedOutputTextureShape
+        XCTAssertEqual(updatedShape?.width, 32)
+        XCTAssertEqual(updatedShape?.height, 24)
+        XCTAssertEqual(updatedShape?.pixelFormat, dataset.pixelFormat)
+        XCTAssertNotEqual(updatedShape?.width, initialShape?.width)
+        XCTAssertNotEqual(updatedShape?.height, initialShape?.height)
+
+        let allocationCount = await adapter.debugOutputTextureAllocationCount
+        XCTAssertEqual(allocationCount, 2)
+    }
+
+    func test_outputTextureInvalidatesOnPixelFormatChange() async throws {
+        let dimensions = VolumeDimensions(width: 64, height: 64, depth: 64)
+        let sharedData = try makeSharedTestData(dimensions: dimensions, pixelFormat: .int16Unsigned, seed: 11)
+        let unsignedDataset = makeTestDataset(data: sharedData.data,
+                                              dimensions: dimensions,
+                                              pixelFormat: .int16Unsigned)
+        let signedDataset = makeTestDataset(data: sharedData.data,
+                                            dimensions: dimensions,
+                                            pixelFormat: .int16Signed)
+        let plane = makeTestPlaneGeometry(for: unsignedDataset)
+
+        _ = try await adapter.makeSlab(
+            dataset: unsignedDataset,
+            plane: plane,
+            thickness: 1,
+            steps: 1,
+            blend: .single
+        )
+
+        _ = try await adapter.makeSlab(
+            dataset: signedDataset,
+            plane: plane,
+            thickness: 1,
+            steps: 1,
+            blend: .single
+        )
+
+        let allocationCount = await adapter.debugOutputTextureAllocationCount
+        XCTAssertEqual(allocationCount, 2)
+
+        let cachedShape = await adapter.debugCachedOutputTextureShape
+        XCTAssertEqual(cachedShape?.width, 64)
+        XCTAssertEqual(cachedShape?.height, 64)
+        XCTAssertEqual(cachedShape?.pixelFormat, .int16Signed)
+    }
+
+    func test_makeSlabInvalidatesCacheOnDimensionChange() async throws {
+        let dimensionsA = VolumeDimensions(width: 64, height: 64, depth: 64)
+        let dimensionsB = VolumeDimensions(width: 32, height: 64, depth: 128)
+        let sharedData = try makeSharedTestData(dimensions: dimensionsA, pixelFormat: .int16Unsigned, seed: 17)
+        let datasetA = makeTestDataset(data: sharedData.data, dimensions: dimensionsA, pixelFormat: .int16Unsigned)
+        let datasetB = makeTestDataset(data: sharedData.data, dimensions: dimensionsB, pixelFormat: .int16Unsigned)
+        let planeA = makeTestPlaneGeometry(for: datasetA)
+        let planeB = makeTestPlaneGeometry(for: datasetB)
+
+        _ = try await adapter.makeSlab(
+            dataset: datasetA,
+            plane: planeA,
+            thickness: 5,
+            steps: 5,
+            blend: .single
+        )
+
+        let initialIdentity = await adapter.debugCachedDatasetIdentity
+        XCTAssertNotNil(initialIdentity)
+
+        _ = try await adapter.makeSlab(
+            dataset: datasetB,
+            plane: planeB,
+            thickness: 5,
+            steps: 5,
+            blend: .single
+        )
+
+        let uploadCount = await adapter.debugTextureUploadCount
+        XCTAssertEqual(uploadCount, 2)
+
+        let cachedIdentity = await adapter.debugCachedDatasetIdentity
+        XCTAssertEqual(cachedIdentity?.count, initialIdentity?.count)
+        XCTAssertEqual(cachedIdentity?.dimensions, datasetB.dimensions)
+        XCTAssertEqual(cachedIdentity?.pixelFormat, datasetB.pixelFormat)
+        XCTAssertNotEqual(cachedIdentity?.dimensions, initialIdentity?.dimensions)
+        XCTAssertEqual(cachedIdentity?.pixelFormat, initialIdentity?.pixelFormat)
+        XCTAssertEqual(cachedIdentity?.contentFingerprint, initialIdentity?.contentFingerprint)
+    }
+
+    func test_makeSlabInvalidatesCacheOnDataChange() async throws {
+        let dataset = makeTestDataset()
+        let plane = makeTestPlaneGeometry(for: dataset)
+
+        _ = try await adapter.makeSlab(
+            dataset: dataset,
+            plane: plane,
+            thickness: 3,
+            steps: 3,
+            blend: .single
+        )
+
+        let initialIdentity = await adapter.debugCachedDatasetIdentity
+        XCTAssertNotNil(initialIdentity)
+
+        let mutatedDataset = makeDataChangedDataset(from: dataset)
+        _ = try await adapter.makeSlab(
+            dataset: mutatedDataset,
+            plane: plane,
+            thickness: 3,
+            steps: 3,
+            blend: .single
+        )
+
+        let uploadCount = await adapter.debugTextureUploadCount
+        XCTAssertEqual(uploadCount, 2)
+
+        let updatedIdentity = await adapter.debugCachedDatasetIdentity
+        XCTAssertEqual(updatedIdentity?.count, mutatedDataset.data.count)
+        XCTAssertEqual(updatedIdentity?.dimensions, mutatedDataset.dimensions)
+        XCTAssertEqual(updatedIdentity?.pixelFormat, mutatedDataset.pixelFormat)
+        XCTAssertNotEqual(updatedIdentity?.contentFingerprint, initialIdentity?.contentFingerprint)
+    }
+
+    func test_makeSlabInvalidatesCacheOnPixelFormatChange() async throws {
+        let dimensions = VolumeDimensions(width: 64, height: 64, depth: 64)
+        let sharedData = try makeSharedTestData(dimensions: dimensions, pixelFormat: .int16Unsigned, seed: 23)
+        let datasetA = makeTestDataset(data: sharedData.data, dimensions: dimensions, pixelFormat: .int16Unsigned)
+        let datasetB = makeTestDataset(data: sharedData.data, dimensions: dimensions, pixelFormat: .int16Signed)
+        let planeA = makeTestPlaneGeometry(for: datasetA)
+        let planeB = makeTestPlaneGeometry(for: datasetB)
+
+        _ = try await adapter.makeSlab(
+            dataset: datasetA,
+            plane: planeA,
+            thickness: 3,
+            steps: 3,
+            blend: .single
+        )
+
+        let initialIdentity = await adapter.debugCachedDatasetIdentity
+        XCTAssertNotNil(initialIdentity)
+
+        _ = try await adapter.makeSlab(
+            dataset: datasetB,
+            plane: planeB,
+            thickness: 3,
+            steps: 3,
+            blend: .single
+        )
+
+        let uploadCount = await adapter.debugTextureUploadCount
+        XCTAssertEqual(uploadCount, 2)
+
+        let updatedIdentity = await adapter.debugCachedDatasetIdentity
+        XCTAssertEqual(updatedIdentity?.count, initialIdentity?.count)
+        XCTAssertEqual(updatedIdentity?.dimensions, initialIdentity?.dimensions)
+        XCTAssertNotEqual(updatedIdentity?.pixelFormat, initialIdentity?.pixelFormat)
+        XCTAssertEqual(updatedIdentity?.dimensions, dimensions)
+        XCTAssertEqual(updatedIdentity?.pixelFormat, .int16Signed)
+        XCTAssertEqual(updatedIdentity?.contentFingerprint, initialIdentity?.contentFingerprint)
+    }
+
+    func test_makeSlabInvalidatesCacheOnInPlaceDataMutation() async throws {
+        let sharedData = try makeSharedTestData(pixelFormat: .int16Signed, seed: 31)
+        let dataset = makeTestDataset(data: sharedData.data, pixelFormat: .int16Signed)
+        let plane = makeTestPlaneGeometry(for: dataset)
+
+        _ = try await adapter.makeSlab(
+            dataset: dataset,
+            plane: plane,
+            thickness: 3,
+            steps: 3,
+            blend: .single
+        )
+
+        let initialIdentity = await adapter.debugCachedDatasetIdentity
+        XCTAssertNotNil(initialIdentity)
+
+        mutateSharedTestDataInPlace(sharedData.storage, pixelFormat: dataset.pixelFormat)
+
+        _ = try await adapter.makeSlab(
+            dataset: dataset,
+            plane: plane,
+            thickness: 3,
+            steps: 3,
+            blend: .single
+        )
+
+        let uploadCount = await adapter.debugTextureUploadCount
+        XCTAssertEqual(uploadCount, 2)
+
+        let updatedIdentity = await adapter.debugCachedDatasetIdentity
+        XCTAssertEqual(updatedIdentity?.count, initialIdentity?.count)
+        XCTAssertEqual(updatedIdentity?.dimensions, initialIdentity?.dimensions)
+        XCTAssertEqual(updatedIdentity?.pixelFormat, initialIdentity?.pixelFormat)
+        XCTAssertNotEqual(updatedIdentity?.contentFingerprint, initialIdentity?.contentFingerprint)
+    }
+
     // MARK: - Multiple Slab Generation
 
     func test_multipleSlabGenerationsSucceed() async throws {
@@ -367,6 +792,9 @@ final class MetalMPRComputeAdapterTests: XCTestCase {
             )
             XCTAssertFalse(slice.pixels.isEmpty)
         }
+
+        let outputAllocationCount = await adapter.debugOutputTextureAllocationCount
+        XCTAssertEqual(outputAllocationCount, 1)
     }
 
     func test_multipleSlabsWithDifferentBlendModes() async throws {
@@ -383,6 +811,111 @@ final class MetalMPRComputeAdapterTests: XCTestCase {
             )
             XCTAssertFalse(slice.pixels.isEmpty)
         }
+
+        let outputAllocationCount = await adapter.debugOutputTextureAllocationCount
+        XCTAssertEqual(outputAllocationCount, 1)
+    }
+
+    func test_sliceCorrectnessAfterTextureReuse() async throws {
+        let dataset = makeTestDataset(
+            dimensions: VolumeDimensions(width: 48, height: 32, depth: 24),
+            pixelFormat: .int16Signed,
+            seed: 3
+        )
+        let axialPlane = makeTestPlaneGeometry(for: dataset, axis: .z)
+        let sagittalPlane = makeTestPlaneGeometry(for: dataset, axis: .x)
+
+        let axialSlice = try await adapter.makeSlab(
+            dataset: dataset,
+            plane: axialPlane,
+            thickness: 1,
+            steps: 1,
+            blend: .single
+        )
+        assertValidSlice(axialSlice, expectedWidth: 48, expectedHeight: 32)
+
+        let repeatedAxialSlice = try await adapter.makeSlab(
+            dataset: dataset,
+            plane: axialPlane,
+            thickness: 1,
+            steps: 1,
+            blend: .single
+        )
+        XCTAssertEqual(repeatedAxialSlice.pixels, axialSlice.pixels)
+        XCTAssertEqual(repeatedAxialSlice.intensityRange, axialSlice.intensityRange)
+        assertValidSlice(repeatedAxialSlice, expectedWidth: 48, expectedHeight: 32)
+
+        let sagittalSlice = try await adapter.makeSlab(
+            dataset: dataset,
+            plane: sagittalPlane,
+            thickness: 5,
+            steps: 5,
+            blend: .maximum
+        )
+        assertValidSlice(sagittalSlice, expectedWidth: 32, expectedHeight: 24)
+
+        let uploadCount = await adapter.debugTextureUploadCount
+        XCTAssertEqual(uploadCount, 1)
+
+        let outputAllocationCount = await adapter.debugOutputTextureAllocationCount
+        XCTAssertEqual(outputAllocationCount, 2)
+    }
+
+    func test_sliceCorrectnessAcrossBlendModes() async throws {
+        let dataset = makeTestDataset(pixelFormat: .int16Signed, seed: 9)
+        let plane = makeTestPlaneGeometry(for: dataset)
+
+        for blendMode in MPRBlendMode.allCases {
+            let thickness = blendMode == .single ? 1 : 5
+            let steps = blendMode == .single ? 1 : 5
+
+            let slice = try await adapter.makeSlab(
+                dataset: dataset,
+                plane: plane,
+                thickness: thickness,
+                steps: steps,
+                blend: blendMode
+            )
+
+            assertValidSlice(slice, expectedWidth: 64, expectedHeight: 64)
+        }
+
+        let uploadCount = await adapter.debugTextureUploadCount
+        XCTAssertEqual(uploadCount, 1)
+
+        let outputAllocationCount = await adapter.debugOutputTextureAllocationCount
+        XCTAssertEqual(outputAllocationCount, 1)
+    }
+
+    func test_outputTextureAllocationReductionDemonstrated() async throws {
+        let dataset = makeTestDataset(
+            dimensions: VolumeDimensions(width: 16, height: 16, depth: 16),
+            pixelFormat: .int16Unsigned,
+            seed: 13
+        )
+        let plane = makeTestPlaneGeometry(for: dataset)
+        var lastSlice: MPRSlice?
+
+        for _ in 0..<100 {
+            lastSlice = try await adapter.makeSlab(
+                dataset: dataset,
+                plane: plane,
+                thickness: 3,
+                steps: 3,
+                blend: .average
+            )
+        }
+
+        if let lastSlice {
+            assertValidSlice(lastSlice, expectedWidth: 16, expectedHeight: 16)
+        } else {
+            XCTFail("Expected at least one generated slice")
+        }
+
+        let allocationCount = await adapter.debugOutputTextureAllocationCount
+        XCTAssertEqual(allocationCount, 1)
+        // Before output texture caching, this loop would allocate one output texture per slab.
+        print("Output texture allocations: \(allocationCount) (vs 100 without caching)")
     }
 
     // MARK: - Pixel Spacing Tests
@@ -453,18 +986,24 @@ final class MetalMPRComputeAdapterTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func makeTestDataset(pixelFormat: VolumePixelFormat = .int16Unsigned) -> VolumeDataset {
-        let dimensions = VolumeDimensions(width: 64, height: 64, depth: 64)
-
-        let data: Data
-        switch pixelFormat {
-        case .int16Signed:
-            let values: [Int16] = (0..<dimensions.voxelCount).map { Int16($0 % 2048 - 1024) }
-            data = values.withUnsafeBytes { Data($0) }
-        case .int16Unsigned:
-            let values: [UInt16] = (0..<dimensions.voxelCount).map { UInt16($0 % 4096) }
-            data = values.withUnsafeBytes { Data($0) }
-        }
+    private func makeTestDataset(data overrideData: Data? = nil,
+                                 dimensions: VolumeDimensions = VolumeDimensions(width: 64, height: 64, depth: 64),
+                                 pixelFormat: VolumePixelFormat = .int16Unsigned,
+                                 seed: Int = 0) -> VolumeDataset {
+        let data = overrideData ?? {
+            switch pixelFormat {
+            case .int16Signed:
+                let values: [Int16] = (0..<dimensions.voxelCount).map {
+                    Int16((($0 + seed) % 2048) - 1024)
+                }
+                return values.withUnsafeBytes { Data($0) }
+            case .int16Unsigned:
+                let values: [UInt16] = (0..<dimensions.voxelCount).map {
+                    UInt16(($0 + seed) % 4096)
+                }
+                return values.withUnsafeBytes { Data($0) }
+            }
+        }()
 
         return VolumeDataset(
             data: data,
@@ -472,6 +1011,82 @@ final class MetalMPRComputeAdapterTests: XCTestCase {
             spacing: VolumeSpacing(x: 1.0, y: 1.0, z: 1.0),
             pixelFormat: pixelFormat
         )
+    }
+
+    private func makeDataChangedDataset(from dataset: VolumeDataset) -> VolumeDataset {
+        var mutatedDataset = dataset
+
+        switch dataset.pixelFormat {
+        case .int16Signed:
+            var mutatedValues = Array(repeating: Int16.zero, count: dataset.voxelCount)
+            _ = mutatedValues.withUnsafeMutableBytes { mutableBytes in
+                dataset.data.copyBytes(to: mutableBytes)
+            }
+            if let firstValue = mutatedValues.first {
+                mutatedValues[0] = firstValue == .max ? .min : firstValue &+ 1
+            }
+            mutatedDataset.data = mutatedValues.withUnsafeBytes { Data($0) }
+
+        case .int16Unsigned:
+            var mutatedValues = Array(repeating: UInt16.zero, count: dataset.voxelCount)
+            _ = mutatedValues.withUnsafeMutableBytes { mutableBytes in
+                dataset.data.copyBytes(to: mutableBytes)
+            }
+            if let firstValue = mutatedValues.first {
+                mutatedValues[0] = firstValue &+ 1
+            }
+            mutatedDataset.data = mutatedValues.withUnsafeBytes { Data($0) }
+        }
+
+        return mutatedDataset
+    }
+
+    private func makeSharedTestData(dimensions: VolumeDimensions = VolumeDimensions(width: 64, height: 64, depth: 64),
+                                    pixelFormat: VolumePixelFormat = .int16Unsigned,
+                                    seed: Int = 0) throws -> (data: Data, storage: NSMutableData) {
+        let byteCount = dimensions.voxelCount * pixelFormat.bytesPerVoxel
+        guard let storage = NSMutableData(length: byteCount) else {
+            throw TestHelperError.sharedDataAllocationFailed(byteCount: byteCount)
+        }
+
+        switch pixelFormat {
+        case .int16Signed:
+            let pointer = storage.mutableBytes.assumingMemoryBound(to: Int16.self)
+            for index in 0..<dimensions.voxelCount {
+                pointer[index] = Int16((index + seed) % 2048 - 1024)
+            }
+        case .int16Unsigned:
+            let pointer = storage.mutableBytes.assumingMemoryBound(to: UInt16.self)
+            for index in 0..<dimensions.voxelCount {
+                pointer[index] = UInt16((index + seed) % 4096)
+            }
+        }
+
+        return (data: Data(referencing: storage), storage: storage)
+    }
+
+    private func mutateSharedTestDataInPlace(_ storage: NSMutableData,
+                                             pixelFormat: VolumePixelFormat) {
+        switch pixelFormat {
+        case .int16Signed:
+            let pointer = storage.mutableBytes.assumingMemoryBound(to: Int16.self)
+            pointer[0] = pointer[0] == .max ? .min : pointer[0] &+ 1
+        case .int16Unsigned:
+            let pointer = storage.mutableBytes.assumingMemoryBound(to: UInt16.self)
+            pointer[0] = pointer[0] &+ 1
+        }
+    }
+
+    private func assertValidSlice(_ slice: MPRSlice,
+                                  expectedWidth: Int,
+                                  expectedHeight: Int,
+                                  file: StaticString = #filePath,
+                                  line: UInt = #line) {
+        XCTAssertEqual(slice.width, expectedWidth, file: file, line: line)
+        XCTAssertEqual(slice.height, expectedHeight, file: file, line: line)
+        XCTAssertFalse(slice.pixels.isEmpty, file: file, line: line)
+        XCTAssertTrue(slice.pixels.contains(where: { $0 != 0 }), file: file, line: line)
+        XCTAssertGreaterThan(slice.bytesPerRow, 0, file: file, line: line)
     }
 
     private func makeTestPlaneGeometry(for dataset: VolumeDataset, axis: MPRPlaneAxis = .z) -> MPRPlaneGeometry {
@@ -527,289 +1142,5 @@ final class MetalMPRComputeAdapterTests: XCTestCase {
             axisVTexture: axisVTexture,
             normalWorld: normal
         )
-    }
-
-    private func makeBenchmarkAdapter() throws -> MetalMPRAdapter {
-        guard let device = MTLCreateSystemDefaultDevice() else {
-            throw XCTSkip("Metal device unavailable for benchmark")
-        }
-
-        guard let commandQueue = device.makeCommandQueue() else {
-            throw XCTSkip("Failed to create command queue for benchmark")
-        }
-
-        guard let library = ShaderLibraryLoader.makeDefaultLibrary(on: device) else {
-            throw XCTSkip("No bundled metallib present for benchmark")
-        }
-
-        let debugOptions = VolumeRenderingDebugOptions()
-        return MetalMPRAdapter(
-            device: device,
-            commandQueue: commandQueue,
-            library: library,
-            debugOptions: debugOptions
-        )
-    }
-}
-
-// MARK: - Performance Benchmarks
-
-extension MetalMPRComputeAdapterTests {
-    /// Benchmark GPU vs CPU for 10mm slab thickness (target: 2x+ speedup)
-    func testPerformanceGPUvsCPU_10mm() async throws {
-        let benchmarkAdapter = try makeBenchmarkAdapter()
-        let dataset = makeTestDataset()
-        let plane = makeTestPlaneGeometry(for: dataset)
-        let thickness = 10
-        let steps = 10
-
-        // Warmup run for GPU
-        _ = try await benchmarkAdapter.makeSlab(
-            dataset: dataset,
-            plane: plane,
-            thickness: thickness,
-            steps: steps,
-            blend: .average
-        )
-
-        // Benchmark GPU path
-        let gpuStart = CFAbsoluteTimeGetCurrent()
-        _ = try await benchmarkAdapter.makeSlab(
-            dataset: dataset,
-            plane: plane,
-            thickness: thickness,
-            steps: steps,
-            blend: .average
-        )
-        let gpuDuration = CFAbsoluteTimeGetCurrent() - gpuStart
-
-        // Switch to CPU path
-        await benchmarkAdapter.setForceCPU(true)
-
-        // Warmup run for CPU
-        _ = try await benchmarkAdapter.makeSlab(
-            dataset: dataset,
-            plane: plane,
-            thickness: thickness,
-            steps: steps,
-            blend: .average
-        )
-
-        // Benchmark CPU path
-        let cpuStart = CFAbsoluteTimeGetCurrent()
-        _ = try await benchmarkAdapter.makeSlab(
-            dataset: dataset,
-            plane: plane,
-            thickness: thickness,
-            steps: steps,
-            blend: .average
-        )
-        let cpuDuration = CFAbsoluteTimeGetCurrent() - cpuStart
-
-        let speedup = cpuDuration / gpuDuration
-
-        print("""
-        Performance Benchmark - 10mm slab:
-          GPU: \(String(format: "%.2f", gpuDuration * 1000))ms
-          CPU: \(String(format: "%.2f", cpuDuration * 1000))ms
-          Speedup: \(String(format: "%.2f", speedup))x
-        """)
-
-        XCTAssertGreaterThan(speedup, 2.0, "GPU should be at least 2x faster than CPU for 10mm slab (actual: \(String(format: "%.2f", speedup))x)")
-    }
-
-    /// Benchmark GPU vs CPU for 20mm slab thickness
-    func testPerformanceGPUvsCPU_20mm() async throws {
-        let benchmarkAdapter = try makeBenchmarkAdapter()
-        let dataset = makeTestDataset()
-        let plane = makeTestPlaneGeometry(for: dataset)
-        let thickness = 20
-        let steps = 20
-
-        // Warmup run for GPU
-        _ = try await benchmarkAdapter.makeSlab(
-            dataset: dataset,
-            plane: plane,
-            thickness: thickness,
-            steps: steps,
-            blend: .average
-        )
-
-        // Benchmark GPU path
-        let gpuStart = CFAbsoluteTimeGetCurrent()
-        _ = try await benchmarkAdapter.makeSlab(
-            dataset: dataset,
-            plane: plane,
-            thickness: thickness,
-            steps: steps,
-            blend: .average
-        )
-        let gpuDuration = CFAbsoluteTimeGetCurrent() - gpuStart
-
-        // Switch to CPU path
-        await benchmarkAdapter.setForceCPU(true)
-
-        // Warmup run for CPU
-        _ = try await benchmarkAdapter.makeSlab(
-            dataset: dataset,
-            plane: plane,
-            thickness: thickness,
-            steps: steps,
-            blend: .average
-        )
-
-        // Benchmark CPU path
-        let cpuStart = CFAbsoluteTimeGetCurrent()
-        _ = try await benchmarkAdapter.makeSlab(
-            dataset: dataset,
-            plane: plane,
-            thickness: thickness,
-            steps: steps,
-            blend: .average
-        )
-        let cpuDuration = CFAbsoluteTimeGetCurrent() - cpuStart
-
-        let speedup = cpuDuration / gpuDuration
-
-        print("""
-        Performance Benchmark - 20mm slab:
-          GPU: \(String(format: "%.2f", gpuDuration * 1000))ms
-          CPU: \(String(format: "%.2f", cpuDuration * 1000))ms
-          Speedup: \(String(format: "%.2f", speedup))x
-        """)
-
-        XCTAssertGreaterThan(speedup, 2.0, "GPU should be at least 2x faster than CPU for 20mm slab (actual: \(String(format: "%.2f", speedup))x)")
-    }
-
-    /// Benchmark GPU vs CPU for 50mm slab thickness (maximum test)
-    func testPerformanceGPUvsCPU_50mm() async throws {
-        let benchmarkAdapter = try makeBenchmarkAdapter()
-        let dataset = makeTestDataset()
-        let plane = makeTestPlaneGeometry(for: dataset)
-        let thickness = 50
-        let steps = 50
-
-        // Warmup run for GPU
-        _ = try await benchmarkAdapter.makeSlab(
-            dataset: dataset,
-            plane: plane,
-            thickness: thickness,
-            steps: steps,
-            blend: .average
-        )
-
-        // Benchmark GPU path
-        let gpuStart = CFAbsoluteTimeGetCurrent()
-        _ = try await benchmarkAdapter.makeSlab(
-            dataset: dataset,
-            plane: plane,
-            thickness: thickness,
-            steps: steps,
-            blend: .average
-        )
-        let gpuDuration = CFAbsoluteTimeGetCurrent() - gpuStart
-
-        // Switch to CPU path
-        await benchmarkAdapter.setForceCPU(true)
-
-        // Warmup run for CPU
-        _ = try await benchmarkAdapter.makeSlab(
-            dataset: dataset,
-            plane: plane,
-            thickness: thickness,
-            steps: steps,
-            blend: .average
-        )
-
-        // Benchmark CPU path
-        let cpuStart = CFAbsoluteTimeGetCurrent()
-        _ = try await benchmarkAdapter.makeSlab(
-            dataset: dataset,
-            plane: plane,
-            thickness: thickness,
-            steps: steps,
-            blend: .average
-        )
-        let cpuDuration = CFAbsoluteTimeGetCurrent() - cpuStart
-
-        let speedup = cpuDuration / gpuDuration
-
-        print("""
-        Performance Benchmark - 50mm slab:
-          GPU: \(String(format: "%.2f", gpuDuration * 1000))ms
-          CPU: \(String(format: "%.2f", cpuDuration * 1000))ms
-          Speedup: \(String(format: "%.2f", speedup))x
-        """)
-
-        XCTAssertGreaterThan(speedup, 2.0, "GPU should be at least 2x faster than CPU for 50mm slab (actual: \(String(format: "%.2f", speedup))x)")
-    }
-
-    /// Benchmark different blend modes on GPU vs CPU
-    func testPerformanceGPUvsCPU_BlendModes() async throws {
-        let benchmarkAdapter = try makeBenchmarkAdapter()
-        let dataset = makeTestDataset()
-        let plane = makeTestPlaneGeometry(for: dataset)
-        let thickness = 15
-        let steps = 15
-
-        for blendMode in MPRBlendMode.allCases {
-            // Warmup run for GPU
-            _ = try await benchmarkAdapter.makeSlab(
-                dataset: dataset,
-                plane: plane,
-                thickness: thickness,
-                steps: steps,
-                blend: blendMode
-            )
-
-            // Benchmark GPU path
-            let gpuStart = CFAbsoluteTimeGetCurrent()
-            _ = try await benchmarkAdapter.makeSlab(
-                dataset: dataset,
-                plane: plane,
-                thickness: thickness,
-                steps: steps,
-                blend: blendMode
-            )
-            let gpuDuration = CFAbsoluteTimeGetCurrent() - gpuStart
-
-            // Switch to CPU path
-            await benchmarkAdapter.setForceCPU(true)
-
-            // Warmup run for CPU
-            _ = try await benchmarkAdapter.makeSlab(
-                dataset: dataset,
-                plane: plane,
-                thickness: thickness,
-                steps: steps,
-                blend: blendMode
-            )
-
-            // Benchmark CPU path
-            let cpuStart = CFAbsoluteTimeGetCurrent()
-            _ = try await benchmarkAdapter.makeSlab(
-                dataset: dataset,
-                plane: plane,
-                thickness: thickness,
-                steps: steps,
-                blend: blendMode
-            )
-            let cpuDuration = CFAbsoluteTimeGetCurrent() - cpuStart
-
-            let speedup = cpuDuration / gpuDuration
-
-            print("""
-            Performance Benchmark - Blend Mode \(blendMode):
-              GPU: \(String(format: "%.2f", gpuDuration * 1000))ms
-              CPU: \(String(format: "%.2f", cpuDuration * 1000))ms
-              Speedup: \(String(format: "%.2f", speedup))x
-            """)
-
-            // Re-enable GPU for next iteration
-            await benchmarkAdapter.setForceCPU(false)
-
-            // Verify GPU is faster for all blend modes
-            XCTAssertGreaterThan(speedup, 1.0, "GPU should be faster than CPU for \(blendMode) blend mode")
-        }
     }
 }

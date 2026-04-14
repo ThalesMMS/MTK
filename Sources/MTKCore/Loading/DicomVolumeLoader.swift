@@ -15,7 +15,7 @@ import ZIPFoundation
 
 /// Protocol abstraction for DICOM series volume metadata and pixel data.
 ///
-/// Bridges DICOM-specific volume representations (from GDCM, DICOM-Decoder, or custom parsers)
+/// Bridges DICOM-specific volume representations from DICOM-Decoder or injected test/integration loaders
 /// into a unified interface consumed by ``DicomVolumeLoader``. Implementations provide spatial
 /// metadata (dimensions, spacing, orientation), rescale parameters for Hounsfield Unit conversion,
 /// and pixel format information.
@@ -94,7 +94,8 @@ public protocol DICOMSeriesVolumeProtocol {
 
 /// Protocol abstraction for DICOM series loading implementations.
 ///
-/// Decouples ``DicomVolumeLoader`` from specific DICOM parsing libraries (GDCM, DICOM-Decoder, dcmtk).
+/// ``DicomVolumeLoader`` uses ``DicomDecoderSeriesLoader`` by default. This protocol keeps the loader
+/// injectable for unit tests and package-level adapters without implying demo runtime backend switching.
 /// Implementations parse DICOM files in a directory, sort slices by Image Position Patient, and stream
 /// slice data incrementally via progress callbacks.
 ///
@@ -181,7 +182,7 @@ public enum DicomVolumeLoaderError: Error {
 
     /// Error from underlying DICOM parsing library.
     ///
-    /// Wraps exceptions from GDCM, DICOM-Decoder, or custom loaders. Original error preserved
+    /// Wraps errors from DICOM-Decoder or injected loaders. Original error preserved
     /// in associated `NSError` for debugging.
     case bridgeError(NSError)
 }
@@ -838,7 +839,7 @@ public extension DicomVolumeLoader {
     /// Convenience initializer using the default Swift-based DICOM decoder.
     ///
     /// Equivalent to `DicomVolumeLoader(seriesLoader: DicomDecoderSeriesLoader())`.
-    /// Uses the pure-Swift DICOM-Decoder package without GDCM dependencies.
+    /// Uses the pure-Swift DICOM-Decoder package without external native dependencies.
     ///
     /// ## Example
     ///

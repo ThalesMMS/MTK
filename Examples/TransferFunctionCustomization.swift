@@ -6,7 +6,7 @@
 //  Thales Matheus Mendonça Santos — November 2025
 //
 //  NOTE: This is example/documentation code showing transfer function customization.
-//  For complete UI implementation, see MTK-Demo's SceneViewController.
+//  For complete UI implementation, see MTK-Demo's DrawOptionModel and MTKUI-backed views.
 //
 
 import SwiftUI

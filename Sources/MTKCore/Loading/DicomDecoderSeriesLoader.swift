@@ -3,7 +3,7 @@
 //  MTK
 //
 //  Swift implementation of DicomSeriesLoading backed by DICOM-Decoder package
-//  Streams slice data and metadata without relying on GDCM bridge
+//  Streams slice data and metadata without external native dependencies
 //  Thales Matheus Mendonça Santos — November 2025
 //
 
@@ -14,7 +14,7 @@ import DicomCore
 /// Pure-Swift DICOM series loader backed by the DICOM-Decoder package.
 ///
 /// Implements ``DicomSeriesLoading`` protocol using a pure-Swift DICOM parser, eliminating
-/// dependencies on native libraries (GDCM, dcmtk). Parses DICOM files in a directory, sorts
+/// dependencies on native parsing libraries. Parses DICOM files in a directory, sorts
 /// slices by Image Position Patient using IPP projection onto slice normal, and streams slice
 /// data incrementally via progress callbacks.
 ///

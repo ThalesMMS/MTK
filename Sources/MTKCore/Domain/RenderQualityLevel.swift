@@ -3,7 +3,7 @@
 //  MTKCore
 //
 //  Encapsulates render quality levels for volumetric rendering with associated sampling parameters.
-//  Migrated from Isis VolumetricSessionState to support MTK domain model.
+//  Shared domain model for sampling presets used across MTK renderers.
 //  Thales Matheus Mendonça Santos - November 2025
 //
 

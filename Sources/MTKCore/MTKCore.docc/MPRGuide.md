@@ -11,8 +11,8 @@ MTKCore's MPR implementation provides:
 - **Orthogonal slicing**: Standard axial, coronal, and sagittal anatomical planes
 - **Oblique reconstruction**: Arbitrary plane orientations for specialized views
 - **Thick-slab MPR**: Average/blend multiple parallel slices for noise reduction
-- **GPU acceleration**: Metal compute shaders for real-time performance (2-5ms per slice)
-- **CPU fallback**: Robust reference implementation for compatibility and testing
+- **Metal acceleration**: Metal compute shaders for real-time performance (2–5 ms per slice)
+- **Explicit Metal failures**: Missing Metal resources surface as errors for callers to handle
 
 All MPR operations preserve spatial accuracy, respecting the volume's pixel spacing and orientation metadata for anatomically correct reconstructions.
 
@@ -189,69 +189,54 @@ for each pixel (u, v):
     output[u, v] = sum / count
 ```
 
-## GPU Acceleration and CPU Fallback
+## Metal Acceleration and Explicit Failures
 
-### Performance Comparison
+``MetalMPRAdapter`` is a Metal-only adapter. It requires a Metal device, command queue, shader library, and compute pipelines before it can generate MPR slices. Initialization failures are thrown immediately, and rendering failures from the compute path are propagated to callers.
 
-``MetalMPRAdapter`` automatically selects between GPU-accelerated Metal compute shaders and a CPU reference implementation:
+### Performance
 
 | Configuration | Typical Performance (512×512 slice, 5mm thickness, 10 steps) |
 |---------------|--------------------------------------------------------------|
-| **GPU (Metal)** | 2-5ms |
-| **CPU (Reference)** | 50-150ms (depends on CPU cores and dataset size) |
+| **Metal compute** | 2–5 ms |
 
-**GPU benefits:**
-- 10-30× faster than CPU
+**Metal benefits:**
 - Parallel processing of all pixels simultaneously
 - Hardware-accelerated trilinear interpolation
-- Scales with GPU compute units (not CPU cores)
+- Scales with GPU compute units
 
-### GPU Initialization
+### Metal Initialization
 
 ```swift
-// GPU-accelerated adapter (recommended)
 guard let device = MTLCreateSystemDefaultDevice() else {
-    fatalError("Metal not available")
+    // Present that Metal is unavailable on this system.
+    return
 }
-let adapter = MetalMPRAdapter(device: device)
+
+do {
+    let adapter = try MetalMPRAdapter(device: device)
+    let slice = try await adapter.makeSlab(
+        dataset: dataset,
+        plane: plane,
+        thickness: 5,
+        steps: 10,
+        blend: .average
+    )
+} catch {
+    // Present the Metal setup or rendering failure to the caller.
+    throw error
+}
 ```
 
-The GPU adapter initializes:
+The Metal adapter initializes:
 - Metal command queue for GPU command submission
 - Shader library with `mprKernel` and `mprSlabKernel` compute functions
 - Argument buffers for efficient parameter passing
 
-### CPU Fallback
-
-```swift
-// CPU-only adapter (compatibility/testing)
-let adapter = MetalMPRAdapter()
-```
-
-The CPU fallback is automatically engaged when:
-- No Metal device is available (e.g., CI/CD servers, virtualized environments)
-- GPU initialization fails (shader library missing, command queue unavailable)
-- Explicitly forced via ``MetalMPRAdapter/setForceCPU(_:)``
-
-**CPU implementation:**
-- Processes pixels sequentially with multi-core parallelism via `Task.detached`
-- Uses manual trilinear interpolation in voxel space
-- Produces bit-identical results to GPU path (validated by unit tests)
-
-### Forcing CPU Path
-
-```swift
-// Temporarily disable GPU for testing
-adapter.setForceCPU(true)
-let slice = try await adapter.makeSlab(...)
-adapter.setForceCPU(false)  // Re-enable GPU
-```
-
-**Use cases:**
-- **Regression testing**: Validate GPU and CPU produce identical output
-- **Profiling**: Measure CPU vs GPU performance
-- **Debugging**: Isolate GPU-specific driver bugs
-- **Compatibility**: Work around unsupported Metal features on specific devices
+Callers should handle:
+- No Metal device being available
+- Command queue creation failure
+- Missing or unloadable shader libraries
+- Compute pipeline, command buffer, texture creation, or kernel execution errors
 
 ## Synchronized Multi-Planar Views
 
@@ -339,9 +324,12 @@ Slab thickness follows a similar pattern via ``VolumetricSceneController/setMprS
 ```swift
 import MTKCore
 
-// Initialize adapter with GPU acceleration
-let device = MTLCreateSystemDefaultDevice()!
-let adapter = MetalMPRAdapter(device: device)
+// Initialize adapter with Metal acceleration
+guard let device = MTLCreateSystemDefaultDevice() else {
+    // Surface an app-level error or choose a non-Metal workflow.
+    return
+}
+let adapter = try MetalMPRAdapter(device: device)
 
 // Define axial plane at Z = 128
 let plane = MPRPlaneGeometry.axial(at: 128, dataset: dataset)
@@ -479,7 +467,7 @@ All modes have similar GPU performance (difference < 5%) due to parallel process
 MPR operations require:
 
 1. **Volume texture** — Full 3D dataset in GPU memory (shared across all slices)
-2. **Output buffer** — 2D slice in GPU/CPU memory (`width × height × bytesPerPixel`)
+2. **Output buffer** — 2D slice result storage (`width × height × bytesPerPixel`)
 
 **Example**: 512×512×300 volume (int16) + 512×512 slice:
 - Volume texture: 512 × 512 × 300 × 2 bytes = ~157 MB

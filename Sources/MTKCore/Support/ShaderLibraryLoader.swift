@@ -53,7 +53,16 @@ public enum ShaderLibraryLoader {
     /// - Returns: A configured `MTLLibrary`, or `nil` if no shader sources could be loaded.
     ///
     /// - Note: In release builds, only the bundled `.metallib` is loaded. Missing libraries cause `nil` return with diagnostic error.
-    /// - Important: Diagnostics are essential for debugging shader loading failures; capture them in test/debug builds.
+    /// Obtain the default Metal shader library for the given device using bundled or fallback strategies.
+    /// 
+    /// Attempts to load a precompiled `.metallib` from the app bundle. In DEBUG builds, if the bundled
+    /// library is unavailable it will additionally try: a module default library, the device's main
+    /// bundle default library, and runtime compilation of shader sources. In release builds, failure to
+    /// find the bundled `.metallib` results in `nil`.
+    /// - Parameters:
+    ///   - device: The `MTLDevice` used to create or compile the library.
+    ///   - diagnostics: A closure that receives human-readable diagnostic messages (default is a no-op).
+    /// - Returns: The loaded `MTLLibrary` if one was found or successfully compiled, `nil` otherwise.
     public static func makeDefaultLibrary(on device: MTLDevice,
                                           diagnostics: (String) -> Void = { _ in }) -> MTLLibrary? {
         if let library = loadBundledMetallib(on: device, diagnostics: diagnostics) {
@@ -74,7 +83,7 @@ public enum ShaderLibraryLoader {
             return runtimeLib
         }
 
-        diagnostics("[MTKCore] Unable to load Metal library; CPU fallbacks may activate")
+        diagnostics("[MTKCore] Metal library unavailable; MPR operations will fail")
         return nil
 #else
         diagnostics("[MTKCore] ERROR: Release build is missing MTK.metallib in Bundle.module")

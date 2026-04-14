@@ -93,7 +93,7 @@ struct MPRViewerExample: View {
 
             // Step 2: Apply dataset to all four controllers
             // Important: All controllers must use the same dataset for proper synchronization
-            await loadDatasetToAllControllers(dataset)
+            await applyDatasetToAllControllers(dataset)
 
             // Step 3: Configure window/level for medical imaging
             // These settings are automatically synchronized across MPR views
@@ -137,15 +137,16 @@ struct MPRViewerExample: View {
         )
     }
 
-    /// Applies the dataset to all four controllers
-    private func loadDatasetToAllControllers(_ dataset: VolumeDataset) async {
+    /// Applies the provided volume dataset to the 3D volumetric controller and to the axial, coronal, and sagittal MPR controllers.
+    /// - Parameter dataset: The `VolumeDataset` to attach to the volumetric view and all three MPR plane controllers.
+    private func applyDatasetToAllControllers(_ dataset: VolumeDataset) async {
         // Load to 3D volumetric controller
-        await volumeController.loadDataset(dataset)
+        await volumeController.applyDataset(dataset)
 
         // Load to all three MPR controllers
-        await axialController.loadDataset(dataset)
-        await coronalController.loadDataset(dataset)
-        await sagittalController.loadDataset(dataset)
+        await axialController.applyDataset(dataset)
+        await coronalController.applyDataset(dataset)
+        await sagittalController.applyDataset(dataset)
     }
 
     /// Configures synchronized window/level settings
@@ -234,7 +235,10 @@ struct DicomMPRViewerExample: View {
     /// 1. Create DicomVolumeLoader with progress callback
     /// 2. Load dataset using DicomSeriesLoading implementation
     /// 3. Apply dataset to all controllers
-    /// 4. Configure window/level and slab settings
+    /// Loads a DICOM series from the given URL and applies the resulting volume dataset to the example's 3D and MPR controllers, updating UI state and defaults.
+    /// 
+    /// This method sets `isLoading` and updates `loadingProgress` while the series is loaded, applies the loaded dataset to `volumeController`, `axialController`, `coronalController`, and `sagittalController`, configures a modality-appropriate MPR window/level and initial slab thickness, and applies a 3D transfer-function preset. On failure it assigns a user-visible message to `errorMessage`.
+    /// - Parameter url: File URL pointing to the DICOM series (folder or archive) to load.
     private func loadDicomSeries(from url: URL) async {
         isLoading = true
         loadingProgress = 0.0
@@ -258,10 +262,10 @@ struct DicomMPRViewerExample: View {
             )
 
             // Apply dataset to all controllers
-            await volumeController.loadDataset(dataset)
-            await axialController.loadDataset(dataset)
-            await coronalController.loadDataset(dataset)
-            await sagittalController.loadDataset(dataset)
+            await volumeController.applyDataset(dataset)
+            await axialController.applyDataset(dataset)
+            await coronalController.applyDataset(dataset)
+            await sagittalController.applyDataset(dataset)
 
             // Configure default window/level based on modality
             if dataset.modality == .ct {
