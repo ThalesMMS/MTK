@@ -210,7 +210,7 @@ final class VolumetricSceneControllerSnapshotTests: XCTestCase {
 #endif
     }
 
-    func testActiveSurfaceDefaultsToSceneSurface() throws {
+    func testSurfaceDefaultsToSceneSurface() throws {
 #if canImport(Metal) && canImport(SceneKit)
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal device unavailable, skipping test")
@@ -219,7 +219,7 @@ final class VolumetricSceneControllerSnapshotTests: XCTestCase {
         let controller = try VolumetricSceneController()
 
         XCTAssertTrue(controller.surface.view === controller.sceneSurface.view,
-                      "Active surface should default to scene surface")
+                      "Surface should resolve to the SceneKit surface")
 #else
         throw XCTSkip("SceneKit or Metal unavailable")
 #endif

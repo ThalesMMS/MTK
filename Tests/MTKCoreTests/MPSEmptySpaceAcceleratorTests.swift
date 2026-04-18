@@ -2,6 +2,7 @@
 
 import CoreGraphics
 import Metal
+import OSLog
 import XCTest
 
 #if canImport(MetalPerformanceShaders)
@@ -21,13 +22,17 @@ final class MPSEmptySpaceAcceleratorTests: XCTestCase {
         }
 
         guard MPSSupportsMTLDevice(device) else {
-            throw XCTSkip("MPS not supported on this device")
+            throw XCTSkip("MPS acceleration is unsupported on this device; shared generation APIs should report .unavailable(.mpsUnsupportedOnDevice)")
         }
 
-        let accelerator = MPSEmptySpaceAccelerator(device: device)
-        XCTAssertNotNil(accelerator, "Expected successful initialization with MPS-capable device")
+        switch MPSEmptySpaceAccelerator.create(device: device) {
+        case .success:
+            break
+        case .unavailable(let reason):
+            throw XCTSkip("Accelerator setup unavailable on this device: \(reason)")
+        }
         #else
-        throw XCTSkip("MetalPerformanceShaders unavailable on this platform")
+        throw XCTSkip("MPS acceleration is unavailable for this platform; shared generation APIs would report .unavailable")
         #endif
     }
 
@@ -38,17 +43,21 @@ final class MPSEmptySpaceAcceleratorTests: XCTestCase {
         }
 
         guard MPSSupportsMTLDevice(device) else {
-            throw XCTSkip("MPS not supported on this device")
+            throw XCTSkip("MPS acceleration is unsupported on this device; shared generation APIs should report .unavailable(.mpsUnsupportedOnDevice)")
         }
 
         guard let queue = device.makeCommandQueue() else {
             throw XCTSkip("Failed to create command queue")
         }
 
-        let accelerator = MPSEmptySpaceAccelerator(device: device, commandQueue: queue)
-        XCTAssertNotNil(accelerator, "Expected successful initialization with custom command queue")
+        switch MPSEmptySpaceAccelerator.create(device: device, commandQueue: queue) {
+        case .success:
+            break
+        case .unavailable(let reason):
+            throw XCTSkip("Accelerator setup unavailable with custom command queue: \(reason)")
+        }
         #else
-        throw XCTSkip("MetalPerformanceShaders unavailable on this platform")
+        throw XCTSkip("MPS acceleration is unavailable for this platform; shared generation APIs would report .unavailable")
         #endif
     }
 
@@ -69,7 +78,7 @@ final class MPSEmptySpaceAcceleratorTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(structure.mipLevels, 1)
         XCTAssertLessThanOrEqual(structure.mipLevels, 8)
         #else
-        throw XCTSkip("MetalPerformanceShaders unavailable on this platform")
+        throw XCTSkip("MPS acceleration is unavailable for this platform; shared generation APIs would report .unavailable")
         #endif
     }
 
@@ -97,7 +106,7 @@ final class MPSEmptySpaceAcceleratorTests: XCTestCase {
         XCTAssertEqual(structure.texture.depth, sourceTexture.depth)
         XCTAssertEqual(structure.intensityRange, Float(0)...Float(4095))
         #else
-        throw XCTSkip("MetalPerformanceShaders unavailable on this platform")
+        throw XCTSkip("MPS acceleration is unavailable for this platform; shared generation APIs would report .unavailable")
         #endif
     }
 
@@ -135,7 +144,7 @@ final class MPSEmptySpaceAcceleratorTests: XCTestCase {
             )
         }
         #else
-        throw XCTSkip("MetalPerformanceShaders unavailable on this platform")
+        throw XCTSkip("MPS acceleration is unavailable for this platform; shared generation APIs would report .unavailable")
         #endif
     }
 
@@ -173,7 +182,7 @@ final class MPSEmptySpaceAcceleratorTests: XCTestCase {
             )
         }
         #else
-        throw XCTSkip("MetalPerformanceShaders unavailable on this platform")
+        throw XCTSkip("MPS acceleration is unavailable for this platform; shared generation APIs would report .unavailable")
         #endif
     }
 
@@ -211,7 +220,7 @@ final class MPSEmptySpaceAcceleratorTests: XCTestCase {
             )
         }
         #else
-        throw XCTSkip("MetalPerformanceShaders unavailable on this platform")
+        throw XCTSkip("MPS acceleration is unavailable for this platform; shared generation APIs would report .unavailable")
         #endif
     }
 
@@ -231,7 +240,7 @@ final class MPSEmptySpaceAcceleratorTests: XCTestCase {
         let structure128 = try accelerator.generateAccelerationStructure(dataset: dataset128)
         XCTAssertEqual(structure128.mipLevels, 8)
         #else
-        throw XCTSkip("MetalPerformanceShaders unavailable on this platform")
+        throw XCTSkip("MPS acceleration is unavailable for this platform; shared generation APIs would report .unavailable")
         #endif
     }
 
@@ -244,7 +253,7 @@ final class MPSEmptySpaceAcceleratorTests: XCTestCase {
         let structure = try accelerator.generateAccelerationStructure(dataset: dataset)
         XCTAssertEqual(structure.mipLevels, 6)
         #else
-        throw XCTSkip("MetalPerformanceShaders unavailable on this platform")
+        throw XCTSkip("MPS acceleration is unavailable for this platform; shared generation APIs would report .unavailable")
         #endif
     }
 
@@ -257,7 +266,7 @@ final class MPSEmptySpaceAcceleratorTests: XCTestCase {
         let structure = try accelerator.generateAccelerationStructure(dataset: dataset)
         XCTAssertEqual(structure.mipLevels, 3)
         #else
-        throw XCTSkip("MetalPerformanceShaders unavailable on this platform")
+        throw XCTSkip("MPS acceleration is unavailable for this platform; shared generation APIs would report .unavailable")
         #endif
     }
 
@@ -276,7 +285,7 @@ final class MPSEmptySpaceAcceleratorTests: XCTestCase {
         // Total with mips should be slightly more
         XCTAssertGreaterThanOrEqual(structure.memoryFootprint, 16 * 16 * 16 * 4)
         #else
-        throw XCTSkip("MetalPerformanceShaders unavailable on this platform")
+        throw XCTSkip("MPS acceleration is unavailable for this platform; shared generation APIs would report .unavailable")
         #endif
     }
 
@@ -295,7 +304,7 @@ final class MPSEmptySpaceAcceleratorTests: XCTestCase {
         XCTAssertLessThan(overheadPercentage, 250, "Memory overhead should be bounded")
         XCTAssertGreaterThan(overhead, 0, "Overhead should be positive")
         #else
-        throw XCTSkip("MetalPerformanceShaders unavailable on this platform")
+        throw XCTSkip("MPS acceleration is unavailable for this platform; shared generation APIs would report .unavailable")
         #endif
     }
 
@@ -312,7 +321,7 @@ final class MPSEmptySpaceAcceleratorTests: XCTestCase {
             XCTAssertGreaterThan(overhead, 0, "Overhead should be positive for \(size)^3 volume")
         }
         #else
-        throw XCTSkip("MetalPerformanceShaders unavailable on this platform")
+        throw XCTSkip("MPS acceleration is unavailable for this platform; shared generation APIs would report .unavailable")
         #endif
     }
 
@@ -331,7 +340,7 @@ final class MPSEmptySpaceAcceleratorTests: XCTestCase {
         XCTAssertEqual(structure.texture.depth, 32)
         XCTAssertGreaterThanOrEqual(structure.texture.mipmapLevelCount, structure.mipLevels)
         #else
-        throw XCTSkip("MetalPerformanceShaders unavailable on this platform")
+        throw XCTSkip("MPS acceleration is unavailable for this platform; shared generation APIs would report .unavailable")
         #endif
     }
 
@@ -349,149 +358,108 @@ final class MPSEmptySpaceAcceleratorTests: XCTestCase {
         // Same structure should equal itself
         XCTAssertEqual(structure1, structure1, "Structure should be equal to itself")
         #else
-        throw XCTSkip("MetalPerformanceShaders unavailable on this platform")
+        throw XCTSkip("MPS acceleration is unavailable for this platform; shared generation APIs would report .unavailable")
         #endif
     }
 
-    // MARK: - Graceful Fallback Tests
+    // MARK: - MPS Availability Contract Tests
 
-    func testInitializationReturnsNilWhenMPSNotSupported() throws {
+    func testGenerateTextureUsesExplicitAvailabilityResult() throws {
         #if canImport(MetalPerformanceShaders)
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw XCTSkip("Metal device unavailable on this test runner")
         }
 
-        // Verify graceful nil return based on MPS support
-        let accelerator = MPSEmptySpaceAccelerator(device: device)
-
-        if MPSSupportsMTLDevice(device) {
-            XCTAssertNotNil(accelerator, "Expected non-nil accelerator on MPS-capable device")
-        } else {
-            XCTAssertNil(accelerator, "Expected nil accelerator for graceful fallback when MPS not supported")
-        }
-        #else
-        // Platform-level graceful fallback: MPS framework not available
-        throw XCTSkip("MetalPerformanceShaders unavailable - graceful platform fallback verified")
-        #endif
-    }
-
-    func testAccelerationStructureGenerationHandlesInvalidTextureGracefully() throws {
-        #if canImport(MetalPerformanceShaders)
-        let accelerator = try makeAccelerator()
-
-        guard let device = MTLCreateSystemDefaultDevice() else {
-            throw XCTSkip("Metal device unavailable")
-        }
-
-        // Create a 2D texture (invalid for acceleration structure)
-        let descriptor = MTLTextureDescriptor()
-        descriptor.textureType = .type2D
-        descriptor.pixelFormat = .r16Sint
-        descriptor.width = 16
-        descriptor.height = 16
-        descriptor.usage = .shaderRead
-
-        guard let invalidTexture = device.makeTexture(descriptor: descriptor) else {
-            throw XCTSkip("Failed to create test texture")
-        }
-
-        let intensityRange: ClosedRange<Int32> = 0...1000
-
-        // Verify graceful error handling with appropriate error type
-        XCTAssertThrowsError(
-            try accelerator.generateAccelerationStructure(
-                from: invalidTexture,
-                intensityRange: intensityRange
-            )
-        ) { error in
-            XCTAssertEqual(
-                error as? MPSEmptySpaceAccelerator.AcceleratorError,
-                .invalidSourceTexture,
-                "Expected invalidSourceTexture error for graceful fallback"
-            )
-        }
-        #else
-        throw XCTSkip("MetalPerformanceShaders unavailable on this platform")
-        #endif
-    }
-
-    func testRenderingFallsBackGracefullyWithoutAcceleration() async throws {
-        #if canImport(MetalPerformanceShaders)
-        guard MTLCreateSystemDefaultDevice() != nil else {
-            throw XCTSkip("Metal device unavailable on this test runner")
-        }
-
-        // Test that rendering works without acceleration structure (fallback behavior)
-        let adapter = MetalVolumeRenderingAdapter()
-        let request = try makeRenderRequest()
-
-        // Render without acceleration structure - should fall back to manual empty space skipping
-        let result = try await adapter.renderImage(using: request)
-
-        XCTAssertNotNil(result.cgImage, "Fallback rendering should succeed without acceleration structure")
-        XCTAssertGreaterThan(result.cgImage?.width ?? 0, 0, "Fallback should produce valid image width")
-        XCTAssertGreaterThan(result.cgImage?.height ?? 0, 0, "Fallback should produce valid image height")
-        #else
-        throw XCTSkip("MetalPerformanceShaders unavailable on this platform")
-        #endif
-    }
-
-    func testAcceleratorHandlesCommandQueueCreationGracefully() throws {
-        #if canImport(MetalPerformanceShaders)
-        guard let device = MTLCreateSystemDefaultDevice() else {
-            throw XCTSkip("Metal device unavailable on this test runner")
-        }
-
-        guard MPSSupportsMTLDevice(device) else {
-            throw XCTSkip("MPS not supported on this device")
-        }
-
-        // With a valid command queue, initialization should succeed
-        guard let queue = device.makeCommandQueue() else {
+        guard let commandQueue = device.makeCommandQueue() else {
             throw XCTSkip("Failed to create command queue")
         }
 
-        let accelerator = MPSEmptySpaceAccelerator(device: device, commandQueue: queue)
-        XCTAssertNotNil(accelerator, "Expected successful initialization with valid command queue")
-        #else
-        throw XCTSkip("MetalPerformanceShaders unavailable on this platform")
-        #endif
-    }
-
-    func testGracefulFallbackWhenMPSUnavailable() throws {
-        #if canImport(MetalPerformanceShaders)
-        guard let device = MTLCreateSystemDefaultDevice() else {
-            throw XCTSkip("Metal device unavailable on this test runner")
-        }
-
-        if !MPSSupportsMTLDevice(device) {
-            let accelerator = MPSEmptySpaceAccelerator(device: device)
-            XCTAssertNil(accelerator, "Graceful fallback: init returns nil when MPS unavailable")
-        } else {
-            let accelerator = MPSEmptySpaceAccelerator(device: device)
-            XCTAssertNotNil(accelerator, "Expected non-nil on MPS-capable device")
-        }
-
-        XCTAssertTrue(true, "Graceful fallback behavior verified")
-        #else
-        throw XCTSkip("MetalPerformanceShaders unavailable - graceful platform fallback verified")
-        #endif
-    }
-
-    func testPlatformLevelGracefulFallback() throws {
-        #if canImport(MetalPerformanceShaders)
-        guard let device = MTLCreateSystemDefaultDevice() else {
-            throw XCTSkip("Metal device unavailable on this test runner")
-        }
+        let result = MPSEmptySpaceAccelerator.generateTexture(
+            device: device,
+            commandQueue: commandQueue,
+            dataset: makeTestDataset(width: 8, height: 8, depth: 8),
+            logger: Logger(subsystem: "MTKCoreTests", category: "MPSEmptySpaceAcceleratorTests")
+        )
 
         if MPSSupportsMTLDevice(device) {
-            XCTAssertTrue(true, "MPS available and gracefully detected")
+            guard case .success(let texture) = result else {
+                XCTFail("Expected .success on an MPS-capable device, got \(String(describing: result))")
+                return
+            }
+            XCTAssertGreaterThan(texture.width, 0, "Expected a valid acceleration texture")
         } else {
-            XCTAssertTrue(true, "MPS unavailable and gracefully detected")
+            guard case .unavailable(let reason) = result else {
+                XCTFail("Expected .unavailable when MPS is unsupported, got \(String(describing: result))")
+                return
+            }
+            XCTAssertEqual(reason, .mpsUnsupportedOnDevice)
         }
         #else
-        XCTAssertTrue(true, "Graceful platform fallback: system functions without MPS")
+        throw XCTSkip("MPS acceleration is unavailable for this platform; shared generation APIs would report .unavailable")
         #endif
+    }
+
+    func testRenderingSucceedsWithoutMPSAccelerationStructure() async throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("Metal device unavailable on this test runner")
+        }
+
+        let request = try makeRenderRequest()
+
+        let raycaster: MetalRaycaster
+        do {
+            raycaster = try MetalRaycaster(device: device)
+        } catch {
+            throw XCTSkip("Metal raycaster unavailable: \(error)")
+        }
+
+        let accelerationResult = raycaster.prepareAccelerationStructure(dataset: request.dataset)
+        if raycaster.isMetalPerformanceShadersAvailable {
+            guard case .success(let texture) = accelerationResult else {
+                XCTFail("Expected .success when MPS is available, got \(String(describing: accelerationResult))")
+                return
+            }
+            XCTAssertGreaterThan(texture.width, 0, "Expected a valid acceleration texture")
+        } else {
+            guard case .unavailable(let reason) = accelerationResult else {
+                XCTFail("Expected .unavailable when MPS is unsupported, got \(String(describing: accelerationResult))")
+                return
+            }
+            XCTAssertEqual(reason, .mpsUnsupportedOnDevice)
+        }
+
+        let resources = try raycaster.prepare(
+            dataset: request.dataset,
+            includeAccelerationStructure: false
+        )
+        XCTAssertNil(
+            resources.accelerationTexture,
+            "Expected no acceleration texture when MPS acceleration is not requested"
+        )
+
+        let adapter: MetalVolumeRenderingAdapter
+        do {
+            adapter = try MetalVolumeRenderingAdapter(device: device)
+        } catch let error as MetalVolumeRenderingAdapter.InitializationError {
+            throw XCTSkip("Metal volume renderer unavailable: \(error.localizedDescription)")
+        }
+
+        let result = try await adapter.renderImage(using: request)
+        let cgImage = try XCTUnwrap(
+            result.cgImage,
+            "The Metal-only rendering path should still produce output when acceleration is not requested"
+        )
+
+        XCTAssertGreaterThan(
+            cgImage.width,
+            0,
+            "The Metal-only rendering path should still produce output when acceleration is not requested"
+        )
+        XCTAssertGreaterThan(
+            cgImage.height,
+            0,
+            "The Metal-only rendering path should still produce output when acceleration is not requested"
+        )
     }
 
     // MARK: - Helpers
@@ -503,16 +471,17 @@ final class MPSEmptySpaceAcceleratorTests: XCTestCase {
         }
 
         guard MPSSupportsMTLDevice(device) else {
-            throw XCTSkip("MPS not supported on this device")
+            throw XCTSkip("MPS acceleration is unsupported on this device; shared generation APIs should report .unavailable(.mpsUnsupportedOnDevice)")
         }
 
-        guard let accelerator = MPSEmptySpaceAccelerator(device: device) else {
-            throw XCTSkip("Failed to create MPSEmptySpaceAccelerator")
+        switch MPSEmptySpaceAccelerator.create(device: device) {
+        case .success(let accelerator):
+            return accelerator
+        case .unavailable(let reason):
+            throw XCTSkip("Failed to create MPSEmptySpaceAccelerator: \(reason)")
         }
-
-        return accelerator
         #else
-        throw XCTSkip("MetalPerformanceShaders unavailable on this platform")
+        throw XCTSkip("MPS acceleration is unavailable for this platform; shared generation APIs would report .unavailable")
         #endif
     }
 
@@ -524,7 +493,8 @@ final class MPSEmptySpaceAcceleratorTests: XCTestCase {
             data: data,
             dimensions: dimensions,
             spacing: VolumeSpacing(x: 1, y: 1, z: 1),
-            pixelFormat: .int16Unsigned
+            pixelFormat: .int16Unsigned,
+            recommendedWindow: 0...4095
         )
     }
 

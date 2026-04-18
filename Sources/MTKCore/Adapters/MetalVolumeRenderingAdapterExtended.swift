@@ -88,13 +88,13 @@ extension MetalVolumeRenderingAdapter: VolumeRenderingPortExtended {
     }
 
     public func setRenderMethod(_ method: Int) async throws {
-        // Intentionally no-op for now; stored for future GPU renderer
+        throw AdapterError.notSupported
     }
 
     // MARK: - MPR Controls
 
     public func setMPRBlend(_ blend: Float) async throws {
-        // No CPU effect yet; store metadata if needed
+        throw AdapterError.notSupported
     }
 
     // MARK: - Clip Controls
@@ -109,7 +109,7 @@ extension MetalVolumeRenderingAdapter: VolumeRenderingPortExtended {
         extendedState.clipBounds = sanitized
         if extendedState.clipPlanePreset != 0 || abs(extendedState.clipPlaneOffset) > 1e-5 {
             if !clipPlaneApproximationLogged {
-                logger.info("Clip-plane/quaternion inputs reach MTK adapter but CPU fallback only respects axis-aligned bounds.")
+                logger.info("Clip-plane/quaternion inputs reach MTK adapter; current Metal volume rendering applies axis-aligned clip bounds and preset clip planes.")
                 clipPlaneApproximationLogged = true
             }
         }
@@ -128,27 +128,21 @@ extension MetalVolumeRenderingAdapter: VolumeRenderingPortExtended {
     }
 
     public func alignClipBoxToView() async throws {
-        logger.warning("alignClipBoxToView not supported in CPU adapter yet.")
+        throw AdapterError.notImplemented
     }
 
     public func alignClipPlaneToView() async throws {
-        logger.warning("alignClipPlaneToView not supported in CPU adapter yet.")
+        throw AdapterError.notImplemented
     }
     
     // MARK: - Snapshot Methods
     
     public func getHistogram() async throws -> [Int] {
-        if debugLastSnapshot != nil {
-            return Array(repeating: 0, count: 256)
-        }
-        return Array(repeating: 0, count: 256)
+        throw AdapterError.histogramNotAvailable
     }
     
     public func getToneCurveSnapshot() async throws -> [ChannelControlSnapshot] {
-        let gain = extendedState.toneCurveGains[0] ?? 1
-        let points = extendedState.toneCurvePoints[0] ?? []
-        let presetKey = extendedState.toneCurvePresetKeys[0] ?? "default"
-        return [ChannelControlSnapshot(presetKey: presetKey, gain: gain, controlPoints: points)]
+        try await getChannelControlSnapshot()
     }
     
     public func getClipBoundsSnapshot() async throws -> ClipBoundsSnapshot {

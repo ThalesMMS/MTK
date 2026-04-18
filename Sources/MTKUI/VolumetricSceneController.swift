@@ -2,7 +2,7 @@
 //  VolumetricSceneController.swift
 //  MetalVolumetrics
 //
-//  Scene controller that orchestrates volumetric rendering and MPS prototypes.
+//  Scene controller that orchestrates volumetric rendering.
 //  Coordinates Metal materials, dataset application, and exposes an async API to
 //  the presentation layer for both volume and MPR displays.
 //
@@ -15,7 +15,7 @@ import Foundation
 import SceneKit
 import simd
 import Combine
-import MTKCore
+@_spi(Internal) import MTKCore
 import MTKSceneKit
 #if canImport(UIKit)
 import UIKit
@@ -23,17 +23,12 @@ import UIKit
 #if canImport(Metal)
 import Metal
 #endif
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-import MetalKit
-#endif
-#if canImport(MetalPerformanceShaders)
-import MetalPerformanceShaders
-#endif
 
-/// SceneKit-based controller for volumetric rendering coordination.
+/// SceneKit-surface controller for Metal-backed volumetric rendering coordination.
 ///
-/// `VolumetricSceneController` orchestrates Metal-accelerated volume rendering and Multi-Planar Reconstruction (MPR) visualization.
-/// It manages SceneKit scene graphs, Metal materials, camera controllers, and rendering pipelines for medical imaging applications.
+/// `VolumetricSceneController` orchestrates Metal-backed volume rendering and Multi-Planar Reconstruction (MPR)
+/// visualization through a SceneKit presentation surface. It manages SceneKit scene graphs, SceneKit materials
+/// backed by Metal shaders, camera controllers, and rendering state for medical imaging applications.
 ///
 /// ## Overview
 ///
@@ -41,7 +36,6 @@ import MetalPerformanceShaders
 /// - Direct Volume Rendering (DVR) with transfer function control
 /// - Maximum/Minimum/Average Intensity Projection (MIP/MinIP/AIP)
 /// - Multi-Planar Reconstruction (MPR) with slab rendering
-/// - Metal Performance Shaders integration for compute-based rendering
 /// - Interactive camera control with gesture support
 /// - Real-time window/level adjustment for medical imaging
 ///
@@ -76,14 +70,6 @@ import MetalPerformanceShaders
 ///     slab: nil
 /// ))
 /// ```
-///
-/// ## Rendering Backends
-///
-/// The controller supports two rendering backends:
-/// - **SceneKit**: Fragment shader-based rendering (default, universally available)
-/// - **Metal Performance Shaders**: Compute pipeline-based rendering (requires MPS-capable device)
-///
-/// Switch backends with ``setRenderingBackend(_:)`` for performance profiling or capability testing.
 ///
 /// ## Camera Control
 ///
@@ -212,23 +198,23 @@ public final class VolumetricSceneController: VolumetricSceneControlling, Observ
 
     /// Known performance hotspots with optimization suggestions.
     ///
-    /// These hotspots identify areas where MPS-based GPU compute could replace CPU-bound operations.
-    /// Use for profiling and performance analysis during development.
+    /// These hotspots identify areas where additional Metal-based preprocessing or analysis could
+    /// reduce CPU work or improve profiling visibility during development.
     public static let manualHotspots: [VolumetricHotspot] = [
         VolumetricHotspot(
             identifier: "volume_ray_march",
             description: "Fragment shader `direct_volume_rendering` performs per-fragment ray marching with manual empty-space skipping",
-            suggestion: "Prototype an MPS ray casting pass to offload accumulation and early-out heuristics to GPU-managed kernels."
+            suggestion: "Prototype a dedicated Metal compute pass to evaluate accumulation and early-out heuristics outside the fragment stage."
         ),
         VolumetricHotspot(
             identifier: "mpr_resample",
             description: "MPR material relies on CPU-generated slab textures prior to binding to SceneKit",
-            suggestion: "Leverage `MPSImageResample` or `MPSMatrixBilinearScale` to rebuild slabs directly on the GPU."
+            suggestion: "Leverage a dedicated Metal resampling workflow to rebuild slabs directly on the GPU."
         ),
         VolumetricHotspot(
             identifier: "histogram_wwl",
             description: "Window/level suggestions derived from CPU statistics before calling into the shader pipeline",
-            suggestion: "Use `MPSImageHistogram` to derive HU statistics alongside transfer-function preparation."
+            suggestion: "Use a Metal histogram workflow to derive HU statistics alongside transfer-function preparation."
         )
     ]
 
@@ -237,34 +223,14 @@ public final class VolumetricSceneController: VolumetricSceneControlling, Observ
     /// SceneKit-based rendering surface (always available).
     public let sceneSurface: SceneKitSurface
 
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-    /// Metal Performance Shaders rendering surface (when MPS is available).
-    let mpsSurface: (any RenderSurface)?
-#endif
-
-    /// Currently active rendering surface (SceneKit or MPS).
-    var activeSurface: any RenderSurface
-
-    /// Active rendering surface for presenting volumetric content.
-    ///
-    /// Switches between SceneKit and MPS backends based on ``setRenderingBackend(_:)`` configuration.
-    public var surface: any RenderSurface { activeSurface }
+    /// Presentation surface for volumetric content.
+    public var surface: any RenderSurface { sceneSurface }
 
     /// SceneKit view hosting the 3D scene graph.
     ///
     /// This view is the primary rendering output for SceneKit-based rendering mode.
     /// Embed this view in your SwiftUI hierarchy using ``VolumetricDisplayContainer``.
     public let sceneView: SCNView
-
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-    /// MetalKit view for MPS compute-based rendering (nil if MPS unavailable).
-    ///
-    /// This view is used when ``setRenderingBackend(_:)`` switches to MPS mode.
-    /// Returns `nil` on devices that don't support Metal Performance Shaders.
-    public var mpsView: MTKView? {
-        mpsDisplay?.mtkView
-    }
-#endif
 
     // MARK: - Scene Graph
 
@@ -395,19 +361,7 @@ public final class VolumetricSceneController: VolumetricSceneControlling, Observ
     let defaultCameraDistanceFactor: Float = 2.5
     var initialCameraTransform: simd_float4x4?
     var defaultCameraTarget: SCNVector3 = SCNVector3(x: 0, y: 0, z: 0)
-    var renderingBackend: VolumetricRenderingBackend = .sceneKit
     var sharedVolumeTexture: (any MTLTexture)?
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-    let mpsDisplay: MPSDisplayAdapter?
-#endif
-#if canImport(MetalPerformanceShaders)
-    var mpsRenderer: MPSVolumeRenderer?
-    var lastMpsHistogram: MPSVolumeRenderer.HistogramResult?
-    var mpsFilteredTexture: (any MTLTexture)?
-    var lastRayCastingSamples: [MPSVolumeRenderer.RayCastingSample] = []
-    var lastRayCastingWorldEntries: [Float] = []
-    let mpsGaussianSigma: Float = 1.25
-#endif
 
     /// Normalized intensity domain (0...1) for the active transfer function.
     ///
@@ -422,7 +376,6 @@ public final class VolumetricSceneController: VolumetricSceneControlling, Observ
     /// Creates a volumetric scene controller with Metal rendering capabilities.
     ///
     /// Initializes SceneKit scene graph, Metal materials, camera controllers, and rendering pipelines.
-    /// Optionally configures MPS compute path when available.
     ///
     /// ## Example
     ///
@@ -458,16 +411,6 @@ public final class VolumetricSceneController: VolumetricSceneControlling, Observ
             throw Error.metalUnavailable
         }
         self.commandQueue = queue
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-        if MPSSupportsMTLDevice(resolvedDevice) {
-            let display = MPSDisplayAdapter(device: resolvedDevice, commandQueue: queue)
-            mpsDisplay = display
-            mpsSurface = display
-        } else {
-            mpsDisplay = nil
-            mpsSurface = nil
-        }
-#endif
 
         let viewOptions: [String: Any] = [
             SCNView.Option.preferredRenderingAPI.rawValue: SCNRenderingAPI.metal.rawValue
@@ -516,8 +459,6 @@ public final class VolumetricSceneController: VolumetricSceneControlling, Observ
         mprNode.isHidden = true
         rootNode.addChildNode(mprNode)
         mprNode.simdTransform = volumeNode.simdTransform
-
-        activeSurface = sceneSurface
 
         // Initialize controllers
         cameraController = VolumetricCameraController(
@@ -585,83 +526,6 @@ extension VolumetricSceneController {
     public func debugVolumeTexture() -> (any MTLTexture)? {
         volumeMaterial.currentVolumeTexture()
     }
-
-#if canImport(MetalPerformanceShaders)
-    /// Returns the MPS-filtered volume texture (if MPS rendering is active).
-    ///
-    /// - SPI: Testing
-    /// - Returns: Filtered 3D texture from MPS Gaussian pipeline, or `nil` if not active.
-    @_spi(Testing)
-    public func debugMpsFilteredTexture() -> (any MTLTexture)? {
-        mpsFilteredTexture
-    }
-
-    /// Returns the last ray casting samples captured during MPS rendering.
-    ///
-    /// - SPI: Testing
-    /// - Returns: Array of ray samples with position, direction, and accumulated density.
-    @_spi(Testing)
-    public func debugLastRayCastingSamples() -> [MPSVolumeRenderer.RayCastingSample] {
-        lastRayCastingSamples
-    }
-
-    /// Returns the world-space entry points from the last ray casting pass.
-    ///
-    /// - SPI: Testing
-    /// - Returns: Array of entry distance values along each ray.
-    @_spi(Testing)
-    public func debugLastRayCastingWorldEntries() -> [Float] {
-        lastRayCastingWorldEntries
-    }
-
-    /// Returns the MPS display brightness setting.
-    ///
-    /// - SPI: Testing
-    /// - Returns: Brightness multiplier (0...1), or `nil` if MPS display is unavailable.
-    @_spi(Testing)
-    public func debugMpsDisplayBrightness() -> Float? {
-        mpsDisplay?.debugResolvedBrightness()
-    }
-
-    /// Returns the active transfer function in the MPS display adapter.
-    ///
-    /// - SPI: Testing
-    /// - Returns: Current transfer function, or `nil` if none loaded.
-    @_spi(Testing)
-    public func debugMpsTransferFunction() -> TransferFunction? {
-        mpsDisplay?.debugTransferFunction()
-    }
-
-    /// Returns the resolved brightness from the MPS display adapter.
-    ///
-    /// - SPI: Testing
-    /// - Returns: Brightness value, or `nil` if MPS is unavailable.
-    @_spi(Testing)
-    public func debugMpsResolvedBrightness() -> Float? {
-        mpsDisplay?.debugResolvedBrightness()
-    }
-
-    /// Returns the clear color used by the MPS display adapter.
-    ///
-    /// - SPI: Testing
-    /// - Returns: RGB color components (each 0...1), defaults to black if unavailable.
-    @_spi(Testing)
-    public func debugMpsClearColor() -> (red: Float, green: Float, blue: Float) {
-        guard let clearColor = mpsDisplay?.debugClearColor() else {
-            return (red: 0, green: 0, blue: 0)
-        }
-        return (red: Float(clearColor.red), green: Float(clearColor.green), blue: Float(clearColor.blue))
-    }
-
-    /// Returns the last computed histogram from MPS volume analysis.
-    ///
-    /// - SPI: Testing
-    /// - Returns: Histogram result with bin counts and intensity statistics, or `nil` if not computed.
-    @_spi(Testing)
-    public func debugLastMpsHistogram() -> MPSVolumeRenderer.HistogramResult? {
-        lastMpsHistogram
-    }
-#endif
 }
 
 #endif

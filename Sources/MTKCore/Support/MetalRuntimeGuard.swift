@@ -3,10 +3,9 @@
 //  MTK
 //
 //  Provides runtime inspection utilities to confirm that the host GPU supports
-//  the features required by the Metal volumetric rendering stack. Mirrors the
-//  behaviour of the legacy runtime guard by exposing cached availability
-//  checks, override hooks for tests and structured logging describing detected
-//  capabilities.
+//  the features required by the Metal volumetric rendering stack. Exposes
+//  cached requirement checks, override hooks for tests, and structured logging
+//  describing detected capabilities and unsatisfied requirements.
 //
 //  Thales Matheus Mendonça Santos — October 2025
 //
@@ -22,19 +21,41 @@ public protocol MetalRuntimeAvailabilityProviding: AnyObject {
     func status() -> MetalRuntimeGuard.Status
 }
 
+/// Validates the Metal runtime contract required by MTK rendering components.
+///
+/// Use `ensureAvailability(using:)` in initialization paths that require Metal,
+/// `status(using:)` when a caller needs detailed capability information, and
+/// `isAvailable(using:)` for non-throwing UI checks before Metal objects are
+/// created.
 public enum MetalRuntimeGuard {
+    /// Snapshot of the current Metal runtime requirement status.
+    ///
+    /// `missingFeatures` identifies required capabilities that are not present.
+    /// `supportsMetalPerformanceShaders` reports optional acceleration support
+    /// and does not determine whether the core Metal rendering requirement is
+    /// satisfied.
     public struct Status: Equatable {
+        /// Required Metal runtime feature that is absent or intentionally disabled.
         public enum MissingFeature: Equatable {
+            /// Availability was intentionally forced off, typically by tests.
             case forcedUnavailable
+            /// No default Metal device can be created.
             case metalUnavailable
+            /// A command queue could not be created for the Metal device.
             case commandQueueUnavailable
+            /// Required 3D texture allocation or family support is unavailable.
             case texture3DUnsupported
+            /// The device does not report one of the required GPU families.
             case unsupportedGPUFamily
         }
 
+        /// `true` when all required Metal runtime capabilities are present.
         public let isAvailable: Bool
+        /// Name of the detected Metal device, when one exists.
         public let deviceName: String?
+        /// `true` when optional Metal Performance Shaders acceleration is available.
         public let supportsMetalPerformanceShaders: Bool
+        /// Required Metal features that prevent the runtime contract from being satisfied.
         public let missingFeatures: [MissingFeature]
 
         public init(isAvailable: Bool,
@@ -48,6 +69,7 @@ public enum MetalRuntimeGuard {
         }
     }
 
+    /// Requirement validation error thrown when Metal rendering cannot be initialized.
     public enum Error: Swift.Error {
         case unavailable(Status)
     }
@@ -59,6 +81,10 @@ public enum MetalRuntimeGuard {
     private static var overrideProvider: MetalRuntimeAvailabilityProviding?
     private static let defaultProvider = DefaultProvider()
 
+    /// Returns the current Metal runtime requirement status.
+    ///
+    /// The result is logged when it changes and includes both required capability
+    /// failures and optional acceleration availability.
     public static func status(using provider: MetalRuntimeAvailabilityProviding? = nil) -> Status {
         lock.lock()
         defer { lock.unlock() }
@@ -72,10 +98,15 @@ public enum MetalRuntimeGuard {
         return status
     }
 
+    /// Returns whether all required Metal runtime capabilities are present.
     public static func isAvailable(using provider: MetalRuntimeAvailabilityProviding? = nil) -> Bool {
         status(using: provider).isAvailable
     }
 
+    /// Throws when the Metal runtime requirement is not satisfied.
+    ///
+    /// Call this before constructing Metal-only controllers, renderers, or
+    /// textures in paths that cannot continue without Metal.
     public static func ensureAvailability(using provider: MetalRuntimeAvailabilityProviding? = nil) throws {
         let status = status(using: provider)
         guard status.isAvailable else {
@@ -83,6 +114,7 @@ public enum MetalRuntimeGuard {
         }
     }
 
+    /// Installs a requirement status provider for tests or controlled runtime probes.
     public static func setOverrideProvider(_ provider: MetalRuntimeAvailabilityProviding?) {
         lock.lock()
         overrideProvider = provider
@@ -90,6 +122,7 @@ public enum MetalRuntimeGuard {
         lock.unlock()
     }
 
+    /// Clears the cached status so the next check logs and evaluates fresh state.
     public static func resetCachedStatus() {
         lock.lock()
         cachedStatus = nil
@@ -108,7 +141,7 @@ private extension MetalRuntimeGuard {
             if status.supportsMetalPerformanceShaders {
                 logger.debug("Metal Performance Shaders available")
             } else {
-                logger.warning("Metal Performance Shaders unavailable; falling back to shader implementations")
+                logger.warning("MPS unavailable; Metal rendering will run without MPS support")
             }
         } else {
             let reasons = status.missingFeatures
@@ -214,8 +247,8 @@ private extension MetalRuntimeGuard {
             return true
             #endif
 
-            // Fallback to an allocation probe for environments (e.g., simulators or
-            // future GPU families) where family reporting might be incomplete.
+            // Validate support with an allocation probe for environments (e.g., simulators
+            // or future GPU families) where family reporting might be incomplete.
             return probe3DTextureAllocation(device: device)
         }
 

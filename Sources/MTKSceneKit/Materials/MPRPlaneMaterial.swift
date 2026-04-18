@@ -114,7 +114,9 @@ public final class MPRPlaneMaterial: SCNMaterial, SCNProgramDelegate {
     ///
     /// Used to compute correct aspect ratios and slice positions.
     public private(set) var resolution: SIMD3<Float> = SIMD3<Float>(1, 1, 1)
-    private var textureFactory: VolumeTextureFactory = VolumeTextureFactory(part: .none)
+    private var textureFactory: VolumeTextureFactory = VolumeTextureFactory(
+        dataset: VolumeTextureFactory.debugPlaceholderDataset()
+    )
     private let logger = Logger(subsystem: "com.mtk.volumerendering",
                                 category: "MPRPlaneMaterial")
 
@@ -183,7 +185,15 @@ public final class MPRPlaneMaterial: SCNMaterial, SCNProgramDelegate {
     ///   - device: Metal device for texture generation.
     ///   - part: Preset volume type from ``VolumeCubeMaterial/BodyPart``.
     public func setPart(device: any MTLDevice, part: VolumeCubeMaterial.BodyPart) {
-        apply(factory: VolumeTextureFactory(part: part), device: device)
+        do {
+            apply(factory: try VolumeTextureFactory(part: part), device: device)
+        } catch {
+            logger.error("Failed to load MPR volume preset \(part.rawValue): \(String(describing: error)); binding debug placeholder")
+            apply(
+                factory: VolumeTextureFactory(dataset: VolumeTextureFactory.debugPlaceholderDataset()),
+                device: device
+            )
+        }
     }
 
     /// Binds a volumetric dataset and optional pre-generated 3D texture.
@@ -362,14 +372,10 @@ private extension MPRPlaneMaterial {
             return
         }
 
-        let library = ShaderLibraryLoader.makeDefaultLibrary(on: metalDevice) { [logger] message in
-            logger.debug("\(message)")
-        }
-
-        if let library {
-            program.library = library
-        } else {
-            logger.error("Failed to load VolumeRendering.metallib; MPR shaders will be unavailable")
+        do {
+            program.library = try ShaderLibraryLoader.loadLibrary(for: metalDevice)
+        } catch {
+            logger.error("Failed to load MTK.metallib from Bundle.module; MPR shaders will be unavailable: \(error.localizedDescription)")
         }
     }
 

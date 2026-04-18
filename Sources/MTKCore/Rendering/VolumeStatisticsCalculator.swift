@@ -10,16 +10,28 @@ import Foundation
 import Metal
 import OSLog
 
-/// GPU-accelerated volume statistics calculator supporting percentile and Otsu threshold computation
+/// GPU compute statistics calculator for percentile and Otsu computations.
+///
+/// This feature has no MPS dependency. GPU setup and execution failures are
+/// surfaced explicitly to callers. CPU reference implementations live in the
+/// test target and are not part of the runtime contract.
 public final class VolumeStatisticsCalculator {
-    public enum StatisticsError: Error {
+    public enum StatisticsError: Error, Equatable {
         case pipelineUnavailable
+        case bufferAllocationFailed
         case commandQueueUnavailable
         case commandBufferCreationFailed
         case encoderCreationFailed
-        case bufferAllocationFailed
         case emptyHistogram
         case invalidPercentiles
+    }
+
+    @_spi(Testing)
+    public enum ForcedFailure: Equatable {
+        case bufferAllocationFailed
+        case pipelineUnavailable
+        case commandBufferCreationFailed
+        case encoderCreationFailed
     }
 
     private let device: any MTLDevice
@@ -27,23 +39,40 @@ public final class VolumeStatisticsCalculator {
     private let commandQueue: any MTLCommandQueue
     private let library: any MTLLibrary
     private let debugOptions: VolumeRenderingDebugOptions
+    private let forcedFailure: ForcedFailure?
     private var pipelineCache: [String: MTLComputePipelineState] = [:]
     private let logger = Logger(subsystem: "com.mtk.volumerendering",
                                 category: "VolumeStatistics")
 
+    public convenience init(device: any MTLDevice,
+                            commandQueue: any MTLCommandQueue,
+                            library: any MTLLibrary,
+                            featureFlags: FeatureFlags,
+                            debugOptions: VolumeRenderingDebugOptions) {
+        self.init(device: device,
+                  commandQueue: commandQueue,
+                  library: library,
+                  featureFlags: featureFlags,
+                  debugOptions: debugOptions,
+                  forcedFailure: nil)
+    }
+
+    @_spi(Testing)
     public init(device: any MTLDevice,
                 commandQueue: any MTLCommandQueue,
                 library: any MTLLibrary,
                 featureFlags: FeatureFlags,
-                debugOptions: VolumeRenderingDebugOptions) {
+                debugOptions: VolumeRenderingDebugOptions,
+                forcedFailure: ForcedFailure?) {
         self.device = device
         self.featureFlags = featureFlags
         self.commandQueue = commandQueue
         self.library = library
         self.debugOptions = debugOptions
+        self.forcedFailure = forcedFailure
     }
 
-    /// Compute percentile bin indices from histogram with GPU acceleration and CPU fallback
+    /// Compute percentile bin indices from a histogram with GPU acceleration.
     ///
     /// - Parameters:
     ///   - histogram: Histogram array (single channel or multi-channel)
@@ -80,18 +109,12 @@ public final class VolumeStatisticsCalculator {
         let percentilesBufferLength = percentiles.count * MemoryLayout<Float>.stride
         let percentileBinsBufferLength = percentiles.count * MemoryLayout<UInt32>.stride
 
-        guard let histogramBuffer = device.makeBuffer(length: histogramBufferLength, options: .storageModeShared),
+        guard forcedFailure != .bufferAllocationFailed,
+              let histogramBuffer = device.makeBuffer(length: histogramBufferLength, options: .storageModeShared),
               let cumulativeSumBuffer = device.makeBuffer(length: cumulativeSumBufferLength, options: .storageModeShared),
               let percentilesBuffer = device.makeBuffer(length: percentilesBufferLength, options: .storageModeShared),
               let percentileBinsBuffer = device.makeBuffer(length: percentileBinsBufferLength, options: .storageModeShared) else {
-            // Fall back to CPU if buffer allocation fails
-            logger.warning("Buffer allocation failed, falling back to CPU percentile computation")
-            do {
-                let result = try computePercentilesCPU(from: channelHistogram, percentiles: percentiles)
-                completion(.success(result))
-            } catch {
-                completion(.failure(error))
-            }
+            completion(.failure(StatisticsError.bufferAllocationFailed))
             return
         }
 
@@ -101,54 +124,54 @@ public final class VolumeStatisticsCalculator {
         percentileBinsBuffer.label = "buf.percentileBins"
 
         // Copy data to buffers
-        histogramBuffer.contents().copyMemory(from: channelHistogram, byteCount: histogramBufferLength)
-        percentilesBuffer.contents().copyMemory(from: percentiles, byteCount: percentilesBufferLength)
+        channelHistogram.withUnsafeBytes { source in
+            if let baseAddress = source.baseAddress {
+                histogramBuffer.contents().copyMemory(from: baseAddress, byteCount: histogramBufferLength)
+            } else {
+                assertionFailure("Histogram source buffer unexpectedly has nil baseAddress; zero-filling GPU histogram buffer")
+                memset(histogramBuffer.contents(), 0, histogramBufferLength)
+            }
+        }
+        percentiles.withUnsafeBytes { source in
+            if let baseAddress = source.baseAddress {
+                percentilesBuffer.contents().copyMemory(from: baseAddress, byteCount: percentilesBufferLength)
+            } else {
+                assertionFailure("Percentiles source buffer unexpectedly has nil baseAddress; zero-filling GPU percentiles buffer")
+                memset(percentilesBuffer.contents(), 0, percentilesBufferLength)
+            }
+        }
 
         // Determine which cumulative sum kernel to use
         let threadgroupMemoryRequired = binCount * MemoryLayout<UInt32>.stride
-        let usesThreadgroupMemory = threadgroupMemoryRequired <= device.maxThreadgroupMemoryLength
+        let cumulativeSumPipelineCandidate = pipelineState(named: "computeCumulativeSum")
+        let maxCumulativeThreads = cumulativeSumPipelineCandidate?.maxTotalThreadsPerThreadgroup ?? 0
+        let usesThreadgroupMemory = cumulativeSumPipelineCandidate != nil &&
+            threadgroupMemoryRequired <= device.maxThreadgroupMemoryLength &&
+            binCount <= maxCumulativeThreads
         let cumulativeSumKernelName = usesThreadgroupMemory ? "computeCumulativeSum" : "computeCumulativeSumSequential"
+        let cumulativeSumPipeline = pipelineState(named: cumulativeSumKernelName)
 
-        guard let cumulativeSumPipeline = pipelineState(named: cumulativeSumKernelName),
+        guard let resolvedCumulativeSumPipeline = cumulativeSumPipeline,
               let percentilesPipeline = pipelineState(named: "extractPercentiles") else {
-            // Fall back to CPU if pipeline is unavailable
-            logger.warning("Pipeline unavailable, falling back to CPU percentile computation")
-            do {
-                let result = try computePercentilesCPU(from: channelHistogram, percentiles: percentiles)
-                completion(.success(result))
-            } catch {
-                completion(.failure(error))
-            }
+            completion(.failure(StatisticsError.pipelineUnavailable))
             return
         }
 
-        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
-            // Fall back to CPU if command buffer creation fails
-            logger.warning("Command buffer creation failed, falling back to CPU percentile computation")
-            do {
-                let result = try computePercentilesCPU(from: channelHistogram, percentiles: percentiles)
-                completion(.success(result))
-            } catch {
-                completion(.failure(error))
-            }
+        guard forcedFailure != .commandBufferCreationFailed,
+              let commandBuffer = commandQueue.makeCommandBuffer() else {
+            completion(.failure(StatisticsError.commandBufferCreationFailed))
             return
         }
         commandBuffer.label = "cmd.calculateStatistics"
 
         // Encode cumulative sum computation
-        guard let cumulativeEncoder = commandBuffer.makeComputeCommandEncoder() else {
-            // Fall back to CPU if encoder creation fails
-            logger.warning("Encoder creation failed, falling back to CPU percentile computation")
-            do {
-                let result = try computePercentilesCPU(from: channelHistogram, percentiles: percentiles)
-                completion(.success(result))
-            } catch {
-                completion(.failure(error))
-            }
+        guard forcedFailure != .encoderCreationFailed,
+              let cumulativeEncoder = commandBuffer.makeComputeCommandEncoder() else {
+            completion(.failure(StatisticsError.encoderCreationFailed))
             return
         }
         cumulativeEncoder.label = "enc.cumulativeSum"
-        cumulativeEncoder.setComputePipelineState(cumulativeSumPipeline)
+        cumulativeEncoder.setComputePipelineState(resolvedCumulativeSumPipeline)
 
         var binCountParam = UInt32(binCount)
 
@@ -159,16 +182,16 @@ public final class VolumeStatisticsCalculator {
             cumulativeEncoder.setBytes(&binCountParam, length: MemoryLayout<UInt32>.stride, index: 2)
             cumulativeEncoder.setThreadgroupMemoryLength(threadgroupMemoryRequired, index: 0)
 
-            let configuration = ThreadgroupDispatchConfiguration.default(for: ThreadgroupPipelineLimits(pipeline: cumulativeSumPipeline))
-            let threadsPerThreadgroup = configuration.threadsPerThreadgroup
+            let threadCount = max(1, min(binCount, resolvedCumulativeSumPipeline.maxTotalThreadsPerThreadgroup))
+            let threadsPerThreadgroup = MTLSize(width: threadCount, height: 1, depth: 1)
             let threadsPerGrid = MTLSize(width: binCount, height: 1, depth: 1)
 
             if featureFlags.contains(.nonUniformThreadgroups) {
                 cumulativeEncoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
             } else {
                 let groups = MTLSize(width: (threadsPerGrid.width + threadsPerThreadgroup.width - 1) / threadsPerThreadgroup.width,
-                                    height: 1,
-                                    depth: 1)
+                                     height: 1,
+                                     depth: 1)
                 cumulativeEncoder.dispatchThreadgroups(groups, threadsPerThreadgroup: threadsPerThreadgroup)
             }
         } else {
@@ -185,15 +208,9 @@ public final class VolumeStatisticsCalculator {
         cumulativeEncoder.endEncoding()
 
         // Encode percentile extraction
-        guard let percentilesEncoder = commandBuffer.makeComputeCommandEncoder() else {
-            // Fall back to CPU if encoder creation fails
-            logger.warning("Encoder creation failed, falling back to CPU percentile computation")
-            do {
-                let result = try computePercentilesCPU(from: channelHistogram, percentiles: percentiles)
-                completion(.success(result))
-            } catch {
-                completion(.failure(error))
-            }
+        guard forcedFailure != .encoderCreationFailed,
+              let percentilesEncoder = commandBuffer.makeComputeCommandEncoder() else {
+            completion(.failure(StatisticsError.encoderCreationFailed))
             return
         }
         percentilesEncoder.label = "enc.extractPercentiles"
@@ -209,8 +226,8 @@ public final class VolumeStatisticsCalculator {
         percentilesEncoder.setBytes(&percentileCountParam, length: MemoryLayout<UInt32>.stride, index: 4)
         percentilesEncoder.setBuffer(percentileBinsBuffer, offset: 0, index: 5)
 
-        let percentileConfiguration = ThreadgroupDispatchConfiguration.default(for: ThreadgroupPipelineLimits(pipeline: percentilesPipeline))
-        let percentileThreadsPerThreadgroup = percentileConfiguration.threadsPerThreadgroup
+        let percentileThreadCount = max(1, min(percentiles.count, percentilesPipeline.maxTotalThreadsPerThreadgroup))
+        let percentileThreadsPerThreadgroup = MTLSize(width: percentileThreadCount, height: 1, depth: 1)
         let percentileThreadsPerGrid = MTLSize(width: percentiles.count, height: 1, depth: 1)
 
         if featureFlags.contains(.nonUniformThreadgroups) {
@@ -224,20 +241,9 @@ public final class VolumeStatisticsCalculator {
 
         percentilesEncoder.endEncoding()
 
-        commandBuffer.addCompletedHandler { [weak self] buffer in
+        commandBuffer.addCompletedHandler { buffer in
             if let error = buffer.error {
-                // Fall back to CPU if GPU execution fails
-                guard let self else {
-                    completion(.failure(error))
-                    return
-                }
-                self.logger.warning("GPU percentile computation failed, falling back to CPU: \(error.localizedDescription)")
-                do {
-                    let result = try self.computePercentilesCPU(from: channelHistogram, percentiles: percentiles)
-                    completion(.success(result))
-                } catch let cpuError {
-                    completion(.failure(cpuError))
-                }
+                completion(.failure(error))
                 return
             }
 
@@ -250,7 +256,7 @@ public final class VolumeStatisticsCalculator {
         commandBuffer.commit()
     }
 
-    /// Compute Otsu threshold bin index from histogram with GPU acceleration and CPU fallback
+    /// Compute the Otsu threshold bin index from a histogram with GPU acceleration.
     ///
     /// Otsu's method finds the optimal threshold that maximizes the between-class variance
     /// between background and foreground voxels in the histogram.
@@ -281,16 +287,10 @@ public final class VolumeStatisticsCalculator {
         let histogramBufferLength = binCount * MemoryLayout<UInt32>.stride
         let resultBufferLength = MemoryLayout<UInt32>.stride
 
-        guard let histogramBuffer = device.makeBuffer(length: histogramBufferLength, options: .storageModeShared),
+        guard forcedFailure != .bufferAllocationFailed,
+              let histogramBuffer = device.makeBuffer(length: histogramBufferLength, options: .storageModeShared),
               let resultBuffer = device.makeBuffer(length: resultBufferLength, options: .storageModeShared) else {
-            // Fall back to CPU if buffer allocation fails
-            logger.warning("Buffer allocation failed, falling back to CPU Otsu threshold computation")
-            do {
-                let result = try computeOtsuThresholdCPU(from: channelHistogram)
-                completion(.success(result))
-            } catch {
-                completion(.failure(error))
-            }
+            completion(.failure(StatisticsError.bufferAllocationFailed))
             return
         }
 
@@ -298,44 +298,32 @@ public final class VolumeStatisticsCalculator {
         resultBuffer.label = "buf.otsuThreshold"
 
         // Copy histogram data to buffer
-        histogramBuffer.contents().copyMemory(from: channelHistogram, byteCount: histogramBufferLength)
+        channelHistogram.withUnsafeBytes { source in
+            if let baseAddress = source.baseAddress {
+                histogramBuffer.contents().copyMemory(from: baseAddress, byteCount: histogramBufferLength)
+            } else {
+                assertionFailure("Histogram source buffer unexpectedly has nil baseAddress; zero-filling GPU histogram buffer")
+                memset(histogramBuffer.contents(), 0, histogramBufferLength)
+            }
+        }
 
         // Get pipeline state
         guard let otsuPipeline = pipelineState(named: "calculateOtsuThreshold") else {
-            // Fall back to CPU if pipeline is unavailable
-            logger.warning("Pipeline unavailable, falling back to CPU Otsu threshold computation")
-            do {
-                let result = try computeOtsuThresholdCPU(from: channelHistogram)
-                completion(.success(result))
-            } catch {
-                completion(.failure(error))
-            }
+            completion(.failure(StatisticsError.pipelineUnavailable))
             return
         }
 
-        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
-            // Fall back to CPU if command buffer creation fails
-            logger.warning("Command buffer creation failed, falling back to CPU Otsu threshold computation")
-            do {
-                let result = try computeOtsuThresholdCPU(from: channelHistogram)
-                completion(.success(result))
-            } catch {
-                completion(.failure(error))
-            }
+        guard forcedFailure != .commandBufferCreationFailed,
+              let commandBuffer = commandQueue.makeCommandBuffer() else {
+            completion(.failure(StatisticsError.commandBufferCreationFailed))
             return
         }
         commandBuffer.label = "cmd.calculateOtsuThreshold"
 
         // Encode Otsu threshold computation
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
-            // Fall back to CPU if encoder creation fails
-            logger.warning("Encoder creation failed, falling back to CPU Otsu threshold computation")
-            do {
-                let result = try computeOtsuThresholdCPU(from: channelHistogram)
-                completion(.success(result))
-            } catch {
-                completion(.failure(error))
-            }
+        guard forcedFailure != .encoderCreationFailed,
+              let encoder = commandBuffer.makeComputeCommandEncoder() else {
+            completion(.failure(StatisticsError.encoderCreationFailed))
             return
         }
         encoder.label = "enc.otsuThreshold"
@@ -355,20 +343,9 @@ public final class VolumeStatisticsCalculator {
 
         encoder.endEncoding()
 
-        commandBuffer.addCompletedHandler { [weak self] buffer in
+        commandBuffer.addCompletedHandler { buffer in
             if let error = buffer.error {
-                // Fall back to CPU if GPU execution fails
-                guard let self else {
-                    completion(.failure(error))
-                    return
-                }
-                self.logger.warning("GPU Otsu threshold computation failed, falling back to CPU: \(error.localizedDescription)")
-                do {
-                    let result = try self.computeOtsuThresholdCPU(from: channelHistogram)
-                    completion(.success(result))
-                } catch let cpuError {
-                    completion(.failure(cpuError))
-                }
+                completion(.failure(error))
                 return
             }
 
@@ -380,141 +357,20 @@ public final class VolumeStatisticsCalculator {
 
         commandBuffer.commit()
     }
-
-    // MARK: - CPU Fallback Implementations
-
-    /// CPU-based percentile computation (fallback when GPU is unavailable)
-    ///
-    /// - Parameters:
-    ///   - histogram: Histogram array (single channel)
-    ///   - percentiles: Array of percentiles to compute (0.0...1.0)
-    /// - Returns: Array of bin indices for each percentile
-    /// - Throws: StatisticsError if input is invalid
-    private func computePercentilesCPU(from histogram: [UInt32],
-                                      percentiles: [Float]) throws -> [UInt32] {
-        guard !histogram.isEmpty else {
-            throw StatisticsError.emptyHistogram
-        }
-
-        guard !percentiles.isEmpty else {
-            throw StatisticsError.invalidPercentiles
-        }
-
-        // Calculate total count
-        let totalCount = histogram.reduce(0, +)
-        guard totalCount > 0 else {
-            throw StatisticsError.emptyHistogram
-        }
-
-        // Compute cumulative sum
-        var cumulativeSum: [UInt32] = []
-        cumulativeSum.reserveCapacity(histogram.count)
-        var runningSum: UInt32 = 0
-        for count in histogram {
-            runningSum += count
-            cumulativeSum.append(runningSum)
-        }
-
-        // Extract percentile bins
-        var percentileBins: [UInt32] = []
-        percentileBins.reserveCapacity(percentiles.count)
-
-        for percentile in percentiles {
-            let threshold = UInt32(Float(totalCount) * percentile)
-
-            // Binary search for the first bin where cumulative sum >= threshold
-            var left = 0
-            var right = cumulativeSum.count - 1
-            var result = UInt32(right)
-
-            while left <= right {
-                let mid = (left + right) / 2
-                if cumulativeSum[mid] >= threshold {
-                    result = UInt32(mid)
-                    right = mid - 1
-                } else {
-                    left = mid + 1
-                }
-            }
-
-            percentileBins.append(result)
-        }
-
-        return percentileBins
-    }
-
-    /// CPU-based Otsu threshold computation (fallback when GPU is unavailable)
-    ///
-    /// Otsu's method finds the optimal threshold that maximizes the between-class variance
-    /// between background and foreground voxels in the histogram.
-    ///
-    /// - Parameter histogram: Histogram array (single channel)
-    /// - Returns: Optimal threshold bin index
-    /// - Throws: StatisticsError if input is invalid
-    private func computeOtsuThresholdCPU(from histogram: [UInt32]) throws -> UInt32 {
-        guard !histogram.isEmpty else {
-            throw StatisticsError.emptyHistogram
-        }
-
-        // Calculate total count and mean intensity
-        let totalCount = histogram.reduce(0, +)
-        guard totalCount > 0 else {
-            throw StatisticsError.emptyHistogram
-        }
-
-        var totalMean: Double = 0.0
-        for (bin, count) in histogram.enumerated() {
-            totalMean += Double(bin) * Double(count)
-        }
-        totalMean /= Double(totalCount)
-
-        // Find threshold that maximizes between-class variance
-        var maxVariance: Double = 0.0
-        var optimalThreshold: UInt32 = 0
-
-        var backgroundWeight: Double = 0.0
-        var backgroundMean: Double = 0.0
-
-        for threshold in 0..<histogram.count {
-            backgroundWeight += Double(histogram[threshold])
-
-            if backgroundWeight == 0 {
-                continue
-            }
-
-            let foregroundWeight = Double(totalCount) - backgroundWeight
-
-            if foregroundWeight == 0 {
-                break
-            }
-
-            backgroundMean += Double(threshold) * Double(histogram[threshold])
-            let currentBackgroundMean = backgroundMean / backgroundWeight
-            let currentForegroundMean = (Double(totalCount) * totalMean - backgroundMean) / foregroundWeight
-
-            // Calculate between-class variance
-            let variance = backgroundWeight * foregroundWeight *
-                          (currentBackgroundMean - currentForegroundMean) *
-                          (currentBackgroundMean - currentForegroundMean)
-
-            if variance > maxVariance {
-                maxVariance = variance
-                optimalThreshold = UInt32(threshold)
-            }
-        }
-
-        return optimalThreshold
-    }
 }
 
 private extension VolumeStatisticsCalculator {
     func pipelineState(named functionName: String) -> MTLComputePipelineState? {
+        if forcedFailure == .pipelineUnavailable {
+            return nil
+        }
+
         if let cached = pipelineCache[functionName] {
             return cached
         }
 
         guard let function = library.makeFunction(name: functionName) else {
-            logger.error("Função Metal \(functionName) não encontrada.")
+            logger.error("Metal function '\(functionName)' not found in library.")
             return nil
         }
         function.label = "func.\(functionName)"
@@ -528,7 +384,7 @@ private extension VolumeStatisticsCalculator {
             pipelineCache[functionName] = pipeline
             return pipeline
         } catch {
-            logger.error("Falha ao criar pipeline de estatísticas: \(error.localizedDescription)")
+            logger.error("Failed to create statistics pipeline: \(error.localizedDescription)")
             return nil
         }
     }

@@ -3,8 +3,9 @@
 //  MTK (Metal Toolkit)
 //
 //  Real-world examples of RenderSurface adapter implementations for different
-//  application scenarios. These examples demonstrate best practices and can be
-//  used as templates for app-specific implementations.
+//  application scenarios. These examples demonstrate fail-fast, Metal-only
+//  integration patterns and can be used as templates for app-specific
+//  implementations.
 //
 //  NOTE: This file contains example code and documentation. The actual implementations
 //  should be copied into your app's codebase, not imported from MTK.
@@ -347,127 +348,130 @@ public final class MultiSurfaceAdapter: RenderSurface {
     }
 }
 
-// MARK: - Example 7: Error-Handling Adapter
+// MARK: - Example 7: Runtime-Gated Adapter
 
-/// An adapter that gracefully handles display errors.
+/// A Metal-only adapter that enforces the runtime requirement before surface construction.
 ///
 /// Useful for:
-/// - Fallback rendering when Metal fails
-/// - Error recovery and resilience
-/// - User feedback on rendering issues
-/// - Graceful degradation
+/// - Failing fast when Metal is unavailable
+/// - Surfacing unsupported-runtime states explicitly
+/// - Preventing adapter stacks from being created on unsupported hosts
+/// - Aligning app integrations with MTK's Metal-only runtime contract
+///
+/// Prefer checking `MetalRuntimeAvailability.isAvailable()` before creating this
+/// adapter in your UI layer so unsupported states can present a
+/// `ContentUnavailableView` (or another explicit error state) before any Metal
+/// surface is instantiated.
 ///
 /// Usage:
 /// ```swift
-/// let baseAdapter = SimpleMTKViewAdapter(metalView: view)
-/// let resilientAdapter = ErrorHandlingSurfaceAdapter(
-///     wrapped: baseAdapter,
-///     fallback: SimpleMTKViewAdapter(metalView: fallbackView)
-/// )
+/// if MetalRuntimeAvailability.isAvailable() {
+///     let adapter = try RuntimeGatedSurfaceAdapter(metalView: metalView)
+///     let volumeController = VolumeRenderingController(surface: adapter)
+/// } else {
+///     let status = MetalRuntimeAvailability.status()
+///     // Present ContentUnavailableView with a message derived from status.
+/// }
 /// ```
+#if canImport(MetalKit)
 @MainActor
-public final class ErrorHandlingSurfaceAdapter: RenderSurface {
-    private let wrapped: any RenderSurface
-    private let fallback: (any RenderSurface)?
-    private var isUsingFallback = false
+public final class RuntimeGatedSurfaceAdapter: RenderSurface {
+    private let wrapped: SimpleMTKViewAdapter
 
-    public init(wrapped: any RenderSurface, fallback: (any RenderSurface)? = nil) {
-        self.wrapped = wrapped
-        self.fallback = fallback
+    public init(metalView: MTKView) throws {
+        try MetalRuntimeAvailability.ensureAvailability()
+        self.wrapped = SimpleMTKViewAdapter(metalView: metalView)
     }
 
-    public var view: PlatformView {
-        isUsingFallback ? (fallback?.view ?? wrapped.view) : wrapped.view
-    }
+    public var view: PlatformView { wrapped.view }
 
     public func display(_ image: CGImage) {
-        do {
-            try performDisplay(image)
-            isUsingFallback = false
-        } catch {
-            print("Display error: \(error.localizedDescription)")
-            if let fallback = fallback {
-                fallback.display(image)
-                isUsingFallback = true
-            }
-        }
+        wrapped.display(image)
     }
 
     public func setContentScale(_ scale: CGFloat) {
         wrapped.setContentScale(scale)
-        if let fallback = fallback {
-            fallback.setContentScale(scale)
-        }
-    }
-
-    private func performDisplay(_ image: CGImage) throws {
-        // In a real implementation, this would catch any Metal or rendering errors
-        wrapped.display(image)
     }
 }
+#endif
 
 // MARK: - Composition Example
 
 /// Example showing how to compose multiple adapters for a production setup.
 ///
 /// This demonstrates:
-/// - Layering adapters for different concerns (logging, recording, error handling)
-/// - Building a resilient rendering pipeline
+/// - Checking the Metal runtime requirement before constructing the surface chain
+/// - Layering adapters for different concerns (runtime gating, recording, logging)
+/// - Building a rendering pipeline with explicit unsupported-state handling
 /// - Maintaining clean separation of concerns
 ///
 /// Usage:
 /// ```swift
 /// let primaryView = MTKView()
-/// let fallbackView = MTKView()
 ///
-/// // Build adapter stack
-/// let baseAdapter = SimpleMTKViewAdapter(metalView: primaryView)
-/// let errorHandled = ErrorHandlingSurfaceAdapter(wrapped: baseAdapter, fallback: SimpleMTKViewAdapter(metalView: fallbackView))
-/// let recorded = RecordingSurfaceAdapter(wrapped: errorHandled)
-/// let logged = LoggingSurfaceAdapter(wrapped: recorded, identifier: "VolumetricRenderer")
+/// if MetalRuntimeAvailability.isAvailable() {
+///     do {
+///         let baseAdapter = try RuntimeGatedSurfaceAdapter(metalView: primaryView)
+///         let recorded = RecordingSurfaceAdapter(wrapped: baseAdapter)
+///         let logged = LoggingSurfaceAdapter(
+///             wrapped: recorded,
+///             identifier: "VolumetricRenderer"
+///         )
 ///
-/// // Use the complete stack
-/// let volumeController = VolumeRenderingController(surface: logged)
-/// recorded.startRecording()
+///         let volumeController = VolumeRenderingController(surface: logged)
+///         recorded.startRecording()
+///     } catch {
+///         // Present an explicit error state if the runtime check fails during init.
+///     }
+/// } else {
+///     let status = MetalRuntimeAvailability.status()
+///     // Map status.missingFeatures into a ContentUnavailableView or other
+///     // unsupported-runtime UI. Keep the error path explicit.
+/// }
 /// ```
 
 // MARK: - Best Practices
 
 /// # Adapter Implementation Best Practices
 ///
-/// 1. **Always mark as @MainActor**
+/// 1. **Check Metal runtime availability before constructing surface chains**
+///    - Use `MetalRuntimeAvailability.isAvailable()` for UI gating
+///    - Use `MetalRuntimeAvailability.ensureAvailability()` in init paths
+///    - Present explicit unsupported-runtime UI instead of silent recovery paths
+///
+/// 2. **Always mark as @MainActor**
 ///    - Ensures thread safety
 ///    - Compiler prevents accidental background thread calls
 ///
-/// 2. **Implement view property efficiently**
+/// 3. **Implement view property efficiently**
 ///    - Cache the view if expensive to compute
 ///    - Don't create new views on each access
 ///
-/// 3. **Keep display() non-blocking**
+/// 4. **Keep display() non-blocking**
 ///    - Offload heavy work to background queues
 ///    - Return quickly to unblock rendering
 ///
-/// 4. **Handle content scale properly**
+/// 5. **Handle content scale properly**
 ///    - Update all affected layers and views
 ///    - Propagate scale to Metal rendering
 ///    - Test on multiple screen densities
 ///
-/// 5. **Use composition over inheritance**
+/// 6. **Use composition over inheritance**
 ///    - Wrap adapters rather than subclassing
 ///    - Easier to combine multiple concerns
 ///    - More flexible at runtime
 ///
-/// 6. **Test adapter implementations**
+/// 7. **Test adapter implementations**
 ///    - Use provided test suite as template
 ///    - Test with real MTKView
 ///    - Verify scale changes work correctly
 ///
-/// 7. **Document your adapter**
+/// 8. **Document your adapter**
 ///    - Explain what surfaces it manages
 ///    - Document any special behavior
 ///    - Provide usage examples
 ///
-/// 8. **Minimize adapter overhead**
+/// 9. **Minimize adapter overhead**
 ///    - Each display() call happens frequently
 ///    - Keep wrapper adapters lightweight
 ///    - Cache expensive computations

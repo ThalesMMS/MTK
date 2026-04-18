@@ -191,7 +191,7 @@ for each pixel (u, v):
 
 ## Metal Acceleration and Explicit Failures
 
-``MetalMPRAdapter`` is a Metal-only adapter. It requires a Metal device, command queue, shader library, and compute pipelines before it can generate MPR slices. Initialization failures are thrown immediately, and rendering failures from the compute path are propagated to callers.
+``MetalMPRAdapter`` is a Metal-only adapter. It requires a Metal device, command queue, shader library, and compute pipelines before it can generate MPR slices. Applications should treat those requirements as the runtime contract for MPR, present an explicit unsupported state when the contract is not satisfied, and propagate compute-path failures to callers.
 
 ### Performance
 
@@ -208,7 +208,7 @@ for each pixel (u, v):
 
 ```swift
 guard let device = MTLCreateSystemDefaultDevice() else {
-    // Present that Metal is unavailable on this system.
+    // Present an explicit unsupported-runtime state.
     return
 }
 

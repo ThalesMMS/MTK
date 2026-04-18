@@ -22,7 +22,7 @@ import MTKUI
 /// 2. Load volume from directory, ZIP archive, or individual file
 /// 3. Track progress with ``DicomVolumeProgress`` updates
 /// 4. Apply loaded dataset to ``VolumetricSceneCoordinator``
-/// 5. Handle errors gracefully
+/// 5. Surface load errors explicitly to the caller
 ///
 /// ## Supported Sources
 ///
@@ -172,7 +172,7 @@ struct BasicDicomLoaderExample: View {
     /// Handle the completion result of a DICOM volume load and update the coordinator and UI state accordingly.
     /// 
     /// On success, applies the imported dataset to the shared coordinator, sets an HU window using the dataset's
-    /// recommended window when available (otherwise applies a soft-tissue fallback of -160 to 240), and applies
+    /// recommended window when available (otherwise applies the named default window policy, soft tissue: -160 to 240 HU), and applies
     /// the `.softTissue` transfer preset to the coordinator's controller. Logs series description, source filename,
     /// and dataset dimensions. On failure, stores the error's localized description in `errorMessage`.
     /// - Parameter result: The completion `Result` from the DICOM loader; contains a `DicomImportResult` on success or an `Error` on failure.
@@ -182,13 +182,14 @@ struct BasicDicomLoaderExample: View {
             // Step 3: Apply loaded dataset
             coordinator.apply(dataset: importResult.dataset)
 
-            // Step 4: Configure window/level
-            // Use recommended window if available (computed from 2nd/98th percentile)
+            // Step 4: Configure window/level.
+            // Use recommended window if available (computed from 2nd/98th percentile).
             if let recommendedWindow = importResult.dataset.recommendedWindow {
                 coordinator.applyHuWindow(min: Int32(recommendedWindow.lowerBound),
                                          max: Int32(recommendedWindow.upperBound))
             } else {
-                // Fallback to default soft tissue window
+                // Named default window policy when metadata is absent:
+                // soft tissue window (-160 to 240 HU).
                 coordinator.applyHuWindow(min: -160, max: 240)
             }
 
@@ -478,10 +479,11 @@ struct DicomLoaderWithAutoWindowingExample: View {
         isLoading = true
         defer { isLoading = false }
 
-        // Create Metal resources for GPU-accelerated statistics
+        // Auto-windowing with histogram/statistics calculators requires GPU compute
+        // resources before those calculators can be created.
         guard let device = MTLCreateSystemDefaultDevice(),
               let commandQueue = device.makeCommandQueue() else {
-            print("Metal not available for auto-windowing")
+            print("Auto-windowing unavailable: Metal device and command queue are required.")
             return
         }
 
@@ -496,7 +498,7 @@ struct DicomLoaderWithAutoWindowingExample: View {
             commandQueue: commandQueue
         )
 
-        // Initialize loader with GPU acceleration
+        // Initialize loader with explicit GPU compute calculators.
         let loader = DicomVolumeLoader(
             seriesLoader: DicomDecoderSeriesLoader(),
             device: device,

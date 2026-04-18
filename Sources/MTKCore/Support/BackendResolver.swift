@@ -2,14 +2,14 @@
 //  BackendResolver.swift
 //  MTK - MTKCore
 //
-//  Provides runtime resolution of the volumetric rendering backend based on
-//  Metal availability and user preferences. This component encapsulates the logic
-//  for determining which rendering backend can be safely used on the current system,
-//  with support for persisting user preferences via UserDefaults.
+//  Provides runtime verification for the Metal requirement used by volumetric
+//  rendering. This component encapsulates the checks that decide whether the
+//  current system satisfies the Metal rendering contract, with support for
+//  persisting the check result via UserDefaults.
 //
-//  Note: This struct focuses on Metal runtime availability checking. The actual
-//  backend enumeration (metalPerformanceShaders vs sceneKit) is defined in
-//  MTKUI/VolumetricSceneController.swift to avoid circular dependencies.
+//  Note: This struct focuses on Metal runtime availability checking. Related
+//  rendering-mode types live in MTKUI/VolumetricSceneController.swift to avoid
+//  circular dependencies.
 //
 //  Extracted from: Isis DICOM Viewer/Presentation/ViewModels/Viewer/VolumetricSessionState.swift
 //  Thales Matheus Mendonça Santos - November 2025
@@ -17,17 +17,19 @@
 
 import Foundation
 
-/// Represents errors that can occur during Metal backend resolution
+/// Represents requirement failures encountered while verifying the Metal rendering contract.
 public enum BackendResolutionError: LocalizedError, Equatable {
+    /// The host does not satisfy the required Metal runtime capabilities.
     case metalUnavailable
+    /// Metal runtime capability checks passed, but Metal rendering initialization still failed.
     case noBackendAvailable
 
     public var errorDescription: String? {
         switch self {
         case .metalUnavailable:
-            return "Metal runtime is not available on this system. Enable a Metal-capable device to use the Metal backend."
+            return "Metal runtime is not available on this system. Use a Metal-capable device for volumetric rendering."
         case .noBackendAvailable:
-            return "No volumetric backend is available on this system."
+            return "Metal initialization failed for volumetric rendering."
         }
     }
 
@@ -36,57 +38,57 @@ public enum BackendResolutionError: LocalizedError, Equatable {
         case .metalUnavailable:
             return "The GPU does not support the required Metal runtime capabilities."
         case .noBackendAvailable:
-            return "Neither Metal nor any fallback backend could be initialized."
+            return "Metal initialization failed after runtime availability was checked."
         }
     }
 }
 
-/// Resolves Metal backend availability at runtime.
+/// Verifies the Metal runtime requirement for the volumetric rendering path.
 ///
-/// BackendResolver checks Metal runtime availability and persists the resolution
-/// to UserDefaults for future sessions. This component is used by higher-level
-/// backend selection logic to determine which rendering implementation should be used.
+/// `BackendResolver` checks the Metal runtime requirement and can persist the
+/// result to `UserDefaults` for future sessions. Higher-level UI code should use
+/// this check to surface an explicit unsupported-capability state before creating
+/// Metal rendering controllers.
 ///
-/// Usage:
+/// Throwing requirement check:
 /// ```swift
 /// let resolver = BackendResolver(defaults: UserDefaults.standard)
-/// if try resolver.isMetalAvailable() {
-///     // Use Metal-based rendering
-/// }
+/// try resolver.checkMetalAvailability()
+/// // Initialize Metal-based rendering.
 /// ```
 ///
-/// For testing:
+/// Non-throwing status check:
 /// ```swift
 /// let resolver = BackendResolver(defaults: nil)
-/// let available = try resolver.isMetalAvailable()
+/// let available = resolver.isMetalAvailable()
 /// ```
 public struct BackendResolver {
-    /// The UserDefaults instance where backend preferences are stored.
+    /// The UserDefaults instance where Metal requirement check results are stored.
     /// If nil, no preference persistence occurs.
     public let defaults: UserDefaults?
 
-    /// Creates a new BackendResolver.
+    /// Creates a new Metal requirement resolver.
     ///
     /// - Parameter defaults: Optional UserDefaults instance for persisting preferences.
-    ///   If nil, the resolver will not persist the resolution result.
+    ///   If nil, the resolver will not persist the check result.
     public init(defaults: UserDefaults? = nil) {
         self.defaults = defaults
     }
 
-    /// Checks whether the Metal backend is available on this system.
+    /// Checks whether this system satisfies the Metal rendering requirement.
     ///
     /// This method uses the MetalRuntimeGuard to determine if the GPU supports
     /// the features required by the Metal volumetric rendering stack.
-    /// The result can optionally be persisted to UserDefaults.
+    /// A successful result can optionally be persisted to UserDefaults.
     ///
-    /// - Returns: true if Metal runtime is available and meets all requirements
-    /// - Throws: BackendResolutionError.metalUnavailable if Metal is unavailable
+    /// - Returns: true if the Metal runtime satisfies all requirements.
+    /// - Throws: BackendResolutionError.metalUnavailable if the requirement is not satisfied.
     public func checkMetalAvailability() throws -> Bool {
         guard Self.isMetalBackendAvailable() else {
             throw BackendResolutionError.metalUnavailable
         }
 
-        // Persist the Metal availability check result
+        // Persist the Metal requirement check result.
         if let defaults = defaults {
             defaults.set(true, forKey: Self.metalAvailabilityKey)
         }
@@ -94,53 +96,52 @@ public struct BackendResolver {
         return true
     }
 
-    /// Checks whether the Metal backend is available on this system (non-throwing).
+    /// Checks whether this system satisfies the Metal rendering requirement (non-throwing).
     ///
-    /// Returns the availability status without raising an error.
-    /// This is useful for conditional logic that doesn't require error handling.
+    /// Returns the requirement status without raising an error. This is useful
+    /// for UI gating that presents an unsupported-capability state.
     ///
     /// - Returns: true if Metal runtime is available, false otherwise
     public func isMetalAvailable() -> Bool {
         Self.isMetalBackendAvailable()
     }
 
-    /// Checks whether the Metal backend is available on this system.
+    /// Checks whether this system satisfies the Metal rendering requirement.
     ///
     /// This method uses conditional compilation to check Metal availability through
     /// the MetalRuntimeAvailability bridge, which internally uses MetalRuntimeGuard.
     ///
-    /// - Returns: true if Metal runtime is available and meets minimum requirements, false otherwise
+    /// - Returns: true if the Metal runtime satisfies required capabilities, false otherwise.
     private static func isMetalBackendAvailable() -> Bool {
         return MetalRuntimeAvailability.isAvailable()
     }
 
-    /// The UserDefaults key for storing the Metal availability check result
+    /// The UserDefaults key for storing the Metal requirement check result.
     public static let metalAvailabilityKey = "volumetric.metalAvailable"
 
-    /// The UserDefaults key for storing the preferred backend preference
-    /// This key is used by higher-level selection logic
+    /// Legacy UserDefaults key retained for compatibility with existing preference storage.
     public static let preferredBackendKey = "volumetric.preferredBackend"
 }
 
 // MARK: - Static Helper Methods
 
 public extension BackendResolver {
-    /// Convenience static method to check Metal availability with default UserDefaults.
+    /// Convenience static method to enforce Metal availability with default UserDefaults.
     ///
     /// - Parameter defaults: UserDefaults instance to use. Defaults to UserDefaults.standard
-    /// - Returns: true if Metal is available
-    /// - Throws: BackendResolutionError.metalUnavailable if Metal is not available
+    /// - Returns: true if the Metal runtime satisfies required capabilities.
+    /// - Throws: BackendResolutionError.metalUnavailable if the requirement is not satisfied.
     static func checkConfiguredMetalAvailability(
         defaults: UserDefaults = .standard
     ) throws -> Bool {
         try BackendResolver(defaults: defaults).checkMetalAvailability()
     }
 
-    /// Convenience static method to check Metal availability without side effects.
+    /// Convenience static method to inspect Metal availability without side effects.
     ///
-    /// Useful for non-throwing checks that don't persist results.
+    /// Useful for non-throwing requirement checks that don't persist results.
     ///
-    /// - Returns: true if Metal is available
+    /// - Returns: true if the Metal runtime satisfies required capabilities.
     static func isMetalAvailable() -> Bool {
         BackendResolver(defaults: nil).isMetalAvailable()
     }

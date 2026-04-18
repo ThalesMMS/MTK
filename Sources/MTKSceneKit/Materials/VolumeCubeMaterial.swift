@@ -185,7 +185,9 @@ public final class VolumeCubeMaterial: SCNMaterial, SCNProgramDelegate {
     private var dicomTexture: (any MTLTexture)?
     private var transferFunctionTexture: (any MTLTexture)?
 
-    private(set) var textureGenerator: VolumeTextureFactory = VolumeTextureFactory(part: .none)
+    private(set) var textureGenerator: VolumeTextureFactory = VolumeTextureFactory(
+        dataset: VolumeTextureFactory.debugPlaceholderDataset()
+    )
     private let logger = Logger(subsystem: "com.mtk.volumerendering",
                                 category: "VolumeCubeMaterial")
 
@@ -247,7 +249,7 @@ public final class VolumeCubeMaterial: SCNMaterial, SCNProgramDelegate {
         writesToDepthBuffer = true
 
         // Estratégia de fallback: inicializa com `BodyPart.none`, que gera uma
-        // textura 1x1x1 sintética via `VolumeTextureFactory.placeholderDataset()`
+        // textura 1x1x1 sintética via `VolumeTextureFactory.debugPlaceholderDataset()`
         // e define um domínio HU padrão (-1024...3071) até que um dataset real
         // seja carregado.
         setPart(device: device, part: .none)
@@ -309,7 +311,15 @@ public final class VolumeCubeMaterial: SCNMaterial, SCNProgramDelegate {
     /// Troca o preset volumétrico embarcado (cabeça, tórax, placeholder). Útil
     /// como fallback quando não há DICOM disponível ou durante debugging.
     public func setPart(device: any MTLDevice, part: BodyPart) {
-        apply(factory: VolumeTextureFactory(part: part), device: device)
+        do {
+            apply(factory: try VolumeTextureFactory(part: part), device: device)
+        } catch {
+            logger.error("Failed to load volume preset \(part.rawValue): \(String(describing: error)); binding debug placeholder")
+            apply(
+                factory: VolumeTextureFactory(dataset: VolumeTextureFactory.debugPlaceholderDataset()),
+                device: device
+            )
+        }
     }
 
     /// Substitui o volume ativo por um dataset clínico. Além de subir a textura
@@ -625,14 +635,12 @@ private extension VolumeCubeMaterial {
             return
         }
 
-        let library = ShaderLibraryLoader.makeDefaultLibrary(on: metalDevice) { [logger] message in
-            logger.debug("\(message)")
-        }
-
-        if let library {
-            program.library = library
-        } else {
-            logger.error("Failed to load VolumeRendering.metallib; SceneKit shaders will be unavailable")
+        do {
+            program.library = try ShaderLibraryLoader.loadLibrary(for: metalDevice)
+        } catch {
+            // Volume rendering cannot proceed without assigning program.library from the required MTK.metallib.
+            logger.fault("Failed to load MTK.metallib via ShaderLibraryLoader.loadLibrary(for:) for VolumeCubeMaterial program.library: \(error.localizedDescription)")
+            fatalError("Failed to load MTK.metallib for VolumeCubeMaterial SceneKit shaders: \(error.localizedDescription)")
         }
     }
 

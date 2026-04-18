@@ -22,13 +22,40 @@ struct VolumeDataReader {
     let depth: Int
 
     init?(dataset: VolumeDataset, buffer: UnsafeRawBufferPointer) {
-        guard let baseAddress = buffer.baseAddress else { return nil }
+        let width = dataset.dimensions.width
+        let height = dataset.dimensions.height
+        let depth = dataset.dimensions.depth
+
+        guard width >= 0, height >= 0, depth >= 0 else {
+            return nil
+        }
+
+        let (widthTimesHeight, widthTimesHeightOverflow) = width.multipliedReportingOverflow(by: height)
+        guard !widthTimesHeightOverflow else {
+            return nil
+        }
+
+        let (voxelCount, voxelCountOverflow) = widthTimesHeight.multipliedReportingOverflow(by: depth)
+        guard !voxelCountOverflow else {
+            return nil
+        }
+
+        let (expectedByteCount, expectedByteCountOverflow) = voxelCount.multipliedReportingOverflow(
+            by: dataset.pixelFormat.bytesPerVoxel
+        )
+        guard
+            !expectedByteCountOverflow,
+            let baseAddress = buffer.baseAddress,
+            buffer.count >= expectedByteCount
+        else {
+            return nil
+        }
         self.dataset = dataset
         self.baseAddress = baseAddress
-        self.width = dataset.dimensions.width
-        self.height = dataset.dimensions.height
-        self.depth = dataset.dimensions.depth
-        self.voxelCount = dataset.voxelCount
+        self.width = width
+        self.height = height
+        self.depth = depth
+        self.voxelCount = voxelCount
     }
 
     func intensity(atLinearIndex index: Int) -> Float {

@@ -130,7 +130,11 @@ struct DicomLoadingExample: View {
 
 // MARK: - Runtime Availability Check
 
-/// Example showing Metal availability check before rendering
+/// Example showing explicit Metal requirement enforcement before rendering.
+///
+/// This pattern checks the Metal runtime contract before creating rendering
+/// components and surfaces an explicit unsupported state before any rendering UI
+/// is presented.
 struct AvailabilityCheckExample: View {
 
     @State private var metalAvailable = false
@@ -143,13 +147,14 @@ struct AvailabilityCheckExample: View {
                 ContentUnavailableView(
                     "Metal Not Available",
                     systemImage: "exclamationmark.triangle",
-                    description: Text("This device does not support Metal rendering")
+                    description: Text("Metal GPU required for volume rendering")
                 )
             }
         }
         .onAppear {
-            // Check Metal availability before creating rendering components
-            metalAvailable = MetalRuntimeAvailability.isMetalAvailable
+            // For throwing initialization code, prefer:
+            // try MetalRuntimeAvailability.ensureAvailability()
+            metalAvailable = MetalRuntimeAvailability.isAvailable()
         }
     }
 }

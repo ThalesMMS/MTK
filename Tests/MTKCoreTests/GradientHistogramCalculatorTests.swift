@@ -30,9 +30,7 @@ final class GradientHistogramCalculatorTests: XCTestCase {
         }
         self.commandQueue = commandQueue
 
-        guard let library = ShaderLibraryLoader.makeDefaultLibrary(on: device) else {
-            throw XCTSkip("No bundled metallib present; expected on CI without GPU assets")
-        }
+        let library = try ShaderLibraryLoader.loadLibrary(for: device)
         self.library = library
 
         let featureFlags = FeatureFlags.evaluate(for: device)
@@ -46,7 +44,7 @@ final class GradientHistogramCalculatorTests: XCTestCase {
         )
     }
 
-    // MARK: - Kernel Planning Tests
+    // MARK: - Kernel Planning Tests - Pure Metal compute kernel selection based on device capabilities (no MPS dependency)
 
     func testKernelPlannerSelectsThreadgroupKernelForSmallBinCounts() {
         let maxMemory = device.maxThreadgroupMemoryLength
@@ -71,12 +69,12 @@ final class GradientHistogramCalculatorTests: XCTestCase {
             XCTAssertTrue(plan.usesThreadgroupMemory, "Should use threadgroup memory for small bin counts")
             XCTAssertEqual(plan.kernelName, "computeGradientHistogramThreadgroup")
         } else {
-            XCTAssertFalse(plan.usesThreadgroupMemory, "Should use legacy kernel when threadgroup memory insufficient")
+            XCTAssertFalse(plan.usesThreadgroupMemory, "Should use device-memory kernel when threadgroup memory is insufficient")
             XCTAssertEqual(plan.kernelName, "computeGradientHistogramLegacy")
         }
     }
 
-    func testKernelPlannerSelectsLegacyKernelForLargeBinCounts() {
+    func testKernelPlannerSelectsDeviceMemoryKernelForLargeBinCounts() {
         let maxMemory = device.maxThreadgroupMemoryLength
         let intensityBins = 4096
         let gradientBins = 4096
@@ -97,7 +95,7 @@ final class GradientHistogramCalculatorTests: XCTestCase {
 
         // Large bin counts should exceed threadgroup memory
         XCTAssertGreaterThan(bufferLength, maxMemory, "Large bin count should exceed threadgroup memory")
-        XCTAssertFalse(plan.usesThreadgroupMemory, "Should use legacy kernel for large bin counts")
+        XCTAssertFalse(plan.usesThreadgroupMemory, "Should use device-memory kernel for large bin counts")
         XCTAssertEqual(plan.kernelName, "computeGradientHistogramLegacy")
     }
 
@@ -583,7 +581,7 @@ final class GradientHistogramCalculatorTests: XCTestCase {
     private func create3DTexture(width: Int, height: Int, depth: Int, fillValue: UInt16) -> MTLTexture {
         let descriptor = MTLTextureDescriptor()
         descriptor.textureType = .type3D
-        descriptor.pixelFormat = .r16Unorm
+        descriptor.pixelFormat = .r16Sint
         descriptor.width = width
         descriptor.height = height
         descriptor.depth = depth
@@ -596,7 +594,7 @@ final class GradientHistogramCalculatorTests: XCTestCase {
 
         // Fill texture with uniform value
         let totalVoxels = width * height * depth
-        var data = [UInt16](repeating: fillValue, count: totalVoxels)
+        var data = [Int16](repeating: Int16(clamping: Int(fillValue)), count: totalVoxels)
 
         data.withUnsafeMutableBytes { ptr in
             texture.replace(
@@ -616,7 +614,7 @@ final class GradientHistogramCalculatorTests: XCTestCase {
     private func createGradientTexture(width: Int, height: Int, depth: Int) -> MTLTexture {
         let descriptor = MTLTextureDescriptor()
         descriptor.textureType = .type3D
-        descriptor.pixelFormat = .r16Unorm
+        descriptor.pixelFormat = .r16Sint
         descriptor.width = width
         descriptor.height = height
         descriptor.depth = depth
@@ -628,13 +626,14 @@ final class GradientHistogramCalculatorTests: XCTestCase {
         }
 
         // Create linear gradient along X axis
-        var data = [UInt16]()
+        var data = [Int16]()
         data.reserveCapacity(width * height * depth)
+        let safeDenominator = Float(max(width - 1, 1))
 
         for _ in 0..<depth {
             for _ in 0..<height {
                 for x in 0..<width {
-                    let value = UInt16((Float(x) / Float(width - 1)) * 4095.0)
+                    let value = Int16((Float(x) / safeDenominator) * 4095.0)
                     data.append(value)
                 }
             }

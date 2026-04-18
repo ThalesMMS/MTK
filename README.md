@@ -13,13 +13,17 @@ Swift Package with Metal/SceneKit/SwiftUI helpers used by the Metal-MPR-VR stack
 ## Package layout
 - `MTKCore` — Domain types (`VolumeDataset`, orientation/spacing models), Metal helpers (`MetalRaycaster`, `VolumeTextureFactory`, `ShaderLibraryLoader`), transfer function models (`AdvancedToneCurveModel`, `VolumeTransferFunctionLibrary`), runtime availability guards, and the `DicomVolumeLoader` that wraps an injected `DicomSeriesLoading` bridge.
 - `MTKSceneKit` — SceneKit materials and camera helpers (`VolumeCubeMaterial`, `MPRPlaneMaterial`, `VolumeCameraController`, SceneKit node extensions).
-- `MTKUI` — SwiftUI-friendly controllers and overlays (`VolumetricSceneController`, `VolumetricSceneCoordinator`, `VolumetricDisplayContainer`, gesture modifiers, overlays like `CrosshairOverlayView`, `WindowLevelControlView`, and `MPRGridComposer` for tri-planar layouts).
+- `MTKUI` — SwiftUI-friendly controllers and overlays (`VolumetricSceneController`, `VolumetricSceneCoordinator`, `VolumetricDisplayContainer`, gesture modifiers, overlays like `CrosshairOverlayView`, `WindowLevelControlView`, and `MPRGridComposer` for tri-planar layouts). MTKUI presents a single SceneKit surface path backed by Metal-driven volume and MPR materials.
 
 ## Requirements
 - Swift 5.10, Xcode 16
 - iOS 17+ / macOS 14+
-- Metal-capable device (tests skip when Metal is unavailable)
-- Metal Performance Shaders unlock histogram/gaussian paths but the stack falls back when MPS is absent
+- Metal-capable device required for rendering and GPU test coverage. Metal is the runtime contract for rendering; no alternate rendering runtime is provided. GPU-dependent tests require Metal and skip when unavailable.
+- Metal Performance Shaders behavior is feature-specific and should be treated as an explicit capability/result contract:
+  - Volume rendering (`MetalVolumeRenderingAdapter`, `MetalRaycaster`): Pure Metal ray marching is the required rendering path on Metal-capable devices and has no MPS dependency.
+  - Empty-space acceleration (`MPSEmptySpaceAccelerator`): Optional MPS accelerator for supported devices. Shared helpers return `.success`, `.unavailable(reason:)`, or `.failed(error)` instead of `nil`.
+  - Histogram calculation (`VolumeHistogramCalculator`): Pure Metal compute. No MPS dependency.
+  - Statistics calculation (`VolumeStatisticsCalculator`): Metal compute with explicit GPU setup and execution errors. CPU reference implementations exist only in tests.
 
 ## Intended use and safety
 MTK is a rendering and UI toolkit for research, education, and prototype applications involving volumetric medical-image data on Apple platforms. It is **not** a medical device, has **not** been validated for clinical decision-making, and should not be the sole basis for diagnosis, treatment, or patient triage.
@@ -69,9 +73,13 @@ swift test
 Some DICOM-oriented tests rely on optional local fixtures from `MTK-Demo/DICOM_Example` that are **not** committed to this repository. To use them, clone the demo repository as a sibling checkout with `git clone https://github.com/ThalesMMS/MTK-Demo.git ../MTK-Demo`. Those suites skip when fixtures are unavailable, so a passing run may still be partial on a fresh machine.
 
 ## Shaders and resources
-- Build-tool plugin `MTKShaderPlugin` compiles `Sources/MTKCore/Resources/Shaders/*.metal` into `MTK.metallib` during the build. At runtime `ShaderLibraryLoader` first looks for a bundled `VolumeRendering.metallib`, then falls back to the module’s default library or runtime compilation of the shader sources.
-- CI/manual fallback: `bash Tooling/Shaders/build_metallib.sh Sources/MTKCore/Resources/Shaders .build/MTK.metallib`
-- Sample RAW datasets referenced by `VolumeTextureFactory(preset:)` are not shipped; presets will fall back to a 1³ placeholder unless you add zipped RAW assets to `Sources/MTKCore/Resources`.
+- `ShaderLibraryLoader` requires `MTK.metallib` to be bundled in `Bundle.module`. Missing or invalid artifacts are reported as structured `ShaderLibraryLoader.LoaderError` cases, such as `metallibNotBundled` or `metallibLoadFailed(underlying:)`.
+- Build-tool plugin `MTKShaderPlugin` compiles `Sources/MTKCore/Resources/Shaders/*.metal` into the required `MTK.metallib` artifact during the build. The plugin must complete successfully for the package's Metal rendering paths to function.
+- Manual shader build is only needed when compiling shaders outside the normal SwiftPM/Xcode plugin path, such as custom command-line packaging or CI steps that assemble resources separately: `bash Tooling/Shaders/build_metallib.sh Sources/MTKCore/Resources/Shaders .build/MTK.metallib`
+- Troubleshooting: if shader loading fails, verify that `MTKShaderPlugin` ran successfully and that `MTK.metallib` is present in the `MTKCore` resource bundle.
+- Sample RAW datasets referenced by `VolumeTextureFactory(preset:)` are not shipped by default. Missing or invalid preset resources throw `VolumeTextureFactory.PresetLoadingError`; preset loading does not silently return a stub volume.
+- Preset resource failures are inspectable through `resourceNotBundled`, `archiveUnreadable`, `extractionFailed`, `emptyPayload`, and `noDataAvailable`.
+- Use `VolumeTextureFactory.debugPlaceholderDataset()` only for tests or explicit debug tooling that needs a minimal 1x1x1 volume.
 
 ## Quick start (SwiftUI)
 Minimal SwiftUI viewer that applies a volume and overlays UI controls:
@@ -128,20 +136,43 @@ Add gesture handling with `volumeGestures(controller:state:configuration:)` and 
 MTK does **not** produce segmentation masks, classification labels, radiology reports, or treatment recommendations by itself. In other words, the package is a visualization/loading substrate, not a diagnostic model.
 
 ## Runtime checks and diagnostics
-- `BackendResolver` and `MetalRuntimeAvailability` gate Metal usage before creating controllers.
-- `CommandBufferProfiler`, `MetalRuntimeGuard`, and `VolumeRenderingDebugOptions` help surface GPU/runtime capabilities during development.
+- `BackendResolver` and `MetalRuntimeAvailability` enforce the Metal rendering requirement before controllers are created. `ensureAvailability()` throws explicit availability errors, and `status()` exposes structured diagnostics plus optional MPS capability flags.
+- `MetalRuntimeGuard` exposes structured requirement status, missing required capabilities, and optional MPS feature availability for diagnostics.
+- `CommandBufferProfiler` and `VolumeRenderingDebugOptions` help surface GPU runtime behavior during development.
+
+```swift
+func makeVolumeController() throws -> VolumetricSceneController {
+    try MetalRuntimeAvailability.ensureAvailability()
+    let status = MetalRuntimeAvailability.status()
+    print("MPS available: \(status.supportsMetalPerformanceShaders)")
+    return VolumetricSceneController()
+}
+
+do {
+    let controller = try makeVolumeController()
+    print(controller)
+} catch {
+    let status = MetalRuntimeAvailability.status()
+    print("Metal requirement failed: \(status.missingFeatures)")
+    print("MPS available: \(status.supportsMetalPerformanceShaders)")
+}
+```
 
 ## Testing notes
-- `swift test` requires a Metal-capable host; GPU-dependent suites skip automatically when no device is available.
+- `swift test` requires a Metal-capable host for GPU-dependent suites; those tests require Metal and skip when unavailable.
 - DICOM-related tests can use optional fixtures under `MTK-Demo/DICOM_Example` from `https://github.com/ThalesMMS/MTK-Demo`; clone it as a sibling checkout with `git clone https://github.com/ThalesMMS/MTK-Demo.git ../MTK-Demo`. Tests will skip when fixtures are missing.
-- Security coverage includes ZIP path-traversal regression tests for `DicomVolumeLoader`; visual-quality checks compare accelerated and non-accelerated rendering paths on synthetic datasets.
+- Security coverage includes ZIP path-traversal regression tests for `DicomVolumeLoader`; visual-quality checks compare MPS-accelerated empty-space skipping (feature availability requires MPS) against core Metal ray marching on synthetic datasets.
 
 ## Limitations and evaluation caveats
 - The package targets Apple-platform rendering workflows; it is not a cross-platform PACS, archive, or viewer.
 - Clean reproducibility currently depends on a sibling checkout of `DICOM-Decoder` because the dependency is path-based.
 - Public examples and tests mostly exercise synthetic datasets, renderer behaviors, and optional local fixtures rather than a versioned benchmark corpus committed in this repository.
 - Rendering correctness checks and visual-regression tests are useful engineering signals, but they are **not** the same thing as clinical validation or reader-study evidence.
-- DICOM import support depends on the Swift decoder's metadata coverage and input quality; malformed studies, unsupported encodings, missing tags, or non-16-bit inputs may fail or degrade gracefully rather than producing a clinically usable view.
+- DICOM import support depends on the Swift decoder's metadata coverage and input quality. Import failures are explicit:
+  - unsupported transfer syntaxes, compressed pixel encodings, malformed datasets, or missing required tags surface parser-specific errors from `DicomDecoderSeriesLoader`, wrapped as `DicomVolumeLoaderError.bridgeError(_:)` when reported through the bridge;
+  - empty directories or parser runs that produce no voxel data report `DicomVolumeLoaderError.missingResult`;
+  - non-16-bit scalar data, 8-bit or 12-bit inputs, and RGB or multi-component volumes report `DicomVolumeLoaderError.unsupportedBitDepth`;
+  - ZIP entries with path traversal report `DicomVolumeLoaderError.pathTraversal`.
 
 ## Documentation
 

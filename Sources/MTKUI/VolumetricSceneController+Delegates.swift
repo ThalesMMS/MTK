@@ -16,12 +16,6 @@ import UIKit
 #if canImport(Metal)
 import Metal
 #endif
-#if canImport(MetalPerformanceShaders)
-import MetalPerformanceShaders
-#endif
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-import MetalKit
-#endif
 #if canImport(Domain)
 import Domain
 #endif

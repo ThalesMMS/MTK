@@ -9,9 +9,9 @@
 
     @Section(title: "Set up your project") {
         @ContentAndMedia {
-            Add the MTK package to your project and verify Metal availability for GPU-accelerated volume rendering.
+            Add the MTK package to your project and enforce the Metal runtime requirement for volume rendering.
 
-            MTKCore requires a Metal-capable device and iOS 17+ / macOS 14+. The framework gracefully degrades when Metal is unavailable, but rendering features require GPU support.
+            MTKCore requires a Metal-capable device and iOS 17+ / macOS 14+. Rendering features require Metal; apps should surface an explicit unsupported state when the runtime requirement is not met.
         }
 
         @Steps {
@@ -47,9 +47,9 @@
             }
 
             @Step {
-                Import the MTK modules and verify Metal runtime availability.
+                Import the MTK modules and enforce the Metal runtime requirement before showing rendering UI.
 
-                Use `MetalRuntimeAvailability` to check for GPU support before initializing rendering components.
+                Use `MetalRuntimeAvailability.ensureAvailability()` in fail-fast initialization paths. For SwiftUI branches that need a non-throwing check, use `isAvailable()` and present an unsupported state when it returns `false`.
 
                 ```swift
                 import SwiftUI
@@ -60,15 +60,21 @@
                 struct VolumeViewerApp: App {
                     var body: some Scene {
                         WindowGroup {
-                            if MetalRuntimeAvailability.isMetalAvailable {
+                            if MetalRuntimeAvailability.isAvailable() {
                                 ContentView()
                             } else {
-                                Text("Metal is required for volume rendering")
+                                Text("Volume rendering requires a Metal-capable device.")
                                     .foregroundColor(.red)
                             }
                         }
                     }
                 }
+                ```
+
+                In throwing initialization code, prefer a fail-fast requirement check:
+
+                ```swift
+                try MetalRuntimeAvailability.ensureAvailability()
                 ```
             }
 

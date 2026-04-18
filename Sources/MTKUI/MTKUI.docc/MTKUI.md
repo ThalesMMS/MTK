@@ -6,11 +6,11 @@ SwiftUI components and controllers for medical volumetric visualization interfac
 
 MTKUI provides SwiftUI components, scene controllers, and gesture handling for building medical volumetric visualization applications on iOS and macOS. Built on top of MTKCore and MTKSceneKit, it includes MPR grids, interactive overlays, camera controls, and windowing tools for medical imaging workflows.
 
-The framework handles scene coordination, gesture interpretation, UI overlays, and telemetry.
+The framework handles scene coordination, gesture interpretation, UI overlays, and telemetry for a single MTKUI rendering path: SceneKit presentation backed by Metal-driven volume and MPR materials.
 
 ### Key Features
 
-- **Scene Management**: VolumetricSceneController orchestrates rendering, camera, volume state, and MPS compute pipelines
+- **Scene Management**: VolumetricSceneController orchestrates SceneKit presentation, camera state, and Metal-backed volume/MPR materials
 - **SwiftUI Integration**: Native SwiftUI views and modifiers with Combine-based state management
 - **MPR Grid Layouts**: Synchronized tri-planar (axial/coronal/sagittal) views with crosshair navigation
 - **Interactive Overlays**: Medical imaging overlays for window/level, slab thickness, orientation markers, and crosshairs
@@ -74,7 +74,7 @@ Published state and telemetry for UI synchronization and debugging.
 
 ### Render Surfaces
 
-Abstraction layer for SceneKit and Metal rendering surfaces.
+Abstraction layer for the SceneKit presentation surface plus lightweight image surfaces used by tests and snapshots.
 
 - ``RenderSurface``
 - ``SceneKitSurface``
@@ -88,6 +88,10 @@ Customizable styling protocols for volumetric UI components.
 
 ## Quick Start
 
+Use ``VolumetricSceneCoordinator`` as the entry point for MTKUI. The shared
+coordinator owns controller lifecycle, keeps shared rendering state in sync, and
+hands each view the surface-specific ``VolumetricSceneController`` it should use.
+
 Create a basic volumetric scene with SwiftUI:
 
 ```swift
@@ -96,9 +100,13 @@ import MTKUI
 import MTKCore
 
 struct VolumetricView: View {
-    @StateObject private var controller = VolumetricSceneController()
+    @StateObject private var coordinator = VolumetricSceneCoordinator.shared
     @State private var level: Double = 40
     @State private var window: Double = 400
+
+    private var controller: VolumetricSceneController {
+        coordinator.controller
+    }
 
     var body: some View {
         VolumetricDisplayContainer(controller: controller) {
@@ -120,8 +128,8 @@ struct VolumetricView: View {
 
     func loadDataset() async {
         // Create and configure your volume dataset
-        // Then apply it to the controller
-        await controller.applyDataset(myDataset)
+        // Then apply it through the coordinator-managed controller set
+        coordinator.apply(dataset: myDataset)
     }
 }
 ```

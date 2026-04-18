@@ -3,7 +3,7 @@
 //  MTKCoreTests
 //
 //  Visual quality regression tests for MPS empty space skipping optimization.
-//  Compares rendering output with and without acceleration to ensure visual quality is maintained.
+//  Compares shader heuristic only against shader heuristic plus MPS precomputed structure.
 //
 //  Thales Matheus Mendonça Santos — February 2026
 //
@@ -20,7 +20,6 @@ import MetalPerformanceShaders
 @testable import MTKCore
 
 final class EmptySpaceSkippingQualityTests: XCTestCase {
-
     private var device: MTLDevice!
     private var commandQueue: MTLCommandQueue!
     private var raycaster: MetalRaycaster!
@@ -101,21 +100,19 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
     func testVisualQualityMaintainedWithAcceleration() async throws {
         #if canImport(MetalPerformanceShaders)
         guard raycaster.isMetalPerformanceShadersAvailable else {
-            throw XCTSkip("MPS not available, skipping quality test")
+            throw XCTSkip("MPS acceleration is unavailable for this Metal runtime; prepareAccelerationStructure(dataset:) would return .unavailable")
         }
 
         let dataset = makeSparseTestDataset()
 
-        // Render without acceleration (baseline)
+        // Render the reference Metal-only path with the shader-level ZSKIP heuristic only.
         guard let baselineTexture = try await renderWithoutAcceleration(dataset: dataset, method: 1) else {
-            XCTFail("Failed to render baseline texture")
+            XCTFail("Failed to render reference Metal-only texture")
             return
         }
 
-        // Render with acceleration
-        guard let accelerationTexture = raycaster.prepareAccelerationStructure(dataset: dataset) else {
-            throw XCTSkip("Failed to generate acceleration structure")
-        }
+        // Render shader-level ZSKIP heuristic plus MPS precomputed acceleration structure.
+        let accelerationTexture = try requireAccelerationTexture(for: dataset)
 
         guard let acceleratedTexture = try await renderWithAcceleration(dataset: dataset, method: 1, accelerationTexture: accelerationTexture) else {
             XCTFail("Failed to render accelerated texture")
@@ -158,28 +155,26 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
             print("⚠️  Visual quality degradation detected: \(String(format: "%.2f", comparison.differenceRatio * 100))% difference")
         }
         #else
-        throw XCTSkip("MetalPerformanceShaders unavailable on this platform")
+        throw XCTSkip("MPS acceleration is unavailable for this platform; prepareAccelerationStructure(dataset:) would return .unavailable")
         #endif
     }
 
     func testVisualQualityWithMIPRendering() async throws {
         #if canImport(MetalPerformanceShaders)
         guard raycaster.isMetalPerformanceShadersAvailable else {
-            throw XCTSkip("MPS not available, skipping quality test")
+            throw XCTSkip("MPS acceleration is unavailable for this Metal runtime; prepareAccelerationStructure(dataset:) would return .unavailable")
         }
 
         let dataset = makeSparseTestDataset()
 
-        // Render without acceleration
+        // Render the reference Metal-only path with the shader-level ZSKIP heuristic only.
         guard let baselineTexture = try await renderWithoutAcceleration(dataset: dataset, method: 2) else {
-            XCTFail("Failed to render baseline texture")
+            XCTFail("Failed to render reference Metal-only texture")
             return
         }
 
-        // Render with acceleration
-        guard let accelerationTexture = raycaster.prepareAccelerationStructure(dataset: dataset) else {
-            throw XCTSkip("Failed to generate acceleration structure")
-        }
+        // Render shader-level ZSKIP heuristic plus MPS precomputed acceleration structure.
+        let accelerationTexture = try requireAccelerationTexture(for: dataset)
 
         guard let acceleratedTexture = try await renderWithAcceleration(dataset: dataset, method: 2, accelerationTexture: accelerationTexture) else {
             XCTFail("Failed to render accelerated texture")
@@ -208,26 +203,24 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
             "Maximum pixel error should be minimal for MIP"
         )
         #else
-        throw XCTSkip("MetalPerformanceShaders unavailable on this platform")
+        throw XCTSkip("MPS acceleration is unavailable for this platform; prepareAccelerationStructure(dataset:) would return .unavailable")
         #endif
     }
 
     func testNoVisibleArtifactsIntroduced() async throws {
         #if canImport(MetalPerformanceShaders)
         guard raycaster.isMetalPerformanceShadersAvailable else {
-            throw XCTSkip("MPS not available, skipping quality test")
+            throw XCTSkip("MPS acceleration is unavailable for this Metal runtime; prepareAccelerationStructure(dataset:) would return .unavailable")
         }
 
         let dataset = makeComplexTestDataset()
 
         guard let baselineTexture = try await renderWithoutAcceleration(dataset: dataset, method: 1) else {
-            XCTFail("Failed to render baseline texture")
+            XCTFail("Failed to render reference Metal-only texture")
             return
         }
 
-        guard let accelerationTexture = raycaster.prepareAccelerationStructure(dataset: dataset) else {
-            throw XCTSkip("Failed to generate acceleration structure")
-        }
+        let accelerationTexture = try requireAccelerationTexture(for: dataset)
 
         guard let acceleratedTexture = try await renderWithAcceleration(dataset: dataset, method: 1, accelerationTexture: accelerationTexture) else {
             XCTFail("Failed to render accelerated texture")
@@ -260,27 +253,25 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
             )
         }
         #else
-        throw XCTSkip("MetalPerformanceShaders unavailable on this platform")
+        throw XCTSkip("MPS acceleration is unavailable for this platform; prepareAccelerationStructure(dataset:) would return .unavailable")
         #endif
     }
 
     func testEdgeCaseVolumeQuality() async throws {
         #if canImport(MetalPerformanceShaders)
         guard raycaster.isMetalPerformanceShadersAvailable else {
-            throw XCTSkip("MPS not available, skipping quality test")
+            throw XCTSkip("MPS acceleration is unavailable for this Metal runtime; prepareAccelerationStructure(dataset:) would return .unavailable")
         }
 
         // Test with a volume that has sharp transitions (edge case for acceleration)
         let dataset = makeSharpTransitionDataset()
 
         guard let baselineTexture = try await renderWithoutAcceleration(dataset: dataset, method: 1) else {
-            XCTFail("Failed to render baseline texture")
+            XCTFail("Failed to render reference Metal-only texture")
             return
         }
 
-        guard let accelerationTexture = raycaster.prepareAccelerationStructure(dataset: dataset) else {
-            throw XCTSkip("Failed to generate acceleration structure")
-        }
+        let accelerationTexture = try requireAccelerationTexture(for: dataset)
 
         guard let acceleratedTexture = try await renderWithAcceleration(dataset: dataset, method: 1, accelerationTexture: accelerationTexture) else {
             XCTFail("Failed to render accelerated texture")
@@ -304,21 +295,19 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
             "Quality should be maintained even with sharp transitions"
         )
         #else
-        throw XCTSkip("MetalPerformanceShaders unavailable on this platform")
+        throw XCTSkip("MPS acceleration is unavailable for this platform; prepareAccelerationStructure(dataset:) would return .unavailable")
         #endif
     }
 
     func testConsistentQualityAcrossMultipleRenders() async throws {
         #if canImport(MetalPerformanceShaders)
         guard raycaster.isMetalPerformanceShadersAvailable else {
-            throw XCTSkip("MPS not available, skipping quality test")
+            throw XCTSkip("MPS acceleration is unavailable for this Metal runtime; prepareAccelerationStructure(dataset:) would return .unavailable")
         }
 
         let dataset = makeSparseTestDataset()
 
-        guard let accelerationTexture = raycaster.prepareAccelerationStructure(dataset: dataset) else {
-            throw XCTSkip("Failed to generate acceleration structure")
-        }
+        let accelerationTexture = try requireAccelerationTexture(for: dataset)
 
         // Render multiple times and ensure consistency
         var comparisons: [TextureComparison] = []
@@ -326,7 +315,7 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
 
         for i in 0..<iterations {
             guard let baselineTexture = try await renderWithoutAcceleration(dataset: dataset, method: 1) else {
-                XCTFail("Failed to render baseline texture at iteration \(i)")
+                XCTFail("Failed to render reference Metal-only texture at iteration \(i)")
                 continue
             }
 
@@ -371,18 +360,28 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
             )
         }
         #else
-        throw XCTSkip("MetalPerformanceShaders unavailable on this platform")
+        throw XCTSkip("MPS acceleration is unavailable for this platform; prepareAccelerationStructure(dataset:) would return .unavailable")
         #endif
     }
 
     // MARK: - Helper Methods
 
+    private func requireAccelerationTexture(
+        for dataset: VolumeDataset,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws -> any MTLTexture {
+        try RaycasterTestHelpers.requireAccelerationTexture(from: raycaster, for: dataset, file: file, line: line)
+    }
+
     private func renderWithoutAcceleration(
         dataset: VolumeDataset,
         method: Int32
     ) async throws -> MTLTexture? {
+        // Reference path: shader-level ZSKIP heuristic only. The dummy acceleration
+        // texture is bound for layout completeness, but acceleration is not enabled.
         let resources = try raycaster.prepare(dataset: dataset)
-        let transferTexture = try await makeTestTransferTexture(for: dataset)
+        let transferTexture = try await RaycasterTestHelpers.makeTestTransferTexture(for: dataset, device: device)
 
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let computeEncoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -401,7 +400,7 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
         }
 
         // Encode argument buffer for volume_compute.
-        var params = makeTestRenderingParameters(dataset: dataset, method: method)
+        var params = RaycasterTestHelpers.makeTestRenderingParameters(dataset: dataset, method: method)
         var optionValue: UInt16 = 0
         var quaternion = SIMD4<Float>(0, 0, 0, 1)
         var targetViewSize = UInt16(256)
@@ -429,7 +428,7 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
         argumentManager.encode(nil, argumentIndex: .pointCoordsBuffer)
         argumentManager.encode(nil, argumentIndex: .legacyOutputBuffer)
 
-        var camera = makeTestCameraUniforms()
+        var camera = RaycasterTestHelpers.makeTestCameraUniforms()
         memcpy(cameraBuffer.contents(), &camera, CameraUniforms.stride)
 
         computeEncoder.setComputePipelineState(volumeComputePipeline)
@@ -446,7 +445,7 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
         computeEncoder.dispatchThreadgroups(threadgroups, threadsPerThreadgroup: threadgroupSize)
         computeEncoder.endEncoding()
 
-        try await commitAndWait(commandBuffer)
+        try await RaycasterTestHelpers.commitAndWait(commandBuffer)
 
         return outputTexture
     }
@@ -456,8 +455,10 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
         method: Int32,
         accelerationTexture: any MTLTexture
     ) async throws -> MTLTexture? {
+        // Accelerated path: shader-level ZSKIP heuristic plus MPS precomputed
+        // min-max structure, with OPTION_USE_ACCELERATION enabled.
         let resources = try raycaster.prepare(dataset: dataset)
-        let transferTexture = try await makeTestTransferTexture(for: dataset)
+        let transferTexture = try await RaycasterTestHelpers.makeTestTransferTexture(for: dataset, device: device)
 
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let computeEncoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -476,7 +477,7 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
         }
 
         // Encode argument buffer for volume_compute with acceleration enabled.
-        var params = makeTestRenderingParameters(dataset: dataset, method: method)
+        var params = RaycasterTestHelpers.makeTestRenderingParameters(dataset: dataset, method: method)
         let optionUseAcceleration: UInt16 = 1 << 4
         var optionValue: UInt16 = optionUseAcceleration
         var quaternion = SIMD4<Float>(0, 0, 0, 1)
@@ -511,7 +512,7 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
             XCTAssertNotEqual(value & optionUseAcceleration, 0, "OPTION_USE_ACCELERATION must be set for accelerated render")
         }
 
-        var camera = makeTestCameraUniforms()
+        var camera = RaycasterTestHelpers.makeTestCameraUniforms()
         memcpy(cameraBuffer.contents(), &camera, CameraUniforms.stride)
 
         computeEncoder.setComputePipelineState(volumeComputePipeline)
@@ -528,79 +529,9 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
         computeEncoder.dispatchThreadgroups(threadgroups, threadsPerThreadgroup: threadgroupSize)
         computeEncoder.endEncoding()
 
-        try await commitAndWait(commandBuffer)
+        try await RaycasterTestHelpers.commitAndWait(commandBuffer)
 
         return outputTexture
-    }
-
-    private func commitAndWait(_ commandBuffer: MTLCommandBuffer) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-            commandBuffer.addCompletedHandler { buffer in
-                if let error = buffer.error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume(returning: ())
-                }
-            }
-            commandBuffer.commit()
-        }
-    }
-
-    private func makeTestRenderingParameters(dataset: VolumeDataset, method: Int32) -> RenderingParameters {
-        var params = RenderingParameters()
-        params.material.method = method
-        params.material.renderingQuality = 256
-        params.material.voxelMinValue = dataset.intensityRange.lowerBound
-        params.material.voxelMaxValue = dataset.intensityRange.upperBound
-        params.material.datasetMinValue = dataset.intensityRange.lowerBound
-        params.material.datasetMaxValue = dataset.intensityRange.upperBound
-        params.material.dimX = Int32(dataset.dimensions.width)
-        params.material.dimY = Int32(dataset.dimensions.height)
-        params.material.dimZ = Int32(dataset.dimensions.depth)
-        params.renderingStep = 1.0 / Float(max(params.material.renderingQuality, 1))
-        params.earlyTerminationThreshold = 0.95
-        params.intensityRatio = SIMD4<Float>(1, 0, 0, 0)
-        return params
-    }
-
-    private func makeTestCameraUniforms() -> CameraUniforms {
-        var camera = CameraUniforms()
-        camera.modelMatrix = matrix_identity_float4x4
-        camera.inverseModelMatrix = matrix_identity_float4x4
-        camera.inverseViewProjectionMatrix = matrix_identity_float4x4
-        camera.cameraPositionLocal = SIMD3<Float>(0, 0, -2)
-        camera.frameIndex = 0
-        camera.projectionType = 0
-        return camera
-    }
-
-    private func makeTestTransferFunction(for dataset: VolumeDataset) -> TransferFunction {
-        var tf = TransferFunction()
-        tf.name = "TestTF"
-        tf.minimumValue = Float(dataset.intensityRange.lowerBound)
-        tf.maximumValue = Float(dataset.intensityRange.upperBound)
-        tf.colorSpace = .linear
-        tf.colourPoints = [
-            .init(dataValue: tf.minimumValue, colourValue: .init(r: 1, g: 1, b: 1, a: 1)),
-            .init(dataValue: tf.maximumValue, colourValue: .init(r: 1, g: 1, b: 1, a: 1))
-        ]
-        tf.alphaPoints = [
-            .init(dataValue: tf.minimumValue, alphaValue: 0.0),
-            .init(dataValue: (tf.minimumValue + tf.maximumValue) * 0.5, alphaValue: 1.0),
-            .init(dataValue: tf.maximumValue, alphaValue: 0.0)
-        ]
-        return tf
-    }
-
-    private func makeTestTransferTexture(for dataset: VolumeDataset) async throws -> any MTLTexture {
-        let tf = makeTestTransferFunction(for: dataset)
-        let texture = await MainActor.run {
-            TransferFunctions.texture(for: tf, device: device)
-        }
-        guard let texture else {
-            throw XCTSkip("Failed to create transfer function texture")
-        }
-        return texture
     }
 
     private struct TextureComparison {

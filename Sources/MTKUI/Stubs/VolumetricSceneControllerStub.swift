@@ -17,9 +17,6 @@ import simd
 import Combine
 import MTKCore
 import MTKSceneKit
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-import MetalKit
-#endif
 
 @MainActor
 public final class VolumetricSceneController: VolumetricSceneControlling, ObservableObject {
@@ -35,9 +32,6 @@ public final class VolumetricSceneController: VolumetricSceneControlling, Observ
     }
 
     public let surface: any RenderSurface
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-    public var mpsView: MTKView? { nil }
-#endif
     public var transferFunctionDomain: ClosedRange<Float>?
     private var storedMetadata: (dimension: SIMD3<Int32>, resolution: SIMD3<Float>)?
 
@@ -118,10 +112,6 @@ public final class VolumetricSceneController: VolumetricSceneControlling, Observ
     }
 
     public func setRenderMode(_ mode: VolumetricRenderMode) async { _ = mode }
-
-    public func setRenderingBackend(_ backend: VolumetricRenderingBackend) async -> VolumetricRenderingBackend {
-        backend
-    }
 
     public func updateTransferFunctionShift(_ shift: Float) async { _ = shift }
 

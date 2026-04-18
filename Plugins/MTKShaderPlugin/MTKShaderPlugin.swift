@@ -1,6 +1,6 @@
 //  MTKShaderPlugin.swift
 //  MTK
-//  Build-tool plugin that compiles shader sources into MTK.metallib.
+//  Required build-tool plugin that compiles shader sources into MTK.metallib.
 //  Thales Matheus Mendonça Santos — October 2025
 
 import PackagePlugin
@@ -28,12 +28,12 @@ private extension MTKShaderPlugin {
         let outputFile = outputDir.appending("MTK.metallib")
 
         guard FileManager.default.isExecutableFile(atPath: script.string) else {
-            Diagnostics.warning("MTKShaderPlugin: missing executable script at \(script.string)")
+            Diagnostics.error("MTKShaderPlugin: missing executable script at \(script.string)")
             return []
         }
 
         guard FileManager.default.fileExists(atPath: shaderDir.string) else {
-            Diagnostics.warning("MTKShaderPlugin: shader directory \(shaderDir.string) not found")
+            Diagnostics.error("MTKShaderPlugin: shader directory \(shaderDir.string) not found")
             return []
         }
 
@@ -42,7 +42,7 @@ private extension MTKShaderPlugin {
                 displayName: "Compile MTK.metallib",
                 executable: script,
                 arguments: [shaderDir.string, outputFile.string],
-                environment: [:],
+                environment: ["METALLIB_STRICT": "1"],
                 outputFilesDirectory: outputDir
             )
         ]

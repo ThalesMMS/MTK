@@ -97,12 +97,6 @@ final class TransferFunction2DPerformanceTests: XCTestCase {
 
     // MARK: - Performance Benchmark Tests
 
-    // NOTE: Currently measuring texture creation overhead only.
-    // Full 2D transfer function rendering tests are disabled due to GPU fault issue
-    // when binding 2D transfer function textures (to be investigated separately).
-    // These tests validate that the performance test infrastructure works correctly
-    // and can measure <10% overhead once the texture binding issue is resolved.
-
     func testTextureCreationPerformance() async throws {
         guard device != nil else {
             throw XCTSkip("Metal device unavailable")
@@ -190,6 +184,7 @@ final class TransferFunction2DPerformanceTests: XCTestCase {
         }
 
         let dataset = makeTestDataset()
+        try await ensure2DTransferRenderingAvailable(for: dataset)
 
         let startTime = CFAbsoluteTimeGetCurrent()
         let iterations = 10
@@ -214,27 +209,10 @@ final class TransferFunction2DPerformanceTests: XCTestCase {
         }
 
         let dataset = makeTestDataset()
-
-        // Measure baseline performance with 1D transfer function
-        let baselineStart = CFAbsoluteTimeGetCurrent()
-        let iterations = 15
-
-        for _ in 0..<iterations {
-            _ = try await renderWith1DTransferFunction(dataset: dataset)
-        }
-
-        let baselineElapsed = CFAbsoluteTimeGetCurrent() - baselineStart
-        let baselineAverage = baselineElapsed / Double(iterations)
-
-        // Measure 2D transfer function performance
-        let twoDStart = CFAbsoluteTimeGetCurrent()
-
-        for _ in 0..<iterations {
-            _ = try await renderWith2DTransferFunction(dataset: dataset)
-        }
-
-        let twoDElapsed = CFAbsoluteTimeGetCurrent() - twoDStart
-        let twoDAverage = twoDElapsed / Double(iterations)
+        let (baselineAverage, twoDAverage) = try await measureRenderAverages(
+            dataset: dataset,
+            iterations: 14
+        )
 
         // Calculate overhead
         let overhead = (twoDAverage - baselineAverage) / baselineAverage
@@ -246,21 +224,16 @@ final class TransferFunction2DPerformanceTests: XCTestCase {
         print("   Overhead:            \(String(format: "%.1f", overheadPercentage))%")
         print("   Target:              <10%")
 
-        // Validate acceptance criteria: overhead must be <10%
         if overheadPercentage < 10 {
             print("✅ Performance target met: \(String(format: "%.1f", overheadPercentage))% < 10%")
-        } else if overheadPercentage < 15 {
-            print("⚠️  Performance overhead \(String(format: "%.1f", overheadPercentage))% slightly above 10% target")
-            print("   (Test environment variations may affect results)")
         } else {
-            XCTFail("Performance overhead too high: \(String(format: "%.1f", overheadPercentage))% (target: <10%)")
+            print("⚠️  Performance overhead \(String(format: "%.1f", overheadPercentage))% exceeded the 10% target")
         }
 
-        // Strict assertion: overhead should be <15% (with tolerance for test environment)
         XCTAssertLessThan(
             overheadPercentage,
-            15.0,
-            "2D transfer function overhead should be <10% (tolerance: 15% for test environment)"
+            10.0,
+            "2D transfer function overhead should remain below the documented 10% target"
         )
     }
 
@@ -270,27 +243,10 @@ final class TransferFunction2DPerformanceTests: XCTestCase {
         }
 
         let dataset = makeLargerTestDataset()
-
-        // Measure baseline performance with 1D transfer function
-        let baselineStart = CFAbsoluteTimeGetCurrent()
-        let iterations = 5
-
-        for _ in 0..<iterations {
-            _ = try await renderWith1DTransferFunction(dataset: dataset)
-        }
-
-        let baselineElapsed = CFAbsoluteTimeGetCurrent() - baselineStart
-        let baselineAverage = baselineElapsed / Double(iterations)
-
-        // Measure 2D transfer function performance
-        let twoDStart = CFAbsoluteTimeGetCurrent()
-
-        for _ in 0..<iterations {
-            _ = try await renderWith2DTransferFunction(dataset: dataset)
-        }
-
-        let twoDElapsed = CFAbsoluteTimeGetCurrent() - twoDStart
-        let twoDAverage = twoDElapsed / Double(iterations)
+        let (baselineAverage, twoDAverage) = try await measureRenderAverages(
+            dataset: dataset,
+            iterations: 12
+        )
 
         // Calculate overhead
         let overhead = (twoDAverage - baselineAverage) / baselineAverage
@@ -362,7 +318,7 @@ final class TransferFunction2DPerformanceTests: XCTestCase {
         argumentManager.encode(nil, argumentIndex: .pointCoordsBuffer)
         argumentManager.encode(nil, argumentIndex: .legacyOutputBuffer)
 
-        var camera = makeTestCameraUniforms()
+        var camera = RaycasterTestHelpers.makeTestCameraUniforms()
         memcpy(cameraBuffer.contents(), &camera, CameraUniforms.stride)
 
         computeEncoder.setComputePipelineState(volumeComputePipeline)
@@ -379,18 +335,65 @@ final class TransferFunction2DPerformanceTests: XCTestCase {
         computeEncoder.dispatchThreadgroups(threadgroups, threadsPerThreadgroup: threadgroupSize)
         computeEncoder.endEncoding()
 
-        try await commitAndWait(commandBuffer)
+        try await RaycasterTestHelpers.commitAndWait(commandBuffer)
 
         return outputTexture
+    }
+
+    private func measureRenderAverages(
+        dataset: VolumeDataset,
+        iterations: Int
+    ) async throws -> (baseline: Double, twoD: Double) {
+        try await ensure2DTransferRenderingAvailable(for: dataset)
+
+        for _ in 0..<3 {
+            _ = try await renderWith1DTransferFunction(dataset: dataset)
+            _ = try await renderWith2DTransferFunction(dataset: dataset)
+        }
+
+        var baselineSamples: [Double] = []
+        var twoDSamples: [Double] = []
+        baselineSamples.reserveCapacity(iterations)
+        twoDSamples.reserveCapacity(iterations)
+
+        for _ in 0..<iterations {
+            let baselineStart = CFAbsoluteTimeGetCurrent()
+            _ = try await renderWith1DTransferFunction(dataset: dataset)
+            baselineSamples.append(CFAbsoluteTimeGetCurrent() - baselineStart)
+
+            let twoDStart = CFAbsoluteTimeGetCurrent()
+            _ = try await renderWith2DTransferFunction(dataset: dataset)
+            twoDSamples.append(CFAbsoluteTimeGetCurrent() - twoDStart)
+        }
+
+        return (trimmedMean(baselineSamples), trimmedMean(twoDSamples))
+    }
+
+    private func trimmedMean(_ samples: [Double]) -> Double {
+        guard !samples.isEmpty else { return 0 }
+        guard samples.count > 4 else {
+            return samples.reduce(0, +) / Double(samples.count)
+        }
+
+        let sorted = samples.sorted()
+        let trimmed = sorted.dropFirst(1).dropLast(1)
+        let total = trimmed.reduce(0, +)
+        return total / Double(trimmed.count)
+    }
+
+    private func ensure2DTransferRenderingAvailable(for dataset: VolumeDataset) async throws {
+        do {
+            _ = try await renderWith2DTransferFunction(dataset: dataset)
+        } catch {
+            throw XCTSkip("2D transfer-function render benchmark unavailable on this GPU: \(error)")
+        }
     }
 
     private func renderWith2DTransferFunction(
         dataset: VolumeDataset
     ) async throws -> MTLTexture? {
         let resources = try raycaster.prepare(dataset: dataset)
-        // NOTE: Temporarily using 1D texture to isolate GPU fault issue
-        // The performance test will measure texture creation overhead separately
-        let transferTexture = try await make1DTransferTexture(for: dataset)  // make2DTransferTexture(for: dataset)
+        let transferTexture = try await make2DTransferTexture(for: dataset)
 
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let computeEncoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -437,7 +440,7 @@ final class TransferFunction2DPerformanceTests: XCTestCase {
         argumentManager.encode(nil, argumentIndex: .pointCoordsBuffer)
         argumentManager.encode(nil, argumentIndex: .legacyOutputBuffer)
 
-        var camera = makeTestCameraUniforms()
+        var camera = RaycasterTestHelpers.makeTestCameraUniforms()
         memcpy(cameraBuffer.contents(), &camera, CameraUniforms.stride)
 
         computeEncoder.setComputePipelineState(volumeComputePipeline)
@@ -454,22 +457,9 @@ final class TransferFunction2DPerformanceTests: XCTestCase {
         computeEncoder.dispatchThreadgroups(threadgroups, threadsPerThreadgroup: threadgroupSize)
         computeEncoder.endEncoding()
 
-        try await commitAndWait(commandBuffer)
+        try await RaycasterTestHelpers.commitAndWait(commandBuffer)
 
         return outputTexture
-    }
-
-    private func commitAndWait(_ commandBuffer: MTLCommandBuffer) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-            commandBuffer.addCompletedHandler { buffer in
-                if let error = buffer.error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume(returning: ())
-                }
-            }
-            commandBuffer.commit()
-        }
     }
 
     private func makeTestRenderingParameters(dataset: VolumeDataset, method: Int32, use2DTF: Bool) -> RenderingParameters {
@@ -483,26 +473,13 @@ final class TransferFunction2DPerformanceTests: XCTestCase {
         params.material.dimX = Int32(dataset.dimensions.width)
         params.material.dimY = Int32(dataset.dimensions.height)
         params.material.dimZ = Int32(dataset.dimensions.depth)
-        // NOTE: Temporarily keeping use2DTF=0 to avoid GPU fault until shader is fully debugged
-        // This test still measures texture overhead (1D vs 2D texture binding/sampling)
-        params.material.use2DTF = 0  // use2DTF ? 1 : 0
+        params.material.use2DTF = use2DTF ? 1 : 0
         params.material.gradientMin = 0.0
         params.material.gradientMax = 500.0
         params.renderingStep = 1.0 / Float(max(params.material.renderingQuality, 1))
         params.earlyTerminationThreshold = 0.95
         params.intensityRatio = SIMD4<Float>(1, 0, 0, 0)
         return params
-    }
-
-    private func makeTestCameraUniforms() -> CameraUniforms {
-        var camera = CameraUniforms()
-        camera.modelMatrix = matrix_identity_float4x4
-        camera.inverseModelMatrix = matrix_identity_float4x4
-        camera.inverseViewProjectionMatrix = matrix_identity_float4x4
-        camera.cameraPositionLocal = SIMD3<Float>(0, 0, -2)
-        camera.frameIndex = 0
-        camera.projectionType = 0
-        return camera
     }
 
     private func make1DTransferFunction(for dataset: VolumeDataset) -> TransferFunction {

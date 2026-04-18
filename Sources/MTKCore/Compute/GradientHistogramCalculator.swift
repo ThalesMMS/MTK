@@ -24,8 +24,8 @@ import OSLog
                                 defaultIntensityBinCount: Int,
                                 defaultGradientBinCount: Int,
                                 maxThreadgroupMemoryLength: Int) -> GradientHistogramDispatchPlan {
-        let intensityBins = VolumetricMath.clampBinCount(requestedIntensityBins > 0 ? requestedIntensityBins : defaultIntensityBinCount)
-        let gradientBins = VolumetricMath.clampBinCount(requestedGradientBins > 0 ? requestedGradientBins : defaultGradientBinCount)
+        let intensityBins = clampGradientHistogramBinCount(requestedIntensityBins > 0 ? requestedIntensityBins : defaultIntensityBinCount)
+        let gradientBins = clampGradientHistogramBinCount(requestedGradientBins > 0 ? requestedGradientBins : defaultGradientBinCount)
         let totalBins = intensityBins * gradientBins
         let bufferLength = totalBins * MemoryLayout<UInt32>.stride
         let usesThreadgroupMemory = bufferLength <= max(0, maxThreadgroupMemoryLength)
@@ -36,6 +36,10 @@ import OSLog
                                             bufferLength: bufferLength,
                                             usesThreadgroupMemory: usesThreadgroupMemory,
                                             kernelName: kernelName)
+    }
+
+    private static func clampGradientHistogramBinCount(_ value: Int) -> Int {
+        max(1, min(value, 4096))
     }
 }
 

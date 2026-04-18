@@ -10,9 +10,6 @@ import Foundation
 import Metal
 import OSLog
 import simd
-#if canImport(CoreGraphics)
-import CoreGraphics
-#endif
 #if canImport(MetalPerformanceShaders)
 import MetalPerformanceShaders
 #endif
@@ -24,7 +21,15 @@ import MetalPerformanceShaders
 /// - Fragment-based volume rendering (SceneKit integration)
 /// - Compute-based volume rendering (standalone rendering)
 /// - Dataset texture management
-/// - Empty space acceleration structure generation
+/// - Optional MPS empty space acceleration structure generation
+///
+/// The raycaster supports two explicit resource configurations:
+/// - **Metal-only resources:** Always available on supported Metal devices.
+///   ``load(dataset:)`` and ``prepare(dataset:texture:)`` create resources for this configuration.
+/// - **Metal resources with an MPS acceleration texture:** Available when
+///   ``isMetalPerformanceShadersAvailable`` is `true`. Use
+///   ``load(dataset:includeAccelerationStructure:)`` or
+///   ``prepare(dataset:texture:includeAccelerationStructure:)`` to request the extra texture.
 ///
 /// ## Overview
 ///
@@ -82,7 +87,7 @@ import MetalPerformanceShaders
 ///
 /// ### Utilities
 /// - ``makeCommandBuffer(label:)``
-/// - ``makeFallbackImage(dataset:slice:)``
+/// - ``makeDebugSliceImage(dataset:slice:)``
 /// - ``resetCaches()``
 ///
 /// ### Supporting Types
@@ -102,6 +107,22 @@ public final class MetalRaycaster {
         case minip
     }
 
+#if canImport(MetalPerformanceShaders)
+    public typealias AccelerationStructureGenerationResult = MPSEmptySpaceAccelerator.GenerationResult
+#else
+    public enum AccelerationStructureGenerationResult {
+        public enum UnavailabilityReason: Equatable {
+            case mpsUnsupportedOnDevice
+            case libraryUnavailable
+            case acceleratorInitializationFailed
+        }
+
+        case success(any MTLTexture)
+        case unavailable(reason: UnavailabilityReason)
+        case failed(any Swift.Error)
+    }
+#endif
+
     /// GPU resources for a loaded volume dataset.
     ///
     /// Bundles the dataset with its Metal textures, dimensions, spacing, and optional
@@ -120,7 +141,20 @@ public final class MetalRaycaster {
         public let spacing: SIMD3<Float>
 
         /// Optional empty space acceleration texture (MPS min-max pyramid).
+        ///
+        /// This stores only the texture payload from a successful acceleration
+        /// request. It is populated when acceleration is requested and
+        /// ``accelerationGenerationResult`` resolves to `.success`.
         public let accelerationTexture: (any MTLTexture)?
+
+        /// Explicit result for an acceleration-structure request.
+        ///
+        /// This is `nil` when acceleration was not requested. When a request was
+        /// made it preserves the full typed outcome from
+        /// ``prepareAccelerationStructure(dataset:)`` so callers can distinguish
+        /// `.success`, `.unavailable`, and `.failed` without re-running
+        /// generation.
+        public let accelerationGenerationResult: AccelerationStructureGenerationResult?
     }
 
     /// Errors that can occur during raycaster initialization or operation.
@@ -177,10 +211,7 @@ public final class MetalRaycaster {
     /// - Parameters:
     ///   - device: Metal device for GPU operations.
     ///   - commandQueue: Optional command queue. If `nil`, creates a new queue from the device.
-    ///   - library: Optional Metal shader library. If `nil`, attempts to load in this order:
-    ///     1. `MTK.metallib` from Bundle.module
-    ///     2. Device's default library
-    ///     3. Default library from Bundle.module (iOS 13+)
+    ///   - library: Optional Metal shader library. If `nil`, loads `MTK.metallib` from `Bundle.module`.
     ///
     /// - Throws:
     ///   - ``Error/unsupportedDevice`` if the device does not support 3D textures.
@@ -196,9 +227,9 @@ public final class MetalRaycaster {
     /// ## Metal Performance Shaders
     ///
     /// MPS availability is detected automatically via `MPSSupportsMTLDevice()`.
-    /// When available, MPS enables:
-    /// - Accelerated histogram calculation (``VolumeHistogramCalculator``)
-    /// - Empty space skipping acceleration (``prepareAccelerationStructure(dataset:)``)
+    /// When available, MPS enables optional empty space skipping acceleration via
+    /// ``prepareAccelerationStructure(dataset:)``. Histogram and statistics features
+    /// are separate Metal compute workflows and do not depend on MPS.
     ///
     /// ## Usage
     ///
@@ -246,22 +277,13 @@ public final class MetalRaycaster {
             throw Error.commandQueueUnavailable
         }
 
-        let resolvedLibrary: (any MTLLibrary)?
-        if let library {
-            resolvedLibrary = library
-        } else if let url = Bundle.module.url(forResource: "MTK", withExtension: "metallib"),
-                  let lib = try? device.makeLibrary(URL: url) {
-            resolvedLibrary = lib
-        } else if let defaultLibrary = device.makeDefaultLibrary() {
-            resolvedLibrary = defaultLibrary
-        } else if #available(iOS 13.0, tvOS 13.0, macOS 11.0, *),
-                  let bundleLibrary = try? device.makeDefaultLibrary(bundle: Bundle.module) {
-            resolvedLibrary = bundleLibrary
-        } else {
-            resolvedLibrary = nil
-        }
-
-        guard let resolvedLibrary else {
+        let resolvedLibrary: any MTLLibrary
+        do {
+            resolvedLibrary = try library ?? ShaderLibraryLoader.loadLibrary(for: device)
+        } catch let err {
+            let errorDescription = String(describing: err)
+            Logger(subsystem: "com.mtk.volumerendering", category: "MetalRaycaster")
+                .error("Failed to resolve Metal shader library for device '\(device.name)': \(errorDescription)")
             throw Error.libraryUnavailable
         }
 
@@ -275,9 +297,9 @@ public final class MetalRaycaster {
 
     /// Whether Metal Performance Shaders (MPS) is available on this device.
     ///
-    /// When `true`, MPS-accelerated features are enabled:
-    /// - ``VolumeHistogramCalculator`` uses MPS histogram kernel
-    /// - ``prepareAccelerationStructure(dataset:)`` generates MPS min-max pyramids
+    /// When `true`, ``prepareAccelerationStructure(dataset:)`` can generate MPS
+    /// min-max pyramids for empty space skipping. Metal-only resource preparation
+    /// does not depend on this value.
     ///
     /// MPS is available on:
     /// - iOS 10+, tvOS 10+, macOS 10.13+ with supported GPUs
@@ -461,17 +483,19 @@ public final class MetalRaycaster {
     /// - Parameters:
     ///   - dataset: The volume dataset to prepare.
     ///   - texture: Optional pre-created 3D texture. If `nil`, a texture is generated automatically.
-    ///   - includeAccelerationStructure: Whether to generate an MPS min-max pyramid for empty space skipping.
+    ///   - includeAccelerationStructure: Whether to request the MPS-only min-max pyramid for empty space skipping.
     ///
     /// - Returns: A ``DatasetResources`` bundle with optional `accelerationTexture`.
+    ///   The texture is populated only when acceleration is requested and
+    ///   ``accelerationGenerationResult`` resolves to `.success`.
     ///
     /// - Throws: ``Error/datasetUnavailable`` if texture creation fails.
     ///
     /// ## Acceleration Structure
     ///
     /// When `includeAccelerationStructure` is `true`:
-    /// - Calls ``prepareAccelerationStructure(dataset:)`` to generate MPS min-max pyramid
-    /// - Returns `nil` for `accelerationTexture` if MPS is unavailable
+    /// - Generates an MPS min-max pyramid from the prepared 3D texture
+    /// - Stores the texture only when that result is `.success`
     /// - One-time cost: ~10-50ms depending on dataset size
     /// - Performance benefit: 30%+ speedup for sparse volumes (CT scans with large air regions)
     ///
@@ -498,16 +522,19 @@ public final class MetalRaycaster {
             throw Error.datasetUnavailable
         }
 
-        let accelerationTexture = includeAccelerationStructure
-            ? prepareAccelerationStructure(dataset: dataset)
-            : nil
+        let accelerationResources = resolvedAccelerationResources(
+            for: dataset,
+            texture: texture,
+            includeAccelerationStructure: includeAccelerationStructure
+        )
 
         let resources = DatasetResources(
             dataset: dataset,
             texture: texture,
             dimensions: factory.dimension,
             spacing: factory.resolution,
-            accelerationTexture: accelerationTexture
+            accelerationTexture: accelerationResources.texture,
+            accelerationGenerationResult: accelerationResources.result
         )
         currentDataset = resources
         return resources
@@ -552,6 +579,8 @@ public final class MetalRaycaster {
     ///   - includeAccelerationStructure: Whether to generate empty space acceleration.
     ///
     /// - Returns: A ``DatasetResources`` bundle with optional acceleration texture.
+    ///   The texture is populated only when acceleration is requested and
+    ///   ``accelerationGenerationResult`` resolves to `.success`.
     ///
     /// - Throws: ``Error/datasetUnavailable`` if texture creation fails.
     ///
@@ -591,8 +620,10 @@ public final class MetalRaycaster {
     ///
     /// - Parameter dataset: The source volume dataset.
     ///
-    /// - Returns: An `MTLTexture` containing the acceleration structure, or `nil` if MPS
-    ///   is unavailable or generation fails.
+    /// - Returns: An explicit acceleration-generation result.
+    ///   - `.success(texture)` when the min-max pyramid is ready
+    ///   - `.unavailable(reason:)` when MPS acceleration cannot be provided
+    ///   - `.failed(error)` when generation attempted work and failed
     ///
     /// ## How It Works
     ///
@@ -613,7 +644,7 @@ public final class MetalRaycaster {
     ///
     /// ## MPS Availability
     ///
-    /// Returns `nil` when MPS is unavailable:
+    /// Returns `.unavailable(reason: .mpsUnsupportedOnDevice)` when MPS is unavailable:
     /// - macOS < 10.13
     /// - Non-Apple GPUs on macOS
     /// - iOS Simulator (Intel Macs)
@@ -621,23 +652,27 @@ public final class MetalRaycaster {
     /// ## Usage
     ///
     /// ```swift
-    /// if let accelTexture = raycaster.prepareAccelerationStructure(dataset: dataset) {
-    ///     // Pass to compute kernel via argument buffer
+    /// switch raycaster.prepareAccelerationStructure(dataset: dataset) {
+    /// case .success(let accelTexture):
     ///     encoder.setTexture(accelTexture, index: accelerationTextureIndex)
-    /// } else {
-    ///     print("MPS unavailable, using fallback ray marching")
+    /// case .unavailable(let reason):
+    ///     print("MPS acceleration unavailable: \(reason)")
+    /// case .failed(let error):
+    ///     print("Acceleration generation failed: \(error)")
     /// }
     /// ```
     ///
-    /// - Note: The acceleration structure is automatically used by ``MetalVolumeRenderingAdapter``
-    ///   when available. Manual integration is only needed for custom rendering pipelines.
+    /// - Note: ``MetalVolumeRenderingAdapter`` preserves the Metal-only rendering
+    ///   contract and does not populate this acceleration texture. Custom rendering
+    ///   pipelines can bind the returned texture when they explicitly opt into MPS
+    ///   acceleration.
     ///
     /// - SeeAlso: ``isMetalPerformanceShadersAvailable`` to check MPS availability before calling.
-    public func prepareAccelerationStructure(dataset: VolumeDataset) -> (any MTLTexture)? {
+    public func prepareAccelerationStructure(dataset: VolumeDataset) -> AccelerationStructureGenerationResult {
 #if canImport(MetalPerformanceShaders)
         guard mpsAvailable else {
             logger.debug("MPS unavailable, skipping acceleration structure generation")
-            return nil
+            return .unavailable(reason: .mpsUnsupportedOnDevice)
         }
         return MPSEmptySpaceAccelerator.generateTexture(device: device,
                                                         commandQueue: commandQueue,
@@ -646,11 +681,48 @@ public final class MetalRaycaster {
                                                         logger: logger)
 #else
         logger.debug("MetalPerformanceShaders not available on this platform")
-        return nil
+        return .unavailable(reason: .mpsUnsupportedOnDevice)
 #endif
     }
 
-    /// Loads a built-in synthetic volume dataset for testing and development.
+    /// Generates an acceleration structure from a caller-supplied 3D texture.
+    ///
+    /// This preserves alignment between the prepared volume texture and the optional
+    /// acceleration pyramid when callers pass preprocessed or externally-managed textures.
+    public func prepareAccelerationStructure(
+        texture: any MTLTexture,
+        intensityRange: ClosedRange<Int32>
+    ) -> AccelerationStructureGenerationResult {
+#if canImport(MetalPerformanceShaders)
+        guard mpsAvailable else {
+            logger.debug("MPS unavailable, skipping acceleration structure generation")
+            return .unavailable(reason: .mpsUnsupportedOnDevice)
+        }
+
+        switch MPSEmptySpaceAccelerator.create(device: device,
+                                               commandQueue: commandQueue,
+                                               library: library) {
+        case .success(let accelerator):
+            do {
+                let structure = try accelerator.generateAccelerationStructure(
+                    from: texture,
+                    intensityRange: intensityRange
+                )
+                return .success(structure.texture)
+            } catch {
+                logger.error("Failed to generate acceleration structure from prepared texture: \(error.localizedDescription)")
+                return .failed(error)
+            }
+        case .unavailable(let reason):
+            return .unavailable(reason: reason)
+        }
+#else
+        logger.debug("MetalPerformanceShaders not available on this platform")
+        return .unavailable(reason: .mpsUnsupportedOnDevice)
+#endif
+    }
+
+    /// Loads a built-in preset volume dataset for testing and development.
     ///
     /// MTK includes procedurally generated test datasets for:
     /// - Sphere primitive
@@ -662,7 +734,8 @@ public final class MetalRaycaster {
     ///
     /// - Returns: A ``DatasetResources`` bundle without acceleration structure.
     ///
-    /// - Throws: ``Error/datasetUnavailable`` if texture creation fails.
+    /// - Throws: ``VolumeTextureFactory/PresetLoadingError`` if preset resource loading fails,
+    ///   or ``Error/datasetUnavailable`` if texture creation fails.
     ///
     /// ## Available Presets
     ///
@@ -684,7 +757,7 @@ public final class MetalRaycaster {
         try loadBuiltinDataset(for: preset, includeAccelerationStructure: false)
     }
 
-    /// Loads a built-in synthetic volume dataset with optional acceleration structure.
+    /// Loads a built-in preset volume dataset with optional acceleration structure.
     ///
     /// Extended version of ``loadBuiltinDataset(for:)`` that supports acceleration structure
     /// generation for performance testing.
@@ -695,7 +768,8 @@ public final class MetalRaycaster {
     ///
     /// - Returns: A ``DatasetResources`` bundle with optional acceleration texture.
     ///
-    /// - Throws: ``Error/datasetUnavailable`` if texture creation fails.
+    /// - Throws: ``VolumeTextureFactory/PresetLoadingError`` if preset resource loading fails,
+    ///   or ``Error/datasetUnavailable`` if texture creation fails.
     ///
     /// ## Usage
     ///
@@ -717,119 +791,65 @@ public final class MetalRaycaster {
     @discardableResult
     public func loadBuiltinDataset(for preset: VolumeDatasetPreset,
                                    includeAccelerationStructure: Bool) throws -> DatasetResources {
-        let factory = VolumeTextureFactory(preset: preset)
+        let factory: VolumeTextureFactory
+        do {
+            factory = try VolumeTextureFactory(preset: preset)
+        } catch {
+            logger.error("Failed to load built-in dataset for preset \(preset.rawValue): \(String(describing: error))")
+            throw error
+        }
+
         guard let texture = factory.generate(device: device) else {
             logger.error("Failed to create built-in dataset for preset: \(preset.rawValue)")
             throw Error.datasetUnavailable
         }
 
-        let accelerationTexture = includeAccelerationStructure
-            ? prepareAccelerationStructure(dataset: factory.dataset)
-            : nil
+        let accelerationResources = resolvedAccelerationResources(
+            for: factory.dataset,
+            texture: texture,
+            includeAccelerationStructure: includeAccelerationStructure
+        )
 
         let resources = DatasetResources(
             dataset: factory.dataset,
             texture: texture,
             dimensions: factory.dimension,
             spacing: factory.resolution,
-            accelerationTexture: accelerationTexture
+            accelerationTexture: accelerationResources.texture,
+            accelerationGenerationResult: accelerationResources.result
         )
         currentDataset = resources
         return resources
     }
 
-    /// Generates a CPU-based grayscale slice image for preview or fallback rendering.
-    ///
-    /// Creates a 2D image by extracting a single axial slice from the volume.
-    /// Intensity values are normalized to the dataset's intensity range and mapped
-    /// to 8-bit grayscale.
-    ///
+    /// Resolve acceleration-structure generation for a dataset's texture when requested.
+    /// 
+    /// If `includeAccelerationStructure` is false, no generation is attempted and `(nil, nil)` is returned. When generation is requested, returns the explicit `AccelerationStructureGenerationResult` and, if generation succeeded, the resulting acceleration `MTLTexture`; if generation was unavailable or failed, the result is returned while the texture is `nil`.
     /// - Parameters:
-    ///   - dataset: The source volume dataset.
-    ///   - index: The slice index (Z coordinate) to extract. If `nil`, uses the middle slice.
-    ///
-    /// - Returns: A `CGImage` containing the grayscale slice, or `nil` if image creation fails
-    ///   or CoreGraphics is unavailable.
-    ///
-    /// ## Performance
-    ///
-    /// Fallback image generation is CPU-based and relatively slow:
-    /// - 256×256 slice: ~1-2ms
-    /// - 512×512 slice: ~5-10ms
-    /// - 1024×1024 slice: ~20-40ms
-    ///
-    /// For interactive rendering, use GPU-accelerated ``makeFragmentPipeline(colorPixelFormat:depthPixelFormat:sampleCount:label:)``
-    /// or ``makeComputePipeline(for:label:)`` instead.
-    ///
-    /// ## Usage
-    ///
-    /// ```swift
-    /// // Generate middle slice
-    /// if let preview = raycaster.makeFallbackImage(dataset: dataset) {
-    ///     imageView.image = UIImage(cgImage: preview)
-    /// }
-    ///
-    /// // Generate specific slice
-    /// if let slice = raycaster.makeFallbackImage(dataset: dataset, slice: 100) {
-    ///     imageView.image = UIImage(cgImage: slice)
-    /// }
-    /// ```
-    ///
-    /// - Note: This method is primarily used for testing, debugging, and situations where
-    ///   GPU rendering is unavailable.
-    public func makeFallbackImage(dataset: VolumeDataset,
-                                  slice index: Int? = nil) -> CGImage? {
-#if canImport(CoreGraphics)
-        let width = dataset.dimensions.width
-        let height = dataset.dimensions.height
-        let depth = dataset.dimensions.depth
-        let sliceIndex = max(0, min(index ?? depth / 2, depth - 1))
-        let voxelsPerSlice = width * height
-        var pixels = [UInt8](repeating: 0, count: voxelsPerSlice)
-        let minValue = dataset.intensityRange.lowerBound
-        let maxValue = dataset.intensityRange.upperBound
-        let span = max(maxValue - minValue, 1)
-
-        let startOffset = sliceIndex * voxelsPerSlice
-
-        return dataset.data.withUnsafeBytes { rawBuffer -> CGImage? in
-            guard let baseAddress = rawBuffer.baseAddress else { return nil }
-            switch dataset.pixelFormat {
-            case .int16Signed:
-                let typed = baseAddress.bindMemory(to: Int16.self, capacity: dataset.voxelCount)
-                for voxel in 0..<voxelsPerSlice {
-                    let value = Int32(typed[startOffset + voxel])
-                    let normalized = Float(value - minValue) / Float(span)
-                    let clamped = simd_clamp(normalized, 0, 1)
-                    pixels[voxel] = UInt8(clamping: Int(clamped * 255))
-                }
-            case .int16Unsigned:
-                let typed = baseAddress.bindMemory(to: UInt16.self, capacity: dataset.voxelCount)
-                for voxel in 0..<voxelsPerSlice {
-                    let value = Int32(typed[startOffset + voxel])
-                    let normalized = Float(value - minValue) / Float(span)
-                    let clamped = simd_clamp(normalized, 0, 1)
-                    pixels[voxel] = UInt8(clamping: Int(clamped * 255))
-                }
-            }
-
-            guard let provider = CGDataProvider(data: Data(pixels) as CFData) else { return nil }
-            let colorSpace = CGColorSpaceCreateDeviceGray()
-            return CGImage(width: width,
-                           height: height,
-                           bitsPerComponent: 8,
-                           bitsPerPixel: 8,
-                           bytesPerRow: width,
-                           space: colorSpace,
-                           bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
-                           provider: provider,
-                           decode: nil,
-                           shouldInterpolate: false,
-                           intent: .defaultIntent)
+    ///   - dataset: The source volume dataset (used for generation parameters such as intensity range).
+    ///   - texture: The 3D volume texture to use as input for acceleration-structure generation.
+    ///   - includeAccelerationStructure: Whether to attempt generation of an acceleration structure.
+    /// - Returns: A tuple `(result: AccelerationStructureGenerationResult?, texture: MTLTexture?)` where `result` is the explicit outcome when generation was requested and `texture` is the generated acceleration texture on success, or `nil` otherwise.
+    private func resolvedAccelerationResources(
+        for dataset: VolumeDataset,
+        texture: any MTLTexture,
+        includeAccelerationStructure: Bool
+    ) -> (result: AccelerationStructureGenerationResult?, texture: (any MTLTexture)?) {
+        guard includeAccelerationStructure else {
+            return (nil, nil)
         }
-#else
-        return nil
-#endif
+
+        let result = prepareAccelerationStructure(texture: texture, intensityRange: dataset.intensityRange)
+        switch result {
+        case .success(let texture):
+            return (result, texture)
+        case .unavailable(let reason):
+            logger.debug("Acceleration structure unavailable: \(String(describing: reason))")
+            return (result, nil)
+        case .failed(let error):
+            logger.error("Acceleration structure generation failed: \(error.localizedDescription)")
+            return (result, nil)
+        }
     }
 
     /// Creates a new Metal command buffer for encoding GPU work.

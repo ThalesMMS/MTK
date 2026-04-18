@@ -88,6 +88,10 @@ struct MPRViewerExample: View {
         defer { isLoading = false }
 
         do {
+            // Validate the Metal runtime contract before creating MPR rendering state.
+            let resolver = BackendResolver(defaults: nil)
+            _ = try resolver.checkMetalAvailability()
+
             // Step 1: Create or load volumetric dataset
             let dataset = try createSampleDataset()
 
@@ -391,10 +395,9 @@ struct CustomMPRStyle: VolumetricUIStyle {
 
  ### Slice Generation Performance
 
- GPU-accelerated MPR provides real-time performance:
+ MPR requires Metal. All timing references below assume Metal execution:
  - Single slice (512×512): 2-5ms on Apple Silicon
  - Thick slab MIP (512×512, 20 steps): 10-20ms on Apple Silicon
- - CPU fallback: 50-150ms depending on configuration
 
  ### Memory Usage
 

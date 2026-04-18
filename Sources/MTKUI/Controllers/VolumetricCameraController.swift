@@ -253,8 +253,7 @@ public final class VolumetricCameraController {
         updateState: (_ cameraTarget: SIMD3<Float>,
                       _ cameraUpVector: SIMD3<Float>,
                       _ cameraOffset: SIMD3<Float>,
-                      _ defaultCameraTarget: SCNVector3) -> Void,
-        updateRayCastingCache: (() -> Void)?
+                      _ defaultCameraTarget: SCNVector3) -> Void
     ) {
         let clampedTarget = clampTargetFn(cameraTarget)
         let clampedOffset = clampOffsetFn(cameraOffset)
@@ -284,8 +283,6 @@ public final class VolumetricCameraController {
         updateCameraClippingPlanes(cameraNode.camera,
                                    radius: volumeBoundingRadius,
                                    offsetLength: simd_length(clampedOffset))
-
-        updateRayCastingCache?()
 
         statePublisher?.recordCameraState(position: position, target: clampedTarget, up: up)
     }

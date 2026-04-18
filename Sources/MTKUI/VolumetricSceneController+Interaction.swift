@@ -16,20 +16,14 @@ import UIKit
 #if canImport(Metal)
 import Metal
 #endif
-#if canImport(MetalPerformanceShaders)
-import MetalPerformanceShaders
-#endif
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-import MetalKit
-#endif
-import MTKCore
+@_spi(Internal) import MTKCore
 import MTKSceneKit
 
 @MainActor extension VolumetricSceneController {
-    /// Encadeia o dataset entre SceneKit e MPS, recalculando bounds do volume
-    /// para direcionar `configureCamera`. A geometria resultante dita o centro
-    /// do volume, o raio usado como limite de distância e o transform de
-    /// fallback aplicado caso o volume seja descartado depois.
+    /// Applies the dataset to the main scene and recalculates volume bounds for
+    /// `configureCamera`. The resulting geometry determines the volume center,
+    /// the radius used for distance limits, and the fallback transform restored
+    /// if the volume content is later discarded.
     public func applyDataset(_ dataset: VolumeDataset) async {
         guard self.dataset != dataset || datasetApplied == false else { return }
         self.dataset = dataset
@@ -74,14 +68,6 @@ import MTKSceneKit
         logger.debug(
             "Dataset applied dim=\(scale) sceneBounds=\(formatSize(sceneView.bounds.size)) cameraPosition=\(formatVector(cameraNode.simdPosition)) cameraTarget=\(formatVector(cameraTarget)) cameraUp=\(formatVector(cameraUpVector)) radius=\(volumeBoundingRadius)"
         )
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-        mpsDisplay?.updateDataset(dataset)
-        mpsDisplay?.updateTransferFunction(transferFunction ?? volumeMaterial.tf)
-        mpsDisplay?.updateDisplayConfiguration(currentDisplay)
-#endif
-#if canImport(MetalPerformanceShaders)
-        prepareMpsResourcesForDataset(dataset)
-#endif
 
         // Ensure the first frame is requested even before user interaction.
         requestImmediateSceneViewFrame()
@@ -98,7 +84,7 @@ import MTKSceneKit
 
         resumeSceneViewIfNeeded()
         logger.debug(
-            "setDisplayConfiguration request=\(describe(configuration)) sceneBounds=\(formatSize(sceneView.bounds.size)) volumeHidden=\(volumeNode.isHidden) mprHidden=\(mprNode.isHidden) backend=\(renderingBackend.rawValue)"
+            "setDisplayConfiguration request=\(describe(configuration)) sceneBounds=\(formatSize(sceneView.bounds.size)) volumeHidden=\(volumeNode.isHidden) mprHidden=\(mprNode.isHidden)"
         )
 
         switch configuration {
@@ -108,17 +94,11 @@ import MTKSceneKit
             mprNode.isHidden = true
             requestImmediateSceneViewFrame()
             logger.debug("Volume mode enabled; volumeNodeHidden=\(volumeNode.isHidden) mprNodeHidden=\(mprNode.isHidden)")
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-            mpsDisplay?.updateDisplayConfiguration(configuration)
-#endif
         case let .mpr(axis, index, blend, slab):
             configureMPR(axis: axis, index: index, blend: blend, slab: slab)
             volumeNode.isHidden = true
             mprNode.isHidden = false
             logger.debug("MPR mode enabled axis=\(axis.rawValue) index=\(index) blend=\(blend.rawValue) volumeNodeHidden=\(volumeNode.isHidden) mprNodeHidden=\(mprNode.isHidden)")
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-            mpsDisplay?.updateDisplayConfiguration(configuration)
-#endif
         }
     }
 
@@ -256,9 +236,6 @@ import MTKSceneKit
     public func setTransferFunction(_ transferFunction: TransferFunction?) async throws {
         transferFunction.map { self.transferFunction = $0 }
         guard let transferFunction else {
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-            mpsDisplay?.updateTransferFunction(nil)
-#endif
             return
         }
         guard let texture = transferFunction.makeTexture(device: device) else {
@@ -266,38 +243,23 @@ import MTKSceneKit
         }
         volumeMaterial.tf = transferFunction
         volumeMaterial.setTransferFunctionTexture(texture)
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-        mpsDisplay?.updateTransferFunction(transferFunction)
-#endif
     }
 
     public func setLighting(enabled: Bool) async {
         volumeMaterial.setLighting(on: enabled)
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-        mpsDisplay?.updateLighting(enabled: enabled)
-#endif
     }
 
     public func setSamplingStep(_ step: Float) async {
         baseSamplingStep = step
         volumeMaterial.setStep(step)
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-        mpsDisplay?.updateSamplingStep(step)
-#endif
     }
 
     public func setProjectionsUseTransferFunction(_ enabled: Bool) async {
         volumeMaterial.setUseTFOnProjections(enabled)
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-        mpsDisplay?.updateProjectionsUseTransferFunction(enabled)
-#endif
     }
 
     public func setProjectionDensityGate(floor: Float, ceil: Float) async {
         volumeMaterial.setDensityGate(floor: floor, ceil: ceil)
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-        mpsDisplay?.updateDensityGate(floor: floor, ceil: ceil)
-#endif
     }
 
     public func setProjectionHuGate(enabled: Bool, min: Int32, max: Int32) async {
@@ -305,9 +267,6 @@ import MTKSceneKit
         if enabled {
             volumeMaterial.setHuWindow(minHU: min, maxHU: max)
         }
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-        mpsDisplay?.updateProjectionHuGate(enabled: enabled, min: min, max: max)
-#endif
     }
 
     public func setAdaptiveSampling(_ enabled: Bool) async {
@@ -317,9 +276,6 @@ import MTKSceneKit
         }
 #if canImport(UIKit)
         attachAdaptiveHandlersIfNeeded()
-#endif
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-        mpsDisplay?.updateAdaptiveSampling(enabled)
 #endif
     }
 
@@ -334,9 +290,6 @@ import MTKSceneKit
 
     public func setRenderMethod(_ method: VolumeCubeMaterial.Method) async {
         await setVolumeMethod(method)
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-        mpsDisplay?.updateRenderMethod(method)
-#endif
     }
 
     public func setMprBlend(_ mode: MPRPlaneMaterial.BlendMode) async {
@@ -362,10 +315,9 @@ import MTKSceneKit
         guard currentMprAxis == axis else { return }
         let clamped = VolumetricMath.clampFloat(normalized, lower: 0.0, upper: 1.0)
         let targetIndex = indexPosition(for: axis, normalized: clamped)
-        // Convertendo para índice inteiro e depois de volta para normalizado
-        // garantimos que tanto o plano do SceneKit quanto o renderer MPS usem
-        // exatamente o mesmo voxel central, evitando discrepâncias após
-        // arredondamentos sucessivos de interações.
+        // Converting to an integer slice index and then back to normalized space
+        // ensures the plane uses the exact same central voxel and avoids drift
+        // from repeated interaction rounding.
         mprPlaneIndex = clampedIndex(for: axis, index: targetIndex)
         mprNormalizedPosition = normalizedPosition(for: axis, index: mprPlaneIndex)
         applyMprOrientation()
@@ -398,9 +350,6 @@ import MTKSceneKit
         guard let texture = copy.makeTexture(device: device) else { return }
         volumeMaterial.setTransferFunctionTexture(texture)
         transferFunction = copy
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-        mpsDisplay?.updateTransferFunction(copy)
-#endif
     }
 
     public func setVolumeMethod(_ method: VolumeCubeMaterial.Method) async {
@@ -408,40 +357,25 @@ import MTKSceneKit
         if case .volume = currentDisplay {
             currentDisplay = .volume(method: method)
         }
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-        mpsDisplay?.updateVolumeMethod(method)
-#endif
     }
 
     public func setPreset(_ preset: VolumeCubeMaterial.Preset) async {
         volumeMaterial.setPreset(device: device, preset: preset)
         transferFunction = volumeMaterial.tf
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-        mpsDisplay?.updateTransferFunction(transferFunction)
-#endif
     }
 
     public func setShift(_ shift: Float) async {
         volumeMaterial.setShift(device: device, shift: shift)
         transferFunction = volumeMaterial.tf
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-        mpsDisplay?.updateTransferFunction(transferFunction)
-#endif
     }
 
     public func setHuGate(enabled: Bool) async {
         volumeMaterial.setHuGate(enabled: enabled)
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-        mpsDisplay?.updateHuGate(enabled: enabled)
-#endif
     }
 
     public func setHuWindow(_ window: VolumeCubeMaterial.HuWindowMapping) async {
         volumeMaterial.setHuWindow(window)
         mprMaterial.setHU(min: window.minHU, max: window.maxHU)
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-        mpsDisplay?.updateHuWindow(min: window.minHU, max: window.maxHU)
-#endif
         statePublisher.recordWindowLevelState(window)
     }
 
@@ -454,80 +388,6 @@ import MTKSceneKit
         case .paused:
             sceneView.isPlaying = false
             sceneView.rendersContinuously = false
-        }
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-        mpsDisplay?.setRenderMode(mode)
-#endif
-    }
-
-    public func setRenderingBackend(_ backend: VolumetricRenderingBackend) async -> VolumetricRenderingBackend {
-        if renderingBackend == backend {
-            return renderingBackend
-        }
-
-        switch backend {
-        case .sceneKit:
-            activateSceneKitBackend()
-            return renderingBackend
-
-        case .metalPerformanceShaders:
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-            guard MPSSupportsMTLDevice(device), let display = mpsDisplay else {
-                logger.warning("Metal Performance Shaders backend unavailable on this device; staying on SceneKit.")
-                activateSceneKitBackend()
-                return renderingBackend
-            }
-
-            if mpsRenderer == nil {
-                guard let renderer = MPSVolumeRenderer(device: device, commandQueue: commandQueue) else {
-                    logger.error("Failed to initialize MPS volume renderer; staying on SceneKit backend.")
-                    activateSceneKitBackend()
-                    return renderingBackend
-                }
-                mpsRenderer = renderer
-            }
-
-            guard mpsRenderer != nil else {
-                activateSceneKitBackend()
-                return renderingBackend
-            }
-
-            renderingBackend = .metalPerformanceShaders
-            sceneView.isHidden = true
-            activeSurface = mpsSurface ?? sceneSurface
-            display.setActive(true)
-
-            if datasetApplied, let dataset {
-                prepareMpsResourcesForDataset(dataset)
-                display.updateDataset(dataset)
-                display.updateTransferFunction(transferFunction ?? volumeMaterial.tf)
-                display.updateDisplayConfiguration(currentDisplay)
-                if let histogram = lastMpsHistogram {
-                    display.updateHistogram(histogram)
-                }
-            } else {
-                display.updateDataset(nil)
-            }
-
-            return renderingBackend
-#else
-            logger.warning("Metal Performance Shaders backend not supported on this platform; staying on SceneKit.")
-            activateSceneKitBackend()
-            return renderingBackend
-#endif
-        }
-    }
-
-    private func activateSceneKitBackend() {
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-        mpsDisplay?.setActive(false)
-#endif
-        sceneView.isHidden = false
-        activeSurface = sceneSurface
-        renderingBackend = .sceneKit
-        if datasetApplied, let dataset {
-            volumeMaterial.setDataset(device: device, dataset: dataset)
-            mprMaterial.setDataset(device: device, dataset: dataset)
         }
         requestImmediateSceneViewFrame()
     }
@@ -556,18 +416,6 @@ import MTKSceneKit
 
         applyMprOrientation()
     }
-
-#if canImport(MetalPerformanceShaders)
-    /// Propaga histogramas derivados de máscaras de ROI para o backend MPS.
-    /// Permite que o `MPSDisplayAdapter` ajuste o brilho e destaques com base
-    /// na região selecionada.
-    func applyROIHistogram(_ histogram: MPSVolumeRenderer.HistogramResult?) {
-        lastMpsHistogram = histogram
-#if canImport(MetalKit)
-        mpsDisplay?.updateHistogram(histogram)
-#endif
-    }
-#endif
 
     public func metadata() -> (dimension: SIMD3<Int32>, resolution: SIMD3<Float>)? {
         guard datasetApplied else { return nil }

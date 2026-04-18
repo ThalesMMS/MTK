@@ -327,41 +327,6 @@ final class VolumetricSceneControllerTests: XCTestCase {
 #endif
     }
 
-#if canImport(MetalPerformanceShaders)
-    func testDebugMpsAccessors() throws {
-#if canImport(Metal) && canImport(SceneKit)
-        guard MTLCreateSystemDefaultDevice() != nil else {
-            throw XCTSkip("Metal device unavailable, skipping test")
-        }
-
-        let controller = try VolumetricSceneController()
-
-        // Test MPS debug accessors
-        let filteredTexture = controller.debugMpsFilteredTexture()
-        let rayCastingSamples = controller.debugLastRayCastingSamples()
-        let worldEntries = controller.debugLastRayCastingWorldEntries()
-        let brightness = controller.debugMpsDisplayBrightness()
-        let transferFunction = controller.debugMpsTransferFunction()
-        let resolvedBrightness = controller.debugMpsResolvedBrightness()
-        let clearColor = controller.debugMpsClearColor()
-        let histogram = controller.debugLastMpsHistogram()
-
-        _ = filteredTexture
-        _ = rayCastingSamples
-        _ = worldEntries
-        _ = brightness
-        _ = transferFunction
-        _ = resolvedBrightness
-        _ = clearColor
-        _ = histogram
-
-        XCTAssertTrue(true, "All MPS debug accessors are functional")
-#else
-        throw XCTSkip("SceneKit or Metal unavailable")
-#endif
-    }
-#endif
-
     // MARK: - Custom SCNView Tests
 
     func testControllerWithCustomSCNView() throws {

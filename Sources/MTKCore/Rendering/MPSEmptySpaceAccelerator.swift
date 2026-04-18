@@ -20,6 +20,10 @@ import MetalPerformanceShaders
 /// Generates hierarchical min-max mipmap acceleration structures for efficient
 /// empty space skipping during volumetric ray marching.
 ///
+/// This accelerator requires Metal Performance Shaders. Shared generation helpers
+/// report explicit unavailability or failure when MPS support or required Metal
+/// resources are absent.
+///
 /// The accelerator pre-computes minimum and maximum intensity values at multiple
 /// resolution levels (up to 8 mip levels), creating a pyramid structure that enables
 /// rapid detection and skipping of transparent regions without expensive per-sample
@@ -32,9 +36,9 @@ import MetalPerformanceShaders
 /// - Minimal overhead for dense volumes (MR, contrast-enhanced CT)
 /// - One-time cost at dataset load, amortized over all subsequent renders
 ///
-/// **Fallback Behavior:** Returns `nil` when `MPSSupportsMTLDevice()` fails
-/// (macOS <10.13, non-Apple GPU, iOS simulator). Ray marching falls back to
-/// manual empty-space skipping with no visual quality degradation.
+/// **Availability Contract:** Shared generation helpers report explicit success,
+/// feature unavailability, or failure. Renderers decide whether to attach the
+/// returned acceleration texture.
 public final class MPSEmptySpaceAccelerator {
     /// Encapsulates a min-max mipmap pyramid texture and associated metadata
     /// for empty space skipping during ray marching.
@@ -45,9 +49,13 @@ public final class MPSEmptySpaceAccelerator {
     ///
     /// **Usage Pattern:**
     /// ```swift
-    /// let accelerator = MPSEmptySpaceAccelerator(device: device)
-    /// let structure = try accelerator?.generateAccelerationStructure(dataset: dataset)
-    /// // Pass structure.texture to ray marching shader
+    /// switch MPSEmptySpaceAccelerator.create(device: device) {
+    /// case .success(let accelerator):
+    ///     let structure = try accelerator.generateAccelerationStructure(dataset: dataset)
+    ///     // Pass structure.texture to ray marching shader
+    /// case .unavailable(let reason):
+    ///     print("Acceleration unavailable: \\(reason)")
+    /// }
     /// ```
     public struct AccelerationStructure: Equatable {
         /// 3D texture storing min-max intensity pairs at multiple mip levels.
@@ -110,6 +118,42 @@ public final class MPSEmptySpaceAccelerator {
         case invalidIntensityRange
     }
 
+    /// Reasons why shared acceleration generation can be unavailable.
+    public enum UnavailabilityReason: Equatable {
+        /// Metal Performance Shaders are not supported on the selected device.
+        case mpsUnsupportedOnDevice
+
+        /// No Metal command queue is available for accelerator setup.
+        case commandQueueUnavailable
+
+        /// Required Metal libraries or empty-space kernels could not be resolved.
+        case libraryUnavailable
+
+        /// Accelerator setup failed after capability and library checks succeeded.
+        case acceleratorInitializationFailed
+    }
+
+    /// Explicit result for accelerator construction requests.
+    public enum CreationResult {
+        /// Accelerator construction succeeded and returned a configured accelerator instance.
+        case success(MPSEmptySpaceAccelerator)
+
+        /// Accelerator construction is unavailable for a typed, non-error reason.
+        case unavailable(reason: UnavailabilityReason)
+    }
+
+    /// Explicit result for shared acceleration-structure generation requests.
+    public enum GenerationResult {
+        /// Acceleration generation succeeded and produced a min-max pyramid texture.
+        case success(any MTLTexture)
+
+        /// Acceleration generation is unavailable for a typed, non-error reason.
+        case unavailable(reason: UnavailabilityReason)
+
+        /// Acceleration generation attempted work and failed with an error.
+        case failed(any Swift.Error)
+    }
+
     /// Metal device used for texture allocation and compute operations.
     private let device: any MTLDevice
 
@@ -130,82 +174,67 @@ public final class MPSEmptySpaceAccelerator {
     private let logger = Logger(subsystem: "com.mtk.volumerendering",
                                 category: "MPSEmptySpaceAccelerator")
 
-    /// Creates an accelerator instance if the Metal device supports Metal Performance Shaders.
+    /// Creates an accelerator instance when MPS support and required Metal resources are available.
     ///
-    /// - Parameters:
-    ///   - device: Metal device to use for acceleration structure generation.
-    ///             Must support MPS (verified via `MPSSupportsMTLDevice`).
-    ///   - commandQueue: Optional command queue. If `nil`, creates a new queue from the device.
-    ///   - library: Optional Metal library. If `nil`, loads from Bundle.module or device default.
-    ///
-    /// - Returns: An accelerator instance, or `nil` if the device does not support MPS,
-    ///            command queue creation fails, or compute pipelines cannot be created.
-    public init?(device: any MTLDevice,
-                 commandQueue: (any MTLCommandQueue)? = nil,
-                 library: (any MTLLibrary)? = nil) {
+    /// Internal convenience retained for tests and same-module helpers. Public callers
+    /// should use ``create(device:commandQueue:library:)`` to retain typed diagnostics.
+    convenience init?(device: any MTLDevice,
+                      commandQueue: (any MTLCommandQueue)? = nil,
+                      library: (any MTLLibrary)? = nil) {
         guard MPSSupportsMTLDevice(device) else { return nil }
         guard let queue = commandQueue ?? device.makeCommandQueue() else { return nil }
 
-        // Resolve Metal shader library: try candidates until all required kernels are available.
-        var candidateLibraries: [any MTLLibrary] = []
-        if let library {
-            // Prefer the caller-provided library, but keep fallbacks in case it does not expose
-            // the empty-space kernels (e.g. stale/metallib mismatch in tests).
-            candidateLibraries.append(library)
-        }
-        if let url = Bundle.module.url(forResource: "MTK", withExtension: "metallib"),
-           let bundledLib = try? device.makeLibrary(URL: url) {
-            candidateLibraries.append(bundledLib)
-        }
-        if let defaultLibrary = device.makeDefaultLibrary() {
-            candidateLibraries.append(defaultLibrary)
-        }
-        if #available(iOS 13.0, tvOS 13.0, macOS 11.0, *),
-           let bundleLibrary = try? device.makeDefaultLibrary(bundle: Bundle.module) {
-            candidateLibraries.append(bundleLibrary)
-        }
-        if let runtimeLibrary = Self.makeRuntimeLibrary(device: device) {
-            candidateLibraries.append(runtimeLibrary)
-        }
-
-        var selectedLibrary: (any MTLLibrary)?
-        var selectedBaseSigned: (any MTLComputePipelineState)?
-        var selectedBaseUnsigned: (any MTLComputePipelineState)?
-        var selectedDownsample: (any MTLComputePipelineState)?
-
-        for candidate in candidateLibraries {
-            guard let baseFunctionSigned = candidate.makeFunction(name: "computeMinMaxBase"),
-                  let baseFunctionUnsigned = candidate.makeFunction(name: "computeMinMaxBaseUnsigned"),
-                  let downsampleFunction = candidate.makeFunction(name: "computeMinMaxDownsample"),
-                  let baseSignedPSO = try? device.makeComputePipelineState(function: baseFunctionSigned),
-                  let baseUnsignedPSO = try? device.makeComputePipelineState(function: baseFunctionUnsigned),
-                  let downsamplePSO = try? device.makeComputePipelineState(function: downsampleFunction) else {
-                continue
-            }
-
-            selectedLibrary = candidate
-            selectedBaseSigned = baseSignedPSO
-            selectedBaseUnsigned = baseUnsignedPSO
-            selectedDownsample = downsamplePSO
-            break
-        }
-
-        guard let selectedLibrary,
-              let selectedBaseSigned,
-              let selectedBaseUnsigned,
-              let selectedDownsample else {
+        guard let resolvedResources = Self.resolveResources(device: device, preferred: library) else {
             return nil
         }
 
-        self.device = device
-        self.commandQueue = queue
-        self.library = selectedLibrary
-        self.basePipelineSigned = selectedBaseSigned
-        self.basePipelineUnsigned = selectedBaseUnsigned
-        self.downsamplePipeline = selectedDownsample
+        self.init(device: device, commandQueue: queue, resolvedResources: resolvedResources)
     }
 
-    /// Last-resort fallback used when precompiled/default Metal libraries do not expose
+    private init(device: any MTLDevice,
+                 commandQueue: any MTLCommandQueue,
+                 resolvedResources: ResolvedResources) {
+        self.device = device
+        self.commandQueue = commandQueue
+        self.library = resolvedResources.library
+        self.basePipelineSigned = resolvedResources.baseSigned
+        self.basePipelineUnsigned = resolvedResources.baseUnsigned
+        self.downsamplePipeline = resolvedResources.downsample
+    }
+
+    /// Creates an accelerator with explicit availability diagnostics.
+    ///
+    /// - Parameters:
+    ///   - device: Metal device to use for acceleration structure generation.
+    ///   - commandQueue: Optional command queue. If `nil`, creates a new queue from the device.
+    ///   - library: Optional Metal library. If `nil`, candidate libraries are resolved automatically.
+    /// - Returns: A ``CreationResult`` that preserves whether setup succeeded or which prerequisite was unavailable.
+    public static func create(device: any MTLDevice,
+                              commandQueue: (any MTLCommandQueue)? = nil,
+                              library: (any MTLLibrary)? = nil) -> CreationResult {
+        guard MPSSupportsMTLDevice(device) else {
+            return .unavailable(reason: .mpsUnsupportedOnDevice)
+        }
+        guard let queue = commandQueue ?? device.makeCommandQueue() else {
+            return .unavailable(reason: .commandQueueUnavailable)
+        }
+        guard let resolvedFunctions = Self.resolveFunctions(device: device, preferred: library) else {
+            return .unavailable(reason: .libraryUnavailable)
+        }
+        guard let resolvedResources = Self.resolveResources(device: device, resolvedFunctions: resolvedFunctions) else {
+            return .unavailable(reason: .acceleratorInitializationFailed)
+        }
+
+        return .success(
+            MPSEmptySpaceAccelerator(
+                device: device,
+                commandQueue: queue,
+                resolvedResources: resolvedResources
+            )
+        )
+    }
+
+    /// Last-resort resolution path used when precompiled/default Metal libraries do not expose
     /// the empty-space compute kernels (for example, stale cached metallib artifacts).
     private static func makeRuntimeLibrary(device: any MTLDevice) -> (any MTLLibrary)? {
         let sourceURL = Bundle.module.url(forResource: "empty_space_compute", withExtension: "metal")
@@ -334,6 +363,117 @@ public final class MPSEmptySpaceAccelerator {
 // MARK: - Private Implementation
 
 private extension MPSEmptySpaceAccelerator {
+    struct ResolvedFunctions {
+        let library: any MTLLibrary
+        let baseSigned: any MTLFunction
+        let baseUnsigned: any MTLFunction
+        let downsample: any MTLFunction
+    }
+
+    struct ResolvedResources {
+        let library: any MTLLibrary
+        let baseSigned: any MTLComputePipelineState
+        let baseUnsigned: any MTLComputePipelineState
+        let downsample: any MTLComputePipelineState
+    }
+
+    /// Builds an ordered list of candidate Metal libraries to resolve the empty-space compute kernels.
+    ///
+    /// The returned list prefers the caller-provided library first (if supplied) and then includes bundled, default, bundle-scoped, and runtime-compiled libraries as available.
+    /// - Parameters:
+    ///   - library: An optional caller-provided `MTLLibrary` to try first.
+    /// - Returns: An ordered array of `MTLLibrary` candidates to attempt when resolving compute kernel functions.
+    static func candidateLibraries(
+        device: any MTLDevice,
+        preferred library: (any MTLLibrary)? = nil
+    ) -> [any MTLLibrary] {
+        var candidates: [any MTLLibrary] = []
+        if let library {
+            // Prefer the caller-provided library, but keep alternate candidates in
+            // case it does not expose the empty-space kernels.
+            candidates.append(library)
+        }
+        if let url = Bundle.module.url(forResource: "MTK", withExtension: "metallib"),
+           let bundledLibrary = try? device.makeLibrary(URL: url) {
+            candidates.append(bundledLibrary)
+        }
+        if let defaultLibrary = device.makeDefaultLibrary() {
+            candidates.append(defaultLibrary)
+        }
+        if #available(iOS 13.0, tvOS 13.0, macOS 11.0, *),
+           let bundleLibrary = try? device.makeDefaultLibrary(bundle: Bundle.module) {
+            candidates.append(bundleLibrary)
+        }
+        if let runtimeLibrary = Self.makeRuntimeLibrary(device: device) {
+            candidates.append(runtimeLibrary)
+        }
+        return candidates
+    }
+
+    /// Finds a Metal library that provides all required compute kernels and returns those functions grouped as `ResolvedFunctions`.
+    /// - Parameters:
+    ///   - device: The Metal device used to probe candidate libraries.
+    ///   - library: An optional preferred `MTLLibrary` to try first when searching for the kernels.
+    /// - Returns: A `ResolvedFunctions` instance containing `computeMinMaxBase`, `computeMinMaxBaseUnsigned`, and `computeMinMaxDownsample` if a library with all three functions is found, `nil` otherwise.
+    static func resolveFunctions(
+        device: any MTLDevice,
+        preferred library: (any MTLLibrary)? = nil
+    ) -> ResolvedFunctions? {
+        for candidate in candidateLibraries(device: device, preferred: library) {
+            guard let baseSigned = candidate.makeFunction(name: "computeMinMaxBase"),
+                  let baseUnsigned = candidate.makeFunction(name: "computeMinMaxBaseUnsigned"),
+                  let downsample = candidate.makeFunction(name: "computeMinMaxDownsample") else {
+                continue
+            }
+            return ResolvedFunctions(
+                library: candidate,
+                baseSigned: baseSigned,
+                baseUnsigned: baseUnsigned,
+                downsample: downsample
+            )
+        }
+        return nil
+    }
+
+    /// Resolves the accelerator's compute kernel functions and constructs their `MTLComputePipelineState` objects.
+    /// - Parameters:
+    ///   - device: The `MTLDevice` used to create pipeline states.
+    ///   - library: An optional preferred `MTLLibrary` to search first for the required kernel functions.
+    /// - Returns: A `ResolvedResources` instance containing the chosen library and the three compute pipeline states when all kernels and pipelines are successfully resolved and created; `nil` if any required function or pipeline state cannot be resolved or constructed.
+    static func resolveResources(
+        device: any MTLDevice,
+        resolvedFunctions: ResolvedFunctions
+    ) -> ResolvedResources? {
+        guard let baseSignedPSO = try? device.makeComputePipelineState(function: resolvedFunctions.baseSigned),
+              let baseUnsignedPSO = try? device.makeComputePipelineState(function: resolvedFunctions.baseUnsigned),
+              let downsamplePSO = try? device.makeComputePipelineState(function: resolvedFunctions.downsample) else {
+            return nil
+        }
+
+        return ResolvedResources(
+            library: resolvedFunctions.library,
+            baseSigned: baseSignedPSO,
+            baseUnsigned: baseUnsignedPSO,
+            downsample: downsamplePSO
+        )
+    }
+
+    /// Resolves the accelerator's compute kernel functions and constructs their `MTLComputePipelineState` objects.
+    /// - Parameters:
+    ///   - device: The `MTLDevice` used to create pipeline states.
+    ///   - library: An optional preferred `MTLLibrary` to search first for the required kernel functions.
+    /// - Returns: A `ResolvedResources` instance containing the chosen library and the three compute pipeline states when all kernels and pipelines are successfully resolved and created; `nil` if any required function or pipeline state cannot be resolved or constructed.
+    static func resolveResources(
+        device: any MTLDevice,
+        preferred library: (any MTLLibrary)? = nil
+    ) -> ResolvedResources? {
+        guard let resolvedFunctions = resolveFunctions(device: device, preferred: library) else {
+            return nil
+        }
+
+        return resolveResources(device: device, resolvedFunctions: resolvedFunctions)
+    }
+
     /// Calculates the optimal number of mip levels for the acceleration structure.
     ///
     /// Determines the maximum mip level count based on the largest texture dimension,
@@ -659,8 +799,10 @@ public extension MPSEmptySpaceAccelerator.AccelerationStructure {
     ///
     /// - Parameter dataset: Source volume dataset to compare against.
     /// Computes the memory overhead of the acceleration structure relative to a volume dataset.
-    /// - Parameter dataset: The volume dataset used as the baseline; its raw byte count (dataset.data.count) is used for comparison.
-    /// - Returns: The ratio of the acceleration structure's total memory footprint to the dataset's byte count, or `0.0` if the dataset contains no data.
+    /// - Parameter dataset: The reference volume dataset; its raw byte count (`dataset.data.count`) is used for comparison.
+    /// Computes the accelerator's memory overhead relative to a dataset.
+    /// - Parameter dataset: The dataset whose `data.count` (byte count) is used as the baseline.
+    /// - Returns: The ratio of `memoryFootprint` to `dataset.data.count`; returns `0.0` if `dataset.data.count` is zero.
     func memoryOverhead(relativeTo dataset: VolumeDataset) -> Double {
         let datasetBytes = dataset.data.count
         guard datasetBytes > 0 else { return 0.0 }
@@ -672,28 +814,47 @@ public extension MPSEmptySpaceAccelerator.AccelerationStructure {
 public extension MPSEmptySpaceAccelerator {
     /// Shared helper used by multiple renderers to generate an acceleration structure texture.
     /// Centralizes the MPS-availability checks, logging, and error handling.
+    ///
+    /// Generates an empty-space acceleration texture (min-max mipmap pyramid)
+    /// for a volume dataset and returns an explicit result describing success,
+    /// feature unavailability, or a generation failure.
+    /// - Returns: A `GenerationResult` describing the outcome:
+    ///   - `.success(texture)`: the generated acceleration `MTLTexture`.
+    ///   - `.unavailable(reason:)`: generation was not attempted due to device/library/initialization constraints.
+    ///   - `.failed(error)`: generation was attempted but failed with the provided error.
     static func generateTexture(
         device: any MTLDevice,
         commandQueue: any MTLCommandQueue,
         library: (any MTLLibrary)? = nil,
         dataset: VolumeDataset,
         logger: Logger
-    ) -> (any MTLTexture)? {
-        guard let accelerator = MPSEmptySpaceAccelerator(device: device,
-                                                         commandQueue: commandQueue,
-                                                         library: library) else {
-            logger.debug("MPS not available for empty space acceleration, returning nil")
-            return nil
+    ) -> GenerationResult {
+        let accelerator: MPSEmptySpaceAccelerator
+        switch Self.create(device: device, commandQueue: commandQueue, library: library) {
+        case .success(let created):
+            accelerator = created
+        case .unavailable(let reason):
+            switch reason {
+            case .mpsUnsupportedOnDevice:
+                logger.debug("MPS not supported on device '\(device.name)'; empty-space acceleration feature unavailable")
+            case .commandQueueUnavailable:
+                logger.error("Failed to resolve a Metal command queue while configuring the MPS accelerator on device '\(device.name)'")
+            case .libraryUnavailable:
+                logger.error("Required empty-space acceleration Metal library or kernels are unavailable on device '\(device.name)'")
+            case .acceleratorInitializationFailed:
+                logger.error("MPS accelerator initialization failed on device '\(device.name)' despite MPS support; unable to resolve command queue, shader library, or empty-space compute pipelines")
+            }
+            return .unavailable(reason: reason)
         }
 
         do {
             let structure = try accelerator.generateAccelerationStructure(dataset: dataset)
             let overhead = structure.memoryOverhead(relativeTo: dataset)
             logger.info("Generated acceleration structure: \(structure.mipLevels) mip levels, \(String(format: "%.1f%%", overhead * 100)) memory overhead")
-            return structure.texture
+            return .success(structure.texture)
         } catch {
             logger.error("Failed to generate acceleration structure: \(error.localizedDescription)")
-            return nil
+            return .failed(error)
         }
     }
 }

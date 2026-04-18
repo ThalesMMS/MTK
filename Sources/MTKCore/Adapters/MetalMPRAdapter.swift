@@ -66,7 +66,7 @@ import simd
 @preconcurrency
 public actor MetalMPRAdapter: MPRReslicePort {
     /// Errors that can occur before the Metal compute adapter is available.
-    public enum InitializationError: Error, Equatable {
+    public enum InitializationError: Error, Equatable, LocalizedError {
         /// The supplied Metal device could not create a command queue.
         case commandQueueCreationFailed
 
@@ -78,6 +78,32 @@ public actor MetalMPRAdapter: MPRReslicePort {
 
         /// The supplied shader library belongs to a different Metal device.
         case shaderLibraryDeviceMismatch
+
+        public var errorDescription: String? {
+            switch self {
+            case .commandQueueCreationFailed:
+                return "Metal command queue creation failed"
+            case .commandQueueDeviceMismatch:
+                return "Metal command queue device mismatch"
+            case .shaderLibraryUnavailable:
+                return "Metal shader library unavailable"
+            case .shaderLibraryDeviceMismatch:
+                return "Metal shader library device mismatch"
+            }
+        }
+
+        public var failureReason: String? {
+            switch self {
+            case .commandQueueCreationFailed:
+                return "The supplied Metal device returned nil when creating a command queue."
+            case .commandQueueDeviceMismatch:
+                return "The injected command queue was created from a different Metal device."
+            case .shaderLibraryUnavailable:
+                return "The required MTK.metallib was not bundled in MTKCore's Bundle.module resources or could not be loaded."
+            case .shaderLibraryDeviceMismatch:
+                return "The injected or resolved shader library was created from a different Metal device."
+            }
+        }
     }
 
     /// Parameter overrides for MPR slice generation.
@@ -131,7 +157,7 @@ public actor MetalMPRAdapter: MPRReslicePort {
     /// - Parameters:
     ///   - device: Metal device for GPU compute operations.
     ///   - commandQueue: Optional command queue. If `nil`, a new queue is created from the device.
-    ///   - library: Optional Metal shader library. If `nil`, loads `MTK.metallib` or the default library.
+    ///   - library: Optional Metal shader library. If `nil`, loads `MTK.metallib` from `Bundle.module`.
     ///   - debugOptions: Debug configuration options for logging and validation.
     ///
     /// - Throws: ``InitializationError/commandQueueCreationFailed`` when a command queue cannot be
@@ -169,12 +195,17 @@ public actor MetalMPRAdapter: MPRReslicePort {
             throw InitializationError.commandQueueCreationFailed
         }
 
-        let lib = library ?? ShaderLibraryLoader.makeDefaultLibrary(on: device) { message in
-            Logger(subsystem: "com.mtk.volumerendering", category: "ShaderLoader").info("\(message)")
-        }
-
-        guard let lib else {
-            throw InitializationError.shaderLibraryUnavailable
+        let lib: any MTLLibrary
+        if let library {
+            lib = library
+        } else {
+            do {
+                lib = try ShaderLibraryLoader.loadLibrary(for: device)
+            } catch is ShaderLibraryLoader.LoaderError {
+                throw InitializationError.shaderLibraryUnavailable
+            } catch {
+                throw InitializationError.shaderLibraryUnavailable
+            }
         }
 
         guard lib.device === device else {

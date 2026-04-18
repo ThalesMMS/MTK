@@ -33,11 +33,10 @@ enum RenderingTelemetry {
         recorder.increment("metal.volume.render.scheduled")
     }
 
-    static func volumeRenderCompleted(duration: TimeInterval, backend: VolumetricRenderingBackend) {
-        recorder.trackTiming("metal.volume.render", interval: duration, name: "success")
+    static func volumeRenderCompleted(duration: TimeInterval) {
+        recorder.trackTiming("metal.volume.render", interval: duration, name: "sceneKit")
         recorder.increment("metal.volume.render.total")
-        recorder.increment("metal.volume.render.success")
-        recorder.increment("metal.volume.render.success.\(backend.displayName.lowercased())")
+        recorder.increment("metal.volume.render.sceneKit.success")
     }
 
     static func volumeRenderFailed(duration: TimeInterval,

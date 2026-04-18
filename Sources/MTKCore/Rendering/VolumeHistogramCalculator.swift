@@ -27,33 +27,33 @@ import OSLog
     public let bufferLength: Int
 
     /// Whether the selected kernel uses threadgroup memory for atomic operations (faster)
-    /// or falls back to device memory (slower but more compatible).
+    /// or the device-memory kernel (slower but more broadly compatible).
     public let usesThreadgroupMemory: Bool
 
     /// Name of the Metal compute kernel to dispatch (`computeHistogramThreadgroup` or `computeHistogramLegacy`).
     public let kernelName: String
 }
 
-/// Strategy for selecting optimal histogram compute kernel based on device capabilities
-/// and histogram requirements.
+/// Device capability adaptation for selecting the histogram compute kernel based on
+/// Metal limits and histogram requirements.
 ///
-/// Determines whether to use the fast threadgroup-memory kernel or fallback legacy kernel
-/// based on threadgroup memory limits and buffer size requirements.
+/// Selects the threadgroup-memory kernel when supported, otherwise uses the
+/// device-memory kernel for broader compatibility.
 @_spi(Testing) public enum HistogramKernelPlanner {
     /// Creates a histogram dispatch plan by selecting the optimal Metal compute kernel
     /// and memory strategy for the given device constraints.
     ///
-    /// The planner attempts to use the fast `computeHistogramThreadgroup` kernel (atomic
-    /// operations in shared memory) when the required buffer fits within the device's
-    /// threadgroup memory limit. Otherwise, it falls back to `computeHistogramLegacy`
-    /// (slower device memory atomics).
+    /// The planner uses the fast `computeHistogramThreadgroup` kernel (atomic operations
+    /// in shared memory) when the required buffer fits within the device's threadgroup
+    /// memory limit. Otherwise, it selects `computeHistogramLegacy`, the alternative
+    /// device-memory kernel for limited threadgroup memory.
     ///
     /// - Parameters:
     ///   - channelCount: Number of histogram channels to compute (1-4, will be clamped).
     ///   - requestedBins: Desired bin count, or 0 to use `defaultBinCount`.
-    ///   - defaultBinCount: Fallback bin count when `requestedBins` is zero or invalid.
+    ///   - defaultBinCount: Default bin count when `requestedBins` is zero or invalid.
     ///   - maxThreadgroupMemoryLength: Device's maximum threadgroup memory size in bytes.
-    ///                                 Pass -1 to force legacy kernel selection.
+    ///                                 Pass -1 to force device-memory kernel selection.
     ///
     /// - Returns: A ``HistogramDispatchPlan`` with kernel name, buffer size, and memory strategy.
     public static func makePlan(channelCount: Int,
@@ -74,15 +74,17 @@ import OSLog
     }
 }
 
-/// GPU-accelerated histogram calculator for 3D volume textures.
+/// Pure Metal compute histogram calculator for 3D volume textures.
+///
+/// This feature has no MPS dependency.
 ///
 /// Computes intensity distribution histograms using Metal compute shaders, enabling
 /// efficient auto-windowing, contrast analysis, and transfer function optimization
 /// for medical imaging workflows.
 ///
 /// The calculator supports both fast threadgroup-memory kernels (for small histograms)
-/// and legacy device-memory kernels (for large histograms or limited devices), with
-/// automatic fallback based on device capabilities.
+/// and alternative device-memory kernels (for large histograms or limited devices),
+/// with kernel selection based on Metal device capabilities.
 ///
 /// ## Features
 ///
@@ -187,8 +189,8 @@ public final class VolumeHistogramCalculator {
     /// The method automatically selects the optimal compute kernel based on device capabilities:
     /// - **Fast path:** `computeHistogramThreadgroup` uses shared memory atomics when buffer size
     ///   fits within device threadgroup memory limits (typical for ≤256 bins).
-    /// - **Fallback path:** `computeHistogramLegacy` uses device memory atomics for larger histograms
-    ///   or devices with limited threadgroup memory.
+    /// - **Device-memory path:** `computeHistogramLegacy` uses device memory atomics for larger
+    ///   histograms or devices with limited threadgroup memory.
     ///
     /// - Parameters:
     ///   - texture: Source 3D Metal texture containing voxel intensity data.

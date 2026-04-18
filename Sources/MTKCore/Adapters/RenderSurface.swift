@@ -14,9 +14,10 @@
 //
 //  Migration Pattern:
 //  Apps migrating from Isis should:
-//  1. Create an adapter implementing RenderSurface
-//  2. Forward view, display, and setContentScale calls to their platform-specific surface
-//  3. Update session state to use the new adapter
+//  1. Check MetalRuntimeAvailability before constructing rendering surfaces
+//  2. Create an adapter implementing RenderSurface
+//  3. Forward view, display, and setContentScale calls to their platform-specific surface
+//  4. Update session state to use the new adapter
 //  See: Documentation/surface-adapter/migration.md
 //
 //  Thales Matheus Mendonça Santos — November 2025
@@ -110,9 +111,25 @@ public func createPlatformView(frame: NSRect) -> NSView {
 /// ## Overview
 /// When migrating volume rendering from one app to another (e.g., from Isis to a new app),
 /// the primary integration point is the RenderSurface protocol. This allows the MTK
-/// volume rendering pipeline to remain agnostic of app-specific view hierarchies.
+/// volume rendering pipeline to remain agnostic of app-specific view hierarchies while
+/// still enforcing MTK's Metal-only runtime contract.
 ///
 /// ## Pattern: Creating an Adapter
+///
+/// ### Step 0: Gate on the Metal Runtime Requirement
+/// Before constructing any rendering surface, check whether the host satisfies
+/// the Metal runtime requirement and present an explicit unsupported state when
+/// it does not:
+/// ```swift
+/// if MetalRuntimeAvailability.isAvailable() == false {
+///     let status = MetalRuntimeAvailability.status()
+///     // Present ContentUnavailableView or another explicit unsupported-runtime UI.
+/// }
+/// ```
+///
+/// For initialization paths that must fail immediately, call
+/// `try MetalRuntimeAvailability.ensureAvailability()` before creating the
+/// backing surface or controller.
 ///
 /// ### Step 1: Define Your App's Backing Surface
 /// Identify what view or Metal surface your app uses for rendering:
@@ -153,8 +170,13 @@ public func createPlatformView(frame: NSRect) -> NSView {
 /// ### Step 3: Integrate with Volume Rendering Controller
 /// Pass your adapter to the volume rendering pipeline:
 /// ```swift
-/// let adapter = MyAppSurfaceAdapter(backingSurface: myMetalView)
-/// volumeController.setSurface(adapter)
+/// if MetalRuntimeAvailability.isAvailable() {
+///     let adapter = MyAppSurfaceAdapter(backingSurface: myMetalView)
+///     volumeController.setSurface(adapter)
+/// } else {
+///     let status = MetalRuntimeAvailability.status()
+///     // Present ContentUnavailableView or log the missing runtime capabilities.
+/// }
 /// ```
 ///
 /// ## Common Patterns
@@ -182,11 +204,15 @@ public func createPlatformView(frame: NSRect) -> NSView {
 /// ```swift
 /// @MainActor
 /// final class TestSurfaceAdapter: RenderSurface {
-///     var view: PlatformView { UIView() }
+///     var view: PlatformView { createPlatformView(frame: .zero) }
 ///     func display(_ image: CGImage) {}
 ///     func setContentScale(_ scale: CGFloat) {}
 /// }
 /// ```
+///
+/// Tests that exercise unsupported-runtime flows should validate
+/// `MetalRuntimeAvailability.status()` or install a `MetalRuntimeGuard`
+/// override provider rather than routing rendering to an alternate surface.
 ///
 /// ## Design Principles
 ///
@@ -194,7 +220,10 @@ public func createPlatformView(frame: NSRect) -> NSView {
 /// - **Minimal Contract**: Only three methods are required; implement only what you need
 /// - **Main-Thread Bound**: All calls are @MainActor; rendering is thread-safe by design
 /// - **Stateless Display**: The `display(_:)` method is fire-and-forget; no buffering required
-/// - **No Assumptions**: The adapter doesn't assume Metal, SceneKit, or any specific backend
+/// - **Runtime-Explicit**: Callers should check `MetalRuntimeAvailability` before creating
+///   adapters and surface unsupported-runtime states explicitly
+/// - **No App-Framework Assumptions**: The adapter boundary stays independent of SceneKit,
+///   SwiftUI, or app-specific controller types
 
 /// For full examples and migration scenarios, see:
 /// - Documentation/surface-adapter/migration.md

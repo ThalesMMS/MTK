@@ -296,14 +296,21 @@ struct CustomTransferFunctionExample: View {
     @StateObject private var coordinator = VolumetricSceneCoordinator.shared
     @State private var transferFunction: TransferFunction?
     @State private var metalDevice: MTLDevice?
+    @State private var unsupportedRuntimeMessage: String?
 
     var body: some View {
         VStack {
-            VolumetricDisplayContainer(controller: coordinator.controller) {
-                OrientationOverlayView()
-            }
+            if let unsupportedRuntimeMessage {
+                ContentUnavailableView(
+                    "Metal Required",
+                    systemImage: "exclamationmark.triangle",
+                    description: Text(unsupportedRuntimeMessage)
+                )
+            } else if let tf = transferFunction {
+                VolumetricDisplayContainer(controller: coordinator.controller) {
+                    OrientationOverlayView()
+                }
 
-            if let tf = transferFunction {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Transfer Function: \(tf.name)")
                         .font(.headline)
@@ -321,9 +328,22 @@ struct CustomTransferFunctionExample: View {
     }
 
     private func setupTransferFunction() {
-        // Step 1: Get Metal device
+        // Step 1: Validate the Metal runtime requirement before configuring rendering resources.
+        do {
+            try MetalRuntimeAvailability.ensureAvailability()
+        } catch {
+            let status = MetalRuntimeAvailability.status()
+            unsupportedRuntimeMessage = unsupportedRuntimeMessage(for: status)
+            metalDevice = nil
+            transferFunction = nil
+            return
+        }
+
         guard let device = MTLCreateSystemDefaultDevice() else {
-            print("Metal device not available")
+            let status = MetalRuntimeAvailability.status()
+            unsupportedRuntimeMessage = unsupportedRuntimeMessage(for: status)
+            metalDevice = nil
+            transferFunction = nil
             return
         }
         metalDevice = device
@@ -358,6 +378,31 @@ struct CustomTransferFunctionExample: View {
 
         // Step 5: Generate Metal texture for rendering
         generateTransferFunctionTexture(tf, device: device)
+    }
+
+    private func unsupportedRuntimeMessage(for status: MetalRuntimeGuard.Status) -> String {
+        if status.missingFeatures.isEmpty {
+            return "Transfer function preview requires a Metal-capable device."
+        }
+
+        let missingFeatures = status.missingFeatures
+            .map { feature in
+                switch feature {
+                case .forcedUnavailable:
+                    return "Metal availability forced unavailable"
+                case .metalUnavailable:
+                    return "Metal device unavailable"
+                case .commandQueueUnavailable:
+                    return "Metal command queue unavailable"
+                case .texture3DUnsupported:
+                    return "3D textures unsupported"
+                case .unsupportedGPUFamily:
+                    return "required GPU family unsupported"
+                }
+            }
+            .joined(separator: ", ")
+
+        return "Transfer function preview requires Metal. Missing: \(missingFeatures)."
     }
 
     @MainActor

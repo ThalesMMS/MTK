@@ -58,6 +58,13 @@ private struct OutputTextureShape: Equatable, Sendable {
     let pixelFormat: VolumePixelFormat
 }
 
+private struct ReadbackShape: Equatable, Sendable {
+    let width: Int
+    let height: Int
+    let bytesPerPixel: Int
+    let pixelFormat: VolumePixelFormat
+}
+
 @preconcurrency
 public actor MetalMPRComputeAdapter: MPRReslicePort {
     public enum ComputeError: Error {
@@ -89,7 +96,7 @@ public actor MetalMPRComputeAdapter: MPRReslicePort {
     private let commandQueue: any MTLCommandQueue
     private let library: any MTLLibrary
     private let debugOptions: VolumeRenderingDebugOptions
-    private var pipelineCache: MTLComputePipelineState?
+    private var pipelineCache: [String: MTLComputePipelineState] = [:]
     private var cachedVolumeTexture: (any MTLTexture)?
     private var cachedDatasetIdentity: DatasetIdentity?
     private(set) var textureUploadCount: Int = 0
@@ -97,6 +104,9 @@ public actor MetalMPRComputeAdapter: MPRReslicePort {
     private var cachedOutputShape: OutputTextureShape?
     private var outputTextureInFlight = false
     private var outputTextureAllocationCount = 0
+    private var cachedReadbackBuffer: Data?
+    private var cachedReadbackShape: ReadbackShape?
+    private var readbackAllocationCount: Int = 0
     private var overrides = Overrides()
     private var lastSnapshot: SliceSnapshot?
     private let mpsAvailable: Bool
@@ -141,7 +151,7 @@ public actor MetalMPRComputeAdapter: MPRReslicePort {
         let effectiveSteps = VolumetricMath.sanitizeSteps(overrides.slabSteps ?? steps)
 
         // Get or create pipeline
-        let pipeline = try await getPipelineState()
+        let pipeline = try await getPipelineState(for: dataset.pixelFormat)
 
         // Reuse the dataset-scoped volume texture when the dataset layout and payload are unchanged.
         let volumeTexture = try provideVolumeTexture(for: dataset)
@@ -232,6 +242,9 @@ extension MetalMPRComputeAdapter {
     public var debugOutputTextureAllocationCount: Int { outputTextureAllocationCount }
 
     @_spi(Testing)
+    public var debugReadbackAllocationCount: Int { readbackAllocationCount }
+
+    @_spi(Testing)
     public var debugCachedOutputTextureShape: (
         width: Int,
         height: Int,
@@ -242,6 +255,20 @@ extension MetalMPRComputeAdapter {
             width: cachedOutputShape.width,
             height: cachedOutputShape.height,
             pixelFormat: cachedOutputShape.pixelFormat
+        )
+    }
+
+    @_spi(Testing)
+    public var debugCachedReadbackShape: (
+        width: Int,
+        height: Int,
+        bytesPerPixel: Int
+    )? {
+        guard let cachedReadbackShape else { return nil }
+        return (
+            width: cachedReadbackShape.width,
+            height: cachedReadbackShape.height,
+            bytesPerPixel: cachedReadbackShape.bytesPerPixel
         )
     }
 
@@ -267,26 +294,27 @@ extension MetalMPRComputeAdapter {
 // MARK: - Pipeline Management
 
 private extension MetalMPRComputeAdapter {
-    func getPipelineState() async throws -> MTLComputePipelineState {
-        if let cached = pipelineCache {
+    func getPipelineState(for pixelFormat: VolumePixelFormat) async throws -> MTLComputePipelineState {
+        let functionName = pixelFormat.mprSlabKernelName
+        if let cached = pipelineCache[functionName] {
             return cached
         }
 
-        guard let function = library.makeFunction(name: "computeMPRSlab") else {
-            logger.error("Metal function computeMPRSlab not found")
+        guard let function = library.makeFunction(name: functionName) else {
+            logger.error("Metal function \(functionName) not found")
             throw ComputeError.pipelineUnavailable
         }
-        function.label = "mpr_slab_compute"
+        function.label = functionName
 
         let descriptor = MTLComputePipelineDescriptor()
-        descriptor.label = "mpr_slab_compute"
+        descriptor.label = "mpr_slab_compute.\(functionName)"
         descriptor.computeFunction = function
 
         do {
             let pipeline = try device.makeComputePipelineState(descriptor: descriptor,
                                                                options: [],
                                                                reflection: nil)
-            pipelineCache = pipeline
+            pipelineCache[functionName] = pipeline
             return pipeline
         } catch {
             logger.error("Failed to create MPR compute pipeline: \(error.localizedDescription)")
@@ -498,10 +526,18 @@ private extension MetalMPRComputeAdapter {
         let bytesPerPixel = pixelFormat.bytesPerVoxel
         let bytesPerRow = width * bytesPerPixel
         let bufferLength = height * bytesPerRow
+        let currentShape = ReadbackShape(width: width,
+                                         height: height,
+                                         bytesPerPixel: bytesPerPixel,
+                                         pixelFormat: pixelFormat)
 
-        var pixels = Data(count: bufferLength)
+        if cachedReadbackBuffer == nil || cachedReadbackShape != currentShape {
+            cachedReadbackBuffer = Data(count: bufferLength)
+            cachedReadbackShape = currentShape
+            readbackAllocationCount += 1
+        }
 
-        try pixels.withUnsafeMutableBytes { buffer in
+        try cachedReadbackBuffer!.withUnsafeMutableBytes { buffer in
             guard let baseAddress = buffer.baseAddress else {
                 throw ComputeError.outputBufferAllocationFailed
             }
@@ -513,6 +549,9 @@ private extension MetalMPRComputeAdapter {
                 mipmapLevel: 0
             )
         }
+
+        // Keep the cache actor-owned; callers receive an isolated copy that later readbacks cannot overwrite.
+        let pixels = cachedReadbackBuffer!.withUnsafeBytes { Data($0) }
 
         let pixelSpacing = calculatePixelSpacing(for: plane,
                                                   width: width,
@@ -603,8 +642,13 @@ private extension MetalMPRComputeAdapter {
 
 #if canImport(MetalPerformanceShaders)
 private extension MetalMPRComputeAdapter {
-    /// Performs optimized texture format conversion using MPS when available.
-    /// Falls back to blit encoder for unsupported formats.
+    /// Metal blit baseline with optional MPS optimization.
+    ///
+    /// The blit encoder path is first-class and fully supported. MPS provides
+    /// optimized conversion for compatible 2D normalized/float formats when available.
+    /// 3D textures and signed integer formats use the Metal blit baseline by design
+    /// because MPS image conversion does not cover those texture cases.
+    ///
     /// - Parameters:
     ///   - commandBuffer: Command buffer to encode operations
     ///   - source: Source texture to convert
@@ -614,20 +658,20 @@ private extension MetalMPRComputeAdapter {
                         source: any MTLTexture,
                         destination: any MTLTexture) {
         guard mpsAvailable else {
-            // Fallback: Use blit encoder for direct copy when MPS unavailable
-            fallbackConvertTexture(on: commandBuffer, source: source, destination: destination)
+            // Use Metal blit encoder (baseline path) when MPS is unavailable.
+            blitConvertTexture(on: commandBuffer, source: source, destination: destination)
             return
         }
 
-        // MPS operations require specific texture types and formats
-        // Use blit encoder fallback for 3D textures or incompatible formats
-        let requiresBlitFallback = source.textureType == .type3D ||
+        // MPS operations require specific texture types and formats. 3D textures
+        // and signed integer formats use the Metal blit baseline by design.
+        let requiresBlitBaseline = source.textureType == .type3D ||
                                     destination.textureType == .type3D ||
                                     !source.pixelFormat.isMPSConvertible ||
                                     !destination.pixelFormat.isMPSConvertible
 
-        if requiresBlitFallback {
-            fallbackConvertTexture(on: commandBuffer, source: source, destination: destination)
+        if requiresBlitBaseline {
+            blitConvertTexture(on: commandBuffer, source: source, destination: destination)
             return
         }
 
@@ -644,15 +688,15 @@ private extension MetalMPRComputeAdapter {
                           destinationTexture: destination)
     }
 
-    /// Fallback texture conversion using blit encoder
-    private func fallbackConvertTexture(on commandBuffer: any MTLCommandBuffer,
-                                         source: any MTLTexture,
-                                         destination: any MTLTexture) {
+    /// Baseline texture conversion using Metal blit encoder.
+    private func blitConvertTexture(on commandBuffer: any MTLCommandBuffer,
+                                    source: any MTLTexture,
+                                    destination: any MTLTexture) {
         guard let blitEncoder = commandBuffer.makeBlitCommandEncoder() else {
-            logger.error("Failed to create blit encoder for texture conversion fallback")
+            logger.error("Failed to create blit encoder for baseline texture conversion")
             return
         }
-        blitEncoder.label = "MPR.TextureConversionFallback"
+        blitEncoder.label = "MPR.TextureConversionBlitBaseline"
 
         // Handle different texture types
         switch (source.textureType, destination.textureType) {
@@ -711,6 +755,15 @@ private extension VolumePixelFormat {
             return .r16Sint
         case .int16Unsigned:
             return .r16Uint
+        }
+    }
+
+    var mprSlabKernelName: String {
+        switch self {
+        case .int16Signed:
+            return "computeMPRSlab"
+        case .int16Unsigned:
+            return "computeMPRSlabUnsigned"
         }
     }
 }

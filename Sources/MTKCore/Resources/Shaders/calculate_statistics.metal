@@ -24,12 +24,21 @@ inline uint find_percentile_bin(device const uint *cumulativeSum,
     }
 
     float clamped = clamp_percentile(percentile);
+    if (clamped >= 1.0f) {
+        for (uint i = 0; i < binCount; ++i) {
+            if (cumulativeSum[i] >= totalCount) {
+                return i;
+            }
+        }
+        return binCount - 1;
+    }
+
     uint target = uint(clamped * float(totalCount));
 
     // Binary search would be more efficient, but linear search is clearer
     // and performance is acceptable for typical bin counts (256-1024)
     for (uint i = 0; i < binCount; ++i) {
-        if (cumulativeSum[i] >= target) {
+        if (cumulativeSum[i] > target) {
             return i;
         }
     }
@@ -80,8 +89,8 @@ kernel void computeCumulativeSum(device const uint *histogramBuffer [[buffer(0)]
     }
 }
 
-/// Compute cumulative sum using sequential algorithm (fallback).
-/// More efficient for small bin counts or when threadgroup size is limited.
+/// Compute cumulative sum using sequential algorithm.
+/// Used when bin counts exceed the single-threadgroup scan limits.
 kernel void computeCumulativeSumSequential(device const uint *histogramBuffer [[buffer(0)]],
                                           device uint *cumulativeSumBuffer [[buffer(1)]],
                                           constant uint &binCount [[buffer(2)]]) {
@@ -137,6 +146,23 @@ kernel void calculateOtsuThreshold(device const uint *histogramBuffer [[buffer(0
     uint bins = max(binCount, 1u);
     float totalCountF = float(totalCount);
 
+    uint firstNonZero = bins;
+    uint lastNonZero = 0;
+    for (uint i = 0; i < bins; ++i) {
+        if (histogramBuffer[i] > 0) {
+            firstNonZero = min(firstNonZero, i);
+            lastNonZero = i;
+        }
+    }
+    if (firstNonZero == bins) {
+        otsuThresholdBin[0] = 0;
+        return;
+    }
+    if (firstNonZero == lastNonZero) {
+        otsuThresholdBin[0] = firstNonZero;
+        return;
+    }
+
     // Calculate mean intensity of entire histogram
     float globalMean = 0.0f;
     for (uint i = 0; i < bins; ++i) {
@@ -146,7 +172,8 @@ kernel void calculateOtsuThreshold(device const uint *histogramBuffer [[buffer(0
 
     // Find threshold that maximizes between-class variance
     float maxVariance = 0.0f;
-    uint optimalThreshold = 0;
+    uint optimalThresholdStart = firstNonZero;
+    uint optimalThresholdEnd = firstNonZero;
 
     float cumulativeWeight = 0.0f;
     float cumulativeMean = 0.0f;
@@ -171,11 +198,15 @@ kernel void calculateOtsuThreshold(device const uint *histogramBuffer [[buffer(0
         float meanDiff = foregroundMean - backgroundMean;
         float betweenClassVariance = backgroundWeight * foregroundWeight * meanDiff * meanDiff;
 
-        if (betweenClassVariance > maxVariance) {
+        float tolerance = max(maxVariance, 1.0f) * 1e-6f;
+        if (betweenClassVariance > maxVariance + tolerance) {
             maxVariance = betweenClassVariance;
-            optimalThreshold = threshold;
+            optimalThresholdStart = threshold;
+            optimalThresholdEnd = threshold;
+        } else if (abs(betweenClassVariance - maxVariance) <= tolerance && maxVariance > 0.0f) {
+            optimalThresholdEnd = threshold;
         }
     }
 
-    otsuThresholdBin[0] = optimalThreshold;
+    otsuThresholdBin[0] = (optimalThresholdStart + optimalThresholdEnd) / 2;
 }

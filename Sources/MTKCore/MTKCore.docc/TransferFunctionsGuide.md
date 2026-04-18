@@ -303,7 +303,7 @@ try await adapter.setHuWindow(min: -100, max: 200)
 
 ```swift
 // 1. Load volume and initialize renderer
-let adapter = MetalVolumeRenderingAdapter()
+let adapter = try MetalVolumeRenderingAdapter()
 
 // 2. Apply soft tissue preset
 try await adapter.setPreset(.ctSoftTissue)

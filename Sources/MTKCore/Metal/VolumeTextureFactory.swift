@@ -31,11 +31,11 @@ import ZIPFoundation
 ///
 /// Or use a built-in preset:
 /// ```swift
-/// let factory = VolumeTextureFactory(preset: .head)
+/// let factory = try VolumeTextureFactory(preset: .head)
 /// let texture = try await factory.generateAsync(device: device, commandQueue: queue)
 /// ```
 ///
-/// - Note: Preset datasets are loaded from bundled `.raw.zip` resources. Missing resources fall back to a 1³ placeholder.
+/// - Note: Preset datasets are loaded from bundled `.raw.zip` resources. Missing or invalid resources throw ``PresetLoadingError``.
 /// - Important: Textures created by this factory use `.type3D` with pixel formats matching the dataset's `VolumePixelFormat`.
 public final class VolumeTextureFactory {
     /// Errors that can occur during asynchronous texture upload.
@@ -48,6 +48,38 @@ public final class VolumeTextureFactory {
         case commandBufferCreationFailed
         /// Failed to create the blit command encoder.
         case blitEncoderCreationFailed
+    }
+
+    /// Errors that can occur when loading preset-backed volume resources.
+    public enum PresetLoadingError: Error, LocalizedError {
+        /// The expected bundled `.raw.zip` resource was not found.
+        case resourceNotBundled(preset: String)
+        /// The bundled archive exists but cannot be opened for reading.
+        case archiveUnreadable(preset: String)
+        /// Archive extraction failed before a complete payload could be built.
+        case extractionFailed(preset: String, underlying: Error?)
+        /// The archive extracted successfully but produced no voxel data.
+        case emptyPayload(preset: String)
+        /// The selected preset does not define bundled voxel data.
+        case noDataAvailable(preset: String)
+
+        public var errorDescription: String? {
+            switch self {
+            case .resourceNotBundled(let preset):
+                return "Preset resource '\(preset).raw.zip' was not found in Bundle.module."
+            case .archiveUnreadable(let preset):
+                return "Preset resource archive for '\(preset)' could not be opened."
+            case .extractionFailed(let preset, let underlying):
+                if let underlying {
+                    return "Preset resource archive for '\(preset)' could not be extracted: \(underlying.localizedDescription)"
+                }
+                return "Preset resource archive for '\(preset)' could not be extracted."
+            case .emptyPayload(let preset):
+                return "Preset resource archive for '\(preset)' did not contain voxel data."
+            case .noDataAvailable(let preset):
+                return "Preset '\(preset)' does not provide bundled voxel data."
+            }
+        }
     }
 
     /// The volumetric dataset backing this factory.
@@ -69,11 +101,11 @@ public final class VolumeTextureFactory {
     /// Creates a factory from a built-in preset.
     ///
     /// Preset datasets are loaded from bundled `.raw.zip` resources in `Bundle.module`.
-    /// If the resource is missing, falls back to a 1³ placeholder dataset.
     ///
     /// - Parameter preset: The preset to load (`.head`, `.chest`, `.none`, or `.dicom`).
-    public convenience init(preset: VolumeDatasetPreset) {
-        self.init(dataset: VolumeTextureFactory.dataset(for: preset))
+    /// - Throws: ``PresetLoadingError`` when the preset has no bundled data or its resource cannot be loaded.
+    public convenience init(preset: VolumeDatasetPreset) throws {
+        self.init(dataset: try VolumeTextureFactory.dataset(for: preset))
     }
 
     /// The physical spacing of the volume in meters (x, y, z).
@@ -99,6 +131,21 @@ public final class VolumeTextureFactory {
     /// - Parameter dataset: The new `VolumeDataset` to use.
     public func update(dataset: VolumeDataset) {
         self.dataset = dataset
+    }
+
+    /// Returns a minimal 1x1x1 volume for tests and explicit debug fallback paths.
+    ///
+    /// This dataset is intentionally not used by preset loading. Production code should
+    /// load real volume data or handle ``PresetLoadingError`` from ``init(preset:)``.
+    public static func debugPlaceholderDataset() -> VolumeDataset {
+        let data = Data(count: VolumePixelFormat.int16Signed.bytesPerVoxel)
+        return VolumeDataset(
+            data: data,
+            dimensions: VolumeDimensions(width: 1, height: 1, depth: 1),
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+            pixelFormat: .int16Signed,
+            intensityRange: (-1024)...3071
+        )
     }
 
     /// Synchronously creates a 3D Metal texture from the current dataset using CPU-based upload.
@@ -159,7 +206,7 @@ public final class VolumeTextureFactory {
     ///
     /// ## Example
     /// ```swift
-    /// let factory = VolumeTextureFactory(preset: .head)
+    /// let factory = try VolumeTextureFactory(preset: .head)
     /// let texture = try await factory.generateAsync(device: device, commandQueue: queue)
     /// // Texture is ready for immediate shader use
     /// ```
@@ -234,10 +281,10 @@ public final class VolumeTextureFactory {
 }
 
 private extension VolumeTextureFactory {
-    static func dataset(for preset: VolumeDatasetPreset) -> VolumeDataset {
+    static func dataset(for preset: VolumeDatasetPreset) throws -> VolumeDataset {
         switch preset {
         case .head:
-            return loadZippedResource(
+            return try loadZippedResource(
                 named: "head",
                 dimensions: VolumeDimensions(width: 512, height: 512, depth: 511),
                 spacing: VolumeSpacing(x: 0.000449, y: 0.000449, z: 0.000501),
@@ -245,7 +292,7 @@ private extension VolumeTextureFactory {
                 intensity: (-1024)...3071
             )
         case .chest:
-            return loadZippedResource(
+            return try loadZippedResource(
                 named: "chest",
                 dimensions: VolumeDimensions(width: 512, height: 512, depth: 179),
                 spacing: VolumeSpacing(x: 0.000586, y: 0.000586, z: 0.002),
@@ -253,32 +300,22 @@ private extension VolumeTextureFactory {
                 intensity: (-1024)...3071
             )
         case .none, .dicom:
-            return placeholderDataset()
+            resourceLogger.warning("Preset \(preset.rawValue) does not provide bundled voxel data")
+            throw PresetLoadingError.noDataAvailable(preset: preset.rawValue)
         }
-    }
-
-    static func placeholderDataset() -> VolumeDataset {
-        let data = Data(count: VolumePixelFormat.int16Signed.bytesPerVoxel)
-        return VolumeDataset(
-            data: data,
-            dimensions: VolumeDimensions(width: 1, height: 1, depth: 1),
-            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
-            pixelFormat: .int16Signed,
-            intensityRange: (-1024)...3071
-        )
     }
 
     static func loadZippedResource(named name: String,
                                    dimensions: VolumeDimensions,
                                    spacing: VolumeSpacing,
                                    pixelFormat: VolumePixelFormat,
-                                   intensity: ClosedRange<Int32>) -> VolumeDataset {
+                                   intensity: ClosedRange<Int32>) throws -> VolumeDataset {
         guard let url = Bundle.module.url(forResource: name, withExtension: "raw.zip") else {
             resourceLogger.warning("Missing resource: \(name).raw.zip")
-            return placeholderDataset()
+            throw PresetLoadingError.resourceNotBundled(preset: name)
         }
 
-        return loadDataset(
+        return try loadDataset(
             fromArchiveAt: url,
             dimensions: dimensions,
             spacing: spacing,
@@ -291,17 +328,14 @@ private extension VolumeTextureFactory {
                             dimensions: VolumeDimensions,
                             spacing: VolumeSpacing,
                             pixelFormat: VolumePixelFormat,
-                            intensity: ClosedRange<Int32>) -> VolumeDataset {
+                            intensity: ClosedRange<Int32>) throws -> VolumeDataset {
+        let presetName = presetName(fromArchiveURL: url)
         let archive: Archive
         do {
-            guard let archive_ = try Archive(url: url, accessMode: .read) else {
-                resourceLogger.error("Unable to create archive at \(url.path)")
-                return placeholderDataset()
-            }
-            archive = archive_
+            archive = try Archive(url: url, accessMode: .read)
         } catch {
             resourceLogger.error("Unable to read archive at \(url.path): \(String(describing: error))")
-            return placeholderDataset()
+            throw PresetLoadingError.archiveUnreadable(preset: presetName)
         }
 
         var data = Data(capacity: dimensions.voxelCount * pixelFormat.bytesPerVoxel)
@@ -313,12 +347,12 @@ private extension VolumeTextureFactory {
             }
         } catch {
             resourceLogger.error("Failed to extract archive \(url.lastPathComponent): \(String(describing: error))")
-            return placeholderDataset()
+            throw PresetLoadingError.extractionFailed(preset: presetName, underlying: error)
         }
 
         if data.isEmpty {
             resourceLogger.warning("Archive \(url.lastPathComponent) extracted but returned empty data")
-            return placeholderDataset()
+            throw PresetLoadingError.emptyPayload(preset: presetName)
         }
 
         return VolumeDataset(
@@ -328,6 +362,11 @@ private extension VolumeTextureFactory {
             pixelFormat: pixelFormat,
             intensityRange: intensity
         )
+    }
+
+    static func presetName(fromArchiveURL url: URL) -> String {
+        let rawName = url.deletingPathExtension().deletingPathExtension().lastPathComponent
+        return rawName.isEmpty ? url.lastPathComponent : rawName
     }
 }
 

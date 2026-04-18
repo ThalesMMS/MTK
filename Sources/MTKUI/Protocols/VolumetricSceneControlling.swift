@@ -4,8 +4,8 @@
 //
 //  Protocol abstraction for volumetric scene rendering coordination.
 //  Defines the public API contract for dataset application, display
-//  configuration, and camera interaction. Enables platform-agnostic
-//  presentation layer integration.
+//  configuration, and camera interaction around MTKUI's single
+//  SceneKit-presented Metal rendering path.
 //
 //  Thales Matheus Mendonça Santos - September 2025
 //
@@ -59,22 +59,6 @@ public struct VolumetricWindowLevelState: Equatable {
     }
 }
 
-/// Available rendering backends for volumetric display.
-/// SceneKit uses fragment shaders, MPS uses compute pipelines.
-public enum VolumetricRenderingBackend: Int, CaseIterable, Equatable, Sendable {
-    case sceneKit
-    case metalPerformanceShaders
-
-    public var displayName: String {
-        switch self {
-        case .sceneKit:
-            return "SceneKit"
-        case .metalPerformanceShaders:
-            return "Metal Performance Shaders"
-        }
-    }
-}
-
 /// Render mode controlling whether the scene actively updates or is paused.
 public enum VolumetricRenderMode {
     case active
@@ -100,19 +84,13 @@ public struct VolumetricHotspot: Equatable {
 #if os(iOS) || os(macOS)
 import MTKCore
 import MTKSceneKit
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-import MetalKit
-#endif
 
 /// Protocol defining the public API for volumetric scene rendering coordination.
 /// Implementers orchestrate dataset application, display configuration, camera control,
-/// and rendering settings for both volume and MPR visualization modes.
+/// and rendering settings for the SceneKit-presented Metal volume and MPR paths.
 @MainActor
 public protocol VolumetricSceneControlling: AnyObject {
     var surface: any RenderSurface { get }
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-    var mpsView: MTKView? { get }
-#endif
     var transferFunctionDomain: ClosedRange<Float>? { get }
 
     func applyDataset(_ dataset: VolumeDataset) async
@@ -126,7 +104,6 @@ public protocol VolumetricSceneControlling: AnyObject {
     func setHuGate(enabled: Bool) async
     func setHuWindow(_ window: VolumeCubeMaterial.HuWindowMapping) async
     func setRenderMode(_ mode: VolumetricRenderMode) async
-    func setRenderingBackend(_ backend: VolumetricRenderingBackend) async -> VolumetricRenderingBackend
     func updateTransferFunctionShift(_ shift: Float) async
     func setAdaptiveSampling(_ enabled: Bool) async
     func beginAdaptiveSamplingInteraction() async
@@ -155,16 +132,10 @@ public protocol VolumetricSceneControlling: AnyObject {
 #else
 import MTKCore
 import MTKSceneKit
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-import MetalKit
-#endif
 
 @MainActor
 public protocol VolumetricSceneControlling: AnyObject {
     var surface: any RenderSurface { get }
-#if canImport(MetalPerformanceShaders) && canImport(MetalKit)
-    var mpsView: MTKView? { get }
-#endif
     var transferFunctionDomain: ClosedRange<Float>? { get }
 
     func applyDataset(_ dataset: VolumeDataset) async
@@ -178,7 +149,6 @@ public protocol VolumetricSceneControlling: AnyObject {
     func setHuGate(enabled: Bool) async
     func setHuWindow(_ window: VolumeCubeMaterial.HuWindowMapping) async
     func setRenderMode(_ mode: VolumetricRenderMode) async
-    func setRenderingBackend(_ backend: VolumetricRenderingBackend) async -> VolumetricRenderingBackend
     func updateTransferFunctionShift(_ shift: Float) async
     func setAdaptiveSampling(_ enabled: Bool) async
     func beginAdaptiveSamplingInteraction() async

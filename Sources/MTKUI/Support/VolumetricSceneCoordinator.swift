@@ -133,7 +133,7 @@ public final class VolumetricSceneCoordinator: ObservableObject {
     /// Indicates whether Metal GPU rendering is available on this device.
     ///
     /// Set to `false` on systems without Metal support (e.g., some simulators or older hardware).
-    /// When `false`, controllers fallback to stub implementations without GPU rendering.
+    /// When `false`, controllers enter an unsupported-capability state without GPU rendering.
     @Published public private(set) var isMetalAvailable: Bool
 
     private enum SurfaceKey: Hashable {
@@ -319,8 +319,9 @@ public final class VolumetricSceneCoordinator: ObservableObject {
     /// coordinator.apply(dataset: dataset)
     /// ```
     ///
-    /// - Note: If Metal is unavailable (``isMetalAvailable`` is `false`), this method returns without error
-    ///   but no GPU textures are created.
+    /// - Note: If Metal is unavailable (``isMetalAvailable`` is `false`), this method surfaces
+    ///   no-op behavior for the unsupported-capability state; callers should gate on
+    ///   ``isMetalAvailable`` before applying datasets.
     public func apply(dataset: VolumeDataset) {
         guard isMetalAvailable else { return }
         pendingDataset = dataset
@@ -355,7 +356,7 @@ public final class VolumetricSceneCoordinator: ObservableObject {
     /// let customTF = try TransferFunction(fileURL: tfURL)
     /// coordinator.apply(transferFunction: customTF)
     ///
-    /// // Clear transfer function (fallback to grayscale)
+    /// // Clear transfer function (uses the default grayscale mapping)
     /// coordinator.apply(transferFunction: nil)
     /// ```
     ///
@@ -537,6 +538,9 @@ public final class VolumetricSceneCoordinator: ObservableObject {
     }
 
     private func controller(for surface: SurfaceKey) -> VolumetricSceneController {
+        // API-stability placeholder for unsupported capability state. UI callers
+        // should gate on isMetalAvailable and present an unsupported-capability view
+        // rather than treating this as a rendering path.
         if !isMetalAvailable {
             if let stub = stubControllers[surface]
                 ?? (try? VolumetricSceneController(device: nil, sceneView: nil))
@@ -555,6 +559,8 @@ public final class VolumetricSceneCoordinator: ObservableObject {
         let newController: VolumetricSceneController
 #if os(iOS) || os(macOS)
         guard let device else {
+            // Device unexpectedly unavailable after the initial requirement check.
+            // Return an unsupported-capability placeholder to preserve API shape.
             if let stub = stubControllers[surface]
                 ?? (try? VolumetricSceneController(device: nil, sceneView: nil))
                 ?? (try? VolumetricSceneController()) {
@@ -562,7 +568,7 @@ public final class VolumetricSceneCoordinator: ObservableObject {
                 controllers[surface] = stub
                 return stub
             }
-            fatalError("Failed to create fallback VolumetricSceneController when Metal device is unavailable.")
+            fatalError("Failed to create unsupported-capability VolumetricSceneController placeholder when Metal device is unavailable.")
         }
         newController = (try? VolumetricSceneController(device: device))
             ?? (try? VolumetricSceneController(device: nil, sceneView: nil))
@@ -571,6 +577,8 @@ public final class VolumetricSceneCoordinator: ObservableObject {
                 fatalError("Failed to create VolumetricSceneController with or without Metal device.")
             }()
 #else
+        // Unsupported platform placeholder for API stability. Rendering features
+        // should be hidden or disabled by UI-level requirement gating.
         newController = (try? VolumetricSceneController(device: nil, sceneView: nil))
             ?? (try? VolumetricSceneController())
             ?? {

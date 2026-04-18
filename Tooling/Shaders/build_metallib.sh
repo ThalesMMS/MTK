@@ -3,30 +3,39 @@
 # build_metallib.sh
 # Shared helper used by MTKShaderPlugin and CI to compile
 # MTK/Sources/MTKCore/Resources/Shaders/*.metal into
-# MTK.metallib. Designed to succeed even on headless builders.
+# MTK.metallib. By default the script remains permissive for headless
+# builders; set METALLIB_STRICT=1 to treat missing inputs or tools as errors.
 
 set -euo pipefail
 
 INPUT_DIR=${1:-"$(cd -- "$(dirname "$0")"/../../Sources/MTKCore/Resources/Shaders && pwd)"}
 OUTPUT_PATH=${2:-"$INPUT_DIR/MTK.metallib"}
 SHADER_ROOT=${MTK_SHADER_ROOT:-"$(cd -- "$INPUT_DIR/.." && pwd)"}
+STRICT=${METALLIB_STRICT:-0}
+
+fail_or_skip() {
+  local message="$1"
+  if [[ "$STRICT" == "1" ]]; then
+    echo "[build_metallib] ERROR: $message" >&2
+    exit 1
+  fi
+  echo "[build_metallib] $message Skipping." >&2
+  exit 0
+}
 
 if [[ ! -d "$SHADER_ROOT" ]]; then
-  echo "[build_metallib] Shader root '$SHADER_ROOT' not found. Skipping." >&2
-  exit 0
+  fail_or_skip "Shader root '$SHADER_ROOT' not found."
 fi
 
 if ! command -v xcrun >/dev/null 2>&1; then
-  echo "[build_metallib] xcrun unavailable. Skipping metallib generation." >&2
-  exit 0
+  fail_or_skip "xcrun unavailable; cannot generate MTK.metallib."
 fi
 
 METALC=$(xcrun --find metal 2>/dev/null || true)
 METALLIB_BIN=$(xcrun --find metallib 2>/dev/null || true)
 
 if [[ -z "$METALC" || -z "$METALLIB_BIN" ]]; then
-  echo "[build_metallib] Metal toolchain not found. Skipping." >&2
-  exit 0
+  fail_or_skip "Metal toolchain not found; cannot generate MTK.metallib."
 fi
 
 SDK=${MTK_METAL_SDK:-macosx}
@@ -51,8 +60,7 @@ while IFS= read -r metal_file; do
 done < <(find "$SHADER_ROOT" -name '*.metal' -print | sort)
 
 if [[ ${#AIR_FILES[@]} -eq 0 ]]; then
-  echo "[build_metallib] No .metal files found under '$INPUT_DIR'." >&2
-  exit 0
+  fail_or_skip "No .metal files found under '$INPUT_DIR'."
 fi
 
 mkdir -p "$(dirname "$OUTPUT_PATH")"
