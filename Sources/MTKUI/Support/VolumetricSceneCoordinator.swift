@@ -11,7 +11,23 @@ import Combine
 import Foundation
 import Metal
 import MTKCore
-import MTKSceneKit
+
+public enum VolumetricSceneCoordinatorError: Error, LocalizedError {
+    case metalUnavailable
+    case unsupportedPlatform
+    case controllerCreationFailed
+
+    public var errorDescription: String? {
+        switch self {
+        case .metalUnavailable:
+            return "VolumetricSceneController requires a Metal device, but no system Metal device is available."
+        case .unsupportedPlatform:
+            return "VolumetricSceneController is only available on iOS and macOS."
+        case .controllerCreationFailed:
+            return "Failed to create VolumetricSceneController with the available Metal device."
+        }
+    }
+}
 
 /// Singleton coordinator managing volumetric scene controller lifecycle and state synchronization.
 ///
@@ -70,20 +86,30 @@ import MTKSceneKit
 ///     @StateObject private var coordinator = VolumetricSceneCoordinator.shared
 ///
 ///     var body: some View {
-///         TriplanarMPRComposer(
-///             axialController: coordinator.controller(for: .z),
-///             coronalController: coordinator.controller(for: .y),
-///             sagittalController: coordinator.controller(for: .x)
-///         )
+///         Group {
+///             if let axialController = try? coordinator.controller(for: .z),
+///                let coronalController = try? coordinator.controller(for: .y),
+///                let sagittalController = try? coordinator.controller(for: .x) {
+///                 TriplanarMPRComposer(
+///                     axialController: axialController,
+///                     coronalController: coronalController,
+///                     sagittalController: sagittalController
+///                 )
+///             }
+///         }
 ///         .task {
-///             await coordinator.controller(for: .z).applyDataset(volumeDataset)
-///             await coordinator.controller(for: .y).applyDataset(volumeDataset)
-///             await coordinator.controller(for: .x).applyDataset(volumeDataset)
+///             guard let axialController = try? coordinator.controller(for: .z),
+///                   let coronalController = try? coordinator.controller(for: .y),
+///                   let sagittalController = try? coordinator.controller(for: .x) else { return }
+///
+///             await axialController.applyDataset(volumeDataset)
+///             await coronalController.applyDataset(volumeDataset)
+///             await sagittalController.applyDataset(volumeDataset)
 ///
 ///             // Configure individual MPR planes
 ///             coordinator.configureMPRDisplay(
 ///                 axis: .z,
-///                 blend: .average,
+///                 blend: .mean,
 ///                 slab: VolumetricSceneController.SlabConfiguration(
 ///                     thickness: 10,
 ///                     steps: 5
@@ -142,7 +168,7 @@ public final class VolumetricSceneCoordinator: ObservableObject {
     }
 
     private struct MprConfiguration {
-        var blend: MPRPlaneMaterial.BlendMode
+        var blend: VolumetricMPRBlendMode
         var slab: VolumetricSceneController.SlabConfiguration?
         var normalizedPosition: Float
     }
@@ -151,7 +177,7 @@ public final class VolumetricSceneCoordinator: ObservableObject {
     private var controllerCancellables: [SurfaceKey: Set<AnyCancellable>] = [:]
     private var pendingDataset: VolumeDataset?
     private var pendingTransferFunction: TransferFunction?
-    private var pendingHuWindow: VolumeCubeMaterial.HuWindowMapping?
+    private var pendingHuWindow: VolumetricHUWindowMapping?
     private var volumeConfiguration: VolumetricSceneController.DisplayConfiguration = .volume(method: .dvr)
     private var mprConfigurations: [VolumetricSceneController.Axis: MprConfiguration] = [
         .x: MprConfiguration(blend: .single, slab: nil, normalizedPosition: 0.5),
@@ -159,7 +185,6 @@ public final class VolumetricSceneCoordinator: ObservableObject {
         .z: MprConfiguration(blend: .single, slab: nil, normalizedPosition: 0.5)
     ]
     private let device: (any MTLDevice)?
-    private var stubControllers: [SurfaceKey: VolumetricSceneController] = [:]
 
     /// Testing-only surface identifiers for lazily instantiated controllers.
     ///
@@ -236,8 +261,8 @@ public final class VolumetricSceneCoordinator: ObservableObject {
     ///     OrientationOverlayView()
     /// }
     /// ```
-    public var controller: VolumetricSceneController {
-        controller(for: .volume)
+    public var controller: VolumetricSceneController? {
+        try? controller(for: .volume)
     }
 
     /// Returns the controller for a specific MPR axis (axial, sagittal, or coronal).
@@ -251,12 +276,12 @@ public final class VolumetricSceneCoordinator: ObservableObject {
     /// ## Example
     ///
     /// ```swift
-    /// let axialController = coordinator.controller(for: .z)
-    /// let sagittalController = coordinator.controller(for: .x)
-    /// let coronalController = coordinator.controller(for: .y)
+    /// let axialController = try coordinator.controller(for: .z)
+    /// let sagittalController = try coordinator.controller(for: .x)
+    /// let coronalController = try coordinator.controller(for: .y)
     /// ```
-    public func controller(for axis: VolumetricSceneController.Axis) -> VolumetricSceneController {
-        controller(for: .mpr(axis))
+    public func controller(for axis: VolumetricSceneController.Axis) throws -> VolumetricSceneController {
+        try controller(for: .mpr(axis))
     }
 
     /// Resets coordinator state and clears all cached controllers.
@@ -283,7 +308,6 @@ public final class VolumetricSceneCoordinator: ObservableObject {
             .y: MprConfiguration(blend: .single, slab: nil, normalizedPosition: 0.5),
             .z: MprConfiguration(blend: .single, slab: nil, normalizedPosition: 0.5)
         ]
-        stubControllers.removeAll()
         updateRendererState { state in
             state.dataset = nil
             state.huWindow = nil
@@ -424,7 +448,7 @@ public final class VolumetricSceneCoordinator: ObservableObject {
     /// coordinator.configureVolumeDisplay(.volume(method: .mip))
     ///
     /// // Average Intensity Projection (AIP)
-    /// coordinator.configureVolumeDisplay(.volume(method: .aip))
+    /// coordinator.configureVolumeDisplay(.volume(method: .avg))
     /// ```
     ///
     /// - Note: Typically you use this method to switch between volume rendering methods (DVR/MIP/MinIP/AIP).
@@ -462,7 +486,7 @@ public final class VolumetricSceneCoordinator: ObservableObject {
     /// // Thick-slab coronal MPR with averaging (noise reduction)
     /// coordinator.configureMPRDisplay(
     ///     axis: .y,
-    ///     blend: .average,
+    ///     blend: .mean,
     ///     slab: VolumetricSceneController.SlabConfiguration(
     ///         thickness: 10,  // 10 voxel thickness
     ///         steps: 5        // 5 sampling steps
@@ -473,7 +497,7 @@ public final class VolumetricSceneCoordinator: ObservableObject {
     ///
     /// Normalized position is automatically clamped to [0, 1]. Updates ``rendererState/normalizedMprPositions``.
     public func configureMPRDisplay(axis: VolumetricSceneController.Axis,
-                                    blend: MPRPlaneMaterial.BlendMode = .single,
+                                    blend: VolumetricMPRBlendMode = .single,
                                     slab: VolumetricSceneController.SlabConfiguration? = nil,
                                     normalizedPosition: Float = 0.5) {
         guard isMetalAvailable else { return }
@@ -537,19 +561,9 @@ public final class VolumetricSceneCoordinator: ObservableObject {
         }
     }
 
-    private func controller(for surface: SurfaceKey) -> VolumetricSceneController {
-        // API-stability placeholder for unsupported capability state. UI callers
-        // should gate on isMetalAvailable and present an unsupported-capability view
-        // rather than treating this as a rendering path.
-        if !isMetalAvailable {
-            if let stub = stubControllers[surface]
-                ?? (try? VolumetricSceneController(device: nil, sceneView: nil))
-                ?? (try? VolumetricSceneController()) {
-                stubControllers[surface] = stub
-                controllers[surface] = stub
-                return stub
-            }
-            fatalError("Failed to create stub VolumetricSceneController without Metal.")
+    private func controller(for surface: SurfaceKey) throws -> VolumetricSceneController {
+        guard isMetalAvailable else {
+            throw VolumetricSceneCoordinatorError.metalUnavailable
         }
 
         if let existing = controllers[surface] {
@@ -559,31 +573,15 @@ public final class VolumetricSceneCoordinator: ObservableObject {
         let newController: VolumetricSceneController
 #if os(iOS) || os(macOS)
         guard let device else {
-            // Device unexpectedly unavailable after the initial requirement check.
-            // Return an unsupported-capability placeholder to preserve API shape.
-            if let stub = stubControllers[surface]
-                ?? (try? VolumetricSceneController(device: nil, sceneView: nil))
-                ?? (try? VolumetricSceneController()) {
-                stubControllers[surface] = stub
-                controllers[surface] = stub
-                return stub
-            }
-            fatalError("Failed to create unsupported-capability VolumetricSceneController placeholder when Metal device is unavailable.")
+            throw VolumetricSceneCoordinatorError.metalUnavailable
         }
-        newController = (try? VolumetricSceneController(device: device))
-            ?? (try? VolumetricSceneController(device: nil, sceneView: nil))
-            ?? (try? VolumetricSceneController())
-            ?? {
-                fatalError("Failed to create VolumetricSceneController with or without Metal device.")
-            }()
+        do {
+            newController = try VolumetricSceneController(device: device)
+        } catch {
+            throw VolumetricSceneCoordinatorError.controllerCreationFailed
+        }
 #else
-        // Unsupported platform placeholder for API stability. Rendering features
-        // should be hidden or disabled by UI-level requirement gating.
-        newController = (try? VolumetricSceneController(device: nil, sceneView: nil))
-            ?? (try? VolumetricSceneController())
-            ?? {
-                fatalError("Failed to create VolumetricSceneController stub on unsupported platform.")
-            }()
+        throw VolumetricSceneCoordinatorError.unsupportedPlatform
 #endif
 
         controllers[surface] = newController
@@ -594,14 +592,14 @@ public final class VolumetricSceneCoordinator: ObservableObject {
         return newController
     }
 
-    private func makeHuMapping(min: Int32, max: Int32) -> VolumeCubeMaterial.HuWindowMapping {
+    private func makeHuMapping(min: Int32, max: Int32) -> VolumetricHUWindowMapping {
         if let dataset = pendingDataset {
-            return VolumeCubeMaterial.makeHuWindowMapping(minHU: min,
-                                                          maxHU: max,
-                                                          datasetRange: dataset.intensityRange,
-                                                          transferDomain: nil)
+            return VolumetricHUWindowMapping.makeHuWindowMapping(minHU: min,
+                                                                 maxHU: max,
+                                                                 datasetRange: dataset.intensityRange,
+                                                                 transferDomain: nil)
         }
-        return VolumeCubeMaterial.HuWindowMapping(minHU: min, maxHU: max, tfMin: 0, tfMax: 1)
+        return VolumetricHUWindowMapping(minHU: min, maxHU: max, tfMin: 0, tfMax: 1)
     }
 
     private func propagateState(to controller: VolumetricSceneController,
@@ -659,13 +657,15 @@ public final class VolumetricSceneCoordinator: ObservableObject {
                     let datasetRange = self.pendingDataset?.intensityRange ??
                         self.rendererState.dataset?.intensityRange ??
                         (-1024...3071)
+                    let mapping = VolumetricHUWindowMapping.makeHuWindowMapping(
+                        minHU: minHU,
+                        maxHU: maxHU,
+                        datasetRange: datasetRange,
+                        transferDomain: nil
+                    )
+                    self.pendingHuWindow = mapping
                     updateRendererState { renderer in
-                        renderer.huWindow = VolumeCubeMaterial.makeHuWindowMapping(
-                            minHU: minHU,
-                            maxHU: maxHU,
-                            datasetRange: datasetRange,
-                            transferDomain: nil
-                        )
+                        renderer.huWindow = mapping
                     }
                 }
                 .store(in: &cancellables)

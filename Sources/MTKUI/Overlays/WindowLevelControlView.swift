@@ -42,7 +42,7 @@ import SwiftUI
 /// }
 ///
 /// func applyWindowLevel() {
-///     let mapping = VolumeCubeMaterial.makeHuWindowMapping(
+///     let mapping = VolumetricHUWindowMapping.makeHuWindowMapping(
 ///         minHU: level - window / 2,
 ///         maxHU: level + window / 2,
 ///         datasetRange: dataset.intensityRange,
@@ -175,7 +175,7 @@ public struct WindowLevelControlView: View {
     ///     onCommit: {
     ///         Task {
     ///             await controller.setHuWindow(
-    ///                 VolumeCubeMaterial.makeHuWindowMapping(
+    ///                 VolumetricHUWindowMapping.makeHuWindowMapping(
     ///                     minHU: centerHU - widthHU / 2,
     ///                     maxHU: centerHU + widthHU / 2,
     ///                     datasetRange: dataset.intensityRange,
@@ -222,4 +222,3 @@ public struct WindowLevelControlView: View {
     }
 }
 #endif
-

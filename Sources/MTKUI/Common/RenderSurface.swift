@@ -41,7 +41,7 @@ public struct RenderSurfaceView: UIViewRepresentable {
             logger.debug("RenderSurfaceView hosting view type=\(typeName) currentSuperview=\(String(describing: type(of: view.superview))) self=\(String(describing: type(of: self)))")
 
             if typeName.contains("_UIReparentingView") {
-                logger.error("CRITICAL: Attempting to host _UIReparentingView! This indicates a UIHostingController's view is being passed instead of the raw Metal/SceneKit view.")
+                logger.error("CRITICAL: Attempting to host _UIReparentingView! This indicates a UIHostingController's view is being passed instead of the raw render view.")
             }
 
             hostedView?.removeFromSuperview()

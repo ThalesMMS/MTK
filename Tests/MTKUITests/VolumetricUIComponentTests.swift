@@ -5,7 +5,6 @@
 
 import XCTest
 @testable import MTKUI
-import MTKSceneKit
 
 @MainActor
 final class VolumetricUIComponentTests: XCTestCase {

@@ -1,4 +1,3 @@
-#if os(iOS)
 import Foundation
 import MTKCore
 
@@ -34,9 +33,9 @@ enum RenderingTelemetry {
     }
 
     static func volumeRenderCompleted(duration: TimeInterval) {
-        recorder.trackTiming("metal.volume.render", interval: duration, name: "sceneKit")
+        recorder.trackTiming("metal.volume.render", interval: duration, name: "adapter")
         recorder.increment("metal.volume.render.total")
-        recorder.increment("metal.volume.render.sceneKit.success")
+        recorder.increment("metal.volume.render.adapter.success")
     }
 
     static func volumeRenderFailed(duration: TimeInterval,
@@ -99,4 +98,3 @@ enum RenderingTelemetry {
         }
     }
 }
-#endif

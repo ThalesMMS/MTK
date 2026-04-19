@@ -4,13 +4,13 @@ SwiftUI components and controllers for medical volumetric visualization interfac
 
 ## Overview
 
-MTKUI provides SwiftUI components, scene controllers, and gesture handling for building medical volumetric visualization applications on iOS and macOS. Built on top of MTKCore and MTKSceneKit, it includes MPR grids, interactive overlays, camera controls, and windowing tools for medical imaging workflows.
+MTKUI provides SwiftUI components, scene controllers, and gesture handling for building medical volumetric visualization applications on iOS and macOS. Built on top of MTKCore, it includes MPR grids, interactive overlays, camera controls, and windowing tools for medical imaging workflows.
 
-The framework handles scene coordination, gesture interpretation, UI overlays, and telemetry for a single MTKUI rendering path: SceneKit presentation backed by Metal-driven volume and MPR materials.
+The framework handles scene coordination, gesture interpretation, UI overlays, and telemetry for a single MTKUI rendering path backed by MTKCore Metal volume and MPR adapters.
 
 ### Key Features
 
-- **Scene Management**: VolumetricSceneController orchestrates SceneKit presentation, camera state, and Metal-backed volume/MPR materials
+- **Scene Management**: VolumetricSceneController orchestrates image-surface presentation, camera state, and MTKCore Metal volume/MPR adapters
 - **SwiftUI Integration**: Native SwiftUI views and modifiers with Combine-based state management
 - **MPR Grid Layouts**: Synchronized tri-planar (axial/coronal/sagittal) views with crosshair navigation
 - **Interactive Overlays**: Medical imaging overlays for window/level, slab thickness, orientation markers, and crosshairs
@@ -32,8 +32,6 @@ Scene controllers orchestrate volumetric rendering, camera interaction, and volu
 - ``VolumetricSceneController``
 - ``VolumetricSceneControlling``
 - ``VolumetricSceneCoordinator``
-- ``VolumetricCameraController``
-- ``VolumetricMPRController``
 
 ### SwiftUI Components
 
@@ -62,7 +60,6 @@ Gesture handling and camera interaction for volumetric scenes.
 
 - ``VolumeGesturesModifier``
 - ``VolumeGestureConfiguration``
-- ``CameraInteractionBridge``
 
 ### State Management
 
@@ -74,10 +71,9 @@ Published state and telemetry for UI synchronization and debugging.
 
 ### Render Surfaces
 
-Abstraction layer for the SceneKit presentation surface plus lightweight image surfaces used by tests and snapshots.
+Abstraction layer for adapter-rendered image surfaces.
 
 - ``RenderSurface``
-- ``SceneKitSurface``
 - ``ImageSurface``
 
 ### UI Styling
@@ -227,4 +223,3 @@ This architecture enables:
 ## See Also
 
 - ``MTKCore`` — Core rendering engine and domain models
-- ``MTKSceneKit`` — SceneKit integration layer for volume materials and camera control

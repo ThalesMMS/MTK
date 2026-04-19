@@ -1,22 +1,12 @@
 //
 //  VolumetricSceneControlling.swift
-//  MetalVolumetrics
-//
-//  Protocol abstraction for volumetric scene rendering coordination.
-//  Defines the public API contract for dataset application, display
-//  configuration, and camera interaction around MTKUI's single
-//  SceneKit-presented Metal rendering path.
-//
-//  Thales Matheus Mendonça Santos - September 2025
+//  MTKUI
 //
 
 import Foundation
 import MTKCore
+import simd
 
-// MARK: - Supporting Types
-
-/// Represents the camera pose in 3D space for volumetric rendering.
-/// Used for publishing camera state changes to SwiftUI observers.
 public struct VolumetricCameraState: Equatable {
     public var position: SIMD3<Float>
     public var target: SIMD3<Float>
@@ -34,8 +24,6 @@ public struct VolumetricCameraState: Equatable {
     }
 }
 
-/// Represents the current MPR slice position along a specific axis.
-/// The normalizedPosition is in the range [0, 1] across the volume.
 public struct VolumetricSliceState: Equatable {
     public var axis: VolumetricSceneController.Axis
     public var normalizedPosition: Float
@@ -47,8 +35,6 @@ public struct VolumetricSliceState: Equatable {
     }
 }
 
-/// Represents the current window/level settings for HU windowing.
-/// Window is the range width, level is the center value.
 public struct VolumetricWindowLevelState: Equatable {
     public var window: Double
     public var level: Double
@@ -59,14 +45,11 @@ public struct VolumetricWindowLevelState: Equatable {
     }
 }
 
-/// Render mode controlling whether the scene actively updates or is paused.
 public enum VolumetricRenderMode {
     case active
     case paused
 }
 
-/// Represents a performance hotspot with optimization suggestions.
-/// Used for profiling and performance analysis in volumetric rendering.
 public struct VolumetricHotspot: Equatable {
     public let identifier: String
     public let description: String
@@ -79,15 +62,6 @@ public struct VolumetricHotspot: Equatable {
     }
 }
 
-// MARK: - Protocol Definition
-
-#if os(iOS) || os(macOS)
-import MTKCore
-import MTKSceneKit
-
-/// Protocol defining the public API for volumetric scene rendering coordination.
-/// Implementers orchestrate dataset application, display configuration, camera control,
-/// and rendering settings for the SceneKit-presented Metal volume and MPR paths.
 @MainActor
 public protocol VolumetricSceneControlling: AnyObject {
     var surface: any RenderSurface { get }
@@ -98,23 +72,26 @@ public protocol VolumetricSceneControlling: AnyObject {
     func metadata() -> (dimension: SIMD3<Int32>, resolution: SIMD3<Float>)?
 
     func setTransferFunction(_ transferFunction: TransferFunction?) async throws
-    func setVolumeMethod(_ method: VolumeCubeMaterial.Method) async
-    func setPreset(_ preset: VolumeCubeMaterial.Preset) async
+    /// Sets the volume rendering method; this is the preferred API for DVR/MIP/MinIP/Avg changes.
+    func setVolumeMethod(_ method: VolumetricRenderMethod) async
+    func setPreset(_ preset: VolumeRenderingBuiltinPreset) async
     func setShift(_ shift: Float) async
     func setHuGate(enabled: Bool) async
-    func setHuWindow(_ window: VolumeCubeMaterial.HuWindowMapping) async
+    func setHuWindow(_ window: VolumetricHUWindowMapping) async
     func setRenderMode(_ mode: VolumetricRenderMode) async
     func updateTransferFunctionShift(_ shift: Float) async
     func setAdaptiveSampling(_ enabled: Bool) async
     func beginAdaptiveSamplingInteraction() async
     func endAdaptiveSamplingInteraction() async
-    func setRenderMethod(_ method: VolumeCubeMaterial.Method) async
+    /// Deprecated compatibility alias; use ``setVolumeMethod(_:)`` for volume method changes.
+    @available(*, deprecated, message: "Use setVolumeMethod(_:) instead")
+    func setRenderMethod(_ method: VolumetricRenderMethod) async
     func setLighting(enabled: Bool) async
     func setSamplingStep(_ step: Float) async
     func setProjectionsUseTransferFunction(_ enabled: Bool) async
     func setProjectionDensityGate(floor: Float, ceil: Float) async
     func setProjectionHuGate(enabled: Bool, min: Int32, max: Int32) async
-    func setMprBlend(_ mode: MPRPlaneMaterial.BlendMode) async
+    func setMprBlend(_ mode: VolumetricMPRBlendMode) async
     func setMprSlab(thickness: Int, steps: Int) async
     func setMprHuWindow(min: Int32, max: Int32) async
     func setMprPlane(axis: VolumetricSceneController.Axis, normalized: Float) async
@@ -128,49 +105,3 @@ public protocol VolumetricSceneControlling: AnyObject {
     func panCamera(screenDelta: SIMD2<Float>) async
     func dollyCamera(delta: Float) async
 }
-
-#else
-import MTKCore
-import MTKSceneKit
-
-@MainActor
-public protocol VolumetricSceneControlling: AnyObject {
-    var surface: any RenderSurface { get }
-    var transferFunctionDomain: ClosedRange<Float>? { get }
-
-    func applyDataset(_ dataset: VolumeDataset) async
-    func setDisplayConfiguration(_ configuration: VolumetricSceneController.DisplayConfiguration) async
-    func metadata() -> (dimension: SIMD3<Int32>, resolution: SIMD3<Float>)?
-
-    func setTransferFunction(_ transferFunction: TransferFunction?) async throws
-    func setVolumeMethod(_ method: VolumeCubeMaterial.Method) async
-    func setPreset(_ preset: VolumeCubeMaterial.Preset) async
-    func setShift(_ shift: Float) async
-    func setHuGate(enabled: Bool) async
-    func setHuWindow(_ window: VolumeCubeMaterial.HuWindowMapping) async
-    func setRenderMode(_ mode: VolumetricRenderMode) async
-    func updateTransferFunctionShift(_ shift: Float) async
-    func setAdaptiveSampling(_ enabled: Bool) async
-    func beginAdaptiveSamplingInteraction() async
-    func endAdaptiveSamplingInteraction() async
-    func setRenderMethod(_ method: VolumeCubeMaterial.Method) async
-    func setLighting(enabled: Bool) async
-    func setSamplingStep(_ step: Float) async
-    func setProjectionsUseTransferFunction(_ enabled: Bool) async
-    func setProjectionDensityGate(floor: Float, ceil: Float) async
-    func setProjectionHuGate(enabled: Bool, min: Int32, max: Int32) async
-    func setMprBlend(_ mode: MPRPlaneMaterial.BlendMode) async
-    func setMprSlab(thickness: Int, steps: Int) async
-    func setMprHuWindow(min: Int32, max: Int32) async
-    func setMprPlane(axis: VolumetricSceneController.Axis, normalized: Float) async
-    func translate(axis: VolumetricSceneController.Axis, deltaNormalized: Float) async
-    func rotate(axis: VolumetricSceneController.Axis, radians: Float) async
-    func resetView() async
-    func resetCamera() async
-
-    func rotateCamera(screenDelta: SIMD2<Float>) async
-    func tiltCamera(roll: Float, pitch: Float) async
-    func panCamera(screenDelta: SIMD2<Float>) async
-    func dollyCamera(delta: Float) async
-}
-#endif

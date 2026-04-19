@@ -11,6 +11,13 @@ import MTKCore
 
 #if os(iOS) || os(macOS)
 
+extension simd_float4x4 {
+    func transformPoint(_ point: SIMD3<Float>) -> SIMD3<Float> {
+        let result = self * SIMD4<Float>(point.x, point.y, point.z, 1)
+        return SIMD3<Float>(result.x, result.y, result.z)
+    }
+}
+
 struct MprPlaneComputation {
     let originVoxel: SIMD3<Float>
     let axisUVoxel: SIMD3<Float>

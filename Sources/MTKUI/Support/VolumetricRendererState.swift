@@ -8,7 +8,6 @@
 
 import Foundation
 import MTKCore
-import MTKSceneKit
 
 public struct VolumetricRendererState {
     public struct DatasetSummary: Equatable {
@@ -29,12 +28,12 @@ public struct VolumetricRendererState {
     }
 
     public var dataset: DatasetSummary?
-    public var huWindow: VolumeCubeMaterial.HuWindowMapping?
+    public var huWindow: VolumetricHUWindowMapping?
     public var transferFunction: TransferFunction?
     public var normalizedMprPositions: [VolumetricSceneController.Axis: Float]
 
     public init(dataset: DatasetSummary? = nil,
-                huWindow: VolumeCubeMaterial.HuWindowMapping? = nil,
+                huWindow: VolumetricHUWindowMapping? = nil,
                 transferFunction: TransferFunction? = nil,
                 normalizedMprPositions: [VolumetricSceneController.Axis: Float] = [:]) {
         self.dataset = dataset

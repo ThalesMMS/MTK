@@ -22,9 +22,9 @@ final class VolumetricSceneCoordinatorLazyInstantiationTests: XCTestCase {
         let coordinator = VolumetricSceneCoordinator.shared
         coordinator.reset()
 
-        _ = coordinator.controller(for: .z)
-        _ = coordinator.controller(for: .y)
-        _ = coordinator.controller(for: .x)
+        _ = try coordinator.controller(for: .z)
+        _ = try coordinator.controller(for: .y)
+        _ = try coordinator.controller(for: .x)
 
         XCTAssertEqual(
             coordinator.debugControllerSurfaceIdentifiers,
@@ -43,10 +43,10 @@ final class VolumetricSceneCoordinatorLazyInstantiationTests: XCTestCase {
         let coordinator = VolumetricSceneCoordinator.shared
         coordinator.reset()
 
-        _ = coordinator.controller(for: .z)
+        _ = try coordinator.controller(for: .z)
         XCTAssertEqual(coordinator.debugControllerSurfaceIdentifiers, ["mpr.z"])
 
-        _ = coordinator.controller
+        _ = try XCTUnwrap(coordinator.controller)
         XCTAssertEqual(
             coordinator.debugControllerSurfaceIdentifiers,
             ["mpr.z", "volume"]

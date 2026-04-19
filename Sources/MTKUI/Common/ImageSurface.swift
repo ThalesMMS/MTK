@@ -8,9 +8,6 @@ import QuartzCore
 #if canImport(MetalKit)
 import MetalKit
 #endif
-#if canImport(SceneKit)
-import SceneKit
-#endif
 
 @MainActor
 private protocol SurfaceLayoutDelegate: AnyObject {
@@ -51,16 +48,12 @@ private final class LayoutObservation {
             forName: NSView.frameDidChangeNotification,
             object: view,
             queue: .main
-        ) { _ in
-            onChange()
-        }
+        ) { _ in onChange() }
         boundsObserver = NotificationCenter.default.addObserver(
             forName: NSView.boundsDidChangeNotification,
             object: view,
             queue: .main
-        ) { _ in
-            onChange()
-        }
+        ) { _ in onChange() }
     }
 
     deinit {
@@ -74,38 +67,23 @@ private final class LayoutObservation {
 #endif
 }
 
-#if os(iOS)
-#if canImport(SceneKit)
+#if canImport(MetalKit)
 @MainActor
-private final class SceneSurfaceView: SCNView {
-    weak var layoutDelegate: (any SurfaceLayoutDelegate)?
-
-    override init(frame: CGRect, options: [String: Any]? = nil) {
-        super.init(frame: frame, options: options)
-        configure()
-    }
-
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        configure()
-    }
-
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        layoutDelegate?.surfaceViewDidLayout(bounds: bounds)
-    }
-
-    private func configure() {
-        preferredFramesPerSecond = 0
-        isPlaying = false
-        rendersContinuously = false
-        antialiasingMode = .none
-        autoenablesDefaultLighting = false
-        backgroundColor = .clear
-    }
+private func applyDefaultMTKViewConfiguration(_ view: MTKView) {
+    view.isPaused = true
+    view.enableSetNeedsDisplay = false
+    view.framebufferOnly = false
+    view.autoResizeDrawable = false
+#if os(iOS)
+    view.preferredFramesPerSecond = 0
+    view.backgroundColor = .clear
+#elseif os(macOS)
+    view.wantsLayer = true
+#endif
 }
 #endif
 
+#if os(iOS)
 #if canImport(MetalKit)
 @MainActor
 private final class MetalSurfaceView: MTKView {
@@ -113,42 +91,37 @@ private final class MetalSurfaceView: MTKView {
 
     override init(frame: CGRect, device: (any MTLDevice)?) {
         super.init(frame: frame, device: device)
+        configure()
     }
 
     required init(coder: NSCoder) {
         super.init(coder: coder)
+        configure()
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
         layoutDelegate?.surfaceViewDidLayout(bounds: bounds)
+    }
+
+    private func configure() {
+        applyDefaultMTKViewConfiguration(self)
     }
 }
 #endif
 
-@MainActor
-private final class MetalLayerBackedView: UIView {
-    weak var layoutDelegate: (any SurfaceLayoutDelegate)?
-
-    override class var layerClass: AnyClass { CAMetalLayer.self }
-
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        layoutDelegate?.surfaceViewDidLayout(bounds: bounds)
-    }
-}
 #elseif os(macOS)
-#if canImport(SceneKit)
+#if canImport(MetalKit)
 @MainActor
-private final class SceneSurfaceView: SCNView {
+private final class MetalSurfaceView: MTKView {
     weak var layoutDelegate: (any SurfaceLayoutDelegate)?
 
-    override init(frame: NSRect, options: [String: Any]? = nil) {
-        super.init(frame: frame, options: options)
+    override init(frame frameRect: NSRect, device: (any MTLDevice)?) {
+        super.init(frame: frameRect, device: device)
         configure()
     }
 
-    required init?(coder: NSCoder) {
+    required init(coder: NSCoder) {
         super.init(coder: coder)
         configure()
     }
@@ -159,66 +132,21 @@ private final class SceneSurfaceView: SCNView {
     }
 
     private func configure() {
-        isPlaying = false
-        rendersContinuously = false
-        if #available(macOS 10.14, *) {
-            // Deprecated; no-op on modern macOS.
-        } else {
-            wantsBestResolutionOpenGLSurface = false
-        }
-        antialiasingMode = .none
-        autoenablesDefaultLighting = false
-        backgroundColor = .clear
+        applyDefaultMTKViewConfiguration(self)
     }
 }
 #endif
 
-#if canImport(MetalKit)
-@MainActor
-private final class MetalSurfaceView: MTKView {
-    weak var layoutDelegate: (any SurfaceLayoutDelegate)?
-
-    override init(frame frameRect: NSRect, device: (any MTLDevice)?) {
-        super.init(frame: frameRect, device: device)
-    }
-
-    required init(coder: NSCoder) {
-        super.init(coder: coder)
-    }
-
-    override func layout() {
-        super.layout()
-        layoutDelegate?.surfaceViewDidLayout(bounds: bounds)
-    }
-}
 #endif
 
 @MainActor
-private final class MetalLayerBackedView: NSView {
-    weak var layoutDelegate: (any SurfaceLayoutDelegate)?
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        wantsLayer = true
-        layer = CAMetalLayer()
-    }
-
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        wantsLayer = true
-        layer = CAMetalLayer()
-    }
-
-    override func layout() {
-        super.layout()
-        layoutDelegate?.surfaceViewDidLayout(bounds: bounds)
-    }
-}
-#endif
-
-@MainActor
-public final class ImageSurface {
+public final class ImageSurface: RenderSurface {
     public let view: PlatformView
+    public var onDrawableSizeChange: ((CGSize) -> Void)? {
+        didSet {
+            onDrawableSizeChange?(lastDrawablePixelSize == .zero ? drawablePixelSize : lastDrawablePixelSize)
+        }
+    }
 
     private let imageLayer: CALayer
     private var contentPhysicalSize: CGSize?
@@ -226,6 +154,7 @@ public final class ImageSurface {
     private var lastRenderedImage: CGImage?
     private var geometryFlipped = false
     private var layoutObservation: LayoutObservation?
+    private var lastDrawablePixelSize = CGSize.zero
 
     public init(view: PlatformView? = nil) {
         let resolvedView = view ?? ImageSurface.makeDefaultView()
@@ -238,13 +167,21 @@ public final class ImageSurface {
         updateDrawableSize()
     }
 
+    public var drawablePixelSize: CGSize {
+        pixelSize(for: view.bounds)
+    }
+
+    private func pixelSize(for bounds: CGRect) -> CGSize {
+        return CGSize(
+            width: max(ceil(bounds.width * contentScale), 1),
+            height: max(ceil(bounds.height * contentScale), 1)
+        )
+    }
+
     public func display(_ image: CGImage) {
         imageLayer.contents = image
         lastRenderedImage = image
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        updateLayerGeometry()
-        CATransaction.commit()
+        setContentPhysicalSize(CGSize(width: image.width, height: image.height))
     }
 
     public func clear() {
@@ -296,6 +233,24 @@ public final class ImageSurface {
         imageLayer.contentsScale = contentScale
     }
 
+    private func attachDisplayLayer(_ layer: CALayer, to view: PlatformView) {
+        layoutObservation = nil
+#if canImport(MetalKit)
+        if let metalView = view as? MetalSurfaceView {
+            metalView.layoutDelegate = self
+            add(layer, to: metalView)
+            return
+        } else if let metalView = view as? MTKView {
+            applyDefaultMTKViewConfiguration(metalView)
+            add(layer, to: metalView)
+            startFallbackLayoutObservation(on: metalView)
+            return
+        }
+#endif
+        add(layer, to: view)
+        startFallbackLayoutObservation(on: view)
+    }
+
     private func updateLayerGeometry() {
         let bounds = view.bounds
         guard let size = contentPhysicalSize,
@@ -311,8 +266,8 @@ public final class ImageSurface {
 
         let aspect = size.width / size.height
         let containerAspect = bounds.width / bounds.height
-
         var targetSize = CGSize.zero
+
         if aspect > containerAspect {
             targetSize.width = bounds.width
             targetSize.height = bounds.width / aspect
@@ -321,138 +276,37 @@ public final class ImageSurface {
             targetSize.width = bounds.height * aspect
         }
 
-        let origin = CGPoint(
+        imageLayer.frame = CGRect(
             x: bounds.midX - targetSize.width / 2,
-            y: bounds.midY - targetSize.height / 2
+            y: bounds.midY - targetSize.height / 2,
+            width: targetSize.width,
+            height: targetSize.height
         )
-
-        imageLayer.frame = CGRect(origin: origin, size: targetSize)
         updateDrawableSize()
     }
 
-    private func attachDisplayLayer(_ layer: CALayer, to view: PlatformView) {
-        layoutObservation = nil
-#if canImport(SceneKit)
-        if let sceneView = view as? SceneSurfaceView {
-            configureSceneView(sceneView)
-            sceneView.layoutDelegate = self
-            #if os(iOS)
-            sceneView.layer.addSublayer(layer)
-            #else
-            sceneView.layer?.addSublayer(layer)
-            #endif
-            return
-        } else if let sceneView = view as? SCNView {
-            configureSceneView(sceneView)
-            #if os(iOS)
-            sceneView.layer.addSublayer(layer)
-            #else
-            sceneView.layer?.addSublayer(layer)
-            #endif
-            startFallbackLayoutObservation(on: sceneView)
-            return
-        }
-#endif
-#if canImport(MetalKit)
-        if let metalView = view as? MetalSurfaceView {
-            configureMetalView(metalView)
-            metalView.layoutDelegate = self
-            #if os(iOS)
-            metalView.layer.addSublayer(layer)
-            #else
-            metalView.layer?.addSublayer(layer)
-            #endif
-            return
-        } else if let metalView = view as? MTKView {
-            configureMetalView(metalView)
-            #if os(iOS)
-            metalView.layer.addSublayer(layer)
-            #else
-            metalView.layer?.addSublayer(layer)
-            #endif
-            startFallbackLayoutObservation(on: metalView)
-            return
-        }
-#endif
-#if os(iOS)
-        if let metalView = view as? MetalLayerBackedView {
-            metalView.layoutDelegate = self
-            metalView.layer.addSublayer(layer)
-            return
-        }
-        view.layer.addSublayer(layer)
-        startFallbackLayoutObservation(on: view)
-#elseif os(macOS)
-        if let metalView = view as? MetalLayerBackedView {
-            metalView.layoutDelegate = self
-            metalView.layer?.addSublayer(layer)
-            return
-        }
-        view.layer?.addSublayer(layer)
-        startFallbackLayoutObservation(on: view)
-#endif
-    }
-
-#if canImport(SceneKit)
-    private func configureSceneView(_ sceneView: SCNView) {
-        sceneView.isPlaying = false
-        sceneView.rendersContinuously = false
-        sceneView.antialiasingMode = .none
-        sceneView.autoenablesDefaultLighting = false
-#if os(iOS)
-        sceneView.backgroundColor = .clear
-#elseif os(macOS)
-        sceneView.backgroundColor = NSColor.clear
-#endif
-    }
-#endif
-
-#if canImport(MetalKit)
-    private func configureMetalView(_ metalView: MTKView) {
-        metalView.isPaused = true
-        metalView.enableSetNeedsDisplay = false
-        metalView.framebufferOnly = false
-        metalView.autoResizeDrawable = false
-#if os(iOS)
-        metalView.preferredFramesPerSecond = 0
-#endif
-    }
-#endif
-
     private func updateDrawableSize() {
-        let bounds = view.bounds
-        let width = max(bounds.width * contentScale, 1)
-        let height = max(bounds.height * contentScale, 1)
-#if canImport(SceneKit)
-        if let sceneView = view as? SCNView {
-#if os(iOS)
-            sceneView.contentScaleFactor = contentScale
-#elseif os(macOS)
-            sceneView.layer?.contentsScale = contentScale
-#endif
-            if let metalLayer = sceneView.layer as? CAMetalLayer {
-                metalLayer.drawableSize = CGSize(width: width, height: height)
-            }
-            return
-        }
-#endif
+        let size = drawablePixelSize
 #if canImport(MetalKit)
         if let metalView = view as? MTKView {
-            metalView.drawableSize = CGSize(width: width, height: height)
-            return
+            metalView.drawableSize = size
         }
 #endif
 #if os(iOS)
         if let metalLayer = view.layer as? CAMetalLayer {
-            metalLayer.drawableSize = CGSize(width: width, height: height)
+            metalLayer.drawableSize = size
         }
 #elseif os(macOS)
         if let metalLayer = view.layer as? CAMetalLayer {
-            metalLayer.drawableSize = CGSize(width: width, height: height)
+            metalLayer.drawableSize = size
         } else {
             view.layer?.contentsScale = contentScale
         }
 #endif
+        if size != lastDrawablePixelSize {
+            lastDrawablePixelSize = size
+            onDrawableSizeChange?(size)
+        }
     }
 
     private func startFallbackLayoutObservation(on view: PlatformView) {
@@ -462,36 +316,41 @@ public final class ImageSurface {
         }
     }
 
+    private func add(_ layer: CALayer, to view: PlatformView) {
 #if os(iOS)
-    private static func makeDefaultView() -> PlatformView {
-#if canImport(SceneKit)
-        return SceneSurfaceView(frame: .zero)
-#elseif canImport(MetalKit)
-        if let device = MTLCreateSystemDefaultDevice() {
-            return MetalSurfaceView(frame: .zero, device: device)
-        }
-        return MetalLayerBackedView(frame: .zero)
-#else
-        return MetalLayerBackedView(frame: .zero)
-#endif
-    }
+        view.layer.addSublayer(layer)
 #elseif os(macOS)
-    private static func makeDefaultView() -> PlatformView {
-#if canImport(SceneKit)
-        return SceneSurfaceView(frame: .zero)
-#elseif canImport(MetalKit)
-        if let device = MTLCreateSystemDefaultDevice() {
-            return MetalSurfaceView(frame: .zero, device: device)
-        }
-        return MetalLayerBackedView(frame: .zero)
-#else
-        return MetalLayerBackedView(frame: .zero)
+        view.wantsLayer = true
+        view.layer?.addSublayer(layer)
 #endif
     }
+
+    private static func makeDefaultView() -> PlatformView {
+#if canImport(MetalKit)
+        if let device = MTLCreateSystemDefaultDevice() {
+#if os(iOS)
+            return MetalSurfaceView(frame: .zero, device: device)
+#elseif os(macOS)
+            return MetalSurfaceView(frame: .zero, device: device)
 #endif
+        }
+#endif
+        return makePlainLayerBackedView()
+    }
+
+    private static func makePlainLayerBackedView() -> PlatformView {
+#if os(iOS)
+        let view = UIView(frame: .zero)
+        view.backgroundColor = .clear
+        return view
+#elseif os(macOS)
+        let view = NSView(frame: .zero)
+        view.wantsLayer = true
+        return view
+#endif
+    }
 }
 
-#if os(iOS)
 extension ImageSurface: SurfaceLayoutDelegate {
     func surfaceViewDidLayout(bounds: CGRect) {
         CATransaction.begin()
@@ -500,13 +359,3 @@ extension ImageSurface: SurfaceLayoutDelegate {
         CATransaction.commit()
     }
 }
-#elseif os(macOS)
-extension ImageSurface: SurfaceLayoutDelegate {
-    func surfaceViewDidLayout(bounds: CGRect) {
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        updateLayerGeometry()
-        CATransaction.commit()
-    }
-}
-#endif

@@ -53,8 +53,7 @@ let package = Package(
         .target(
             name: "MTKUI",
             dependencies: [
-                "MTKCore",
-                "MTKSceneKit"
+                "MTKCore"
             ],
             path: "Sources/MTKUI"
         ),
@@ -75,8 +74,7 @@ let package = Package(
         .testTarget(
             name: "MTKUITests",
             dependencies: [
-                "MTKUI",
-                "MTKSceneKit"
+                "MTKUI"
             ],
             path: "Tests/MTKUITests"
         ),

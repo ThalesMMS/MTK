@@ -15,7 +15,6 @@ import Foundation
 #if os(iOS) || os(macOS)
 import Combine
 import MTKCore
-import MTKSceneKit
 
 @MainActor
 public final class VolumetricStatePublisher: ObservableObject {
@@ -43,7 +42,7 @@ public final class VolumetricStatePublisher: ObservableObject {
 
     /// Internal helper to publish window/level state changes.
     /// Derives window width and level from HU mapping min/max values.
-    private func publishWindowLevelState(_ mapping: VolumeCubeMaterial.HuWindowMapping) {
+    private func publishWindowLevelState(_ mapping: VolumetricHUWindowMapping) {
         let width = Double(mapping.maxHU - mapping.minHU)
         let level = Double(mapping.minHU) + width / 2
         windowLevelState = VolumetricWindowLevelState(window: width, level: level)
@@ -72,7 +71,7 @@ public final class VolumetricStatePublisher: ObservableObject {
 
     /// Records a new window/level state while preserving the derived width/level calculus.
     @inline(__always)
-    public func recordWindowLevelState(_ mapping: VolumeCubeMaterial.HuWindowMapping) {
+    public func recordWindowLevelState(_ mapping: VolumetricHUWindowMapping) {
         publishWindowLevelState(mapping)
     }
 }

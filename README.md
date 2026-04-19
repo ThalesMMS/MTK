@@ -6,14 +6,14 @@
 ![macOS 14+](https://img.shields.io/badge/macOS-14%2B-lightgrey.svg)
 ![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)
 
-Swift Package with Metal/SceneKit/SwiftUI helpers used by the Metal-MPR-VR stack. The code currently ships the rendering pipelines, materials, SwiftUI overlays, and DICOM loader bridge used by the demo app—no legacy migration notes or placeholder APIs.
+Swift Package with Metal rendering, optional SceneKit materials, SwiftUI overlays, and DICOM loader bridges used by the Metal-MPR-VR stack. The code currently ships adapter-backed volume/MPR rendering, standalone SceneKit integration for consumers that explicitly choose it, MTKUI presentation, and the demo app path.
 
 ![UI Screenshot](screenshots/ui.png)
 
 ## Package layout
 - `MTKCore` — Domain types (`VolumeDataset`, orientation/spacing models), Metal helpers (`MetalRaycaster`, `VolumeTextureFactory`, `ShaderLibraryLoader`), transfer function models (`AdvancedToneCurveModel`, `VolumeTransferFunctionLibrary`), runtime availability guards, and the `DicomVolumeLoader` that wraps an injected `DicomSeriesLoading` bridge.
 - `MTKSceneKit` — SceneKit materials and camera helpers (`VolumeCubeMaterial`, `MPRPlaneMaterial`, `VolumeCameraController`, SceneKit node extensions).
-- `MTKUI` — SwiftUI-friendly controllers and overlays (`VolumetricSceneController`, `VolumetricSceneCoordinator`, `VolumetricDisplayContainer`, gesture modifiers, overlays like `CrosshairOverlayView`, `WindowLevelControlView`, and `MPRGridComposer` for tri-planar layouts). MTKUI presents a single SceneKit surface path backed by Metal-driven volume and MPR materials.
+- `MTKUI` — SwiftUI-friendly controllers and overlays (`VolumetricSceneController`, `VolumetricSceneCoordinator`, `VolumetricDisplayContainer`, gesture modifiers, overlays like `CrosshairOverlayView`, `WindowLevelControlView`, and `MPRGridComposer` for tri-planar layouts). MTKUI presents `ImageSurface` views rendered by `MetalVolumeRenderingAdapter` and `MetalMPRAdapter`; it does not depend on `MTKSceneKit`.
 
 ## Requirements
 - Swift 5.10, Xcode 16
@@ -131,7 +131,7 @@ Add gesture handling with `volumeGestures(controller:state:configuration:)` and 
 **Typical outputs**
 - An in-memory `VolumeDataset` ready for rendering
 - `DicomImportResult` metadata such as `sourceURL` and `seriesDescription`
-- SwiftUI / SceneKit rendering surfaces, MPR views, overlays, and transfer-function-driven visualization
+- SwiftUI rendering surfaces, MPR views, overlays, and transfer-function-driven visualization backed by MTKCore Metal adapters
 
 MTK does **not** produce segmentation masks, classification labels, radiology reports, or treatment recommendations by itself. In other words, the package is a visualization/loading substrate, not a diagnostic model.
 

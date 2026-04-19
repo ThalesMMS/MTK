@@ -4,7 +4,7 @@
 //
 //  Platform stub implementation for VolumetricSceneController on non-iOS/macOS platforms.
 //  Provides a minimal conforming implementation that allows code to compile and run
-//  on platforms where SceneKit and Metal are unavailable. This stub maintains the
+//  on platforms where Metal is unavailable. This stub maintains the
 //  same public API surface while providing no-op implementations.
 //
 //  Thales Matheus Mendonça Santos - February 2025
@@ -16,7 +16,6 @@ import CoreGraphics
 import simd
 import Combine
 import MTKCore
-import MTKSceneKit
 
 @MainActor
 public final class VolumetricSceneController: VolumetricSceneControlling, ObservableObject {
@@ -73,8 +72,8 @@ public final class VolumetricSceneController: VolumetricSceneControlling, Observ
     }
 
     public enum DisplayConfiguration: Equatable {
-        case volume(method: VolumeCubeMaterial.Method)
-        case mpr(axis: Axis, index: Int, blend: MPRPlaneMaterial.BlendMode, slab: SlabConfiguration?)
+        case volume(method: VolumetricRenderMethod)
+        case mpr(axis: Axis, index: Int, blend: VolumetricMPRBlendMode, slab: SlabConfiguration?)
     }
 
     public init() {
@@ -98,15 +97,16 @@ public final class VolumetricSceneController: VolumetricSceneControlling, Observ
         _ = transferFunction
     }
 
-    public func setVolumeMethod(_ method: VolumeCubeMaterial.Method) async { _ = method }
+    /// Sets the volume rendering method; this is the preferred API for DVR/MIP/MinIP/Avg changes.
+    public func setVolumeMethod(_ method: VolumetricRenderMethod) async { _ = method }
 
-    public func setPreset(_ preset: VolumeCubeMaterial.Preset) async { _ = preset }
+    public func setPreset(_ preset: VolumeRenderingBuiltinPreset) async { _ = preset }
 
     public func setShift(_ shift: Float) async { _ = shift }
 
     public func setHuGate(enabled: Bool) async { _ = enabled }
 
-    public func setHuWindow(_ window: VolumeCubeMaterial.HuWindowMapping) async {
+    public func setHuWindow(_ window: VolumetricHUWindowMapping) async {
         transferFunctionDomain = Float(window.minHU)...Float(window.maxHU)
         statePublisher.recordWindowLevelState(window)
     }
@@ -123,7 +123,11 @@ public final class VolumetricSceneController: VolumetricSceneControlling, Observ
 
     public func endAdaptiveSamplingInteraction() async {}
 
-    public func setRenderMethod(_ method: VolumeCubeMaterial.Method) async { _ = method }
+    /// Deprecated compatibility alias; use ``setVolumeMethod(_:)`` for volume method changes.
+    @available(*, deprecated, message: "Use setVolumeMethod(_:) instead")
+    public func setRenderMethod(_ method: VolumetricRenderMethod) async {
+        await setVolumeMethod(method)
+    }
 
     public func setLighting(enabled: Bool) async { _ = enabled }
 
@@ -139,7 +143,7 @@ public final class VolumetricSceneController: VolumetricSceneControlling, Observ
         _ = (enabled, min, max)
     }
 
-    public func setMprBlend(_ mode: MPRPlaneMaterial.BlendMode) async { _ = mode }
+    public func setMprBlend(_ mode: VolumetricMPRBlendMode) async { _ = mode }
 
     public func setMprSlab(thickness: Int, steps: Int) async {
         _ = (thickness, steps)
