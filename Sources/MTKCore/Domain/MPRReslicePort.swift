@@ -3,11 +3,12 @@
 //  MetalVolumetrics
 //
 //  Declares the domain contract for requesting multi-planar reconstruction
-//  slabs. Infrastructure renderers resample the volume and return 2D buffers
-//  ready for texturing or post processing.
+//  slabs as texture-native GPU frames for interactive presentation.
 //
 
+import CoreGraphics
 import Foundation
+@preconcurrency import Metal
 import simd
 
 public enum MPRPlaneAxis: Int, CaseIterable, Sendable {
@@ -18,11 +19,11 @@ public enum MPRPlaneAxis: Int, CaseIterable, Sendable {
     public var description: String {
         switch self {
         case .x:
-            return "Sagittal (X)"
+            return "Sagittal"
         case .y:
-            return "Coronal (Y)"
+            return "Coronal"
         case .z:
-            return "Axial (Z)"
+            return "Axial"
         }
     }
 }
@@ -85,29 +86,120 @@ public struct MPRPlaneGeometry: Sendable, Equatable {
     }
 }
 
-public struct MPRSlice: Sendable, Equatable {
-    public var pixels: Data
-    public var width: Int
-    public var height: Int
-    public var bytesPerRow: Int
-    public var pixelFormat: VolumePixelFormat
-    public var intensityRange: ClosedRange<Int32>
-    public var pixelSpacing: SIMD2<Float>?
+public struct MPRFrameSignature: Hashable, Sendable, Equatable {
+    public var planeGeometry: MPRPlaneGeometry
+    public var slabThickness: Int
+    public var slabSteps: Int
+    public var blend: MPRBlendMode
 
-    public init(pixels: Data,
-                width: Int,
-                height: Int,
-                bytesPerRow: Int,
-                pixelFormat: VolumePixelFormat,
-                intensityRange: ClosedRange<Int32>,
-                pixelSpacing: SIMD2<Float>? = nil) {
-        self.pixels = pixels
-        self.width = width
-        self.height = height
-        self.bytesPerRow = bytesPerRow
-        self.pixelFormat = pixelFormat
-        self.intensityRange = intensityRange
-        self.pixelSpacing = pixelSpacing
+    public init(planeGeometry: MPRPlaneGeometry,
+                slabThickness: Int,
+                slabSteps: Int,
+                blend: MPRBlendMode) {
+        self.planeGeometry = planeGeometry
+        self.slabThickness = slabThickness
+        self.slabSteps = slabSteps
+        self.blend = blend
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(planeGeometry.originVoxel.x)
+        hasher.combine(planeGeometry.originVoxel.y)
+        hasher.combine(planeGeometry.originVoxel.z)
+        hasher.combine(planeGeometry.axisUVoxel.x)
+        hasher.combine(planeGeometry.axisUVoxel.y)
+        hasher.combine(planeGeometry.axisUVoxel.z)
+        hasher.combine(planeGeometry.axisVVoxel.x)
+        hasher.combine(planeGeometry.axisVVoxel.y)
+        hasher.combine(planeGeometry.axisVVoxel.z)
+        hasher.combine(planeGeometry.originWorld.x)
+        hasher.combine(planeGeometry.originWorld.y)
+        hasher.combine(planeGeometry.originWorld.z)
+        hasher.combine(planeGeometry.axisUWorld.x)
+        hasher.combine(planeGeometry.axisUWorld.y)
+        hasher.combine(planeGeometry.axisUWorld.z)
+        hasher.combine(planeGeometry.axisVWorld.x)
+        hasher.combine(planeGeometry.axisVWorld.y)
+        hasher.combine(planeGeometry.axisVWorld.z)
+        hasher.combine(planeGeometry.originTexture.x)
+        hasher.combine(planeGeometry.originTexture.y)
+        hasher.combine(planeGeometry.originTexture.z)
+        hasher.combine(planeGeometry.axisUTexture.x)
+        hasher.combine(planeGeometry.axisUTexture.y)
+        hasher.combine(planeGeometry.axisUTexture.z)
+        hasher.combine(planeGeometry.axisVTexture.x)
+        hasher.combine(planeGeometry.axisVTexture.y)
+        hasher.combine(planeGeometry.axisVTexture.z)
+        hasher.combine(planeGeometry.normalWorld.x)
+        hasher.combine(planeGeometry.normalWorld.y)
+        hasher.combine(planeGeometry.normalWorld.z)
+        hasher.combine(slabThickness)
+        hasher.combine(slabSteps)
+        hasher.combine(blend.rawValue)
+    }
+}
+
+public extension MPRPlaneGeometry {
+    static func canonical(axis: MPRPlaneAxis) -> MPRPlaneGeometry {
+        switch axis {
+        case .z:
+            return MPRPlaneGeometry(originVoxel: .zero,
+                                    axisUVoxel: SIMD3<Float>(1, 0, 0),
+                                    axisVVoxel: SIMD3<Float>(0, 1, 0),
+                                    originWorld: .zero,
+                                    axisUWorld: SIMD3<Float>(1, 0, 0),
+                                    axisVWorld: SIMD3<Float>(0, 1, 0),
+                                    originTexture: .zero,
+                                    axisUTexture: SIMD3<Float>(1, 0, 0),
+                                    axisVTexture: SIMD3<Float>(0, 1, 0),
+                                    normalWorld: SIMD3<Float>(0, 0, 1))
+        case .y:
+            return MPRPlaneGeometry(originVoxel: .zero,
+                                    axisUVoxel: SIMD3<Float>(-1, 0, 0),
+                                    axisVVoxel: SIMD3<Float>(0, 0, 1),
+                                    originWorld: .zero,
+                                    axisUWorld: SIMD3<Float>(-1, 0, 0),
+                                    axisVWorld: SIMD3<Float>(0, 0, 1),
+                                    originTexture: .zero,
+                                    axisUTexture: SIMD3<Float>(-1, 0, 0),
+                                    axisVTexture: SIMD3<Float>(0, 0, 1),
+                                    normalWorld: SIMD3<Float>(0, 1, 0))
+        case .x:
+            return MPRPlaneGeometry(originVoxel: .zero,
+                                    axisUVoxel: SIMD3<Float>(0, 1, 0),
+                                    axisVVoxel: SIMD3<Float>(0, 0, 1),
+                                    originWorld: .zero,
+                                    axisUWorld: SIMD3<Float>(0, 1, 0),
+                                    axisVWorld: SIMD3<Float>(0, 0, 1),
+                                    originTexture: .zero,
+                                    axisUTexture: SIMD3<Float>(0, 1, 0),
+                                    axisVTexture: SIMD3<Float>(0, 0, 1),
+                                    normalWorld: SIMD3<Float>(1, 0, 0))
+        }
+    }
+
+    func sizedForOutput(_ size: CGSize) -> MPRPlaneGeometry {
+        let width = max(1, Int(size.width.rounded()))
+        let height = max(1, Int(size.height.rounded()))
+        let targetULength = width > 1 ? Float(width - 1) : 0
+        let targetVLength = height > 1 ? Float(height - 1) : 0
+        let uLength = simd_length(axisUVoxel)
+        let vLength = simd_length(axisVVoxel)
+        let uScale = uLength > Float.ulpOfOne ? targetULength / uLength : 0
+        let vScale = vLength > Float.ulpOfOne ? targetVLength / vLength : 0
+
+        return MPRPlaneGeometry(
+            originVoxel: originVoxel,
+            axisUVoxel: axisUVoxel * uScale,
+            axisVVoxel: axisVVoxel * vScale,
+            originWorld: originWorld,
+            axisUWorld: axisUWorld,
+            axisVWorld: axisVWorld,
+            originTexture: originTexture,
+            axisUTexture: axisUTexture,
+            axisVTexture: axisVTexture,
+            normalWorld: normalWorld
+        )
     }
 }
 
@@ -118,10 +210,19 @@ public enum MPRResliceCommand: Sendable, Equatable {
 
 @preconcurrency
 public protocol MPRReslicePort {
-    func makeSlab(dataset: VolumeDataset,
-                  plane: MPRPlaneGeometry,
-                  thickness: Int,
-                  steps: Int,
-                  blend: MPRBlendMode) async throws -> MPRSlice
+    /// Produces a texture-native raw intensity MPR frame.
+    ///
+    /// This is the preferred path for interactive rendering. The provided
+    /// `volumeTexture` should be the shared 3D volume texture for synchronized
+    /// axial, coronal, and sagittal viewports. The returned texture stores raw
+    /// 16-bit intensity values (`r16Sint` or `r16Uint`) for a later presentation
+    /// pass to apply window/level, LUT, and orientation.
+    func makeSlabTexture(dataset: VolumeDataset,
+                         volumeTexture: any MTLTexture,
+                         plane: MPRPlaneGeometry,
+                         thickness: Int,
+                         steps: Int,
+                         blend: MPRBlendMode) async throws -> MPRTextureFrame
+
     func send(_ command: MPRResliceCommand) async throws
 }

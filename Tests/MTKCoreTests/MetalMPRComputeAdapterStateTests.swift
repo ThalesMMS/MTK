@@ -4,7 +4,6 @@
 //
 //  Unit tests for MetalMPRComputeAdapter command and snapshot state.
 //
-//  Thales Matheus Mendonca Santos - February 2026
 
 import XCTest
 import Metal
@@ -34,22 +33,28 @@ final class MetalMPRComputeAdapterStateTests: MetalMPRComputeAdapterTestCase {
         XCTAssertEqual(overridesAfter.slabSteps, 5)
     }
 
-    func test_overridesApplyToNextSlab() async throws {
+    func test_overridesApplyToNextFrame() async throws {
         let dataset = VolumeDatasetTestFactory.makeTestDataset()
         let plane = MPRTestHelpers.makeTestPlaneGeometry(for: dataset)
+        let volumeTexture = try await makeVolumeTexture(for: dataset)
 
         try await adapter.send(.setBlend(.minimum))
         try await adapter.send(.setSlab(thickness: 15, steps: 10))
 
-        let slice = try await adapter.makeSlab(
+        let frame = try await adapter.makeSlabTexture(
             dataset: dataset,
+            volumeTexture: volumeTexture,
             plane: plane,
             thickness: 1,
             steps: 1,
             blend: .single
         )
 
-        XCTAssertFalse(slice.pixels.isEmpty)
+        MPRTestHelpers.assertValidFrame(frame,
+                                        expectedWidth: 64,
+                                        expectedHeight: 64,
+                                        expectedPixelFormat: dataset.pixelFormat)
+        XCTAssertEqual(try MPRTestHelpers.readInputValues(UInt16.self, from: frame).count, 64 * 64)
 
         let snapshot = await adapter.debugLastSnapshot
         XCTAssertEqual(snapshot?.blend, .minimum)
@@ -62,14 +67,15 @@ final class MetalMPRComputeAdapterStateTests: MetalMPRComputeAdapterTestCase {
         XCTAssertNil(overridesAfter.slabSteps)
     }
 
-    func test_overridesClearedAfterSlabGeneration() async throws {
+    func test_overridesClearedAfterFrameGeneration() async throws {
         let dataset = VolumeDatasetTestFactory.makeTestDataset()
         let plane = MPRTestHelpers.makeTestPlaneGeometry(for: dataset)
+        let volumeTexture = try await makeVolumeTexture(for: dataset)
 
         try await adapter.send(.setBlend(.maximum))
-
-        _ = try await adapter.makeSlab(
+        _ = try await adapter.makeSlabTexture(
             dataset: dataset,
+            volumeTexture: volumeTexture,
             plane: plane,
             thickness: 1,
             steps: 1,
@@ -80,45 +86,33 @@ final class MetalMPRComputeAdapterStateTests: MetalMPRComputeAdapterTestCase {
         XCTAssertNil(overridesAfter.blend)
     }
 
-    func test_lastSnapshotUpdatedAfterSlabGeneration() async throws {
+    func test_lastSnapshotUpdatedAfterFrameGeneration() async throws {
         let dataset = VolumeDatasetTestFactory.makeTestDataset()
         let plane = MPRTestHelpers.makeTestPlaneGeometry(for: dataset)
+        let volumeTexture = try await makeVolumeTexture(for: dataset)
 
         let snapshotBefore = await adapter.debugLastSnapshot
         XCTAssertNil(snapshotBefore)
 
-        _ = try await adapter.makeSlab(
+        let frame = try await adapter.makeSlabTexture(
             dataset: dataset,
+            volumeTexture: volumeTexture,
             plane: plane,
             thickness: 5,
             steps: 3,
             blend: .average
         )
-
-        let snapshotAfter = await adapter.debugLastSnapshot
-        XCTAssertNotNil(snapshotAfter)
-        XCTAssertEqual(snapshotAfter?.blend, .average)
-        XCTAssertEqual(snapshotAfter?.thickness, 5)
-        XCTAssertEqual(snapshotAfter?.steps, 3)
-    }
-
-    func test_snapshotCapturesIntensityRange() async throws {
-        let dataset = VolumeDatasetTestFactory.makeTestDataset()
-        let plane = MPRTestHelpers.makeTestPlaneGeometry(for: dataset)
-
-        _ = try await adapter.makeSlab(
-            dataset: dataset,
-            plane: plane,
-            thickness: 1,
-            steps: 1,
-            blend: .single
-        )
+        XCTAssertEqual(try MPRTestHelpers.readInputValues(UInt16.self, from: frame).count, 64 * 64)
 
         let snapshot = await adapter.debugLastSnapshot
-        XCTAssertNotNil(snapshot?.intensityRange)
+        XCTAssertNotNil(snapshot)
+        XCTAssertEqual(snapshot?.blend, .average)
+        XCTAssertEqual(snapshot?.thickness, 5)
+        XCTAssertEqual(snapshot?.steps, 3)
+        XCTAssertEqual(snapshot?.intensityRange, dataset.intensityRange)
     }
 
-    func test_makeSlabWithSmallDataset() async throws {
+    func test_makeTextureFrameWithSmallDataset() async throws {
         let dimensions = VolumeDimensions(width: 2, height: 2, depth: 2)
         let values: [UInt16] = Array(repeating: 1000, count: dimensions.voxelCount)
         let data = values.withUnsafeBytes { Data($0) }
@@ -130,32 +124,40 @@ final class MetalMPRComputeAdapterStateTests: MetalMPRComputeAdapterTestCase {
         )
 
         let plane = MPRTestHelpers.makeTestPlaneGeometry(for: dataset)
-
-        let slice = try await adapter.makeSlab(
+        let volumeTexture = try await makeVolumeTexture(for: dataset)
+        let frame = try await adapter.makeSlabTexture(
             dataset: dataset,
+            volumeTexture: volumeTexture,
             plane: plane,
             thickness: 1,
             steps: 1,
             blend: .single
         )
 
-        XCTAssertGreaterThan(slice.width, 0)
-        XCTAssertGreaterThan(slice.height, 0)
-        XCTAssertFalse(slice.pixels.isEmpty)
+        XCTAssertGreaterThan(frame.texture.width, 0)
+        XCTAssertGreaterThan(frame.texture.height, 0)
+        XCTAssertEqual(try MPRTestHelpers.readInputValues(UInt16.self, from: frame).count, frame.texture.width * frame.texture.height)
+        XCTAssertEqual(frame.intensityRange, dataset.intensityRange)
     }
 
-    func test_makeSlabWithLargeThickness() async throws {
+    func test_makeSlabTextureWithLargeThickness() async throws {
         let dataset = VolumeDatasetTestFactory.makeTestDataset()
         let plane = MPRTestHelpers.makeTestPlaneGeometry(for: dataset)
+        let volumeTexture = try await makeVolumeTexture(for: dataset)
 
-        let slice = try await adapter.makeSlab(
+        let frame = try await adapter.makeSlabTexture(
             dataset: dataset,
+            volumeTexture: volumeTexture,
             plane: plane,
             thickness: 100,
             steps: 50,
             blend: .maximum
         )
 
-        XCTAssertFalse(slice.pixels.isEmpty)
+        MPRTestHelpers.assertValidFrame(frame,
+                                        expectedWidth: 64,
+                                        expectedHeight: 64,
+                                        expectedPixelFormat: dataset.pixelFormat)
+        XCTAssertEqual(try MPRTestHelpers.readInputValues(UInt16.self, from: frame).count, 64 * 64)
     }
 }

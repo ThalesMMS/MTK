@@ -28,6 +28,25 @@ extension MetalVolumeRenderingAdapter {
         return texture
     }
 
+    func prepareDatasetTexture(for dataset: VolumeDataset,
+                               texture: any MTLTexture,
+                               state: MetalState) -> any MTLTexture {
+        let identity = DatasetIdentity(dataset: dataset)
+        let sameTexture = state.volumeTexture.map {
+            ($0 as AnyObject) === (texture as AnyObject)
+        } ?? false
+
+        if sameTexture, state.datasetIdentity == identity {
+            return texture
+        }
+
+        texture.label = texture.label ?? "VolumeCompute.Dataset"
+        state.volumeTexture = texture
+        state.datasetIdentity = identity
+        state.argumentManager.markAsNeedsUpdate(argumentIndex: .mainTexture)
+        return texture
+    }
+
     func prepareTransferTexture(for transfer: VolumeTransferFunction,
                                 dataset: VolumeDataset,
                                 state: MetalState) async throws -> any MTLTexture {

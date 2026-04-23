@@ -39,7 +39,7 @@ import simd
 ///     dataset: dataset
 /// )
 ///
-/// let slice = try await adapter.makeSlab(
+/// let frame = try await adapter.makeTextureFrame(
 ///     dataset: dataset,
 ///     plane: plane,
 ///     thickness: 5,
@@ -54,7 +54,8 @@ import simd
 /// - ``init(device:commandQueue:library:debugOptions:)``
 ///
 /// ### Slicing
-/// - ``makeSlab(dataset:plane:thickness:steps:blend:)``
+/// - ``makeTextureFrame(dataset:plane:thickness:steps:blend:)``
+/// - ``makeSlabTexture(dataset:volumeTexture:plane:thickness:steps:blend:)``
 ///
 /// ### Configuration
 /// - ``send(_:)``
@@ -108,13 +109,13 @@ public actor MetalMPRAdapter: MPRReslicePort {
 
     /// Parameter overrides for MPR slice generation.
     ///
-    /// Overrides set via ``send(_:)`` persist until the next ``makeSlab(dataset:plane:thickness:steps:blend:)``
+    /// Overrides set via ``send(_:)`` persist until the next texture frame generation
     /// call, where they are applied and then cleared.
     public struct Overrides: Equatable {
         /// Override blend mode for the next slab generation.
         var blend: MPRBlendMode?
 
-        /// Override slab thickness (in voxels) for the next slab generation.
+        /// Override slab thickness for the next slab generation.
         var slabThickness: Int?
 
         /// Override number of sampling steps for the next slab generation.
@@ -123,7 +124,7 @@ public actor MetalMPRAdapter: MPRReslicePort {
 
     /// Snapshot of the most recent slice generation.
     ///
-    /// Captures parameters and results from the last ``makeSlab(dataset:plane:thickness:steps:blend:)`` call.
+    /// Captures parameters and results from the last texture frame generation call.
     /// Useful for debugging and validating MPR state.
     public struct SliceSnapshot: Equatable {
         /// The dominant anatomical axis of the slice (axial, sagittal, or coronal).
@@ -135,7 +136,7 @@ public actor MetalMPRAdapter: MPRReslicePort {
         /// Blend mode used for slab generation.
         var blend: MPRBlendMode
 
-        /// Slab thickness in voxels.
+        /// Slab thickness resolved along the plane normal using dataset spacing.
         var thickness: Int
 
         /// Number of sampling steps used.
@@ -144,7 +145,7 @@ public actor MetalMPRAdapter: MPRReslicePort {
 
     private var overrides = Overrides()
     private var lastSnapshot: SliceSnapshot?
-    private let gpuAdapter: MetalMPRComputeAdapter
+    let gpuAdapter: MetalMPRComputeAdapter
     private let logger = Logger(subsystem: "com.mtk.volumerendering",
                                 category: "MetalMPRAdapter")
 
@@ -223,76 +224,11 @@ public actor MetalMPRAdapter: MPRReslicePort {
         logger.info("MetalMPRAdapter initialized with Metal compute backend")
     }
 
-    /// Generates a 2D slice or slab from a volumetric dataset.
-    ///
-    /// This is the primary MPR method. It extracts a 2D cross-section from a 3D volume
-    /// along an arbitrary plane, optionally averaging/blending multiple parallel slices
-    /// for reduced noise (slab mode).
-    ///
-    /// - Parameters:
-    ///   - dataset: The source volumetric dataset.
-    ///   - plane: Geometry defining the slice plane's position and orientation in volume space.
-    ///   - thickness: Slab thickness in voxels. Use 0 or 1 for a single slice.
-    ///   - steps: Number of parallel slices to sample within the slab thickness. Use 1 for single slice.
-    ///   - blend: Blending mode for combining multiple slab samples (maximum, minimum, average, single).
-    ///
-    /// - Returns: An ``MPRSlice`` containing the extracted 2D image data and metadata.
-    ///
-    /// - Throws: Errors from Metal operations such as texture creation, command buffer creation,
-    ///   or kernel execution failure.
-    ///
-    /// ## Parameter Overrides
-    ///
-    /// Overrides set via ``send(_:)`` are applied in this order:
-    /// 1. Blend mode (override → parameter)
-    /// 2. Thickness (override → parameter, then sanitized to ≥0)
-    /// 3. Steps (override → parameter, then sanitized to ≥1)
-    ///
-    /// Overrides are cleared after each call.
-    ///
-    /// ## Performance
-    ///
-    /// Typical slice generation time: ~2-5ms for a 512×512 output, 5mm thickness, 10 steps.
-    ///
-    /// ## Usage
-    ///
-    /// ```swift
-    /// // Single axial slice at Z = 128
-    /// let plane = MPRPlaneGeometry.axial(at: 128, dataset: dataset)
-    /// let slice = try await adapter.makeSlab(
-    ///     dataset: dataset,
-    ///     plane: plane,
-    ///     thickness: 1,
-    ///     steps: 1,
-    ///     blend: .single
-    /// )
-    ///
-    /// // 10mm slab with MIP (maximum intensity projection)
-    /// let slabPlane = MPRPlaneGeometry.axial(at: 128, dataset: dataset)
-    /// let slab = try await adapter.makeSlab(
-    ///     dataset: dataset,
-    ///     plane: slabPlane,
-    ///     thickness: 10,
-    ///     steps: 20,
-    ///     blend: .maximum
-    /// )
-    /// ```
-    /// Generate an MPR slab image from a volume along the specified plane using the Metal GPU adapter.
-    ///
-    /// The effective `blend`, `thickness`, and `steps` are computed by applying any pending overrides (set via `send(_:)`) first, then falling back to the provided arguments; thickness and steps are sanitized before use. All pending overrides are cleared after computation.
-    /// - Parameters:
-    ///   - dataset: The volume dataset to sample.
-    ///   - plane: The geometry of the reslice plane in world space.
-    ///   - thickness: Requested slab thickness in voxels (used if no override is present).
-    ///   - steps: Requested sampling steps across the slab (used if no override is present).
-    ///   - blend: Requested blending mode for slab compositing (used if no override is present).
-    /// - Returns: An `MPRSlice` containing the generated slab image and its intensity range.
-    /// - Throws: Any error produced by the underlying GPU adapter (for example Metal texture, command queue, or kernel failures).
-    public func makeSlab(dataset: VolumeDataset,
-                         plane: MPRPlaneGeometry,
-                         thickness: Int,
-                         steps: Int,
-                         blend: MPRBlendMode) async throws -> MPRSlice {
+    public func makeTextureFrame(dataset: VolumeDataset,
+                                 plane: MPRPlaneGeometry,
+                                 thickness: Int,
+                                 steps: Int,
+                                 blend: MPRBlendMode) async throws -> MPRTextureFrame {
         let effectiveBlend = overrides.blend ?? blend
         let effectiveThickness = VolumetricMath.sanitizeThickness(overrides.slabThickness ?? thickness)
         let effectiveSteps = VolumetricMath.sanitizeSteps(overrides.slabSteps ?? steps)
@@ -302,8 +238,7 @@ public actor MetalMPRAdapter: MPRReslicePort {
             overrides.slabSteps = nil
         }
 
-        let startTime = CFAbsoluteTimeGetCurrent()
-        let slice = try await gpuAdapter.makeSlab(
+        let frame = try await gpuAdapter.makeTextureFrame(
             dataset: dataset,
             plane: plane,
             thickness: effectiveThickness,
@@ -311,22 +246,86 @@ public actor MetalMPRAdapter: MPRReslicePort {
             blend: effectiveBlend
         )
 
-        let duration = CFAbsoluteTimeGetCurrent() - startTime
-        logger.info("MPR slab generation completed via Metal path: \(String(format: "%.2f", duration * 1000))ms blend=\(effectiveBlend) thickness=\(effectiveThickness) steps=\(effectiveSteps)")
-
         let axis = Self.dominantAxis(for: plane)
         lastSnapshot = SliceSnapshot(axis: axis,
-                                     intensityRange: slice.intensityRange,
+                                     intensityRange: frame.intensityRange,
                                      blend: effectiveBlend,
                                      thickness: effectiveThickness,
                                      steps: effectiveSteps)
 
-        return slice
+        return frame
+    }
+
+    public func makeTextureFrame(dataset: VolumeDataset,
+                                 volumeTexture: any MTLTexture,
+                                 plane: MPRPlaneGeometry,
+                                 thickness: Int,
+                                 steps: Int,
+                                 blend: MPRBlendMode,
+                                 viewportID: ViewportID? = nil) async throws -> MPRTextureFrame {
+        try await makeSlabTexture(dataset: dataset,
+                                  volumeTexture: volumeTexture,
+                                  plane: plane,
+                                  thickness: thickness,
+                                  steps: steps,
+                                  blend: blend,
+                                  viewportID: viewportID)
+    }
+
+    public func makeSlabTexture(dataset: VolumeDataset,
+                                volumeTexture: any MTLTexture,
+                                plane: MPRPlaneGeometry,
+                                thickness: Int,
+                                steps: Int,
+                                blend: MPRBlendMode) async throws -> MPRTextureFrame {
+        try await makeSlabTexture(dataset: dataset,
+                                  volumeTexture: volumeTexture,
+                                  plane: plane,
+                                  thickness: thickness,
+                                  steps: steps,
+                                  blend: blend,
+                                  viewportID: nil)
+    }
+
+    public func makeSlabTexture(dataset: VolumeDataset,
+                                volumeTexture: any MTLTexture,
+                                plane: MPRPlaneGeometry,
+                                thickness: Int,
+                                steps: Int,
+                                blend: MPRBlendMode,
+                                viewportID: ViewportID?) async throws -> MPRTextureFrame {
+        let effectiveBlend = overrides.blend ?? blend
+        let effectiveThickness = VolumetricMath.sanitizeThickness(overrides.slabThickness ?? thickness)
+        let effectiveSteps = VolumetricMath.sanitizeSteps(overrides.slabSteps ?? steps)
+        defer {
+            overrides.blend = nil
+            overrides.slabThickness = nil
+            overrides.slabSteps = nil
+        }
+
+        let frame = try await gpuAdapter.makeSlabTexture(
+            dataset: dataset,
+            volumeTexture: volumeTexture,
+            plane: plane,
+            thickness: effectiveThickness,
+            steps: effectiveSteps,
+            blend: effectiveBlend,
+            viewportID: viewportID
+        )
+
+        let axis = Self.dominantAxis(for: plane)
+        lastSnapshot = SliceSnapshot(axis: axis,
+                                     intensityRange: frame.intensityRange,
+                                     blend: effectiveBlend,
+                                     thickness: effectiveThickness,
+                                     steps: effectiveSteps)
+
+        return frame
     }
 
     /// Sends an MPR command to update slice generation parameters.
     ///
-    /// Commands set persistent overrides that apply to the next ``makeSlab(dataset:plane:thickness:steps:blend:)``
+    /// Commands set persistent overrides that apply to the next texture frame generation
     /// call. Overrides are cleared after being applied.
     ///
     /// - Parameter command: The command to execute.
@@ -344,8 +343,8 @@ public actor MetalMPRAdapter: MPRReslicePort {
     /// // Change blend mode to maximum intensity
     /// try await adapter.send(.setBlend(.maximum))
     ///
-    /// // Next makeSlab call will use maximum blend
-    /// let slice = try await adapter.makeSlab(
+    /// // Next texture frame call will use maximum blend
+    /// let frame = try await adapter.makeTextureFrame(
     ///     dataset: dataset,
     ///     plane: plane,
     ///     thickness: 5,
@@ -356,9 +355,9 @@ public actor MetalMPRAdapter: MPRReslicePort {
     /// // Override slab parameters
     /// try await adapter.send(.setSlab(thickness: 10, steps: 20))
     /// ```
-    /// Sends a reslice command to the GPU compute adapter and records pending parameter overrides to apply on the next slab generation.
+    /// Sends a reslice command to the GPU compute adapter and records pending parameter overrides to apply on the next frame generation.
     ///
-    /// The command is forwarded to the underlying GPU adapter; certain command variants update `overrides` so they take effect for the next `makeSlab(...)` call:
+    /// The command is forwarded to the underlying GPU adapter; certain command variants update `overrides` so they take effect for the next frame generation call:
     /// - `.setBlend(mode)`: sets the pending blend mode.
     /// - `.setSlab(thickness, steps)`: sets the pending slab thickness and steps after sanitizing them.
     /// - Parameters:

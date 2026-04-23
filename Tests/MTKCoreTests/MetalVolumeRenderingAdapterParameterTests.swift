@@ -141,6 +141,71 @@ extension MetalVolumeRenderingAdapter {
     }
 }
 
+// MARK: - Gate uniforms
+
+final class GateUniformTests: XCTestCase {
+    private var adapter: MetalVolumeRenderingAdapter!
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        adapter = try makeTestAdapter()
+    }
+
+    func testDensityGateDoesNotEnableHuGate() async throws {
+        try await adapter.send(.setWindow(min: -1024, max: 1023))
+        try await adapter.setDensityGate(floor: 0.2, ceil: 0.8)
+
+        let uniforms = try await adapter.buildVolumeUniforms(for: makeRequest())
+
+        XCTAssertEqual(uniforms.useHuGate, 0)
+        XCTAssertEqual(uniforms.densityFloor, 0.2, accuracy: 1e-6)
+        XCTAssertEqual(uniforms.densityCeil, 0.8, accuracy: 1e-6)
+    }
+
+    func testHuGateUsesRawHUUniforms() async throws {
+        try await adapter.send(.setWindow(min: -1024, max: 1023))
+        try await adapter.setHuGate(enabled: true, minHU: 150, maxHU: 400)
+
+        let uniforms = try await adapter.buildVolumeUniforms(for: makeRequest())
+
+        XCTAssertEqual(uniforms.useHuGate, 1)
+        XCTAssertEqual(uniforms.gateHuMin, 150)
+        XCTAssertEqual(uniforms.gateHuMax, 400)
+    }
+
+    private func makeRequest() -> VolumeRenderRequest {
+        let dataset = VolumeDatasetTestFactory.makeTestDataset(
+            dimensions: VolumeDimensions(width: 4, height: 4, depth: 4),
+            pixelFormat: .int16Signed
+        )
+        return VolumeRenderRequest(
+            dataset: dataset,
+            transferFunction: VolumeTransferFunction(
+                opacityPoints: [
+                    VolumeTransferFunction.OpacityControlPoint(intensity: -1024, opacity: 0),
+                    VolumeTransferFunction.OpacityControlPoint(intensity: 1023, opacity: 1)
+                ],
+                colourPoints: [
+                    VolumeTransferFunction.ColourControlPoint(intensity: -1024,
+                                                              colour: SIMD4<Float>(0, 0, 0, 1)),
+                    VolumeTransferFunction.ColourControlPoint(intensity: 1023,
+                                                              colour: SIMD4<Float>(1, 1, 1, 1))
+                ]
+            ),
+            viewportSize: CGSize(width: 16, height: 16),
+            camera: VolumeRenderRequest.Camera(
+                position: SIMD3<Float>(0, 0, 3),
+                target: SIMD3<Float>(0, 0, 0),
+                up: SIMD3<Float>(0, 1, 0),
+                fieldOfView: 45
+            ),
+            samplingDistance: 1 / 256,
+            compositing: .frontToBack,
+            quality: .interactive
+        )
+    }
+}
+
 // MARK: - resolveWindow priority (MetalVolumeRenderingAdapter+Dispatch.swift)
 
 final class ResolveWindowTests: XCTestCase {

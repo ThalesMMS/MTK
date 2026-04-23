@@ -27,13 +27,17 @@ extension MetalVolumeRenderingAdapter: VolumeRenderingPortExtended {
         let lower = min(floor, ceil)
         let upper = max(floor, ceil)
         extendedState.densityGate = lower...upper
+        extendedState.huGate = nil
     }
 
     public func setHuGate(enabled: Bool, minHU: Int32, maxHU: Int32) async throws {
         if enabled {
-            extendedState.densityGate = Float(minHU)...Float(maxHU)
-        } else {
+            let lower = min(minHU, maxHU)
+            let upper = max(minHU, maxHU)
+            extendedState.huGate = lower...upper
             extendedState.densityGate = nil
+        } else {
+            extendedState.huGate = nil
         }
     }
 

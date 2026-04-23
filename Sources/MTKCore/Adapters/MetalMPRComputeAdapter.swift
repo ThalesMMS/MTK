@@ -30,7 +30,7 @@ private struct DatasetIdentity: Equatable, Sendable {
         self.pointer = dataset.data.withUnsafeBytes { buffer in
             buffer.baseAddress.map { UInt(bitPattern: $0) } ?? 0
         }
-        self.contentFingerprint = Self.makeContentFingerprint(for: dataset.data)
+        self.contentFingerprint = DatasetContentFingerprint.make(for: dataset.data)
     }
 
     static func == (lhs: DatasetIdentity, rhs: DatasetIdentity) -> Bool {
@@ -40,28 +40,11 @@ private struct DatasetIdentity: Equatable, Sendable {
         lhs.contentFingerprint == rhs.contentFingerprint
     }
 
-    private static func makeContentFingerprint(for data: Data) -> UInt64 {
-        data.withUnsafeBytes { buffer in
-            var hash: UInt64 = 14_695_981_039_346_656_037
-            for byte in buffer {
-                hash ^= UInt64(byte)
-                hash &*= 1_099_511_628_211
-            }
-            return hash
-        }
-    }
 }
 
 private struct OutputTextureShape: Equatable, Sendable {
     let width: Int
     let height: Int
-    let pixelFormat: VolumePixelFormat
-}
-
-private struct ReadbackShape: Equatable, Sendable {
-    let width: Int
-    let height: Int
-    let bytesPerPixel: Int
     let pixelFormat: VolumePixelFormat
 }
 
@@ -104,9 +87,6 @@ public actor MetalMPRComputeAdapter: MPRReslicePort {
     private var cachedOutputShape: OutputTextureShape?
     private var outputTextureInFlight = false
     private var outputTextureAllocationCount = 0
-    private var cachedReadbackBuffer: Data?
-    private var cachedReadbackShape: ReadbackShape?
-    private var readbackAllocationCount: Int = 0
     private var overrides = Overrides()
     private var lastSnapshot: SliceSnapshot?
     private let mpsAvailable: Bool
@@ -132,34 +112,49 @@ public actor MetalMPRComputeAdapter: MPRReslicePort {
         #endif
     }
 
-    /// Generate an MPR slab image from a volumetric dataset for a specified plane.
-    /// - Parameters:
-    ///   - dataset: The source volumetric dataset to sample from.
-    ///   - plane: The plane geometry defining the slice origin and axes.
-    ///   - thickness: Slab thickness in voxels (will be sanitized before use).
-    ///   - steps: Number of sampling steps through the slab (will be sanitized before use).
-    ///   - blend: The blending mode to apply across the slab.
-    /// - Returns: An `MPRSlice` containing the computed pixel buffer, dimensions, bytes-per-row, pixel format, intensity range, and pixel spacing.
-    /// - Throws: `ComputeError` or underlying Metal errors when pipeline creation, texture allocation, command encoding/dispatch, or readback fails.
-    public func makeSlab(dataset: VolumeDataset,
+    public func makeTextureFrame(dataset: VolumeDataset,
+                                 plane: MPRPlaneGeometry,
+                                 thickness: Int,
+                                 steps: Int,
+                                 blend: MPRBlendMode) async throws -> MPRTextureFrame {
+        let volumeTexture = try provideVolumeTexture(for: dataset)
+        return try await makeSlabTexture(dataset: dataset,
+                                         volumeTexture: volumeTexture,
+                                         plane: plane,
+                                         thickness: thickness,
+                                         steps: steps,
+                                         blend: blend)
+    }
+
+    public func makeSlabTexture(dataset: VolumeDataset,
+                                volumeTexture: any MTLTexture,
+                                plane: MPRPlaneGeometry,
+                                thickness: Int,
+                                steps: Int,
+                                blend: MPRBlendMode) async throws -> MPRTextureFrame {
+        try await makeSlabTexture(dataset: dataset,
+                                  volumeTexture: volumeTexture,
+                                  plane: plane,
+                                  thickness: thickness,
+                                  steps: steps,
+                                  blend: blend,
+                                  viewportID: nil)
+    }
+
+    func makeSlabTexture(dataset: VolumeDataset,
+                         volumeTexture: any MTLTexture,
                          plane: MPRPlaneGeometry,
                          thickness: Int,
                          steps: Int,
-                         blend: MPRBlendMode) async throws -> MPRSlice {
+                         blend: MPRBlendMode,
+                         viewportID: ViewportID?) async throws -> MPRTextureFrame {
         let effectiveBlend = overrides.blend ?? blend
         let effectiveThickness = VolumetricMath.sanitizeThickness(overrides.slabThickness ?? thickness)
         let effectiveSteps = VolumetricMath.sanitizeSteps(overrides.slabSteps ?? steps)
+        overrides = Overrides()
 
-        // Get or create pipeline
         let pipeline = try await getPipelineState(for: dataset.pixelFormat)
-
-        // Reuse the dataset-scoped volume texture when the dataset layout and payload are unchanged.
-        let volumeTexture = try provideVolumeTexture(for: dataset)
-
-        // Calculate output dimensions
         let (width, height) = sliceDimensions(for: plane)
-
-        // Reuse the output texture when the requested shape is unchanged and not already in flight.
         let outputTexture = try provideOutputTexture(width: width,
                                                      height: height,
                                                      pixelFormat: dataset.pixelFormat)
@@ -173,43 +168,56 @@ public actor MetalMPRComputeAdapter: MPRReslicePort {
             }
         }
 
-        // Prepare uniforms
         var uniforms = try createUniforms(dataset: dataset,
                                           plane: plane,
                                           thickness: effectiveThickness,
                                           steps: effectiveSteps,
                                           blend: effectiveBlend)
 
-        // Dispatch compute kernel
-        try await dispatchCompute(pipeline: pipeline,
-                                   volumeTexture: volumeTexture,
-                                   outputTexture: outputTexture,
-                                   uniforms: &uniforms,
-                                   width: width,
-                                   height: height)
+        let timings = try await dispatchCompute(pipeline: pipeline,
+                                                volumeTexture: volumeTexture,
+                                                outputTexture: outputTexture,
+                                                uniforms: &uniforms,
+                                                width: width,
+                                                height: height)
+        ClinicalProfiler.shared.recordSample(
+            stage: .mprReslice,
+            cpuTime: timings.cpuTime,
+            gpuTime: timings.gpuTime > 0 ? timings.gpuTime : nil,
+            memory: ResourceMemoryEstimator.estimate(for: outputTexture),
+            viewport: ProfilingViewportContext(width: width,
+                                                       height: height,
+                                                       viewportType: "mpr",
+                                                       quality: "unknown",
+                                                       renderMode: effectiveBlend),
+            metadata: [
+                "path": "MetalMPRComputeAdapter.makeSlabTexture",
+                "kernelTimeMilliseconds": String(format: "%.6f", timings.kernelTime),
+                "thickness": String(effectiveThickness),
+                "steps": String(effectiveSteps)
+            ],
+            device: device
+        )
 
-        // Read back result
-        let slice = try await readSlice(from: outputTexture,
-                                        width: width,
-                                        height: height,
-                                        pixelFormat: dataset.pixelFormat,
-                                        plane: plane,
-                                        dataset: dataset)
+        let resultTexture = outputTextureUsesCache
+            ? try await makeOutputTextureCopy(of: outputTexture,
+                                              width: width,
+                                              height: height,
+                                              pixelFormat: dataset.pixelFormat)
+            : outputTexture
 
-        // Update snapshot
         let axis = dominantAxis(for: plane)
         lastSnapshot = SliceSnapshot(axis: axis,
-                                     intensityRange: slice.intensityRange,
+                                     intensityRange: dataset.intensityRange,
                                      blend: effectiveBlend,
                                      thickness: effectiveThickness,
                                      steps: effectiveSteps)
 
-        // Clear overrides
-        overrides.blend = nil
-        overrides.slabThickness = nil
-        overrides.slabSteps = nil
-
-        return slice
+        return MPRTextureFrame(texture: resultTexture,
+                               intensityRange: dataset.intensityRange,
+                               pixelFormat: dataset.pixelFormat,
+                               viewportID: viewportID,
+                               planeGeometry: plane)
     }
 
     public func send(_ command: MPRResliceCommand) async throws {
@@ -242,9 +250,6 @@ extension MetalMPRComputeAdapter {
     public var debugOutputTextureAllocationCount: Int { outputTextureAllocationCount }
 
     @_spi(Testing)
-    public var debugReadbackAllocationCount: Int { readbackAllocationCount }
-
-    @_spi(Testing)
     public var debugCachedOutputTextureShape: (
         width: Int,
         height: Int,
@@ -255,20 +260,6 @@ extension MetalMPRComputeAdapter {
             width: cachedOutputShape.width,
             height: cachedOutputShape.height,
             pixelFormat: cachedOutputShape.pixelFormat
-        )
-    }
-
-    @_spi(Testing)
-    public var debugCachedReadbackShape: (
-        width: Int,
-        height: Int,
-        bytesPerPixel: Int
-    )? {
-        guard let cachedReadbackShape else { return nil }
-        return (
-            width: cachedReadbackShape.width,
-            height: cachedReadbackShape.height,
-            bytesPerPixel: cachedReadbackShape.bytesPerPixel
         )
     }
 
@@ -383,12 +374,14 @@ private extension MetalMPRComputeAdapter {
     func createOutputTexture(width: Int,
                              height: Int,
                              pixelFormat: VolumePixelFormat) throws -> any MTLTexture {
+        // StorageModePolicy.md: MPR compute output textures are GPU-only intermediates.
         let descriptor = MTLTextureDescriptor()
         descriptor.textureType = .type2D
         descriptor.pixelFormat = pixelFormat.metalPixelFormat
         descriptor.usage = [.shaderWrite, .shaderRead]
         descriptor.width = width
         descriptor.height = height
+        descriptor.storageMode = .private
 
         guard let texture = device.makeTexture(descriptor: descriptor) else {
             logger.error("Failed to create output texture (\(width)x\(height))")
@@ -404,6 +397,51 @@ private extension MetalMPRComputeAdapter {
         guard let cachedOutputTexture else { return false }
         return (texture as AnyObject) === (cachedOutputTexture as AnyObject)
     }
+
+    func makeOutputTextureCopy(of source: any MTLTexture,
+                               width: Int,
+                               height: Int,
+                               pixelFormat: VolumePixelFormat) async throws -> any MTLTexture {
+        let destination = try createOutputTexture(width: width,
+                                                  height: height,
+                                                  pixelFormat: pixelFormat)
+        destination.label = "MPR.outputTexture.copy"
+
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
+            throw ComputeError.commandBufferCreationFailed
+        }
+        commandBuffer.label = "mpr_output_texture_copy"
+
+        guard let blitEncoder = commandBuffer.makeBlitCommandEncoder() else {
+            throw ComputeError.encoderCreationFailed
+        }
+        blitEncoder.label = "mpr_output_texture_copy"
+        blitEncoder.copy(
+            from: source,
+            sourceSlice: 0,
+            sourceLevel: 0,
+            sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+            sourceSize: MTLSize(width: width, height: height, depth: 1),
+            to: destination,
+            destinationSlice: 0,
+            destinationLevel: 0,
+            destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0)
+        )
+        blitEncoder.endEncoding()
+
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            commandBuffer.addCompletedHandler { buffer in
+                if let error = buffer.error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
+                }
+            }
+            commandBuffer.commit()
+        }
+
+        return destination
+    }
 }
 
 // MARK: - Uniforms
@@ -414,9 +452,8 @@ private extension MetalMPRComputeAdapter {
         var voxelMaxValue: Int32
         var blendMode: Int32
         var numSteps: Int32
-        var flipVertical: Int32
         var slabHalf: Float
-        var _pad0: SIMD2<Float>
+        var _pad0: SIMD3<Float>
 
         var planeOrigin: SIMD3<Float>
         var _pad1: Float
@@ -426,29 +463,41 @@ private extension MetalMPRComputeAdapter {
         var _pad3: Float
     }
 
+    static func assertMPRSlabUniformLayout() {
+        assert(MemoryLayout<MPRSlabUniforms>.size == 132)
+        assert(MemoryLayout<MPRSlabUniforms>.stride == 144)
+        assert(MemoryLayout<MPRSlabUniforms>.offset(of: \.voxelMinValue) == 0)
+        assert(MemoryLayout<MPRSlabUniforms>.offset(of: \.voxelMaxValue) == 4)
+        assert(MemoryLayout<MPRSlabUniforms>.offset(of: \.blendMode) == 8)
+        assert(MemoryLayout<MPRSlabUniforms>.offset(of: \.numSteps) == 12)
+        assert(MemoryLayout<MPRSlabUniforms>.offset(of: \.slabHalf) == 16)
+        assert(MemoryLayout<MPRSlabUniforms>.offset(of: \._pad0) == 32)
+        assert(MemoryLayout<MPRSlabUniforms>.offset(of: \.planeOrigin) == 48)
+        assert(MemoryLayout<MPRSlabUniforms>.offset(of: \.planeX) == 80)
+        assert(MemoryLayout<MPRSlabUniforms>.offset(of: \.planeY) == 112)
+    }
+
     func createUniforms(dataset: VolumeDataset,
                         plane: MPRPlaneGeometry,
                         thickness: Int,
                         steps: Int,
                         blend: MPRBlendMode) throws -> MPRSlabUniforms {
-        // Convert thickness from voxels to normalized [0,1] space
-        let spacing = dataset.spacing
-        let dimensions = dataset.dimensions
-
-        // Use average spacing for thickness normalization
-        let avgSpacing = (spacing.x + spacing.y + spacing.z) / 3.0
-        let avgDimension = (Double(dimensions.width) + Double(dimensions.height) + Double(dimensions.depth)) / 3.0
-        let normalizedThickness = (Double(thickness) * avgSpacing) / (avgDimension * avgSpacing)
-        let slabHalf = Float(normalizedThickness / 2.0)
+#if DEBUG
+        Self.assertMPRSlabUniformLayout()
+#endif
+        let slabHalf = MPRPlaneGeometryFactory.normalizedTextureThickness(
+            for: Float(thickness),
+            dataset: dataset,
+            plane: plane
+        ) / 2
 
         return MPRSlabUniforms(
             voxelMinValue: Int32(dataset.intensityRange.lowerBound),
             voxelMaxValue: Int32(dataset.intensityRange.upperBound),
             blendMode: Int32(blend.rawValue),
             numSteps: Int32(steps),
-            flipVertical: 0,
             slabHalf: slabHalf,
-            _pad0: SIMD2<Float>(0, 0),
+            _pad0: SIMD3<Float>(0, 0, 0),
             planeOrigin: plane.originTexture,
             _pad1: 0,
             planeX: plane.axisUTexture,
@@ -467,10 +516,11 @@ private extension MetalMPRComputeAdapter {
                          outputTexture: any MTLTexture,
                          uniforms: inout MPRSlabUniforms,
                          width: Int,
-                         height: Int) async throws {
+                         height: Int) async throws -> CommandBufferTimings {
         guard let commandBuffer = commandQueue.makeCommandBuffer() else {
             throw ComputeError.commandBufferCreationFailed
         }
+        let cpuStart = CFAbsoluteTimeGetCurrent()
         commandBuffer.label = "mpr_slab_compute"
 
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -501,7 +551,8 @@ private extension MetalMPRComputeAdapter {
 
         encoder.endEncoding()
 
-        return try await withCheckedThrowingContinuation { continuation in
+        let cpuEnd = CFAbsoluteTimeGetCurrent()
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
             commandBuffer.addCompletedHandler { buffer in
                 if let error = buffer.error {
                     continuation.resume(throwing: error)
@@ -511,65 +562,8 @@ private extension MetalMPRComputeAdapter {
             }
             commandBuffer.commit()
         }
-    }
-}
-
-// MARK: - Result Reading
-
-private extension MetalMPRComputeAdapter {
-    func readSlice(from texture: any MTLTexture,
-                   width: Int,
-                   height: Int,
-                   pixelFormat: VolumePixelFormat,
-                   plane: MPRPlaneGeometry,
-                   dataset: VolumeDataset) async throws -> MPRSlice {
-        let bytesPerPixel = pixelFormat.bytesPerVoxel
-        let bytesPerRow = width * bytesPerPixel
-        let bufferLength = height * bytesPerRow
-        let currentShape = ReadbackShape(width: width,
-                                         height: height,
-                                         bytesPerPixel: bytesPerPixel,
-                                         pixelFormat: pixelFormat)
-
-        if cachedReadbackBuffer == nil || cachedReadbackShape != currentShape {
-            cachedReadbackBuffer = Data(count: bufferLength)
-            cachedReadbackShape = currentShape
-            readbackAllocationCount += 1
-        }
-
-        try cachedReadbackBuffer!.withUnsafeMutableBytes { buffer in
-            guard let baseAddress = buffer.baseAddress else {
-                throw ComputeError.outputBufferAllocationFailed
-            }
-
-            texture.getBytes(
-                baseAddress,
-                bytesPerRow: bytesPerRow,
-                from: MTLRegionMake2D(0, 0, width, height),
-                mipmapLevel: 0
-            )
-        }
-
-        // Keep the cache actor-owned; callers receive an isolated copy that later readbacks cannot overwrite.
-        let pixels = cachedReadbackBuffer!.withUnsafeBytes { Data($0) }
-
-        let pixelSpacing = calculatePixelSpacing(for: plane,
-                                                  width: width,
-                                                  height: height,
-                                                  dataset: dataset)
-        let intensityRange = calculateIntensityRange(in: pixels,
-                                                      pixelFormat: pixelFormat)
-            ?? dataset.intensityRange
-
-        return MPRSlice(
-            pixels: pixels,
-            width: width,
-            height: height,
-            bytesPerRow: bytesPerRow,
-            pixelFormat: pixelFormat,
-            intensityRange: intensityRange,
-            pixelSpacing: pixelSpacing
-        )
+        return commandBuffer.timings(cpuStart: cpuStart,
+                                     cpuEnd: cpuEnd)
     }
 }
 
@@ -584,58 +578,11 @@ private extension MetalMPRComputeAdapter {
     }
 
     func sliceDimensions(for plane: MPRPlaneGeometry) -> (width: Int, height: Int) {
-        let width = max(1, Int(round(simd_length(plane.axisUVoxel))))
-        let height = max(1, Int(round(simd_length(plane.axisVVoxel))))
+        let width = max(1, Int(round(simd_length(plane.axisUVoxel))) + 1)
+        let height = max(1, Int(round(simd_length(plane.axisVVoxel))) + 1)
         return (width, height)
     }
 
-    func calculatePixelSpacing(for plane: MPRPlaneGeometry,
-                                width: Int,
-                                height: Int,
-                                dataset: VolumeDataset) -> SIMD2<Float>? {
-        let uLength = simd_length(plane.axisUWorld)
-        let vLength = simd_length(plane.axisVWorld)
-        let spacingU = width > 1 ? uLength / Float(width - 1) : Float(dataset.spacing.x)
-        let spacingV = height > 1 ? vLength / Float(height - 1) : Float(dataset.spacing.y)
-        return SIMD2<Float>(spacingU, spacingV)
-    }
-
-    func calculateIntensityRange(in pixels: Data,
-                                  pixelFormat: VolumePixelFormat) -> ClosedRange<Int32>? {
-        guard !pixels.isEmpty else { return nil }
-
-        return pixels.withUnsafeBytes { buffer in
-            switch pixelFormat {
-            case .int16Signed:
-                guard let pointer = buffer.baseAddress?.assumingMemoryBound(to: Int16.self) else {
-                    return nil
-                }
-                let count = pixels.count / MemoryLayout<Int16>.stride
-                var minValue: Int16 = .max
-                var maxValue: Int16 = .min
-                for i in 0..<count {
-                    let value = pointer[i]
-                    minValue = min(minValue, value)
-                    maxValue = max(maxValue, value)
-                }
-                return Int32(minValue)...Int32(maxValue)
-
-            case .int16Unsigned:
-                guard let pointer = buffer.baseAddress?.assumingMemoryBound(to: UInt16.self) else {
-                    return nil
-                }
-                let count = pixels.count / MemoryLayout<UInt16>.stride
-                var minValue: UInt16 = .max
-                var maxValue: UInt16 = .min
-                for i in 0..<count {
-                    let value = pointer[i]
-                    minValue = min(minValue, value)
-                    maxValue = max(maxValue, value)
-                }
-                return Int32(minValue)...Int32(maxValue)
-            }
-        }
-    }
 }
 
 // MARK: - MPS Optimization Support
@@ -750,12 +697,7 @@ private extension MTLPixelFormat {
 
 private extension VolumePixelFormat {
     var metalPixelFormat: MTLPixelFormat {
-        switch self {
-        case .int16Signed:
-            return .r16Sint
-        case .int16Unsigned:
-            return .r16Uint
-        }
+        rawIntensityMetalPixelFormat
     }
 
     var mprSlabKernelName: String {

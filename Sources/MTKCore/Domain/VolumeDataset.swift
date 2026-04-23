@@ -190,7 +190,7 @@ public enum VolumePixelFormat: Sendable, Equatable {
 /// ```
 ///
 /// The dataset can then be uploaded to Metal textures via `VolumeTextureFactory`
-/// and rendered using `MetalRaycaster` or SceneKit volume materials.
+/// and rendered using the Metal adapters in this package.
 public struct VolumeDataset: Sendable, Equatable {
     /// Raw voxel intensity data.
     ///
@@ -263,7 +263,7 @@ public struct VolumeDataset: Sendable, Equatable {
     /// - `y = spacing.y * dimensions.height`
     /// - `z = spacing.z * dimensions.depth`
     ///
-    /// Use this to set SceneKit node scales or compute bounding boxes.
+    /// Use this to scale spatial geometry or compute bounding boxes.
     public var scale: VolumeSpacing {
         VolumeSpacing(
             x: spacing.x * Double(dimensions.width),

@@ -61,6 +61,11 @@ public struct WindowLevelPreset: Identifiable, Equatable {
         WindowLevelMath.bounds(forWidth: Float(window), level: Float(level)).max
     }
 
+    /// Integer HU range suitable for Metal presentation window uniforms.
+    public var windowRange: ClosedRange<Int32> {
+        Int32(minValue.rounded(.down))...Int32(maxValue.rounded(.up))
+    }
+
     /// Full display name including source
     public var fullDisplayName: String {
         "\(name) (\(source.displayName))"
@@ -95,14 +100,54 @@ public struct WindowLevelPreset: Identifiable, Equatable {
 
 /// Library of standard window/level presets
 public enum WindowLevelPresetLibrary {
+    /// Common CT soft tissue window (W400/L40).
+    public static let softTissue = WindowLevelPreset(
+        id: "ohif.ct-soft-tissue",
+        name: "Soft Tissue",
+        modality: .ct,
+        window: 400,
+        level: 40,
+        source: .ohif
+    )
+
+    /// Common CT lung window (W1500/L-600).
+    public static let lung = WindowLevelPreset(
+        id: "ohif.ct-lung",
+        name: "Lung",
+        modality: .ct,
+        window: 1500,
+        level: -600,
+        source: .ohif
+    )
+
+    /// Common CT bone window (W2500/L480).
+    public static let bone = WindowLevelPreset(
+        id: "ohif.ct-bone",
+        name: "Bone",
+        modality: .ct,
+        window: 2500,
+        level: 480,
+        source: .ohif
+    )
+
+    /// Common CT brain window (W80/L40).
+    public static let brain = WindowLevelPreset(
+        id: "ohif.ct-brain",
+        name: "Brain",
+        modality: .ct,
+        window: 80,
+        level: 40,
+        source: .ohif
+    )
+
     /// CT presets from OHIF and Weasis
     public static let ct: [WindowLevelPreset] = [
         // OHIF presets
-        WindowLevelPreset(id: "ohif.ct-soft-tissue", name: "Soft Tissue", modality: .ct, window: 400, level: 40, source: .ohif),
-        WindowLevelPreset(id: "ohif.ct-lung", name: "Lung", modality: .ct, window: 1500, level: -600, source: .ohif),
+        softTissue,
+        lung,
         WindowLevelPreset(id: "ohif.ct-liver", name: "Liver", modality: .ct, window: 150, level: 90, source: .ohif),
-        WindowLevelPreset(id: "ohif.ct-bone", name: "Bone", modality: .ct, window: 2500, level: 480, source: .ohif),
-        WindowLevelPreset(id: "ohif.ct-brain", name: "Brain", modality: .ct, window: 80, level: 40, source: .ohif),
+        bone,
+        brain,
 
         // Weasis presets
         WindowLevelPreset(id: "weasis.ct-brain", name: "Brain", modality: .ct, window: 110, level: 35, source: .weasis),

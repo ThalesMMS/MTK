@@ -7,7 +7,7 @@
 //  Thales Matheus Mendonça Santos — October 2025
 
 import Foundation
-import Metal
+@preconcurrency import Metal
 import OSLog
 import simd
 import ZIPFoundation
@@ -159,19 +159,31 @@ public final class VolumeTextureFactory {
     ///
     /// - Note: Logs errors via OSLog when texture creation fails.
     public func generate(device: any MTLDevice) -> (any MTLTexture)? {
-        let descriptor = MTLTextureDescriptor()
-        descriptor.textureType = .type3D
-        descriptor.pixelFormat = dataset.pixelFormat.metalPixelFormat
-        descriptor.usage = [.shaderRead, .pixelFormatView]
-        descriptor.width = dataset.dimensions.width
-        descriptor.height = dataset.dimensions.height
-        descriptor.depth = dataset.dimensions.depth
+        let startedAt = CFAbsoluteTimeGetCurrent()
+        // StorageModePolicy.md: the synchronous CPU reference path keeps `.shared`
+        // storage so tests can validate raw voxel uploads without a readback pass.
+        let descriptor = Self.makeVolumeTextureDescriptor(dimensions: dataset.dimensions,
+                                                          pixelFormat: dataset.pixelFormat,
+                                                          storageMode: .shared)
 
         guard let texture = device.makeTexture(descriptor: descriptor) else {
             logger.error("Failed to create 3D texture (\(descriptor.width)x\(descriptor.height)x\(descriptor.depth))")
             return nil
         }
+        ClinicalProfiler.shared.recordSample(
+            stage: .texturePreparation,
+            cpuTime: ClinicalProfiler.milliseconds(from: startedAt),
+            memory: ResourceMemoryEstimator.estimate(for: texture),
+            viewport: .unknown,
+            metadata: [
+                "path": "VolumeTextureFactory.generate.prepare",
+                "dimensions": "\(descriptor.width)x\(descriptor.height)x\(descriptor.depth)",
+                "pixelFormat": "\(texture.pixelFormat)"
+            ],
+            device: device
+        )
 
+        let uploadStartedAt = CFAbsoluteTimeGetCurrent()
         let bytesPerRow = dataset.pixelFormat.bytesPerVoxel * descriptor.width
         let bytesPerImage = bytesPerRow * descriptor.height
 
@@ -187,6 +199,18 @@ public final class VolumeTextureFactory {
             )
         }
 
+        ClinicalProfiler.shared.recordSample(
+            stage: .textureUpload,
+            cpuTime: ClinicalProfiler.milliseconds(from: uploadStartedAt),
+            memory: ResourceMemoryEstimator.estimate(for: texture),
+            viewport: .unknown,
+            metadata: [
+                "path": "VolumeTextureFactory.generate",
+                "dimensions": "\(descriptor.width)x\(descriptor.height)x\(descriptor.depth)",
+                "pixelFormat": "\(texture.pixelFormat)"
+            ],
+            device: device
+        )
         return texture
     }
 
@@ -212,13 +236,12 @@ public final class VolumeTextureFactory {
     /// ```
     public func generateAsync(device: any MTLDevice,
                              commandQueue: any MTLCommandQueue) async throws -> any MTLTexture {
-        let descriptor = MTLTextureDescriptor()
-        descriptor.textureType = .type3D
-        descriptor.pixelFormat = dataset.pixelFormat.metalPixelFormat
-        descriptor.usage = [.shaderRead, .pixelFormatView]
-        descriptor.width = dataset.dimensions.width
-        descriptor.height = dataset.dimensions.height
-        descriptor.depth = dataset.dimensions.depth
+        let startedAt = CFAbsoluteTimeGetCurrent()
+        // StorageModePolicy.md: async volume uploads write into a final private
+        // texture through a transient CPU-visible staging buffer.
+        let descriptor = Self.makeVolumeTextureDescriptor(dimensions: dataset.dimensions,
+                                                          pixelFormat: dataset.pixelFormat,
+                                                          storageMode: .private)
 
         guard let texture = device.makeTexture(descriptor: descriptor) else {
             logger.error("Failed to create 3D texture (\(descriptor.width)x\(descriptor.height)x\(descriptor.depth))")
@@ -230,12 +253,27 @@ public final class VolumeTextureFactory {
         let bytesPerImage = bytesPerRow * descriptor.height
         let bufferLength = dataset.data.count
 
-        guard let stagingBuffer = device.makeBuffer(length: bufferLength, options: .storageModeShared) else {
+        // StorageModePolicy.md: staging is shared/write-combined for one-way CPU writes.
+        guard let stagingBuffer = device.makeBuffer(length: bufferLength,
+                                                    options: [.storageModeShared, .cpuCacheModeWriteCombined]) else {
             logger.error("Failed to allocate staging buffer (\(bufferLength) bytes)")
             throw TextureUploadError.bufferAllocationFailed
         }
         stagingBuffer.label = "VolumeStagingBuffer"
+        ClinicalProfiler.shared.recordSample(
+            stage: .texturePreparation,
+            cpuTime: ClinicalProfiler.milliseconds(from: startedAt),
+            memory: ResourceMemoryEstimator.estimate(for: texture) + stagingBuffer.length,
+            viewport: .unknown,
+            metadata: [
+                "path": "VolumeTextureFactory.generateAsync.prepare",
+                "dimensions": "\(descriptor.width)x\(descriptor.height)x\(descriptor.depth)",
+                "pixelFormat": "\(texture.pixelFormat)"
+            ],
+            device: device
+        )
 
+        let uploadStartedAt = CFAbsoluteTimeGetCurrent()
         dataset.data.withUnsafeBytes { buffer in
             guard let baseAddress = buffer.baseAddress else { return }
             memcpy(stagingBuffer.contents(), baseAddress, bufferLength)
@@ -266,17 +304,56 @@ public final class VolumeTextureFactory {
         )
 
         blitEncoder.endEncoding()
+        CommandBufferProfiler.captureTimes(for: commandBuffer,
+                                           label: "upload",
+                                           category: "Benchmark")
+        let uploadCPUEnd = CFAbsoluteTimeGetCurrent()
 
         return try await withCheckedThrowingContinuation { continuation in
             commandBuffer.addCompletedHandler { buffer in
                 if let error = buffer.error {
                     continuation.resume(throwing: error)
                 } else {
+                    let timing = buffer.timings(cpuStart: uploadStartedAt,
+                                                cpuEnd: uploadCPUEnd)
+                    ClinicalProfiler.shared.recordSample(
+                        stage: .textureUpload,
+                        cpuTime: timing.cpuTime,
+                        gpuTime: timing.gpuTime > 0 ? timing.gpuTime : nil,
+                        memory: ResourceMemoryEstimator.estimate(for: texture) + stagingBuffer.length,
+                        viewport: .unknown,
+                        metadata: [
+                            "path": "VolumeTextureFactory.generateAsync",
+                            "kernelTimeMilliseconds": String(format: "%.6f", timing.kernelTime),
+                            "dimensions": "\(descriptor.width)x\(descriptor.height)x\(descriptor.depth)",
+                            "pixelFormat": "\(texture.pixelFormat)"
+                        ],
+                        device: device
+                    )
                     continuation.resume(returning: texture)
                 }
             }
             commandBuffer.commit()
         }
+    }
+}
+
+extension VolumeTextureFactory {
+    static func makeVolumeTextureDescriptor(dimensions: VolumeDimensions,
+                                            pixelFormat: VolumePixelFormat,
+                                            storageMode: MTLStorageMode = .private) -> MTLTextureDescriptor {
+        // StorageModePolicy.md: volume texture storage is always explicit at call sites.
+        let descriptor = MTLTextureDescriptor()
+        descriptor.textureType = .type3D
+        descriptor.pixelFormat = pixelFormat.metalPixelFormat
+        descriptor.usage = [.shaderRead, .shaderWrite, .pixelFormatView]
+        descriptor.width = dimensions.width
+        descriptor.height = dimensions.height
+        descriptor.depth = dimensions.depth
+        // Volume textures are GPU-only in the rendering path; async/chunked uploads
+        // use private storage and stage CPU writes through shared buffers.
+        descriptor.storageMode = storageMode
+        return descriptor
     }
 }
 

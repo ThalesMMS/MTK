@@ -444,19 +444,15 @@ final class MPSEmptySpaceAcceleratorTests: XCTestCase {
             throw XCTSkip("Metal volume renderer unavailable: \(error.localizedDescription)")
         }
 
-        let result = try await adapter.renderImage(using: request)
-        let cgImage = try XCTUnwrap(
-            result.cgImage,
-            "The Metal-only rendering path should still produce output when acceleration is not requested"
-        )
+        let frame = try await adapter.renderFrame(using: request)
 
         XCTAssertGreaterThan(
-            cgImage.width,
+            frame.texture.width,
             0,
             "The Metal-only rendering path should still produce output when acceleration is not requested"
         )
         XCTAssertGreaterThan(
-            cgImage.height,
+            frame.texture.height,
             0,
             "The Metal-only rendering path should still produce output when acceleration is not requested"
         )

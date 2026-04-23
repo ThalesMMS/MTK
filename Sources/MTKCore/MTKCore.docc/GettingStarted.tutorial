@@ -79,19 +79,19 @@
             }
 
             @Step {
-                Create a SwiftUI view with the volumetric scene coordinator.
+                Create a SwiftUI view with the volume viewport coordinator.
 
-                `VolumetricSceneCoordinator` manages the rendering pipeline lifecycle and provides the main interface for volume operations.
+                `VolumeViewportCoordinator` manages the rendering pipeline lifecycle and provides the main interface for volume operations.
 
                 ```swift
                 import SwiftUI
                 import MTKUI
 
                 struct ContentView: View {
-                    @StateObject private var coordinator = VolumetricSceneCoordinator.shared
+                    @StateObject private var coordinator = VolumeViewportCoordinator.shared
 
                     var body: some View {
-                        VolumetricDisplayContainer(controller: coordinator.controller) {
+                        VolumeViewportContainer(controller: coordinator.controller) {
                             // Overlays will be added here
                         }
                     }
@@ -120,10 +120,10 @@
                 import MTKUI
 
                 struct ContentView: View {
-                    @StateObject private var coordinator = VolumetricSceneCoordinator.shared
+                    @StateObject private var coordinator = VolumeViewportCoordinator.shared
 
                     var body: some View {
-                        VolumetricDisplayContainer(controller: coordinator.controller) {
+                        VolumeViewportContainer(controller: coordinator.controller) {
                             // Overlays will be added here
                         }
                         .task {
@@ -149,10 +149,10 @@
                 import MTKUI
 
                 struct ContentView: View {
-                    @StateObject private var coordinator = VolumetricSceneCoordinator.shared
+                    @StateObject private var coordinator = VolumeViewportCoordinator.shared
 
                     var body: some View {
-                        VolumetricDisplayContainer(controller: coordinator.controller) {
+                        VolumeViewportContainer(controller: coordinator.controller) {
                             // Overlays will be added here
                         }
                         .task {
@@ -185,10 +185,10 @@
                 import MTKUI
 
                 struct ContentView: View {
-                    @StateObject private var coordinator = VolumetricSceneCoordinator.shared
+                    @StateObject private var coordinator = VolumeViewportCoordinator.shared
 
                     var body: some View {
-                        VolumetricDisplayContainer(controller: coordinator.controller) {
+                        VolumeViewportContainer(controller: coordinator.controller) {
                             // Overlays will be added here
                         }
                         .task {
@@ -332,10 +332,10 @@
                 import MTKUI
 
                 struct ContentView: View {
-                    @StateObject private var coordinator = VolumetricSceneCoordinator.shared
+                    @StateObject private var coordinator = VolumeViewportCoordinator.shared
 
                     var body: some View {
-                        VolumetricDisplayContainer(controller: coordinator.controller) {
+                        VolumeViewportContainer(controller: coordinator.controller) {
                             OrientationOverlayView()
                             CrosshairOverlayView()
                         }
@@ -358,11 +358,11 @@
                 import MTKUI
 
                 struct ContentView: View {
-                    @StateObject private var coordinator = VolumetricSceneCoordinator.shared
+                    @StateObject private var coordinator = VolumeViewportCoordinator.shared
                     @State private var cameraState = CameraPose()
 
                     var body: some View {
-                        VolumetricDisplayContainer(controller: coordinator.controller) {
+                        VolumeViewportContainer(controller: coordinator.controller) {
                             OrientationOverlayView()
                             CrosshairOverlayView()
                         }
@@ -389,11 +389,11 @@
                 import MTKUI
 
                 struct ContentView: View {
-                    @StateObject private var coordinator = VolumetricSceneCoordinator.shared
+                    @StateObject private var coordinator = VolumeViewportCoordinator.shared
                     @State private var cameraState = CameraPose()
 
                     var body: some View {
-                        VolumetricDisplayContainer(controller: coordinator.controller) {
+                        VolumeViewportContainer(controller: coordinator.controller) {
                             OrientationOverlayView()
                             CrosshairOverlayView()
                             WindowLevelControlView(coordinator: coordinator)

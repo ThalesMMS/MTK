@@ -8,13 +8,13 @@ import SwiftUI
 
 @MainActor
 public struct MPRPanelView: View {
-    private let controller: VolumetricSceneController
-    private let axis: VolumetricSceneController.Axis
+    private let controller: VolumeViewportController
+    private let axis: VolumeViewportController.Axis
     private let style: any VolumetricUIStyle
     @State private var normalizedPosition: Double
 
-    public init(controller: VolumetricSceneController,
-                axis: VolumetricSceneController.Axis,
+    public init(controller: VolumeViewportController,
+                axis: VolumeViewportController.Axis,
                 style: any VolumetricUIStyle = DefaultVolumetricUIStyle()) {
         self.controller = controller
         self.axis = axis

@@ -2,7 +2,7 @@
 #define volume_rendering_helpers_metal
 
 #include <metal_stdlib>
-#include "../MPR/Shared.metal"
+#include "volume_shader_common.metal"
 #include "volume_rendering_types.metal"
 
 using namespace metal;
@@ -48,14 +48,12 @@ static inline float sampleTone(device float *toneBuffer,
                                                 short hu)
 {
     constant VolumeUniforms& uniforms = params.material;
-    if (uniforms.method == 2 || uniforms.method == 3 || uniforms.method == 4) {
-        if (density < uniforms.densityFloor || density > uniforms.densityCeil) {
-            return true;
-        }
-        if (uniforms.useHuGate != 0 &&
-            (hu < uniforms.gateHuMin || hu > uniforms.gateHuMax)) {
-            return true;
-        }
+    if (uniforms.useHuGate != 0 &&
+        (hu < uniforms.gateHuMin || hu > uniforms.gateHuMax)) {
+        return true;
+    }
+    if (density < uniforms.densityFloor || density > uniforms.densityCeil) {
+        return true;
     }
     return false;
 }
@@ -114,6 +112,165 @@ static inline float4 sampleChannel(texture2d<float, access::sample> transfer,
     float3 colour = premult / max(alpha, 1e-5f);
     colour = clamp(colour, float3(0.0f), float3(1.0f));
     return float4(colour, clamp(alpha, 0.0f, 1.0f));
+}
+
+struct ProjectionState {
+    float maxDensityWindow;
+    float maxDensityDataset;
+    float minDensityWindow;
+    float minDensityDataset;
+    float sumDensityWindow;
+    float sumDensityDataset;
+    float3 selectedGradient;
+    float3 summedGradient;
+    float3 selectedPosition;
+    float3 summedPosition;
+    uint sampleCount;
+    bool hit;
+};
+
+[[maybe_unused]] static inline ProjectionState initProjectionState()
+{
+    ProjectionState state;
+    state.maxDensityWindow = 0.0f;
+    state.maxDensityDataset = 0.0f;
+    state.minDensityWindow = 1.0f;
+    state.minDensityDataset = 1.0f;
+    state.sumDensityWindow = 0.0f;
+    state.sumDensityDataset = 0.0f;
+    state.selectedGradient = float3(0.0f);
+    state.summedGradient = float3(0.0f);
+    state.selectedPosition = float3(0.5f);
+    state.summedPosition = float3(0.0f);
+    state.sampleCount = 0u;
+    state.hit = false;
+    return state;
+}
+
+[[maybe_unused]] static inline void updateMaxIntensity(thread ProjectionState& state,
+                                                       float densityWindow,
+                                                       float densityDataset,
+                                                       float3 gradient,
+                                                       float3 samplePos)
+{
+    if (!state.hit || densityWindow > state.maxDensityWindow) {
+        state.maxDensityWindow = densityWindow;
+        state.maxDensityDataset = densityDataset;
+        state.selectedGradient = gradient;
+        state.selectedPosition = samplePos;
+    }
+    state.hit = true;
+}
+
+[[maybe_unused]] static inline void updateMinIntensity(thread ProjectionState& state,
+                                                       float densityWindow,
+                                                       float densityDataset,
+                                                       float3 gradient,
+                                                       float3 samplePos)
+{
+    if (!state.hit || densityWindow < state.minDensityWindow) {
+        state.minDensityWindow = densityWindow;
+        state.minDensityDataset = densityDataset;
+        state.selectedGradient = gradient;
+        state.selectedPosition = samplePos;
+    }
+    state.hit = true;
+}
+
+[[maybe_unused]] static inline void updateAverageIntensity(thread ProjectionState& state,
+                                                           float densityWindow,
+                                                           float densityDataset,
+                                                           float3 gradient,
+                                                           float3 samplePos)
+{
+    state.sumDensityWindow += densityWindow;
+    state.sumDensityDataset += densityDataset;
+    state.summedGradient += gradient;
+    state.summedPosition += samplePos;
+    state.sampleCount += 1u;
+    state.hit = true;
+}
+
+[[maybe_unused]] static inline float projectionDensityWindow(thread const ProjectionState& state,
+                                                             int method)
+{
+    if (!state.hit) {
+        return 0.0f;
+    }
+    if (method == 2) {
+        return state.maxDensityWindow;
+    }
+    if (method == 3) {
+        return state.minDensityWindow;
+    }
+    if (method == 4 && state.sampleCount > 0u) {
+        return state.sumDensityWindow / float(state.sampleCount);
+    }
+    return 0.0f;
+}
+
+[[maybe_unused]] static inline float projectionDensityDataset(thread const ProjectionState& state,
+                                                              int method)
+{
+    if (!state.hit) {
+        return 0.0f;
+    }
+    if (method == 2) {
+        return state.maxDensityDataset;
+    }
+    if (method == 3) {
+        return state.minDensityDataset;
+    }
+    if (method == 4 && state.sampleCount > 0u) {
+        return state.sumDensityDataset / float(state.sampleCount);
+    }
+    return 0.0f;
+}
+
+[[maybe_unused]] static inline float3 projectionGradient(thread const ProjectionState& state,
+                                                         int method)
+{
+    if (!state.hit) {
+        return float3(0.0f);
+    }
+    if (method == 4 && state.sampleCount > 0u) {
+        return state.summedGradient / float(state.sampleCount);
+    }
+    return state.selectedGradient;
+}
+
+[[maybe_unused]] static inline float3 projectionPosition(thread const ProjectionState& state,
+                                                         int method)
+{
+    if (!state.hit) {
+        return float3(0.5f);
+    }
+    if (method == 4 && state.sampleCount > 0u) {
+        return state.summedPosition / float(state.sampleCount);
+    }
+    return state.selectedPosition;
+}
+
+[[maybe_unused]] static inline float4 finalizeProjection(constant RenderingArguments& args,
+                                                         constant RenderingParameters& params,
+                                                         thread const ProjectionState& state,
+                                                         bool useTransfer)
+{
+    const int method = params.material.method;
+    const float densityWindow = projectionDensityWindow(state, method);
+    const float densityDataset = projectionDensityDataset(state, method);
+
+    if (!state.hit) {
+        return float4(0.0f);
+    }
+    if (!useTransfer) {
+        return float4(densityWindow);
+    }
+    return compositeChannels(args,
+                             params,
+                             densityDataset,
+                             0.0f,
+                             true);
 }
 
 struct ClipSampleContext {

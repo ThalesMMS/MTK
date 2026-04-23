@@ -2,126 +2,101 @@
 //  TriplanarMPRViewer.swift
 //  MTK Examples
 //
-//  Tri-planar-only Multi-Planar Reconstruction (MPR) examples without a 3D pane
-//  Thales Matheus Mendonca Santos - April 2026
-//
-//  NOTE: This is example/documentation code demonstrating MTK's MPR-only
-//  composition path. For complete implementation, see the MTK-Demo app.
+//  MPR-only engine-native example with one shared VolumeResourceHandle.
 //
 
 import SwiftUI
+import Metal
 import MTKCore
 import MTKUI
 
-// MARK: - Tri-Planar MPR Viewer
+private func axisTitle(for axis: MTKCore.Axis) -> String {
+    switch axis {
+    case .axial:
+        return "Axial"
+    case .coronal:
+        return "Coronal"
+    case .sagittal:
+        return "Sagittal"
+    }
+}
 
-/// SwiftUI example demonstrating axial, coronal, and sagittal MPR without a 3D pane.
+/// Example purpose: shared resource model and ref-counted GPU texture pattern.
 ///
-/// `TriplanarMPRViewerExample` uses ``VolumetricSceneCoordinator`` to provide one
-/// controller for each anatomical MPR axis:
-/// - `.z` for axial
-/// - `.y` for coronal
-/// - `.x` for sagittal
+/// ADR concepts demonstrated:
+/// the dataset is uploaded once through `engine.setVolume(_:for:)`, producing a
+/// single `VolumeResourceHandle` shared by axial, coronal, and sagittal
+/// viewports. Each pane renders from that shared GPU resource, so there is no
+/// duplicate 3D texture upload for the three orthogonal reviews.
+/// See `MTK/Architecture/ClinicalRenderingADR.md`.
 ///
-/// No volume controller is requested, loaded, or synchronized. This keeps the setup
-/// focused on orthogonal MPR review and avoids provisioning the 3D render surface.
+/// Interactive MPR presentation remains Metal-native as `MTLTexture` until
+/// `PresentationPass` presents into `MTKView`. This example does not use
+/// SceneKit or `CGImage` for display.
 struct TriplanarMPRViewerExample: View {
-
-    @ObservedObject private var coordinator = VolumetricSceneCoordinator.shared
-    @State private var isLoading = false
+    @State private var controller: SharedTriplanarMPRExampleController?
+    @State private var didConfigureExample = false
     @State private var errorMessage: String?
 
-    private var axialController: VolumetricSceneController {
-        coordinator.controller(for: .z)
-    }
-
-    private var coronalController: VolumetricSceneController {
-        coordinator.controller(for: .y)
-    }
-
-    private var sagittalController: VolumetricSceneController {
-        coordinator.controller(for: .x)
-    }
+    private let axes: [MTKCore.Axis] = [.axial, .coronal, .sagittal]
 
     var body: some View {
-        ZStack {
-            if isLoading {
-                ProgressView("Loading MPR volume...")
-            } else {
-                TriplanarMPRComposer(
-                    axialController: axialController,
-                    coronalController: coronalController,
-                    sagittalController: sagittalController,
-                    layout: .grid
-                )
-            }
-
-            if let error = errorMessage {
+        Group {
+            if let controller {
+                TriplanarMPRContent(controller: controller, axes: axes)
+            } else if let errorMessage {
                 ContentUnavailableView(
-                    "Failed to Load Volume",
+                    "Failed to Prepare Triplanar Viewer",
                     systemImage: "exclamationmark.triangle",
-                    description: Text(error)
+                    description: Text(errorMessage)
                 )
+            } else {
+                ProgressView("Preparing triplanar MPR viewports...")
             }
         }
         .task {
-            await setupTriplanarVolume()
+            await configureExampleIfNeeded()
+        }
+        .onDisappear {
+            let controller = controller
+            Task {
+                await controller?.shutdown()
+                self.controller = nil
+                didConfigureExample = false
+            }
         }
     }
 
-    /// Initializes a synthetic volume, applies it to the three MPR controllers, and configures their initial display state.
-    /// 
-    /// Creates a sample VolumeDataset, loads it into the axial, coronal, and sagittal MPR controllers only, sets each MPR plane's display/position, and applies a shared window/level and slab thickness.
-    /// - Note: While running `isLoading` is set to `true` and reset when complete. On failure `errorMessage` is assigned the error's localized description.
-
-    private func setupTriplanarVolume() async {
+    @MainActor
+    private func configureExampleIfNeeded() async {
+        guard !didConfigureExample else { return }
+        didConfigureExample = true
         errorMessage = nil
-        isLoading = true
-        defer { isLoading = false }
 
         do {
-            let dataset = try createSampleDataset()
+            let controller = try await SharedTriplanarMPRExampleController.make()
 
-            // Load the dataset into the three MPR controllers only.
-            await TriplanarMPRExampleHelpers.applyDatasetToMPRControllers(
-                dataset,
-                axialController: axialController,
-                coronalController: coronalController,
-                sagittalController: sagittalController
-            )
+            let dataset = makeSampleDataset()
 
-            // Configure initial MPR display state for each anatomical axis.
-            TriplanarMPRExampleHelpers.configureMPRPlanes(coordinator: coordinator)
-            await TriplanarMPRExampleHelpers.configureWindowLevel(
-                min: -160,
-                max: 240,
-                axialController: axialController,
-                coronalController: coronalController,
-                sagittalController: sagittalController
-            )
-            await TriplanarMPRExampleHelpers.configureSlabThickness(
-                thickness: 3,
-                steps: 6,
-                axialController: axialController,
-                coronalController: coronalController,
-                sagittalController: sagittalController
-            )
-
+            // One dataset load produces one VolumeResourceHandle shared across
+            // axial/coronal/sagittal viewports. Moving slice planes updates
+            // viewport configuration only; it does not duplicate GPU volume data.
+            try await controller.applyDataset(dataset)
+            await controller.setSlicePosition(axis: .axial, normalizedPosition: 0.35)
+            await controller.setSlicePosition(axis: .coronal, normalizedPosition: 0.50)
+            await controller.setSlicePosition(axis: .sagittal, normalizedPosition: 0.65)
+            self.controller = controller
         } catch {
+            self.controller = nil
+            didConfigureExample = false
             errorMessage = error.localizedDescription
         }
     }
 
-    /// Creates a synthetic volumetric dataset for the example.
-    ///
-    /// In a real application, this would come from DICOM files or another medical
-    /// volume source.
-    /// - Returns: A zero-filled `VolumeDataset` with CT-like dimensions, spacing,
-    ///   pixel format, and intensity range.
-    private func createSampleDataset() throws -> VolumeDataset {
-        let width = 512
-        let height = 512
-        let depth = 300
+    private func makeSampleDataset() -> VolumeDataset {
+        let width = 384
+        let height = 384
+        let depth = 220
         let voxelCount = width * height * depth
         let bytesPerVoxel = VolumePixelFormat.int16Signed.bytesPerVoxel
         let voxels = Data(repeating: 0, count: voxelCount * bytesPerVoxel)
@@ -129,234 +104,289 @@ struct TriplanarMPRViewerExample: View {
         return VolumeDataset(
             data: voxels,
             dimensions: VolumeDimensions(width: width, height: height, depth: depth),
-            spacing: VolumeSpacing(x: 0.0007, y: 0.0007, z: 0.001),
+            spacing: VolumeSpacing(x: 0.00075, y: 0.00075, z: 0.0010),
             pixelFormat: .int16Signed,
-            intensityRange: (-1024)...3071
+            intensityRange: (-1024)...3071,
+            recommendedWindow: -160...240
+        )
+    }
+}
+
+@MainActor
+private struct TriplanarMPRContent: View {
+    @ObservedObject var controller: SharedTriplanarMPRExampleController
+    let axes: [MTKCore.Axis]
+
+    var body: some View {
+        VStack(spacing: 16) {
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                ForEach(axes, id: \.self) { axis in
+                    pane(for: axis)
+                }
+            }
+            .padding(.horizontal)
+
+            sliceControls
+
+            if let handle = controller.sharedResourceHandle {
+                Text(
+                    "Shared VolumeResourceHandle: " +
+                    "\(handle.metadata.dimensions.width)x" +
+                    "\(handle.metadata.dimensions.height)x" +
+                    "\(handle.metadata.dimensions.depth)"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func pane(for axis: MTKCore.Axis) -> some View {
+        MetalViewportContainer(surface: controller.surface(for: axis)) {
+            ZStack {
+                OrientationOverlayView(transform: controller.displayTransform(for: axis))
+                paneBadge(axisTitle(for: axis))
+            }
+        }
+        .aspectRatio(1, contentMode: .fit)
+        .background(Color.black.opacity(0.75))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private var sliceControls: some View {
+        VStack(spacing: 12) {
+            ForEach(axes, id: \.self) { axis in
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("\(axisTitle(for: axis)) Slice")
+                        .font(.caption.weight(.semibold))
+                    Slider(
+                        value: Binding(
+                            get: { Double(controller.normalizedPosition(for: axis)) },
+                            set: { newValue in
+                                Task {
+                                    await controller.setSlicePosition(
+                                        axis: axis,
+                                        normalizedPosition: Float(newValue)
+                                    )
+                                }
+                            }
+                        ),
+                        in: 0...1
+                    )
+                }
+            }
+        }
+        .padding(.horizontal)
+    }
+
+    private func paneBadge(_ title: String) -> some View {
+        VStack {
+            HStack {
+                Text(title)
+                    .font(.caption.bold())
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(.black.opacity(0.7), in: RoundedRectangle(cornerRadius: 8))
+                    .foregroundStyle(.white)
+                Spacer()
+            }
+            Spacer()
+        }
+        .padding(8)
+    }
+
+}
+
+@MainActor
+private final class SharedTriplanarMPRExampleController: ObservableObject {
+    @Published private(set) var sharedResourceHandle: VolumeResourceHandle?
+    @Published private(set) var lastError: String?
+    @Published private var displayTransformStore: [MTKCore.Axis: MPRDisplayTransform] = [
+        .axial: .identity,
+        .coronal: .identity,
+        .sagittal: .identity
+    ]
+    @Published private var normalizedPositionStore: [MTKCore.Axis: Float] = [
+        .axial: 0.5,
+        .coronal: 0.5,
+        .sagittal: 0.5
+    ]
+
+    private let engine: MTKRenderingEngine
+    private let axialViewportID: ViewportID
+    private let coronalViewportID: ViewportID
+    private let sagittalViewportID: ViewportID
+
+    private let axialSurface: MetalViewportSurface
+    private let coronalSurface: MetalViewportSurface
+    private let sagittalSurface: MetalViewportSurface
+
+    private var window: ClosedRange<Int32> = -160...240
+
+    static func make(initialViewportSize: CGSize = CGSize(width: 512, height: 512)) async throws
+        -> SharedTriplanarMPRExampleController {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw MTKRenderingEngine.EngineError.metalDeviceUnavailable
+        }
+
+        let engine = try await MTKRenderingEngine(device: device)
+        let axialSurface = try MetalViewportSurface(device: device)
+        let coronalSurface = try MetalViewportSurface(device: device)
+        let sagittalSurface = try MetalViewportSurface(device: device)
+
+        let axialViewportID = try await engine.createViewport(
+            ViewportDescriptor(type: .mpr(axis: .axial), initialSize: initialViewportSize, label: "Axial")
+        )
+        let coronalViewportID = try await engine.createViewport(
+            ViewportDescriptor(type: .mpr(axis: .coronal), initialSize: initialViewportSize, label: "Coronal")
+        )
+        let sagittalViewportID = try await engine.createViewport(
+            ViewportDescriptor(type: .mpr(axis: .sagittal), initialSize: initialViewportSize, label: "Sagittal")
+        )
+
+        return SharedTriplanarMPRExampleController(
+            engine: engine,
+            axialViewportID: axialViewportID,
+            coronalViewportID: coronalViewportID,
+            sagittalViewportID: sagittalViewportID,
+            axialSurface: axialSurface,
+            coronalSurface: coronalSurface,
+            sagittalSurface: sagittalSurface
         )
     }
 
-}
-
-// MARK: - DICOM Loading with Tri-Planar MPR
-
-/// Example showing DICOM loading into a tri-planar-only MPR viewer.
-///
-/// This variant uses ``DicomDecoderSeriesLoader`` with ``DicomVolumeLoader`` and
-/// applies the resulting dataset to the three MPR controllers only.
-struct DicomTriplanarExample: View {
-
-    @ObservedObject private var coordinator = VolumetricSceneCoordinator.shared
-    @State private var isLoading = false
-    @State private var loadingProgress: Double = 0
-    @State private var errorMessage: String?
-
-    private var axialController: VolumetricSceneController {
-        coordinator.controller(for: .z)
+    private init(engine: MTKRenderingEngine,
+                 axialViewportID: ViewportID,
+                 coronalViewportID: ViewportID,
+                 sagittalViewportID: ViewportID,
+                 axialSurface: MetalViewportSurface,
+                 coronalSurface: MetalViewportSurface,
+                 sagittalSurface: MetalViewportSurface) {
+        self.engine = engine
+        self.axialViewportID = axialViewportID
+        self.coronalViewportID = coronalViewportID
+        self.sagittalViewportID = sagittalViewportID
+        self.axialSurface = axialSurface
+        self.coronalSurface = coronalSurface
+        self.sagittalSurface = sagittalSurface
     }
 
-    private var coronalController: VolumetricSceneController {
-        coordinator.controller(for: .y)
-    }
-
-    private var sagittalController: VolumetricSceneController {
-        coordinator.controller(for: .x)
-    }
-
-    var body: some View {
-        VStack {
-            if isLoading {
-                VStack(spacing: 16) {
-                    ProgressView("Loading DICOM series...", value: loadingProgress, total: 1)
-                        .progressViewStyle(.linear)
-                    Text("\(Int(loadingProgress * 100))% complete")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .padding()
-            } else {
-                TriplanarMPRComposer(
-                    axialController: axialController,
-                    coronalController: coronalController,
-                    sagittalController: sagittalController,
-                    layout: .horizontal
-                )
-            }
-        }
-        .overlay {
-            if let error = errorMessage {
-                ContentUnavailableView(
-                    "Failed to Load DICOM",
-                    systemImage: "exclamationmark.triangle",
-                    description: Text(error)
-                )
-            }
-        }
-        .task {
-            // In a real app, get this URL from a file picker or document browser.
-            // await loadDicomSeries(from: dicomSeriesURL)
+    func surface(for axis: MTKCore.Axis) -> MetalViewportSurface {
+        switch axis {
+        case .axial:
+            return axialSurface
+        case .coronal:
+            return coronalSurface
+        case .sagittal:
+            return sagittalSurface
         }
     }
 
-    /// Loads a DICOM series from the provided URL, applies the imported volume to the axial/coronal/sagittal MPR controllers, and configures MPR planes, shared window/level, and slab thickness.
-    /// - Parameter url: File URL of the DICOM series to load.
-    /// - Note: Updates `isLoading` and `loadingProgress` while running; on error sets `errorMessage` with a localized failure description.
+    func displayTransform(for axis: MTKCore.Axis) -> MPRDisplayTransform {
+        displayTransformStore[axis] ?? .identity
+    }
 
-    private func loadDicomSeries(from url: URL) async {
-        errorMessage = nil
-        isLoading = true
-        loadingProgress = 0
-        defer { isLoading = false }
+    func normalizedPosition(for axis: MTKCore.Axis) -> Float {
+        normalizedPositionStore[axis] ?? 0.5
+    }
+
+    func applyDataset(_ dataset: VolumeDataset) async throws {
+        // The engine acquires one shared handle here and retains it across the
+        // three MPR viewports, matching the ADR resource-sharing model.
+        let handle = try await engine.setVolume(
+            dataset,
+            for: [axialViewportID, coronalViewportID, sagittalViewportID]
+        )
+        sharedResourceHandle = handle
+        window = dataset.recommendedWindow ?? dataset.intensityRange
+
+        for axis in [MTKCore.Axis.axial, .coronal, .sagittal] {
+            try await configureViewport(axis: axis)
+        }
+
+        try await renderAll()
+    }
+
+    func setSlicePosition(axis: MTKCore.Axis, normalizedPosition: Float) async {
+        let clamped = min(max(normalizedPosition, 0), 1)
+        normalizedPositionStore[axis] = clamped
 
         do {
-            let loader = DicomVolumeLoader(seriesLoader: DicomDecoderSeriesLoader())
-            let result = try await loadVolume(from: url, using: loader)
-            let dataset = result.dataset
-
-            await TriplanarMPRExampleHelpers.applyDatasetToMPRControllers(
-                dataset,
-                axialController: axialController,
-                coronalController: coronalController,
-                sagittalController: sagittalController
-            )
-            TriplanarMPRExampleHelpers.configureMPRPlanes(coordinator: coordinator)
-
-            let window = dataset.recommendedWindow ?? dataset.intensityRange
-            await TriplanarMPRExampleHelpers.configureWindowLevel(
-                min: window.lowerBound,
-                max: window.upperBound,
-                axialController: axialController,
-                coronalController: coronalController,
-                sagittalController: sagittalController
-            )
-            await TriplanarMPRExampleHelpers.configureSlabThickness(
-                thickness: 3,
-                steps: 6,
-                axialController: axialController,
-                coronalController: coronalController,
-                sagittalController: sagittalController
-            )
-
+            try await configureViewport(axis: axis)
+            try await render(axis: axis)
+            lastError = nil
         } catch {
-            errorMessage = "Failed to load DICOM: \(error.localizedDescription)"
+            lastError = error.localizedDescription
         }
     }
 
-    /// Loads a DICOM volume from the given URL using the provided DICOM loader and returns the import result.
-    /// - Parameters:
-    ///   - url: The file URL of the DICOM series to import.
-    ///   - loader: The `DicomVolumeLoader` instance used to perform the import; its progress callbacks update `loadingProgress`.
-    /// - Returns: The `DicomImportResult` produced by the loader on successful import.
-    /// - Throws: An error produced by the loader if the import fails.
-    private func loadVolume(from url: URL,
-                            using loader: DicomVolumeLoader) async throws -> DicomImportResult {
-        try await withCheckedThrowingContinuation { continuation in
-            loader.loadVolume(from: url, progress: { update in
-                switch update {
-                case .started(_):
-                    loadingProgress = 0
-                case .reading(let fraction):
-                    loadingProgress = fraction
-                }
-            }, completion: { result in
-                continuation.resume(with: result)
-            })
+    func shutdown() async {
+        await engine.destroyViewport(axialViewportID)
+        await engine.destroyViewport(coronalViewportID)
+        await engine.destroyViewport(sagittalViewportID)
+    }
+
+    private func configureViewport(axis: MTKCore.Axis) async throws {
+        let viewportID = viewportID(for: axis)
+        let normalizedPosition = normalizedPositionStore[axis] ?? 0.5
+        try await engine.configure(viewportID, slicePosition: normalizedPosition, window: window)
+        try await engine.configure(viewportID, slabThickness: 3, slabSteps: 7, blend: .single)
+    }
+
+    private func renderAll() async throws {
+        for axis in [MTKCore.Axis.axial, .coronal, .sagittal] {
+            try await render(axis: axis)
         }
     }
 
-}
+    private func render(axis: MTKCore.Axis) async throws {
+        let viewportID = viewportID(for: axis)
+        let frame = try await engine.render(viewportID)
+        guard let mprFrame = frame.mprFrame else {
+            throw MTKRenderingEngine.EngineError.renderTextureUnavailable
+        }
 
-// MARK: - Shared Tri-Planar Example Helpers
+        let transform = MPRDisplayTransformFactory.makeTransform(
+            for: mprFrame.planeGeometry,
+            axis: planeAxis(for: axis)
+        )
+        displayTransformStore[axis] = transform
 
-@MainActor
-private enum TriplanarMPRExampleHelpers {
-    /// Applies the dataset to axial, coronal, and sagittal controllers only.
-    /// - Parameters:
-    ///   - dataset: The dataset to apply to each MPR controller.
-    ///   - axialController: The axial MPR controller.
-    ///   - coronalController: The coronal MPR controller.
-    ///   - sagittalController: The sagittal MPR controller.
-    static func applyDatasetToMPRControllers(_ dataset: VolumeDataset,
-                                             axialController: VolumetricSceneController,
-                                             coronalController: VolumetricSceneController,
-                                             sagittalController: VolumetricSceneController) async {
-        await axialController.applyDataset(dataset)
-        await coronalController.applyDataset(dataset)
-        await sagittalController.applyDataset(dataset)
+        _ = try surface(for: axis).present(
+            mprFrame: mprFrame,
+            window: window,
+            transform: transform
+        )
     }
 
-    /// Configures the coordinator's cached MPR plane state for axial, coronal, and sagittal axes.
-    static func configureMPRPlanes(coordinator: VolumetricSceneCoordinator) {
-        coordinator.configureMPRDisplay(axis: .z, blend: .single, normalizedPosition: 0.5)
-        coordinator.configureMPRDisplay(axis: .y, blend: .single, normalizedPosition: 0.5)
-        coordinator.configureMPRDisplay(axis: .x, blend: .single, normalizedPosition: 0.5)
+    private func viewportID(for axis: MTKCore.Axis) -> ViewportID {
+        switch axis {
+        case .axial:
+            return axialViewportID
+        case .coronal:
+            return coronalViewportID
+        case .sagittal:
+            return sagittalViewportID
+        }
     }
 
-    /// Sets the shared MPR Hounsfield unit (HU) window on the axial, coronal, and sagittal controllers.
-    /// - Parameters:
-    ///   - min: Lower bound of the HU window.
-    ///   - max: Upper bound of the HU window.
-    ///   - axialController: The axial MPR controller.
-    ///   - coronalController: The coronal MPR controller.
-    ///   - sagittalController: The sagittal MPR controller.
-    static func configureWindowLevel(min: Int32,
-                                     max: Int32,
-                                     axialController: VolumetricSceneController,
-                                     coronalController: VolumetricSceneController,
-                                     sagittalController: VolumetricSceneController) async {
-        await axialController.setMprHuWindow(min: min, max: max)
-        await coronalController.setMprHuWindow(min: min, max: max)
-        await sagittalController.setMprHuWindow(min: min, max: max)
-    }
-
-    /// Sets the MPR slab configuration for axial, coronal, and sagittal views.
-    /// - Parameters:
-    ///   - thickness: Number of slices included in the slab.
-    ///   - steps: Number of sampling steps used when compositing the slab.
-    ///   - axialController: The axial MPR controller.
-    ///   - coronalController: The coronal MPR controller.
-    ///   - sagittalController: The sagittal MPR controller.
-    static func configureSlabThickness(thickness: Int,
-                                       steps: Int,
-                                       axialController: VolumetricSceneController,
-                                       coronalController: VolumetricSceneController,
-                                       sagittalController: VolumetricSceneController) async {
-        await axialController.setMprSlab(thickness: thickness, steps: steps)
-        await coronalController.setMprSlab(thickness: thickness, steps: steps)
-        await sagittalController.setMprSlab(thickness: thickness, steps: steps)
+    private func planeAxis(for axis: MTKCore.Axis) -> MPRPlaneAxis {
+        switch axis {
+        case .axial:
+            return .z
+        case .coronal:
+            return .y
+        case .sagittal:
+            return .x
+        }
     }
 }
-
-// MARK: - Usage Notes
 
 /*
- ## Choosing an MPR Composer
-
- Use `TriplanarMPRComposer` when the workflow is axial/coronal/sagittal review and
- the interface does not need a 3D volume pane. It keeps controller setup smaller,
- avoids loading a volume controller, and makes MPR synchronization easier to reason
- about.
-
- Use `MPRGridComposer` when the user benefits from 3D anatomical context alongside
- the three orthogonal planes. That layout intentionally provisions four controllers:
- one volume controller plus axial, coronal, and sagittal MPR controllers.
-
- ## Controller Mapping
-
- ```swift
- let axialController = coordinator.controller(for: .z)
- let coronalController = coordinator.controller(for: .y)
- let sagittalController = coordinator.controller(for: .x)
- ```
-
- ## Dataset Loading
-
- For tri-planar-only MPR, load the dataset into those three controllers:
-
- ```swift
- await axialController.applyDataset(dataset)
- await coronalController.applyDataset(dataset)
- await sagittalController.applyDataset(dataset)
- ```
-
- Request `coordinator.controller` only when the UI includes a 3D pane.
+ This example is intentionally MPR-only. It does not create a 3D pane, does not
+ use SceneKit, and does not upload one texture per anatomical plane. The shared
+ `VolumeResourceHandle` keeps the axial/coronal/sagittal viewports on one GPU
+ volume resource while slice changes only reconfigure viewport state. `CGImage`
+ remains export-only and is not part of the interactive display path.
  */

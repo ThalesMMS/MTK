@@ -2,7 +2,7 @@
 //  VolumetricStatePublisher.swift
 //  MetalVolumetrics
 //
-//  State publisher managing @Published properties for volumetric scene interaction.
+//  State publisher managing @Published properties for volume viewport interaction.
 //  Coordinates camera pose, slice position, window/level adjustments, and adaptive
 //  sampling flags. Provides public recording methods to update state while preserving
 //  validation and clamping logic.
@@ -22,6 +22,7 @@ public final class VolumetricStatePublisher: ObservableObject {
     @Published public private(set) var sliceState = VolumetricSliceState()
     @Published public private(set) var windowLevelState = VolumetricWindowLevelState()
     @Published public private(set) var adaptiveSamplingEnabled: Bool = true
+    @Published public private(set) var qualityState: RenderQualityState = .settled
 
     public init() {}
 
@@ -35,7 +36,7 @@ public final class VolumetricStatePublisher: ObservableObject {
 
     /// Internal helper to publish slice state changes.
     /// Clamps normalized position to [0, 1] range before publishing.
-    private func publishSliceState(axis: VolumetricSceneController.Axis, normalized: Float) {
+    private func publishSliceState(axis: VolumeViewportController.Axis, normalized: Float) {
         let clamped = VolumetricMath.clampFloat(normalized, lower: 0, upper: 1)
         sliceState = VolumetricSliceState(axis: axis, normalizedPosition: clamped)
     }
@@ -57,6 +58,12 @@ public final class VolumetricStatePublisher: ObservableObject {
         adaptiveSamplingEnabled = enabled
     }
 
+    /// Records the current render quality tier for HUD and diagnostics.
+    @inline(__always)
+    public func recordRenderQualityState(_ state: RenderQualityState) {
+        qualityState = state
+    }
+
     /// Records the latest camera pose for observers without relaxing encapsulation.
     @inline(__always)
     public func recordCameraState(position: SIMD3<Float>, target: SIMD3<Float>, up: SIMD3<Float>) {
@@ -65,7 +72,7 @@ public final class VolumetricStatePublisher: ObservableObject {
 
     /// Records a new slice state while clamping through the existing publisher logic.
     @inline(__always)
-    public func recordSliceState(axis: VolumetricSceneController.Axis, normalized: Float) {
+    public func recordSliceState(axis: VolumeViewportController.Axis, normalized: Float) {
         publishSliceState(axis: axis, normalized: normalized)
     }
 

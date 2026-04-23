@@ -32,7 +32,7 @@ import SwiftUI
 /// @State private var window: Double = 400  // Soft tissue width
 ///
 /// var body: some View {
-///     VolumetricDisplayContainer(controller: sceneController) {
+///     VolumeViewportContainer(controller: viewportController) {
 ///         WindowLevelControlView(
 ///             level: $level,
 ///             window: $window,
@@ -49,7 +49,7 @@ import SwiftUI
 ///         transferDomain: nil
 ///     )
 ///     Task {
-///         await sceneController.setHuWindow(mapping)
+///         await viewportController.setHuWindow(mapping)
 ///     }
 /// }
 /// ```
@@ -95,7 +95,7 @@ import SwiftUI
 /// @State private var selectedPreset: WindowLevelPreset = .softTissue
 ///
 /// var body: some View {
-///     VolumetricDisplayContainer(controller: sceneController) {
+///     VolumeViewportContainer(controller: viewportController) {
 ///         VStack {
 ///             Picker("Preset", selection: $selectedPreset) {
 ///                 ForEach(WindowLevelPreset.allCases, id: \.self) { preset in

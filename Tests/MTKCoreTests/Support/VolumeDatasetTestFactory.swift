@@ -9,7 +9,9 @@ enum TestHelperError: Error {
 enum VolumeDatasetTestFactory {
     static func makeTestDataset(data overrideData: Data? = nil,
                                 dimensions: VolumeDimensions = VolumeDimensions(width: 64, height: 64, depth: 64),
+                                spacing: VolumeSpacing = VolumeSpacing(x: 1.0, y: 1.0, z: 1.0),
                                 pixelFormat: VolumePixelFormat = .int16Unsigned,
+                                orientation: VolumeOrientation = .canonical,
                                 seed: Int = 0) -> VolumeDataset {
         let expectedSize = dimensions.voxelCount * pixelFormat.bytesPerVoxel
         let data: Data
@@ -37,8 +39,9 @@ enum VolumeDatasetTestFactory {
         return VolumeDataset(
             data: data,
             dimensions: dimensions,
-            spacing: VolumeSpacing(x: 1.0, y: 1.0, z: 1.0),
-            pixelFormat: pixelFormat
+            spacing: spacing,
+            pixelFormat: pixelFormat,
+            orientation: orientation
         )
     }
 

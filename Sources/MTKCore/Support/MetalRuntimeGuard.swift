@@ -284,6 +284,7 @@ private extension MetalRuntimeGuard {
         }
 
         private static func probe3DTextureAllocation(device: any MTLDevice) -> Bool {
+            // StorageModePolicy.md: capability probes set explicit texture properties.
             let descriptor = MTLTextureDescriptor()
             descriptor.textureType = .type3D
             descriptor.pixelFormat = .r8Unorm

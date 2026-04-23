@@ -5,20 +5,20 @@ import XCTest
 @testable import MTKCore
 
 final class MetalVolumeRenderingAdapterValidationTests: XCTestCase {
-    func testRenderImageThrowsWhenWindowIsNotSpecified() async throws {
+    func testRenderFrameThrowsWhenWindowIsNotSpecified() async throws {
         let adapter = try makeTestAdapter()
         let dataset = makeDataset(recommendedWindow: nil)
         let request = makeRequest(dataset: dataset, transferFunction: validTransferFunction())
 
         do {
-            _ = try await adapter.renderImage(using: request)
-            XCTFail("Expected renderImage to throw when no window is available")
+            _ = try await adapter.renderFrame(using: request)
+            XCTFail("Expected renderFrame to throw when no window is available")
         } catch let error as MetalVolumeRenderingAdapter.AdapterError {
             XCTAssertEqual(error, .windowNotSpecified)
         }
     }
 
-    func testRenderImageThrowsWhenColourPointsAreEmpty() async throws {
+    func testRenderFrameThrowsWhenColourPointsAreEmpty() async throws {
         let adapter = try makeTestAdapter()
         let dataset = makeDataset(recommendedWindow: 0...4095)
         let transfer = VolumeTransferFunction(
@@ -27,14 +27,14 @@ final class MetalVolumeRenderingAdapterValidationTests: XCTestCase {
         )
 
         do {
-            _ = try await adapter.renderImage(using: makeRequest(dataset: dataset, transferFunction: transfer))
-            XCTFail("Expected renderImage to reject empty color control points")
+            _ = try await adapter.renderFrame(using: makeRequest(dataset: dataset, transferFunction: transfer))
+            XCTFail("Expected renderFrame to reject empty color control points")
         } catch let error as MetalVolumeRenderingAdapter.AdapterError {
             XCTAssertEqual(error, .emptyColorPoints)
         }
     }
 
-    func testRenderImageThrowsWhenAlphaPointsAreEmpty() async throws {
+    func testRenderFrameThrowsWhenAlphaPointsAreEmpty() async throws {
         let adapter = try makeTestAdapter()
         let dataset = makeDataset(recommendedWindow: 0...4095)
         let transfer = VolumeTransferFunction(
@@ -43,14 +43,14 @@ final class MetalVolumeRenderingAdapterValidationTests: XCTestCase {
         )
 
         do {
-            _ = try await adapter.renderImage(using: makeRequest(dataset: dataset, transferFunction: transfer))
-            XCTFail("Expected renderImage to reject empty alpha control points")
+            _ = try await adapter.renderFrame(using: makeRequest(dataset: dataset, transferFunction: transfer))
+            XCTFail("Expected renderFrame to reject empty alpha control points")
         } catch let error as MetalVolumeRenderingAdapter.AdapterError {
             XCTAssertEqual(error, .emptyAlphaPoints)
         }
     }
 
-    func testRenderImageThrowsWhenCameraMatrixIsDegenerate() async throws {
+    func testRenderFrameThrowsWhenCameraMatrixIsDegenerate() async throws {
         let adapter = try makeTestAdapter()
         let dataset = makeDataset(recommendedWindow: 0...4095)
         let camera = VolumeRenderRequest.Camera(
@@ -61,10 +61,10 @@ final class MetalVolumeRenderingAdapterValidationTests: XCTestCase {
         )
 
         do {
-            _ = try await adapter.renderImage(using: makeRequest(dataset: dataset,
+            _ = try await adapter.renderFrame(using: makeRequest(dataset: dataset,
                                                                  transferFunction: validTransferFunction(),
                                                                  camera: camera))
-            XCTFail("Expected renderImage to reject a degenerate camera matrix")
+            XCTFail("Expected renderFrame to reject a degenerate camera matrix")
         } catch let error as MetalVolumeRenderingAdapter.AdapterError {
             XCTAssertEqual(error, .degenerateCameraMatrix)
         }

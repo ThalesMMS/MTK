@@ -102,6 +102,7 @@ private extension TransferFunctions {
         let colourPoints = prepareColourPoints(for: transfer)
         let alphaPoints = prepareAlphaPoints(for: transfer)
 
+        // StorageModePolicy.md: transfer functions are small CPU-authored lookup textures.
         let descriptor = MTLTextureDescriptor()
         descriptor.textureType = .type2D
         descriptor.pixelFormat = .rgba32Float
@@ -228,6 +229,7 @@ private extension TransferFunctions {
         let colourPoints = prepareColourPoints2D(for: transfer)
         let alphaPoints = prepareAlphaPoints2D(for: transfer)
 
+        // StorageModePolicy.md: 2D transfer functions are small CPU-authored lookup textures.
         let descriptor = MTLTextureDescriptor()
         descriptor.textureType = .type2D
         descriptor.pixelFormat = .rgba32Float

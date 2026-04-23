@@ -24,6 +24,7 @@ final class RenderingErrorEquatableTests: XCTestCase {
             .transferTextureUnavailable,
             .commandEncodingFailed,
             .outputTextureUnavailable,
+            .cgImageCreationFailed,
         ]
         for error in simpleCases {
             XCTAssertEqual(error, error, "\(error) should equal itself")
@@ -84,6 +85,7 @@ final class RenderingErrorLocalizedErrorTests: XCTestCase {
             .transferTextureUnavailable,
             .commandEncodingFailed,
             .outputTextureUnavailable,
+            .cgImageCreationFailed,
         ]
         for error in simpleCases {
             let desc = error.errorDescription
@@ -105,6 +107,7 @@ final class RenderingErrorLocalizedErrorTests: XCTestCase {
             .transferTextureUnavailable,
             .commandEncodingFailed,
             .outputTextureUnavailable,
+            .cgImageCreationFailed,
         ]
         for error in simpleCases {
             let reason = error.failureReason
@@ -126,6 +129,7 @@ final class RenderingErrorLocalizedErrorTests: XCTestCase {
         XCTAssertEqual(RenderingError.transferTextureUnavailable.errorDescription, "Transfer function texture unavailable")
         XCTAssertEqual(RenderingError.commandEncodingFailed.errorDescription, "Metal command encoding failed")
         XCTAssertEqual(RenderingError.outputTextureUnavailable.errorDescription, "Output texture unavailable")
+        XCTAssertEqual(RenderingError.cgImageCreationFailed.errorDescription, "CGImage creation failed")
         XCTAssertEqual(RenderingError.commandBufferExecutionFailed(underlyingDescription: "x").errorDescription,
                        "Metal command buffer execution failed")
     }
@@ -207,6 +211,7 @@ final class ExtendedRenderingStateDefaultsTests: XCTestCase {
                        "samplingStep should default to 1/512")
         XCTAssertEqual(state.shift, 0, "shift should default to 0")
         XCTAssertNil(state.densityGate, "densityGate should default to nil")
+        XCTAssertNil(state.huGate, "huGate should default to nil")
         XCTAssertFalse(state.adaptiveEnabled, "adaptiveEnabled should default to false")
         XCTAssertEqual(state.adaptiveThreshold, 0, "adaptiveThreshold should default to 0")
         XCTAssertEqual(state.jitterAmount, 0, "jitterAmount should default to 0")
@@ -296,15 +301,12 @@ final class RenderSnapshotTests: XCTestCase {
             pixelFormat: .int16Unsigned,
             recommendedWindow: 0...4095
         )
-        let transfer = VolumeTransferFunction(
-            opacityPoints: [VolumeTransferFunction.OpacityControlPoint(intensity: 0, opacity: 1)],
-            colourPoints: [VolumeTransferFunction.ColourControlPoint(intensity: 0, colour: .one)]
-        )
-        let metadata = VolumeRenderResult.Metadata(
+        let metadata = VolumeRenderFrame.Metadata(
             viewportSize: CGSize(width: 64, height: 64),
             samplingDistance: 0.002,
             compositing: .frontToBack,
-            quality: .interactive
+            quality: .interactive,
+            pixelFormat: .bgra8Unorm
         )
         let window: ClosedRange<Int32> = -500...1500
         let snapshot = MetalVolumeRenderingAdapter.RenderSnapshot(

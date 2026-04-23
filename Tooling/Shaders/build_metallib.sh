@@ -50,9 +50,7 @@ while IFS= read -r metal_file; do
   base=$(basename "$metal_file" .metal)
   air="$TMPDIR/$base.air"
   if [[ -n "$SDK_PATH" ]]; then
-    "$METALC" -isysroot "$SDK_PATH" \
-      -I "$SDK_PATH/System/Library/Frameworks/SceneKit.framework/Headers" \
-      -c "$metal_file" -o "$air"
+    "$METALC" -isysroot "$SDK_PATH" -c "$metal_file" -o "$air"
   else
     "$METALC" -c "$metal_file" -o "$air"
   fi

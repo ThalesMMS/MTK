@@ -103,6 +103,7 @@ public final class GradientHistogramCalculator {
             return
         }
 
+        // StorageModePolicy.md: gradient histogram buffers are CPU-visible compute outputs.
         guard let histogramBuffer = device.makeBuffer(length: plan.bufferLength, options: .storageModeShared) else {
             completion(.failure(HistogramError.bufferAllocationFailed))
             return

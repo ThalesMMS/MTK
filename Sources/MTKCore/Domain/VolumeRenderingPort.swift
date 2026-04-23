@@ -3,18 +3,15 @@
 //  MetalVolumetrics
 //
 //  Declares the domain contract used to request GPU-backed volume rendering
-//  artefacts from infrastructure providers. The API is intentionally SceneKit
-//  agnostic, focusing on delivery of CoreGraphics and Metal friendly payloads
-//  so presentation layers remain free to choose their rendering stack.
+//  artefacts from infrastructure providers. Interactive rendering returns
+//  GPU-native Metal textures.
 //
 
 import Foundation
 import CoreGraphics
 import simd
 
-#if canImport(Metal)
 @preconcurrency import Metal
-#endif
 
 public struct VolumeRenderRequest: Sendable, Equatable {
     public struct Camera: Sendable, Equatable {
@@ -37,7 +34,7 @@ public struct VolumeRenderRequest: Sendable, Equatable {
         }
     }
 
-    public enum Quality: Sendable {
+    public enum Quality: Sendable, Equatable {
         case preview
         case interactive
         case production
@@ -105,6 +102,26 @@ public struct VolumeTransferFunction: Sendable, Equatable {
     }
 }
 
+public extension VolumeTransferFunction {
+    @inlinable
+    static func defaultGrayscale(for dataset: VolumeDataset) -> VolumeTransferFunction {
+        let lower = Float(dataset.intensityRange.lowerBound)
+        let upper = Float(dataset.intensityRange.upperBound)
+        return VolumeTransferFunction(
+            opacityPoints: [
+                VolumeTransferFunction.OpacityControlPoint(intensity: lower, opacity: 0),
+                VolumeTransferFunction.OpacityControlPoint(intensity: upper, opacity: 1)
+            ],
+            colourPoints: [
+                VolumeTransferFunction.ColourControlPoint(intensity: lower,
+                                                          colour: SIMD4<Float>(0, 0, 0, 1)),
+                VolumeTransferFunction.ColourControlPoint(intensity: upper,
+                                                          colour: SIMD4<Float>(1, 1, 1, 1))
+            ]
+        )
+    }
+}
+
 public struct VolumeRenderingPreset: Sendable, Equatable, Identifiable {
     public var id: UUID
     public var name: String
@@ -152,51 +169,6 @@ public struct VolumeHistogram: Sendable, Equatable {
     }
 }
 
-public struct VolumeRenderResult {
-    public struct Metadata: Sendable {
-        public var viewportSize: CGSize
-        public var samplingDistance: Float
-        public var compositing: VolumeRenderRequest.Compositing
-        public var quality: VolumeRenderRequest.Quality
-
-        public init(viewportSize: CGSize,
-                    samplingDistance: Float,
-                    compositing: VolumeRenderRequest.Compositing,
-                    quality: VolumeRenderRequest.Quality) {
-            self.viewportSize = viewportSize
-            self.samplingDistance = samplingDistance
-            self.compositing = compositing
-            self.quality = quality
-        }
-    }
-
-    public var cgImage: CGImage?
-
-    #if canImport(Metal)
-    public var metalTexture: (any MTLTexture)?
-    #endif
-
-    public var metadata: Metadata
-
-    public init(cgImage: CGImage?, metadata: Metadata) {
-        self.cgImage = cgImage
-#if canImport(Metal)
-        self.metalTexture = nil
-#endif
-        self.metadata = metadata
-    }
-
-#if canImport(Metal)
-    public init(cgImage: CGImage?, metalTexture: (any MTLTexture)?, metadata: Metadata) {
-        self.cgImage = cgImage
-        self.metalTexture = metalTexture
-        self.metadata = metadata
-    }
-#endif
-}
-
-extension VolumeRenderResult: @unchecked Sendable {}
-
 public enum VolumeRenderingCommand: Sendable, Equatable {
     case setCompositing(VolumeRenderRequest.Compositing)
     case setWindow(min: Int32, max: Int32)
@@ -204,8 +176,18 @@ public enum VolumeRenderingCommand: Sendable, Equatable {
     case setLighting(Bool)
 }
 
+/// Volume rendering boundary for Metal-backed clinical rendering.
+///
+/// Use the API in three tiers:
+/// - Interactive rendering: call ``renderFrame(using:)`` and consume the
+///   returned ``VolumeRenderFrame``.
+/// - Display: bind ``VolumeRenderFrame/texture`` to `MTKView`,
+///   `CAMetalLayer`, or another Metal-native presentation surface.
+/// - Export/snapshot: call ``SnapshotExporting`` only when a CPU image is
+///   explicitly required.
 public protocol VolumeRenderingPort: Sendable {
-    func renderImage(using request: VolumeRenderRequest) async throws -> VolumeRenderResult
+    func renderFrame(using request: VolumeRenderRequest) async throws -> VolumeRenderFrame
+    func renderInteractiveTexture(using request: VolumeRenderRequest) async throws -> any MTLTexture
     func updatePreset(_ preset: VolumeRenderingPreset,
                       for dataset: VolumeDataset) async throws -> [VolumeRenderingPreset]
     func refreshHistogram(for dataset: VolumeDataset,

@@ -2,9 +2,8 @@
 //  MetalMPRComputeAdapterSlabTests.swift
 //  MTK
 //
-//  Unit tests for MetalMPRComputeAdapter initialization and slab generation.
+//  Unit tests for MetalMPRComputeAdapter texture-native slab generation.
 //
-//  Thales Matheus Mendonca Santos - February 2026
 
 import XCTest
 import Metal
@@ -28,139 +27,135 @@ final class MetalMPRComputeAdapterSlabTests: MetalMPRComputeAdapterTestCase {
         #endif
     }
 
-    func test_makeSlabGeneratesValidSlice() async throws {
+    func test_makeSlabTextureGeneratesValidFrame() async throws {
         let dataset = VolumeDatasetTestFactory.makeTestDataset()
         let plane = MPRTestHelpers.makeTestPlaneGeometry(for: dataset)
+        let volumeTexture = try await makeVolumeTexture(for: dataset)
 
-        let slice = try await adapter.makeSlab(
+        let frame = try await adapter.makeSlabTexture(
             dataset: dataset,
+            volumeTexture: volumeTexture,
             plane: plane,
             thickness: 1,
             steps: 1,
             blend: .single
         )
 
-        XCTAssertEqual(slice.width, 64)
-        XCTAssertEqual(slice.height, 64)
-        XCTAssertEqual(slice.pixelFormat, dataset.pixelFormat)
-        XCTAssertFalse(slice.pixels.isEmpty)
-        XCTAssertGreaterThan(slice.bytesPerRow, 0)
+        MPRTestHelpers.assertValidFrame(frame,
+                                        expectedWidth: 64,
+                                        expectedHeight: 64,
+                                        expectedPixelFormat: dataset.pixelFormat)
+        XCTAssertEqual(try MPRTestHelpers.readInputValues(UInt16.self, from: frame).count, 64 * 64)
+        XCTAssertEqual(frame.intensityRange, dataset.intensityRange)
+        XCTAssertEqual(frame.planeGeometry, plane)
     }
 
-    func test_makeSlabWithMaximumBlend() async throws {
+    func test_makeSlabTextureSupportsAllBlendModes() async throws {
         let dataset = VolumeDatasetTestFactory.makeTestDataset()
         let plane = MPRTestHelpers.makeTestPlaneGeometry(for: dataset)
+        let volumeTexture = try await makeVolumeTexture(for: dataset)
 
-        let slice = try await adapter.makeSlab(
-            dataset: dataset,
-            plane: plane,
-            thickness: 5,
-            steps: 5,
-            blend: .maximum
-        )
+        for blend in [MPRBlendMode.maximum, .minimum, .average] {
+            let frame = try await adapter.makeSlabTexture(
+                dataset: dataset,
+                volumeTexture: volumeTexture,
+                plane: plane,
+                thickness: 5,
+                steps: 5,
+                blend: blend
+            )
 
-        XCTAssertEqual(slice.width, 64)
-        XCTAssertEqual(slice.height, 64)
-        XCTAssertFalse(slice.pixels.isEmpty)
+            MPRTestHelpers.assertValidFrame(frame,
+                                            expectedWidth: 64,
+                                            expectedHeight: 64,
+                                            expectedPixelFormat: dataset.pixelFormat)
+            XCTAssertEqual(try MPRTestHelpers.readInputValues(UInt16.self, from: frame).count, 64 * 64)
+        }
     }
 
-    func test_makeSlabWithMinimumBlend() async throws {
+    func test_makeSlabTextureSanitizesThickness() async throws {
         let dataset = VolumeDatasetTestFactory.makeTestDataset()
         let plane = MPRTestHelpers.makeTestPlaneGeometry(for: dataset)
+        let volumeTexture = try await makeVolumeTexture(for: dataset)
 
-        let slice = try await adapter.makeSlab(
+        let frame = try await adapter.makeSlabTexture(
             dataset: dataset,
-            plane: plane,
-            thickness: 5,
-            steps: 5,
-            blend: .minimum
-        )
-
-        XCTAssertEqual(slice.width, 64)
-        XCTAssertEqual(slice.height, 64)
-        XCTAssertFalse(slice.pixels.isEmpty)
-    }
-
-    func test_makeSlabWithAverageBlend() async throws {
-        let dataset = VolumeDatasetTestFactory.makeTestDataset()
-        let plane = MPRTestHelpers.makeTestPlaneGeometry(for: dataset)
-
-        let slice = try await adapter.makeSlab(
-            dataset: dataset,
-            plane: plane,
-            thickness: 10,
-            steps: 10,
-            blend: .average
-        )
-
-        XCTAssertEqual(slice.width, 64)
-        XCTAssertEqual(slice.height, 64)
-        XCTAssertFalse(slice.pixels.isEmpty)
-    }
-
-    func test_makeSlabSanitizesThickness() async throws {
-        let dataset = VolumeDatasetTestFactory.makeTestDataset()
-        let plane = MPRTestHelpers.makeTestPlaneGeometry(for: dataset)
-
-        let slice = try await adapter.makeSlab(
-            dataset: dataset,
+            volumeTexture: volumeTexture,
             plane: plane,
             thickness: -10,
             steps: 5,
             blend: .single
         )
 
-        XCTAssertFalse(slice.pixels.isEmpty)
-        XCTAssertGreaterThan(slice.width, 0)
-        XCTAssertGreaterThan(slice.height, 0)
+        MPRTestHelpers.assertValidFrame(frame,
+                                        expectedWidth: 64,
+                                        expectedHeight: 64,
+                                        expectedPixelFormat: dataset.pixelFormat)
+        XCTAssertEqual(try MPRTestHelpers.readInputValues(UInt16.self, from: frame).count, 64 * 64)
     }
 
-    func test_makeSlabSanitizesSteps() async throws {
+    func test_makeSlabTextureSanitizesSteps() async throws {
         let dataset = VolumeDatasetTestFactory.makeTestDataset()
         let plane = MPRTestHelpers.makeTestPlaneGeometry(for: dataset)
+        let volumeTexture = try await makeVolumeTexture(for: dataset)
 
-        let slice = try await adapter.makeSlab(
+        let frame = try await adapter.makeSlabTexture(
             dataset: dataset,
+            volumeTexture: volumeTexture,
             plane: plane,
             thickness: 5,
             steps: 0,
             blend: .single
         )
 
-        XCTAssertFalse(slice.pixels.isEmpty)
-        XCTAssertGreaterThan(slice.width, 0)
-        XCTAssertGreaterThan(slice.height, 0)
+        MPRTestHelpers.assertValidFrame(frame,
+                                        expectedWidth: 64,
+                                        expectedHeight: 64,
+                                        expectedPixelFormat: dataset.pixelFormat)
+        XCTAssertEqual(try MPRTestHelpers.readInputValues(UInt16.self, from: frame).count, 64 * 64)
     }
 
-    func test_makeSlabWithInt16SignedPixelFormat() async throws {
+    func test_makeSlabTextureWithInt16SignedPixelFormat() async throws {
         let dataset = VolumeDatasetTestFactory.makeTestDataset(pixelFormat: .int16Signed)
         let plane = MPRTestHelpers.makeTestPlaneGeometry(for: dataset)
+        let volumeTexture = try await makeVolumeTexture(for: dataset)
 
-        let slice = try await adapter.makeSlab(
+        let frame = try await adapter.makeSlabTexture(
             dataset: dataset,
+            volumeTexture: volumeTexture,
             plane: plane,
             thickness: 1,
             steps: 1,
             blend: .single
         )
 
-        XCTAssertEqual(slice.pixelFormat, .int16Signed)
-        XCTAssertFalse(slice.pixels.isEmpty)
+        MPRTestHelpers.assertValidFrame(frame,
+                                        expectedWidth: 64,
+                                        expectedHeight: 64,
+                                        expectedPixelFormat: .int16Signed)
+        XCTAssertEqual(try MPRTestHelpers.readInputValues(Int16.self, from: frame).count, 64 * 64)
+        XCTAssertEqual(frame.texture.pixelFormat, .r16Sint)
     }
 
-    func test_makeSlabWithInt16UnsignedPixelFormat() async throws {
+    func test_makeSlabTextureWithInt16UnsignedPixelFormat() async throws {
         let dataset = VolumeDatasetTestFactory.makeTestDataset(pixelFormat: .int16Unsigned)
         let plane = MPRTestHelpers.makeTestPlaneGeometry(for: dataset)
+        let volumeTexture = try await makeVolumeTexture(for: dataset)
 
-        let slice = try await adapter.makeSlab(
+        let frame = try await adapter.makeSlabTexture(
             dataset: dataset,
+            volumeTexture: volumeTexture,
             plane: plane,
             thickness: 1,
             steps: 1,
             blend: .single
         )
 
-        XCTAssertEqual(slice.pixelFormat, .int16Unsigned)
-        XCTAssertFalse(slice.pixels.isEmpty)
+        MPRTestHelpers.assertValidFrame(frame,
+                                        expectedWidth: 64,
+                                        expectedHeight: 64,
+                                        expectedPixelFormat: .int16Unsigned)
+        XCTAssertEqual(try MPRTestHelpers.readInputValues(UInt16.self, from: frame).count, 64 * 64)
+        XCTAssertEqual(frame.texture.pixelFormat, .r16Uint)
     }
 }

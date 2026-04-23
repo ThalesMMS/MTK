@@ -58,6 +58,9 @@ public struct ExtendedRenderingState: Sendable {
     /// Optional density gate that filters out voxels outside this intensity range.
     var densityGate: ClosedRange<Float>?
 
+    /// Optional HU gate that filters out voxels outside this raw intensity range.
+    var huGate: ClosedRange<Int32>?
+
     /// Whether adaptive sampling is enabled (adjusts step size based on gradient).
     var adaptiveEnabled: Bool = false
 
@@ -252,6 +255,9 @@ extension MetalVolumeRenderingAdapter {
         /// Unable to create or access the output render texture.
         case outputTextureUnavailable
 
+        /// Unable to create a CPU image from a rendered frame.
+        case cgImageCreationFailed
+
         /// Metal reported an execution failure after the command buffer was committed.
         case commandBufferExecutionFailed(underlyingDescription: String)
 
@@ -260,7 +266,8 @@ extension MetalVolumeRenderingAdapter {
             case (.datasetTextureUnavailable, .datasetTextureUnavailable),
                  (.transferTextureUnavailable, .transferTextureUnavailable),
                  (.commandEncodingFailed, .commandEncodingFailed),
-                 (.outputTextureUnavailable, .outputTextureUnavailable):
+                 (.outputTextureUnavailable, .outputTextureUnavailable),
+                 (.cgImageCreationFailed, .cgImageCreationFailed):
                 return true
             case let (.commandBufferExecutionFailed(lhsDescription),
                       .commandBufferExecutionFailed(rhsDescription)):
@@ -280,6 +287,8 @@ extension MetalVolumeRenderingAdapter {
                 return "Metal command encoding failed"
             case .outputTextureUnavailable:
                 return "Output texture unavailable"
+            case .cgImageCreationFailed:
+                return "CGImage creation failed"
             case .commandBufferExecutionFailed:
                 return "Metal command buffer execution failed"
             }
@@ -295,6 +304,8 @@ extension MetalVolumeRenderingAdapter {
                 return "The adapter could not create a Metal command buffer or compute command encoder."
             case .outputTextureUnavailable:
                 return "The adapter could not create or access the output Metal texture."
+            case .cgImageCreationFailed:
+                return "The rendered frame could not be converted to a CGImage for snapshot or export."
             case .commandBufferExecutionFailed(let underlyingDescription):
                 return underlyingDescription
             }
@@ -322,14 +333,14 @@ extension MetalVolumeRenderingAdapter {
 
     /// Snapshot of the most recent successful render.
     ///
-    /// Captures the dataset, metadata, and window used in the last ``renderImage(using:)`` call.
+    /// Captures the dataset, metadata, and window used in the last ``renderFrame(using:)`` call.
     /// Useful for debugging and validating rendering state.
     public struct RenderSnapshot {
         /// The dataset that was rendered.
         public var dataset: VolumeDataset
 
         /// Metadata describing the render configuration.
-        public var metadata: VolumeRenderResult.Metadata
+        public var metadata: VolumeRenderFrame.Metadata
 
         /// The intensity window applied during rendering.
         public var window: ClosedRange<Int32>

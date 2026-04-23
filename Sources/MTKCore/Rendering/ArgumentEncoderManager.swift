@@ -21,6 +21,7 @@ public final class ArgumentEncoderManager {
 
     private var buffers: [Int: MTLBuffer] = [:]
     private var textures: [Int: ObjectIdentifier] = [:]
+    private var textureObjects: [Int: MTLTexture] = [:]
     private var needsUpdate: [Int: Bool] = [:]
 
     var currentPxByteSize: Int = 0
@@ -124,6 +125,7 @@ public final class ArgumentEncoderManager {
 
         let argumentBufferLength = argumentEncoder.encodedLength
 
+        // StorageModePolicy.md: argument buffers are CPU-authored per-dispatch state.
         guard let argumentBuffer = device.makeBuffer(length: argumentBufferLength,
                                                      options: [.cpuCacheModeWriteCombined, .storageModeShared]) else {
             logger.error("Falha ao criar argument buffer (len=\(argumentBufferLength)).")
@@ -142,13 +144,14 @@ public final class ArgumentEncoderManager {
     public func encodeTexture(_ texture: MTLTexture, argumentIndex: ArgumentIndex) {
         let index = argumentIndex.rawValue
 
-        let identity = ObjectIdentifier(texture)
+        let identity = ObjectIdentifier(texture as AnyObject)
         let shouldUpdate = needsUpdate[index] == true || textures[index] != identity
 
         if shouldUpdate {
             argumentEncoder.setTexture(texture, index: index)
             needsUpdate[index] = false
             textures[index] = identity
+            textureObjects[index] = texture
 
             if debugOptions.isDebugMode {
                 print("arg texture index:\(index) (\(argumentIndex.description)), \(String(describing: type(of: texture))), set")
@@ -156,6 +159,25 @@ public final class ArgumentEncoderManager {
         } else if debugOptions.isDebugMode {
             print("arg texture index:\(index) (\(argumentIndex.description)), \(String(describing: type(of: texture))), reuse")
         }
+    }
+
+    public func encodeTexture(_ texture: MTLTexture?, argumentIndex: ArgumentIndex) {
+        guard let texture else {
+            let index = argumentIndex.rawValue
+            if needsUpdate[index] == true || textures[index] != nil {
+                argumentEncoder.setTexture(nil, index: index)
+                needsUpdate[index] = false
+                textures[index] = nil
+                textureObjects[index] = nil
+
+                if debugOptions.isDebugMode {
+                    print("arg texture index:\(index) (\(argumentIndex.description)), nil set")
+                }
+            }
+            return
+        }
+
+        encodeTexture(texture, argumentIndex: argumentIndex)
     }
 
     public func encodeSampler(filter: MTLSamplerMinMagFilter) {
@@ -193,6 +215,7 @@ public final class ArgumentEncoderManager {
             if debugOptions.isDebugMode {
                 print("arg buffer index:\(index) (\(argumentIndex.description)), \(String(describing: T.self)), LayoutSize:\(MemoryLayout<T>.stride), size:\(size) created -> \(value)")
             }
+            // StorageModePolicy.md: uniform buffers are small CPU-written inputs.
             buffers[index] = device.makeBuffer(length: size, options: [.cpuCacheModeWriteCombined, .storageModeShared])
             buffers[index]?.label = argumentIndex.description
 
@@ -237,6 +260,7 @@ public final class ArgumentEncoderManager {
             if debugOptions.isDebugMode {
                 print("arg buffer index:\(index), \(String(describing: SIMD3<Float>.self)), LayoutSize:\(MemoryLayout<SIMD3<Float>>.stride), size:\(size) created")
             }
+            // StorageModePolicy.md: array uniforms are CPU-authored shader inputs.
             buffers[index] = device.makeBuffer(bytes: value, length: size, options: [.cpuCacheModeWriteCombined, .storageModeShared])
             buffers[index]?.label = argumentIndex.description
             argumentEncoder.setBuffer(buffers[index], offset: 0, index: index)
@@ -249,10 +273,11 @@ public final class ArgumentEncoderManager {
             if debugOptions.isDebugMode {
                 print("arg buffer index:\(index) (\(argumentIndex.description)), \(String(describing: SIMD3<Float>.self)), LayoutSize:\(MemoryLayout<SIMD3<Float>>.stride), size:\(size) created")
             }
+            // StorageModePolicy.md: refreshed array uniforms remain CPU-authored shader inputs.
             buffers[index] = device.makeBuffer(bytes: value, length: size, options: [.cpuCacheModeWriteCombined, .storageModeShared])
             buffers[index]?.label = argumentIndex.description
             argumentEncoder.setBuffer(buffers[index], offset: 0, index: index)
-            needsUpdate[index] = true
+            needsUpdate[index] = false
         }
     }
 
@@ -287,6 +312,7 @@ public final class ArgumentEncoderManager {
         }
 
         if needsRecreation {
+            // StorageModePolicy.md: render outputs are GPU-only and private.
             let descriptor = MTLTextureDescriptor.texture2DDescriptor(
                 pixelFormat: outputPixelFormat,
                 width: width,
@@ -294,7 +320,7 @@ public final class ArgumentEncoderManager {
                 mipmapped: false
             )
             descriptor.usage = [.shaderWrite, .shaderRead, .pixelFormatView]
-            descriptor.storageMode = .shared
+            descriptor.storageMode = .private
 
             outputTexture = device.makeTexture(descriptor: descriptor)
             outputTexture?.label = MTL_label.outputTexture
@@ -304,6 +330,8 @@ public final class ArgumentEncoderManager {
         if needsUpdate[index] == true, let outputTexture {
             argumentEncoder.setTexture(outputTexture, index: index)
             needsUpdate[index] = false
+            textures[index] = ObjectIdentifier(outputTexture as AnyObject)
+            textureObjects[index] = outputTexture
 
             if debugOptions.isDebugMode {
                 print("arg texture index:\(index) (\(ArgumentIndex.outputTexture.description)), output texture set @ \(width)x\(height)")
@@ -313,12 +341,44 @@ public final class ArgumentEncoderManager {
         encodeCompatibilityBuffer(width: width, height: height)
     }
 
+    public func setOutputTexture(_ texture: MTLTexture) {
+        let index = ArgumentIndex.outputTexture.rawValue
+
+        outputTexture = texture
+        currentOutputWidth = texture.width
+        currentOutputHeight = texture.height
+        currentPxByteSize = ResourceMemoryEstimator.estimate(for: texture)
+        needsUpdate[index] = true
+
+        if needsUpdate[index] == true {
+            argumentEncoder.setTexture(texture, index: index)
+            needsUpdate[index] = false
+            textures[index] = ObjectIdentifier(texture as AnyObject)
+            textureObjects[index] = texture
+
+            if debugOptions.isDebugMode {
+                print("arg texture index:\(index) (\(ArgumentIndex.outputTexture.description)), external output texture set @ \(texture.width)x\(texture.height)")
+            }
+        }
+
+        encodeCompatibilityBuffer(width: texture.width, height: texture.height)
+    }
+
     private func encodeCompatibilityBuffer(width: Int, height: Int) {
         let index = ArgumentIndex.legacyOutputBuffer.rawValue
 
         let requiredBytes = width * height * 3
         if legacyOutputBuffer == nil || compatibilityPxByteSize != requiredBytes {
-            legacyOutputBuffer = device.makeBuffer(length: MemoryLayout<UInt8>.stride * requiredBytes)
+            // StorageModePolicy.md: legacy output compatibility buffers are CPU-visible readback storage.
+            #if os(macOS)
+            let readbackOptions: MTLResourceOptions = device.hasUnifiedMemory ? .storageModeShared : .storageModeManaged
+            #else
+            let readbackOptions: MTLResourceOptions = .storageModeShared
+            #endif
+            // If CPU readback is restored here, mirror TextureSnapshotExporter by synchronizing
+            // managed buffers with a blit synchronize(resource:) before reading contents().
+            legacyOutputBuffer = device.makeBuffer(length: MemoryLayout<UInt8>.stride * requiredBytes,
+                                                   options: readbackOptions)
             legacyOutputBuffer?.label = MTL_label.outputPixelBuffer
             needsUpdate[index] = true
             compatibilityPxByteSize = requiredBytes
@@ -336,6 +396,7 @@ public final class ArgumentEncoderManager {
     }
 
     func makeReadbackTexture(drawingViewSize: Int) -> MTLTexture? {
+        // StorageModePolicy.md: debug readback textures are separate CPU-visible resources.
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: outputPixelFormat,
             width: drawingViewSize,
@@ -350,6 +411,7 @@ public final class ArgumentEncoderManager {
             return texture
         }
 
+        // StorageModePolicy.md: debug readback uses a separate CPU-visible texture.
         readbackTexture = device.makeTexture(descriptor: descriptor)
         readbackTexture?.label = "tex.output.readback"
         return readbackTexture
@@ -359,6 +421,35 @@ public final class ArgumentEncoderManager {
         needsUpdate[argumentIndex.rawValue] = true
         if debugOptions.isDebugMode {
             print("arg buffer index:\(argumentIndex.rawValue) markes as Needs Updata")
+        }
+    }
+
+    func registerResources(on encoder: MTLComputeCommandEncoder) {
+        for (index, texture) in textureObjects {
+            switch ArgumentIndex(rawValue: index) {
+            case .mainTexture, .transferTextureCh1, .transferTextureCh2, .transferTextureCh3, .transferTextureCh4, .accelerationTexture:
+                encoder.useResource(texture, usage: .read)
+            case .outputTexture:
+                encoder.useResource(texture, usage: .write)
+            case .none, .some:
+                continue
+            }
+        }
+
+        for (index, buffer) in buffers {
+            switch ArgumentIndex(rawValue: index) {
+            case .legacyOutputBuffer:
+                encoder.useResource(buffer, usage: .write)
+            case .renderParams, .toneBufferCh1, .toneBufferCh2, .toneBufferCh3, .toneBufferCh4,
+                 .optionValue, .quaternion, .targetViewSize, .pointSetCountBuffer,
+                 .pointSetSelectedBuffer, .pointCoordsBuffer:
+                encoder.useResource(buffer, usage: .read)
+            case .mainTexture, .outputTexture, .sampler, .transferTextureCh1, .transferTextureCh2,
+                 .transferTextureCh3, .transferTextureCh4, .accelerationTexture:
+                continue
+            case .none:
+                continue
+            }
         }
     }
 

@@ -1,5 +1,5 @@
 #include <metal_stdlib>
-#include "../MPR/Shared.metal"
+#include "volume_shader_common.metal"
 #include "volume_rendering_types.metal"
 #include "volume_rendering_helpers.metal"
 #include "empty_space_acceleration.metal"
@@ -115,6 +115,8 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
         return;
     }
 
+    const bool isDVR = (material.method == 1);
+    VolumeCompute::ProjectionState projectionState = VolumeCompute::initProjectionState();
     float4 accumulator = float4(0.0f);
     float debugMaxDensity = 0.0f;
     float debugMaxSampleAlpha = 0.0f;
@@ -158,7 +160,7 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
 
         // MPS-accelerated empty space skipping (if available)
         const bool accelerationEnabled = ((args.optionValue & VolumeCompute::OPTION_USE_ACCELERATION) != 0);
-        if (accelerationEnabled && args.accelerationTexture.get_width() > 0) {
+        if (isDVR && accelerationEnabled && args.accelerationTexture.get_width() > 0) {
             uint maxMipLevel = args.accelerationTexture.get_num_mip_levels() - 1;
             bool canSkip = ESS::sampleAccelerationStructure(args.accelerationTexture,
                                                             args,
@@ -229,6 +231,33 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
         const bool useTransfer = (material.useTFProj != 0 || material.method == 1);
         const float densityForColour = useTransfer ? densityDataset : densityWindow;
         const float windowIntensity = densityWindow;
+
+        if (!isDVR) {
+            if (material.method == 2) {
+                VolumeCompute::updateMaxIntensity(projectionState,
+                                                  densityWindow,
+                                                  densityDataset,
+                                                  gradient,
+                                                  samplePos);
+            } else if (material.method == 3) {
+                VolumeCompute::updateMinIntensity(projectionState,
+                                                  densityWindow,
+                                                  densityDataset,
+                                                  gradient,
+                                                  samplePos);
+            } else if (material.method == 4) {
+                VolumeCompute::updateAverageIntensity(projectionState,
+                                                      densityWindow,
+                                                      densityDataset,
+                                                      gradient,
+                                                      samplePos);
+            }
+
+            distanceTravelled += stepDistance;
+            distanceTravelled = min(distanceTravelled, totalDistance);
+            iteration++;
+            continue;
+        }
 
         float gradientMagnitude = 0.0f;
         if (need2DTF) {
@@ -318,6 +347,32 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
         distanceTravelled += stepDistance;
         distanceTravelled = min(distanceTravelled, totalDistance);
         iteration++;
+    }
+
+    if (!isDVR) {
+        const bool useTransfer = (material.useTFProj != 0);
+        accumulator = VolumeCompute::finalizeProjection(args,
+                                                        args.params,
+                                                        projectionState,
+                                                        useTransfer);
+        if (material.isLightingOn != 0 && projectionState.hit) {
+            float3 projectionNormal = VolumeCompute::projectionGradient(projectionState, material.method);
+            float lengthSq = dot(projectionNormal, projectionNormal);
+            if (lengthSq > 1.0e-6f) {
+                projectionNormal = normalize(projectionNormal);
+                float3 projectionPosition = VolumeCompute::projectionPosition(projectionState, material.method);
+                float3 eyeDir = (material.isBackwardOn != 0) ? ray.direction : -ray.direction;
+                float3 lightDir = normalize(cameraLocal01 - projectionPosition);
+                accumulator.rgb = Util::calculateLighting(accumulator.rgb,
+                                                          projectionNormal,
+                                                          lightDir,
+                                                          eyeDir,
+                                                          0.3f);
+            }
+        }
+        debugMaxDensity = max(debugMaxDensity,
+                              VolumeCompute::projectionDensityWindow(projectionState, material.method));
+        debugMaxSampleAlpha = max(debugMaxSampleAlpha, accumulator.a);
     }
 
     accumulator = clamp(accumulator, float4(0.0f), float4(1.0f));

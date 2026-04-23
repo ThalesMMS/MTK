@@ -64,17 +64,29 @@ extension MetalVolumeRenderingAdapter {
         let lightingEnabled = overrides.lightingEnabled && extendedState.lightingEnabled
         uniforms.isLightingOn = lightingEnabled ? 1 : 0
 
-        if let gate = extendedState.densityGate {
-            uniforms.densityFloor = gate.lowerBound
-            uniforms.densityCeil = gate.upperBound
+        if let gate = extendedState.huGate {
             uniforms.useHuGate = 1
-            uniforms.gateHuMin = Int32(gate.lowerBound)
-            uniforms.gateHuMax = Int32(gate.upperBound)
+            uniforms.gateHuMin = gate.lowerBound
+            uniforms.gateHuMax = gate.upperBound
         } else {
             uniforms.useHuGate = 0
         }
 
-        uniforms.useTFProj = 1
+        if let gate = extendedState.densityGate {
+            uniforms.densityFloor = gate.lowerBound
+            uniforms.densityCeil = gate.upperBound
+        }
+
+        switch request.compositing {
+        case .frontToBack:
+            uniforms.useTFProj = 1
+        case .maximumIntensity, .minimumIntensity, .averageIntensity:
+            // Issues #98 and #103 track the broader viewport routing cleanup.
+            // The empty fourth viewport was not a missing render call here; the
+            // projection modes were incorrectly reusing DVR transfer-function
+            // projection and could collapse the presented output to black.
+            uniforms.useTFProj = 0
+        }
         uniforms.isBackwardOn = 0
         return uniforms
     }
@@ -97,21 +109,16 @@ extension MetalVolumeRenderingAdapter {
         extendedState.adaptiveEnabled ? (1 << 2) : 0
     }
 
-    func encodeCamera(_ uniforms: CameraUniforms, into state: MetalState) {
-        var localUniforms = uniforms
-        let pointer = state.cameraBuffer.contents()
-        memcpy(pointer, &localUniforms, CameraUniforms.stride)
-    }
-
     func makeCameraUniforms(for request: VolumeRenderRequest,
                             viewportSize: (width: Int, height: Int),
                             frameIndex: UInt32) throws -> CameraUniforms {
         var camera = CameraUniforms()
+        let centeredCamera = centered(camera: request.camera)
         camera.modelMatrix = matrix_identity_float4x4
         camera.inverseModelMatrix = matrix_identity_float4x4
-        camera.inverseViewProjectionMatrix = try makeInverseViewProjectionMatrix(camera: request.camera,
+        camera.inverseViewProjectionMatrix = try makeInverseViewProjectionMatrix(camera: centeredCamera,
                                                                                  viewportSize: viewportSize)
-        camera.cameraPositionLocal = request.camera.position
+        camera.cameraPositionLocal = centeredCamera.position
         camera.frameIndex = frameIndex
         camera.projectionType = request.camera.projectionType.rawValue
         return camera
@@ -124,7 +131,7 @@ extension MetalVolumeRenderingAdapter {
                                      target: camera.target,
                                      up: camera.up)
 
-        let center = SIMD3<Float>(repeating: 0.5)
+        let center = SIMD3<Float>.zero
         let distanceToCenter = simd_length(camera.position - center)
         let farPadding = distanceToCenter * 0.1 + 1.0
         let nearZ: Float = 0.01
@@ -153,6 +160,17 @@ extension MetalVolumeRenderingAdapter {
         }
 
         return simd_inverse(matrix)
+    }
+
+    func centered(camera: VolumeRenderRequest.Camera) -> VolumeRenderRequest.Camera {
+        let originShift = SIMD3<Float>(repeating: 0.5)
+        return VolumeRenderRequest.Camera(
+            position: camera.position - originShift,
+            target: camera.target - originShift,
+            up: camera.up,
+            fieldOfView: camera.fieldOfView,
+            projectionType: camera.projectionType
+        )
     }
 }
 
@@ -188,9 +206,8 @@ private extension simd_float4x4 {
          farZ: Float) {
         let yScale = 1 / tan(fovY * 0.5)
         let xScale = yScale / max(aspect, 1e-3)
-        let zRange = farZ - nearZ
-        let z = -(farZ + nearZ) / zRange
-        let wz = -(2 * farZ * nearZ) / zRange
+        let z = farZ / (nearZ - farZ)
+        let wz = (farZ * nearZ) / (nearZ - farZ)
 
         self = simd_float4x4(columns: (
             SIMD4<Float>(xScale, 0, 0, 0),
@@ -204,13 +221,13 @@ private extension simd_float4x4 {
          height: Float,
          nearZ: Float,
          farZ: Float) {
-        let range = farZ - nearZ
+        let range = nearZ - farZ
 
         self = simd_float4x4(columns: (
             SIMD4<Float>(2.0 / width, 0, 0, 0),
             SIMD4<Float>(0, 2.0 / height, 0, 0),
-            SIMD4<Float>(0, 0, -2.0 / range, 0),
-            SIMD4<Float>(0, 0, -(farZ + nearZ) / range, 1)
+            SIMD4<Float>(0, 0, 1.0 / range, 0),
+            SIMD4<Float>(0, 0, nearZ / range, 1)
         ))
     }
 }

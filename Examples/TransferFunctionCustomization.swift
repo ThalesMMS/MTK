@@ -25,13 +25,13 @@ import Metal
 /// 4. Applying the curve to volume visualization
 struct CustomToneCurveExample: View {
 
-    @StateObject private var coordinator = VolumetricSceneCoordinator.shared
+    @StateObject private var coordinator = VolumeViewportCoordinator.shared
     @StateObject private var toneCurveModel = AdvancedToneCurveModel()
     @State private var sampledValues: [Float] = []
 
     var body: some View {
         VStack {
-            VolumetricDisplayContainer(controller: coordinator.controller) {
+            VolumeViewportContainer(controller: coordinator.controller) {
                 OrientationOverlayView()
             }
 
@@ -101,13 +101,13 @@ struct CustomToneCurveExample: View {
 /// 3. Understanding different windowing algorithms
 struct AutoWindowPresetExample: View {
 
-    @StateObject private var coordinator = VolumetricSceneCoordinator.shared
+    @StateObject private var coordinator = VolumeViewportCoordinator.shared
     @StateObject private var toneCurveModel = AdvancedToneCurveModel()
     @State private var currentPreset: ToneCurveAutoWindowPreset = .abdomen
 
     var body: some View {
         VStack {
-            VolumetricDisplayContainer(controller: coordinator.controller) {
+            VolumeViewportContainer(controller: coordinator.controller) {
                 OrientationOverlayView()
             }
 
@@ -197,14 +197,14 @@ struct AutoWindowPresetExample: View {
 /// 3. Applying presets to volume visualization
 struct WindowLevelPresetExample: View {
 
-    @StateObject private var coordinator = VolumetricSceneCoordinator.shared
+    @StateObject private var coordinator = VolumeViewportCoordinator.shared
     @State private var selectedPreset: WindowLevelPreset = WindowLevelPresetLibrary.ct[0]
     @State private var minHU: Float = -160
     @State private var maxHU: Float = 240
 
     var body: some View {
         VStack {
-            VolumetricDisplayContainer(controller: coordinator.controller) {
+            VolumeViewportContainer(controller: coordinator.controller) {
                 OrientationOverlayView()
             }
 
@@ -293,7 +293,7 @@ struct WindowLevelPresetExample: View {
 /// 3. Generating Metal textures for rendering
 struct CustomTransferFunctionExample: View {
 
-    @StateObject private var coordinator = VolumetricSceneCoordinator.shared
+    @StateObject private var coordinator = VolumeViewportCoordinator.shared
     @State private var transferFunction: TransferFunction?
     @State private var metalDevice: MTLDevice?
     @State private var unsupportedRuntimeMessage: String?
@@ -307,7 +307,7 @@ struct CustomTransferFunctionExample: View {
                     description: Text(unsupportedRuntimeMessage)
                 )
             } else if let tf = transferFunction {
-                VolumetricDisplayContainer(controller: coordinator.controller) {
+                VolumeViewportContainer(controller: coordinator.controller) {
                     OrientationOverlayView()
                 }
 
@@ -433,7 +433,7 @@ struct CustomTransferFunctionExample: View {
 /// 3. Fine-tuning with manual window/level adjustments
 struct CombinedCustomizationExample: View {
 
-    @StateObject private var coordinator = VolumetricSceneCoordinator.shared
+    @StateObject private var coordinator = VolumeViewportCoordinator.shared
     @StateObject private var toneCurveModel = AdvancedToneCurveModel()
     @State private var currentBuiltinPreset: VolumeRenderingBuiltinPreset = .softTissue
     @State private var windowMin: Int32 = -160
@@ -441,7 +441,7 @@ struct CombinedCustomizationExample: View {
 
     var body: some View {
         VStack {
-            VolumetricDisplayContainer(controller: coordinator.controller) {
+            VolumeViewportContainer(controller: coordinator.controller) {
                 OrientationOverlayView()
                 CrosshairOverlayView()
             }

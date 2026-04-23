@@ -9,6 +9,8 @@
 import Foundation
 import simd
 
+@preconcurrency import Metal
+
 public protocol VolumeRenderingPortExtended: VolumeRenderingPort {
     // Window/Intensity controls
     func setHuWindow(min: Int32, max: Int32) async throws

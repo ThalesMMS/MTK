@@ -147,7 +147,7 @@ public final class VolumeGestureState: ObservableObject {
 
 #if canImport(SwiftUI) && os(iOS)
  
-extension VolumetricSceneController {
+extension VolumeViewportController {
     public func gestureContext(using state: VolumeGestureState) -> VolumeGestureContext {
         let handler = VolumeGestureContext(
             onTranslate: { axis, delta in
@@ -158,7 +158,7 @@ extension VolumetricSceneController {
                         await self.rotateCamera(screenDelta: screenDelta)
                         return
                     }
-                    guard let controllerAxis = VolumetricSceneController.Axis(axis) else { return }
+                    guard let controllerAxis = VolumeViewportController.Axis(axis) else { return }
                     let normalized = Float(delta.height / 512)
                     await self.translate(axis: controllerAxis, deltaNormalized: normalized)
                 }
@@ -177,7 +177,7 @@ extension VolumetricSceneController {
                         await self.tiltCamera(roll: Float(radians), pitch: 0)
                         return
                     }
-                    guard let controllerAxis = VolumetricSceneController.Axis(axis) else { return }
+                    guard let controllerAxis = VolumeViewportController.Axis(axis) else { return }
                     await self.rotate(axis: controllerAxis, radians: Float(radians))
                 }
             },
@@ -191,7 +191,7 @@ extension VolumetricSceneController {
             onSlabThickness: { thickness in
                 Task { [weak self] in
                     guard let self else { return }
-                    let snaps = VolumetricSceneController.SlabConfiguration(thickness: Int(thickness), steps: 1)
+                    let snaps = VolumeViewportController.SlabConfiguration(thickness: Int(thickness), steps: 1)
                     await self.setMprSlab(thickness: snaps.thickness, steps: snaps.steps)
                 }
             },
@@ -207,7 +207,7 @@ extension VolumetricSceneController {
     }
 }
 
-private extension VolumetricSceneController.Axis {
+private extension VolumeViewportController.Axis {
     init?(_ axis: VolumeGestureAxis) {
         switch axis {
         case .sagittal:

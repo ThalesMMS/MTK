@@ -8,11 +8,11 @@ import SwiftUI
 
 @MainActor
 public struct VolumetricGestureOverlay: View {
-    private let controller: VolumetricSceneController
+    private let controller: VolumeViewportController
     private let configuration: VolumeGestureConfiguration
     @StateObject private var stateStorage: VolumeGestureState
 
-    public init(controller: VolumetricSceneController,
+    public init(controller: VolumeViewportController,
                 configuration: VolumeGestureConfiguration = .default,
                 state: VolumeGestureState? = nil) {
         self.controller = controller

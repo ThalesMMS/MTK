@@ -2,936 +2,185 @@
 //  DicomLoader.swift
 //  MTK Examples
 //
-//  Comprehensive example showing DICOM series loading with progress handling
-//  Thales Matheus Mendonça Santos — February 2026
-//
-//  NOTE: This is example/documentation code demonstrating MTK's DICOM loading capabilities.
-//  For production implementation, see MTK-Demo app and DicomVolumeLoader documentation.
+//  Canonical DICOM loading example for the engine-native rendering path.
 //
 
 import SwiftUI
 import MTKCore
 import MTKUI
 
-// MARK: - Basic DICOM Loading Example
-
-/// Basic SwiftUI view demonstrating DICOM series loading with progress tracking
+/// Example purpose: DICOM loading pipeline stages matching the ADR diagram.
 ///
-/// This example shows the essential workflow for loading DICOM volumes:
-/// 1. Create a ``DicomVolumeLoader`` with a ``DicomSeriesLoading`` implementation
-/// 2. Load volume from directory, ZIP archive, or individual file
-/// 3. Track progress with ``DicomVolumeProgress`` updates
-/// 4. Apply loaded dataset to ``VolumetricSceneCoordinator``
-/// 5. Surface load errors explicitly to the caller
+/// ADR concepts demonstrated:
+/// the example uses `DicomVolumeLoader.loadVolume(from:progress:completion:)`
+/// as the canonical import path, then applies the resulting `VolumeDataset`
+/// through `ClinicalViewportGridController.applyDataset(_:)`. That call routes
+/// the dataset into `MTKRenderingEngine`, which acquires a shared
+/// `VolumeResourceHandle` through `VolumeResourceManager` before binding the
+/// same GPU resource to the clinical viewports. See
+/// `MTK/Architecture/ClinicalRenderingADR.md`.
 ///
-/// ## Supported Sources
-///
-/// - Directories containing DICOM files (*.dcm or any DICOM format)
-/// - ZIP archives with DICOM files (nested directories supported)
-/// - Individual DICOM files (loader will scan parent directory)
-///
-/// ## DICOM Requirements
-///
-/// - 16-bit scalar volumes (signed or unsigned pixel representation)
-/// - Image Orientation Patient (0020,0037) and Image Position Patient (0020,0032) tags
-/// - Rescale Slope/Intercept (0028,1053/0028,1052) for Hounsfield Unit conversion
+/// Interactive display remains Metal-native as `MTLTexture` through
+/// `PresentationPass`. This example does not use SceneKit, and it never uses
+/// `CGImage` as a display surface.
 struct BasicDicomLoaderExample: View {
-
-    @StateObject private var coordinator = VolumetricSceneCoordinator.shared
-
+    @State private var controller: ClinicalViewportGridController?
     @State private var isLoading = false
-    @State private var loadingProgress: Double = 0.0
-    @State private var totalSlices: Int = 0
+    @State private var loadingProgress = 0.0
+    @State private var totalSlices = 0
     @State private var errorMessage: String?
 
     var body: some View {
-        ZStack {
-            if isLoading {
-                // Loading UI with progress indicator
-                VStack(spacing: 16) {
-                    ProgressView("Loading DICOM series...", value: loadingProgress, total: 1.0)
-                        .progressViewStyle(.linear)
-                        .padding()
-
-                    if totalSlices > 0 {
-                        Text("Processing \(Int(loadingProgress * Double(totalSlices))) of \(totalSlices) slices")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Text("\(Int(loadingProgress * 100))% complete")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                .padding()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color(white: 0.1))
-
-            } else if let error = errorMessage {
-                // Error state
-                VStack(spacing: 16) {
-                    ContentUnavailableView(
-                        "Failed to Load DICOM",
-                        systemImage: "exclamationmark.triangle",
-                        description: Text(error)
-                    )
-
-                    Button("Retry") {
-                        errorMessage = nil
-                        Task { await loadDicomVolume() }
-                    }
-                    .buttonStyle(.bordered)
-                }
-
+        Group {
+            if let controller {
+                ClinicalViewportGrid(controller: controller)
+            } else if isLoading {
+                loadingState
+            } else if let errorMessage {
+                ContentUnavailableView(
+                    "Failed to Load DICOM",
+                    systemImage: "exclamationmark.triangle",
+                    description: Text(errorMessage)
+                )
             } else {
-                // Main rendering view after successful load
-                VolumetricDisplayContainer(controller: coordinator.controller) {
-                    OrientationOverlayView()
-                    CrosshairOverlayView()
-                }
+                ContentUnavailableView(
+                    "No DICOM Source Selected",
+                    systemImage: "folder",
+                    description: Text("Pass a directory, ZIP archive, or DICOM file URL to load the dataset.")
+                )
             }
         }
         .task {
-            // In a real app, get URL from file picker or document browser
-            // await loadDicomVolume(from: selectedDicomURL)
+            // In a real app, pass a user-selected URL:
+            // await loadDicomVolume(from: selectedURL)
         }
-    }
-
-    // MARK: - DICOM Loading
-
-    /// Load DICOM volume from a URL with progress tracking
-    ///
-    /// Demonstrates the complete DICOM loading workflow:
-    /// 1. Create ``DicomVolumeLoader`` with its default Swift series loader
-    /// 2. Call ``loadVolume(from:progress:completion:)`` with progress callback
-    /// 3. Update UI with ``DicomVolumeProgress`` events
-    /// 4. Apply loaded dataset to coordinator
-    /// 5. Configure window/level and transfer function
-    ///
-    /// Starts loading a DICOM volume from the provided URL and updates the view's loading state and progress.
-    /// 
-    /// If `url` is `nil`, sets `errorMessage` to indicate no source was selected and returns without starting a load.
-    /// While loading, `isLoading`, `loadingProgress`, and `totalSlices` are updated; progress and completion updates are routed to `handleProgress(_:)` and `handleLoadResult(_:)` respectively. The loader used is the default `DicomVolumeLoader`.
-    /// - Parameter url: Filesystem URL pointing to a DICOM directory, archive, or file to load. If omitted, no load is attempted and an error message is set.
-    private func loadDicomVolume(from url: URL? = nil) async {
-        guard let url else {
-            // In a real app, this would come from NSOpenPanel or UIDocumentPickerViewController
-            errorMessage = "No DICOM source selected"
-            return
-        }
-
-        isLoading = true
-        loadingProgress = 0.0
-        totalSlices = 0
-        defer { isLoading = false }
-
-        // Step 1: Create loader with the canonical Swift DICOM implementation
-        // DicomVolumeLoader uses DicomDecoderSeriesLoader by default.
-        let loader = DicomVolumeLoader()
-
-        // Step 2: Load volume with progress tracking
-        loader.loadVolume(from: url, progress: { progress in
-            // Progress callback executed on main queue
-            handleProgress(progress)
-        }, completion: { result in
-            // Completion handler executed on main queue
-            handleLoadResult(result)
-        })
-    }
-
-    /// Process DICOM loading progress updates
-    ///
-    /// Maps ``DicomVolumeProgress`` events to UI state updates for display
-    /// in SwiftUI `ProgressView` and status labels.
-    ///
-    /// - Parameter progress: Progress update from ``DicomVolumeLoader``
-    private func handleProgress(_ progress: DicomVolumeProgress) {
-        switch progress {
-        case .started(let sliceCount):
-            // Loading started with known total slice count
-            totalSlices = sliceCount
-            loadingProgress = 0.0
-
-        case .reading(let fraction):
-            // Incremental progress during slice reading and HU conversion
-            loadingProgress = fraction
-        }
-    }
-
-    /// Handle DICOM loading completion or error
-    ///
-    /// On success:
-    /// - Applies loaded dataset to volumetric coordinator
-    /// - Configures default window/level settings
-    /// - Applies appropriate transfer function preset
-    ///
-    /// On failure:
-    /// - Displays localized error message
-    /// - Offers retry option
-    ///
-    /// Handle the completion result of a DICOM volume load and update the coordinator and UI state accordingly.
-    /// 
-    /// On success, applies the imported dataset to the shared coordinator, sets an HU window using the dataset's
-    /// recommended window when available (otherwise applies the named default window policy, soft tissue: -160 to 240 HU), and applies
-    /// the `.softTissue` transfer preset to the coordinator's controller. Logs series description, source filename,
-    /// and dataset dimensions. On failure, stores the error's localized description in `errorMessage`.
-    /// - Parameter result: The completion `Result` from the DICOM loader; contains a `DicomImportResult` on success or an `Error` on failure.
-    private func handleLoadResult(_ result: Result<DicomImportResult, Error>) {
-        switch result {
-        case .success(let importResult):
-            // Step 3: Apply loaded dataset
-            coordinator.apply(dataset: importResult.dataset)
-
-            // Step 4: Configure window/level.
-            // Use recommended window if available (computed from 2nd/98th percentile).
-            if let recommendedWindow = importResult.dataset.recommendedWindow {
-                coordinator.applyHuWindow(min: Int32(recommendedWindow.lowerBound),
-                                         max: Int32(recommendedWindow.upperBound))
-            } else {
-                // Named default window policy when metadata is absent:
-                // soft tissue window (-160 to 240 HU).
-                coordinator.applyHuWindow(min: -160, max: 240)
-            }
-
-            // Step 5: Apply transfer function preset
+        .onDisappear {
+            let controller = controller
             Task {
-                await coordinator.controller.setPreset(.softTissue)
-            }
-
-            print("Successfully loaded: \(importResult.seriesDescription)")
-            print("Source: \(importResult.sourceURL.lastPathComponent)")
-            print("Dimensions: \(importResult.dataset.dimensions.description)")
-
-        case .failure(let error):
-            // Display localized error message
-            errorMessage = error.localizedDescription
-        }
-    }
-}
-
-// MARK: - Advanced DICOM Loading with an Injected Implementation
-
-/// Advanced example showing custom ``DicomSeriesLoading`` implementation pattern
-///
-/// This demonstrates how to create an injected series loader for tests or
-/// package-level integrations outside the demo runtime. The example follows
-/// the architecture used by ``DicomDecoderSeriesLoader``.
-///
-/// ## Implementation Requirements
-///
-/// Custom loaders must:
-/// 1. Conform to ``DicomSeriesLoading`` protocol
-/// 2. Return objects conforming to ``DICOMSeriesVolumeProtocol``
-/// 3. Provide incremental progress callbacks with slice data
-/// 4. Parse and sort slices by Image Position Patient
-/// 5. Extract spatial metadata (spacing, orientation, origin)
-/// 6. Extract rescale parameters for HU conversion
-struct CustomDicomLoaderExample: View {
-
-    @StateObject private var coordinator = VolumetricSceneCoordinator.shared
-    @State private var isLoading = false
-    @State private var errorMessage: String?
-
-    var body: some View {
-        VStack {
-            if isLoading {
-                ProgressView("Loading with custom loader...")
-            } else {
-                VolumetricDisplayContainer(controller: coordinator.controller) {
-                    OrientationOverlayView()
-                }
+                await controller?.shutdown()
             }
         }
-        .task {
-            // await loadWithCustomImplementation(from: dicomURL)
-        }
     }
 
-    /// Load DICOM volume using an injected test/integration series loader
-    ///
-    /// Demonstrates injecting a custom ``DicomSeriesLoading`` implementation
-    /// into ``DicomVolumeLoader`` outside the demo's canonical loader path.
-    ///
-    /// Loads a DICOM volume from the given URL using a custom injected series loader and applies the result to the coordinator.
-    /// 
-    /// While loading, the view's `isLoading` state is set to `true` and is reset when loading finishes. Progress updates that report a reading fraction are printed as percent to the console. On successful load the loader's dataset is applied to `coordinator` and the controller's transfer preset is set to `.softTissue`. On failure `errorMessage` is populated with the error's localized description.
-    /// - Parameter url: File or directory URL pointing to the DICOM source (directory, archive, or file) to load.
-    private func loadWithCustomImplementation(from url: URL) async {
-        isLoading = true
-        defer { isLoading = false }
+    private var loadingState: some View {
+        VStack(spacing: 12) {
+            ProgressView("Loading DICOM series...", value: loadingProgress, total: 1)
+                .progressViewStyle(.linear)
 
-        // Create injected series loader for this example
-        // See CustomDicomSeriesLoader below for implementation pattern
-        let customSeriesLoader = CustomDicomSeriesLoader()
-
-        // Initialize DicomVolumeLoader with custom implementation
-        let loader = DicomVolumeLoader(seriesLoader: customSeriesLoader)
-
-        loader.loadVolume(from: url, progress: { progress in
-            if case .reading(let fraction) = progress {
-                print("Custom loader progress: \(Int(fraction * 100))%")
-            }
-        }, completion: { result in
-            switch result {
-            case .success(let importResult):
-                coordinator.apply(dataset: importResult.dataset)
-                Task { await coordinator.controller.setPreset(.softTissue) }
-
-            case .failure(let error):
-                errorMessage = error.localizedDescription
-            }
-        })
-    }
-}
-
-// MARK: - Custom DicomSeriesLoading Implementation Pattern
-
-/// Example injected DICOM series loader
-///
-/// This demonstrates the pattern for feeding externally parsed DICOM slices
-/// into MTK's loading pipeline when a test or package integration needs it.
-///
-/// ## Implementation Steps
-///
-/// 1. Parse DICOM files in directory
-/// 2. Sort slices by Image Position Patient (IPP projection onto slice normal)
-/// 3. Stream slice data via progress callbacks
-/// 4. Return volume conforming to ``DICOMSeriesVolumeProtocol``
-///
-/// ## Reference Implementation
-///
-/// See `MTK/Sources/MTKCore/Loading/DicomDecoderSeriesLoader.swift` for a
-/// production implementation backed by the DICOM-Decoder package.
-final class CustomDicomSeriesLoader: DicomSeriesLoading {
-
-    /// Load DICOM series from directory with incremental progress
-    ///
-    /// - Parameters:
-    ///   - url: Directory containing DICOM files
-    ///   - progress: Optional progress callback
-    ///
-    /// - Returns: Volume object conforming to ``DICOMSeriesVolumeProtocol``
-    /// - Throws: Parser-specific errors for I/O failures or invalid DICOM data
-    func loadSeries(at url: URL,
-                    progress: ((Double, UInt, Data?, Any) -> Void)?) throws -> Any {
-
-        // Step 1: Discover and parse DICOM files
-        let dicomFiles = try discoverDicomFiles(in: url)
-        guard !dicomFiles.isEmpty else {
-            throw NSError(domain: "CustomDicomLoader", code: 1,
-                         userInfo: [NSLocalizedDescriptionKey: "No DICOM files found"])
-        }
-
-        // Step 2: Parse first slice to determine dimensions and metadata
-        let firstSlice = try parseDicomSlice(url: dicomFiles.first!)
-        let width = firstSlice.width
-        let height = firstSlice.height
-        let depth = dicomFiles.count
-
-        // Step 3: Allocate voxel buffer
-        let voxelCount = width * height * depth
-        let bytesPerVoxel = firstSlice.isSignedPixel ? MemoryLayout<Int16>.size : MemoryLayout<UInt16>.size
-        var voxelBuffer = Data(count: voxelCount * bytesPerVoxel)
-
-        // Step 4: Sort slices by Image Position Patient
-        let sortedFiles = try sortSlicesByPosition(dicomFiles)
-
-        // Step 5: Stream slice data with progress callbacks
-        for (index, fileURL) in sortedFiles.enumerated() {
-            let slice = try parseDicomSlice(url: fileURL)
-            let sliceData = slice.pixelData
-
-            // Copy slice into voxel buffer at correct depth position
-            let sliceVoxelCount = width * height
-            let offset = index * sliceVoxelCount * bytesPerVoxel
-            voxelBuffer.replaceSubrange(offset..<(offset + sliceData.count), with: sliceData)
-
-            // Report progress with partial volume
-            let fraction = Double(index + 1) / Double(depth)
-            let partialVolume = CustomDicomVolume(
-                width: width,
-                height: height,
-                depth: depth,
-                spacingX: firstSlice.spacingX,
-                spacingY: firstSlice.spacingY,
-                spacingZ: firstSlice.spacingZ,
-                orientation: firstSlice.orientation,
-                origin: firstSlice.origin,
-                rescaleSlope: firstSlice.rescaleSlope,
-                rescaleIntercept: firstSlice.rescaleIntercept,
-                isSignedPixel: firstSlice.isSignedPixel,
-                seriesDescription: firstSlice.seriesDescription,
-                bitsAllocated: 16
-            )
-
-            progress?(fraction, UInt(index + 1), sliceData, partialVolume)
-        }
-
-        // Step 6: Return final volume
-        return CustomDicomVolume(
-            width: width,
-            height: height,
-            depth: depth,
-            spacingX: firstSlice.spacingX,
-            spacingY: firstSlice.spacingY,
-            spacingZ: firstSlice.spacingZ,
-            orientation: firstSlice.orientation,
-            origin: firstSlice.origin,
-            rescaleSlope: firstSlice.rescaleSlope,
-            rescaleIntercept: firstSlice.rescaleIntercept,
-            isSignedPixel: firstSlice.isSignedPixel,
-            seriesDescription: firstSlice.seriesDescription,
-            bitsAllocated: 16
-        )
-    }
-
-    // MARK: - Helper Methods (Implementation Placeholders)
-
-    private func discoverDicomFiles(in directory: URL) throws -> [URL] {
-        // Implementation: Scan directory for .dcm files or parse all files for DICOM magic bytes
-        // return FileManager.default.contentsOfDirectory(...)
-        return []
-    }
-
-    /// Parse a single DICOM file and produce a ParsedSlice containing its metadata and raw pixel buffer.
-    /// - Parameters:
-    ///   - url: The file URL of the DICOM slice to parse.
-    /// - Returns: A `ParsedSlice` with width, height, pixel data, spacing, orientation, origin, rescale slope/intercept, signedness, and series description extracted from the file.
-    /// - Throws: An error if the file cannot be read or cannot be parsed as a valid DICOM slice.
-    private func parseDicomSlice(url: URL) throws -> ParsedSlice {
-        // Implementation: Parse DICOM file and extract metadata + pixel data
-        // using the integration-specific parser.
-        throw NSError(domain: "CustomDicomLoader", code: 2,
-                     userInfo: [NSLocalizedDescriptionKey: "Not implemented"])
-    }
-
-    private func sortSlicesByPosition(_ files: [URL]) throws -> [URL] {
-        // Implementation: Sort by Image Position Patient (IPP) projected onto slice normal
-        // See DicomDecoderSeriesLoader for IPP projection algorithm
-        return files
-    }
-
-    private struct ParsedSlice {
-        let width: Int
-        let height: Int
-        let spacingX: Double
-        let spacingY: Double
-        let spacingZ: Double
-        let orientation: simd_float3x3
-        let origin: SIMD3<Float>
-        let rescaleSlope: Double
-        let rescaleIntercept: Double
-        let isSignedPixel: Bool
-        let seriesDescription: String
-        let pixelData: Data
-    }
-}
-
-/// Custom volume wrapper conforming to ``DICOMSeriesVolumeProtocol``
-///
-/// Bridges custom DICOM parser output into MTK's expected protocol.
-/// This pattern allows any DICOM library to integrate with ``DicomVolumeLoader``.
-private struct CustomDicomVolume: DICOMSeriesVolumeProtocol {
-    let width: Int
-    let height: Int
-    let depth: Int
-    let spacingX: Double
-    let spacingY: Double
-    let spacingZ: Double
-    let orientation: simd_float3x3
-    let origin: SIMD3<Float>
-    let rescaleSlope: Double
-    let rescaleIntercept: Double
-    let isSignedPixel: Bool
-    let seriesDescription: String
-    let bitsAllocated: Int
-}
-
-// MARK: - GPU-Accelerated Window Recommendations
-
-/// Example showing GPU-accelerated auto-windowing via histogram percentiles
-///
-/// ``DicomVolumeLoader`` can compute recommended window/level settings using
-/// Metal Performance Shaders to calculate 2nd/98th percentile from the volume
-/// intensity histogram. This provides better default visualization than simple
-/// min/max windowing.
-struct DicomLoaderWithAutoWindowingExample: View {
-
-    @StateObject private var coordinator = VolumetricSceneCoordinator.shared
-    @State private var isLoading = false
-
-    var body: some View {
-        VolumetricDisplayContainer(controller: coordinator.controller) {
-            OrientationOverlayView()
-        }
-        .task {
-            // await loadWithAutoWindowing(from: dicomURL)
-        }
-    }
-
-    /// Load DICOM volume with GPU-accelerated window recommendation
-    ///
-    /// Configures ``DicomVolumeLoader`` with histogram and statistics calculators
-    /// to enable automatic window/level computation based on intensity percentiles.
-    ///
-    /// - Parameter url: DICOM source URL
-    private func loadWithAutoWindowing(from url: URL) async {
-        isLoading = true
-        defer { isLoading = false }
-
-        // Auto-windowing with histogram/statistics calculators requires GPU compute
-        // resources before those calculators can be created.
-        guard let device = MTLCreateSystemDefaultDevice(),
-              let commandQueue = device.makeCommandQueue() else {
-            print("Auto-windowing unavailable: Metal device and command queue are required.")
-            return
-        }
-
-        // Create histogram and statistics calculators
-        let histogramCalculator = VolumeHistogramCalculator(
-            device: device,
-            commandQueue: commandQueue
-        )
-
-        let statisticsCalculator = VolumeStatisticsCalculator(
-            device: device,
-            commandQueue: commandQueue
-        )
-
-        // Initialize loader with explicit GPU compute calculators.
-        let loader = DicomVolumeLoader(
-            seriesLoader: DicomDecoderSeriesLoader(),
-            device: device,
-            commandQueue: commandQueue,
-            histogramCalculator: histogramCalculator,
-            statisticsCalculator: statisticsCalculator
-        )
-
-        loader.loadVolume(from: url, progress: { _ in
-            // Handle progress
-        }, completion: { result in
-            switch result {
-            case .success(let importResult):
-                coordinator.apply(dataset: importResult.dataset)
-
-                // Use GPU-computed recommended window (2nd/98th percentile)
-                if let recommendedWindow = importResult.dataset.recommendedWindow {
-                    coordinator.applyHuWindow(
-                        min: Int32(recommendedWindow.lowerBound),
-                        max: Int32(recommendedWindow.upperBound)
-                    )
-                    print("Applied auto window: [\(recommendedWindow.lowerBound), \(recommendedWindow.upperBound)]")
-                }
-
-                Task { await coordinator.controller.setPreset(.softTissue) }
-
-            case .failure(let error):
-                print("Auto-windowing load failed: \(error.localizedDescription)")
-            }
-        })
-    }
-}
-
-// MARK: - Progress UI Integration Patterns
-
-/// Example demonstrating various SwiftUI progress UI patterns
-///
-/// Shows different approaches to integrating DICOM loading progress
-/// into SwiftUI user interfaces with ``DicomVolumeProgress`` updates.
-struct DicomProgressUIPatterns: View {
-
-    @State private var loadingProgress: Double = 0.0
-    @State private var totalSlices: Int = 0
-    @State private var currentSlice: Int = 0
-    @State private var isLoading = false
-
-    var body: some View {
-        VStack(spacing: 24) {
-            // Pattern 1: Linear progress bar with percentage
-            if isLoading {
-                VStack(spacing: 8) {
-                    ProgressView(value: loadingProgress, total: 1.0)
-                        .progressViewStyle(.linear)
-
-                    Text("\(Int(loadingProgress * 100))%")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .padding()
-            }
-
-            // Pattern 2: Circular progress with slice count
-            if isLoading && totalSlices > 0 {
-                VStack(spacing: 8) {
-                    ProgressView(value: loadingProgress, total: 1.0)
-                        .progressViewStyle(.circular)
-
-                    Text("\(currentSlice) / \(totalSlices) slices")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            // Pattern 3: Detailed status with estimated time
-            if isLoading {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text("Loading DICOM series...")
-                            .font(.headline)
-                        Spacer()
-                        Text("\(Int(loadingProgress * 100))%")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    ProgressView(value: loadingProgress, total: 1.0)
-                        .progressViewStyle(.linear)
-
-                    if totalSlices > 0 {
-                        Text("Slice \(currentSlice) of \(totalSlices)")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .padding()
-                .background(Color(white: 0.15))
-                .cornerRadius(8)
+            if totalSlices > 0 {
+                Text("Processing \(Int(loadingProgress * Double(totalSlices))) of \(totalSlices) slices")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding()
     }
 
-    /// Update UI state from DICOM loading progress
-    ///
-    /// - Parameter progress: Progress update from ``DicomVolumeLoader``
-    func updateProgress(_ progress: DicomVolumeProgress) {
-        switch progress {
-        case .started(let slices):
-            totalSlices = slices
-            loadingProgress = 0.0
-            currentSlice = 0
+    @MainActor
+    private func loadDicomVolume(from url: URL) async {
+        isLoading = true
+        loadingProgress = 0
+        totalSlices = 0
+        errorMessage = nil
+        defer { isLoading = false }
 
+        let loader = DicomVolumeLoader()
+
+        do {
+            // DICOM -> VolumeDataset
+            let importResult = try await importDicomVolume(from: url, using: loader)
+            let dataset = importResult.dataset
+
+            let controller = try await resolvedController()
+
+            // VolumeDataset -> VolumeResourceManager -> shared GPU texture(s)
+            // for all four clinical viewports via one controller-level dataset load.
+            try await controller.applyDataset(dataset)
+
+            // Use the recommended clinical window when available; otherwise fall
+            // back to the dataset intensity range.
+            let window = dataset.recommendedWindow ?? dataset.intensityRange
+            let windowWidth = max(Double(window.upperBound - window.lowerBound), 1)
+            let windowLevel = Double(window.lowerBound + window.upperBound) / 2
+            await controller.setMPRWindowLevel(window: windowWidth, level: windowLevel)
+
+            try await controller.setTransferFunction(
+                VolumeTransferFunctionLibrary.transferFunction(for: .ctSoftTissue)
+            )
+        } catch {
+            errorMessage = makeUserFacingMessage(for: error)
+        }
+    }
+
+    @MainActor
+    private func resolvedController() async throws -> ClinicalViewportGridController {
+        if let controller {
+            return controller
+        }
+
+        let controller = try await ClinicalViewportGridController.make()
+        self.controller = controller
+        return controller
+    }
+
+    private func importDicomVolume(from url: URL,
+                                   using loader: DicomVolumeLoader) async throws -> DicomImportResult {
+        try await withCheckedThrowingContinuation { continuation in
+            loader.loadVolume(
+                from: url,
+                progress: { progress in
+                    Task { @MainActor in
+                        handle(progress)
+                    }
+                },
+                completion: { result in
+                    continuation.resume(with: result)
+                }
+            )
+        }
+    }
+
+    @MainActor
+    private func handle(_ progress: DicomVolumeProgress) {
+        switch progress {
+        case .started(let sliceCount):
+            totalSlices = sliceCount
+            loadingProgress = 0
         case .reading(let fraction):
             loadingProgress = fraction
-            currentSlice = Int(fraction * Double(totalSlices))
+        }
+    }
+
+    private func makeUserFacingMessage(for error: Error) -> String {
+        guard let loaderError = error as? DicomVolumeLoaderError else {
+            return error.localizedDescription
+        }
+
+        switch loaderError {
+        case .securityScopeUnavailable:
+            return "The selected files could not be accessed."
+        case .unsupportedBitDepth:
+            return "Only 16-bit scalar DICOM series are currently supported."
+        case .missingResult:
+            return "The DICOM loader did not return a volume dataset."
+        case .pathTraversal:
+            return "The selected archive contains invalid paths and was rejected."
+        case .bridgeError(let nsError):
+            return nsError.localizedDescription
         }
     }
 }
-
-// MARK: - Error Handling Patterns
-
-/// Example demonstrating comprehensive DICOM loading error handling
-///
-/// Shows how to handle different ``DicomVolumeLoaderError`` cases and
-/// provide appropriate user feedback and recovery options.
-struct DicomErrorHandlingExample: View {
-
-    @State private var errorType: DicomVolumeLoaderError?
-    @State private var showError = false
-
-    var body: some View {
-        VStack {
-            if showError, let error = errorType {
-                // Error-specific UI
-                VStack(spacing: 16) {
-                    errorIcon(for: error)
-
-                    Text(errorTitle(for: error))
-                        .font(.headline)
-
-                    Text(error.localizedDescription)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-
-                    recoveryActions(for: error)
-                }
-                .padding()
-            }
-        }
-    }
-
-    /// Provide error-specific icon
-    private func errorIcon(for error: DicomVolumeLoaderError) -> some View {
-        Group {
-            switch error {
-            case .securityScopeUnavailable:
-                Image(systemName: "lock.fill")
-            case .unsupportedBitDepth:
-                Image(systemName: "exclamationmark.triangle.fill")
-            case .missingResult:
-                Image(systemName: "questionmark.folder.fill")
-            case .pathTraversal:
-                Image(systemName: "exclamationmark.shield.fill")
-            case .bridgeError:
-                Image(systemName: "exclamationmark.circle.fill")
-            }
-        }
-        .font(.largeTitle)
-        .foregroundStyle(.red)
-    }
-
-    /// Provide error-specific title
-    private func errorTitle(for error: DicomVolumeLoaderError) -> String {
-        switch error {
-        case .securityScopeUnavailable:
-            return "Access Denied"
-        case .unsupportedBitDepth:
-            return "Unsupported Format"
-        case .missingResult:
-            return "No Data Found"
-        case .pathTraversal:
-            return "Invalid Archive"
-        case .bridgeError:
-            return "Loading Failed"
-        }
-    }
-
-    /// Provide error-specific recovery actions
-    @ViewBuilder
-    private func recoveryActions(for error: DicomVolumeLoaderError) -> some View {
-        switch error {
-        case .securityScopeUnavailable:
-            Button("Choose File Again") {
-                // Re-open file picker
-            }
-            .buttonStyle(.bordered)
-
-        case .unsupportedBitDepth:
-            VStack {
-                Text("Only 16-bit DICOM volumes are supported")
-                    .font(.caption2)
-                Button("Select Different Series") {
-                    // Open file picker
-                }
-                .buttonStyle(.bordered)
-            }
-
-        case .missingResult:
-            Button("Select DICOM Directory") {
-                // Open directory picker
-            }
-            .buttonStyle(.bordered)
-
-        case .pathTraversal:
-            Text("This archive contains invalid file paths")
-                .font(.caption2)
-
-        case .bridgeError:
-            Button("Retry") {
-                // Retry loading
-            }
-            .buttonStyle(.bordered)
-        }
-    }
-}
-
-// MARK: - Usage Notes
 
 /*
- ## Basic Usage
+ `DicomVolumeLoader` remains the canonical importer for directories, archives,
+ and individual DICOM files. After loading:
 
- Import a DICOM series from a directory or ZIP archive:
+ 1. `DicomVolumeLoader` produces a `VolumeDataset`.
+ 2. `ClinicalViewportGridController.applyDataset(_:)` forwards that dataset into
+    `MTKRenderingEngine`.
+ 3. `VolumeResourceManager` acquires one shared GPU volume resource.
+ 4. `PresentationPass` displays interactive Metal frames through `MTKView`.
 
- ```swift
- let loader = DicomVolumeLoader()
-
- loader.loadVolume(from: selectedURL, progress: { progress in
-     switch progress {
-     case .started(let totalSlices):
-         print("Loading \(totalSlices) slices")
-     case .reading(let fraction):
-         progressBar.doubleValue = fraction
-     }
- }, completion: { result in
-     switch result {
-     case .success(let importResult):
-         coordinator.apply(dataset: importResult.dataset)
-         await coordinator.controller.setPreset(.softTissue)
-     case .failure(let error):
-         presentError(error)
-     }
- })
- ```
-
- ## Default DICOM Loader
-
- ``DicomVolumeLoader()`` uses ``DicomDecoderSeriesLoader`` by default:
- - Pure Swift implementation
- - Automatic IPP-based slice sorting
- - Support for standard CT/MR DICOM files
-
- ## DICOM Loader Injection Seam
-
- Implement ``DicomSeriesLoading`` when tests or package integrations need to
- feed externally parsed slices into ``DicomVolumeLoader``:
-
- ```swift
- final class MyCustomLoader: DicomSeriesLoading {
-     func loadSeries(at url: URL,
-                     progress: ((Double, UInt, Data?, Any) -> Void)?) throws -> Any {
-         // Parse DICOM files with your library
-         // Stream slice data via progress callback
-         // Return DICOMSeriesVolumeProtocol-conforming volume
-     }
- }
-
- let loader = DicomVolumeLoader(seriesLoader: MyCustomLoader())
- ```
-
- ## GPU-Accelerated Auto-Windowing
-
- Enable automatic window/level computation from histogram percentiles:
-
- ```swift
- let device = MTLCreateSystemDefaultDevice()!
- let queue = device.makeCommandQueue()!
-
- let loader = DicomVolumeLoader(
-     seriesLoader: DicomDecoderSeriesLoader(),
-     device: device,
-     commandQueue: queue,
-     histogramCalculator: VolumeHistogramCalculator(device: device, commandQueue: queue),
-     statisticsCalculator: VolumeStatisticsCalculator(device: device, commandQueue: queue)
- )
-
- // dataset.recommendedWindow will contain 2nd/98th percentile range
- ```
-
- ## Progress Translation for UI
-
- Use ``DicomVolumeLoader.uiUpdate(from:)`` to map progress events to SwiftUI:
-
- ```swift
- loader.loadVolume(from: url, progress: { internalProgress in
-     let uiProgress = DicomVolumeLoader.uiUpdate(from: internalProgress)
-     switch uiProgress {
-     case .started(let totalSlices):
-         self.statusLabel = "Loading \(totalSlices) slices..."
-     case .reading(let fraction):
-         self.progressValue = fraction
-     }
- }, completion: { result in
-     // Handle result
- })
- ```
-
- ## Supported DICOM Formats
-
- - **Pixel Representation**: 16-bit signed or unsigned
- - **Photometric Interpretation**: MONOCHROME1, MONOCHROME2
- - **Transfer Syntax**: Uncompressed, JPEG Lossless, JPEG 2000 (depends on Swift decoder support)
- - **Modality**: CT, MR, PET, etc. (any with spatial metadata)
-
- ## Required DICOM Tags
-
- - (0020,0037) Image Orientation Patient — Defines row/column directions
- - (0020,0032) Image Position Patient — Defines slice position
- - (0028,0030) Pixel Spacing — In-plane spacing (X/Y)
- - (0018,0050) Slice Thickness — Z-spacing (or computed from IPP)
- - (0028,1053) Rescale Slope — For Hounsfield Unit conversion
- - (0028,1052) Rescale Intercept — For Hounsfield Unit conversion
-
- ## File Picker Integration
-
- ### iOS
- ```swift
- import UniformTypeIdentifiers
-
- @State private var showFilePicker = false
-
- var body: some View {
-     VStack {
-         Button("Import DICOM") {
-             showFilePicker = true
-         }
-     }
-     .fileImporter(
-         isPresented: $showFilePicker,
-         allowedContentTypes: [.folder, .zip],
-         onCompletion: { result in
-             switch result {
-             case .success(let url):
-                 Task { await loadDicomVolume(from: url) }
-             case .failure(let error):
-                 print("File picker error: \(error)")
-             }
-         }
-     )
- }
- ```
-
- ### macOS
- ```swift
- import AppKit
-
- func selectDicomSource() {
-     let panel = NSOpenPanel()
-     panel.allowsMultipleSelection = false
-     panel.canChooseDirectories = true
-     panel.canChooseFiles = true
-     panel.allowedContentTypes = [.folder, .zip]
-
-     panel.begin { response in
-         guard response == .OK, let url = panel.url else { return }
-         Task { await loadDicomVolume(from: url) }
-     }
- }
- ```
-
- ## Performance Characteristics
-
- ### Loading Performance
-
- Typical DICOM series loading performance on Apple Silicon:
- - **Small CT** (256×256×128): 1-2 seconds
- - **Medium CT** (512×512×300): 3-5 seconds
- - **Large CT** (1024×1024×512): 10-15 seconds
-
- Includes ZIP extraction, DICOM parsing, IPP sorting, and HU conversion.
-
- ### Memory Usage
-
- Peak memory during loading:
- - Source DICOM files in memory (if compressed)
- - Voxel buffer (width × height × depth × 2 bytes)
- - Temporary slice buffers during assembly
-
- Example for 512×512×300 CT:
- - Voxel buffer: ~157 MB
- - Peak memory: ~250-300 MB (including parser overhead)
-
- ## Error Handling
-
- ### Common Errors
-
- - ``DicomVolumeLoaderError/securityScopeUnavailable`` — File access denied (App Sandbox)
- - ``DicomVolumeLoaderError/unsupportedBitDepth`` — Only 16-bit volumes supported
- - ``DicomVolumeLoaderError/missingResult`` — Empty directory or all-invalid files
- - ``DicomVolumeLoaderError/pathTraversal`` — Malicious ZIP archive
- - ``DicomVolumeLoaderError/bridgeError(_:)`` — DICOM parser library error
-
- ### Security Considerations
-
- - ZIP archives are validated for path traversal attacks
- - Hidden files and parent directory references (.., .__MACOSX) are rejected
- - Temporary extraction directories are cleaned up automatically
- - Security-scoped bookmarks required for sandboxed file access
-
- ## Thread Safety
-
- - ``DicomVolumeLoader/loadVolume(from:progress:completion:)`` executes on background queue
- - Progress callbacks dispatched to main queue
- - Completion handler dispatched to main queue
- - Safe to update SwiftUI state directly in callbacks
-
- ## See Also
-
- - ``DicomVolumeLoader`` — Main DICOM loading orchestrator
- - ``DicomSeriesLoading`` — Protocol for custom DICOM loaders
- - ``DICOMSeriesVolumeProtocol`` — Protocol for volume metadata
- - ``DicomDecoderSeriesLoader`` — Default Swift-based DICOM loader
- - ``VolumeDataset`` — Loaded volume representation
- - ``VolumetricSceneCoordinator`` — Scene management
- - <doc:DicomLoadingGuide> — Complete DICOM loading guide
+ Snapshot/export remains an explicit `TextureSnapshotExporter` workflow; the
+ interactive display path never uses `CGImage`.
  */

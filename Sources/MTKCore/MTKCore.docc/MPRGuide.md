@@ -117,13 +117,15 @@ MPR supports two slicing modes:
 
 ### Slab Parameters
 
-``MetalMPRAdapter/makeSlab(dataset:plane:thickness:steps:blend:)`` accepts:
+``MPRReslicePort/makeSlabTexture(dataset:volumeTexture:plane:thickness:steps:blend:)`` is the preferred interactive API. It accepts a shared 3D `volumeTexture` so synchronized axial, coronal, and sagittal viewports can reuse the same uploaded dataset texture instead of regenerating it per request.
 
-- `thickness` — Slab depth in voxels (0 or 1 for single slice, >1 for thick slab)
+- `thickness` — Slab depth resolved along the plane normal using the dataset spacing (0 or 1 for single slice, >1 for thick slab)
 - `steps` — Number of parallel samples within the thickness (higher = smoother but slower)
 - `blend` — Blending mode for combining samples
 
-**Example**: `thickness = 10, steps = 20` generates 20 parallel slices spanning 10 voxels, blending them according to the specified mode.
+**Example**: `thickness = 10, steps = 20` generates 20 parallel slices spanning a slab that is resolved against the dataset spacing along the plane normal, blending them according to the specified mode.
+
+``MetalMPRAdapter/makeTextureFrame(dataset:plane:thickness:steps:blend:)`` remains a convenience that uploads or reuses the volume texture internally when the caller is not managing a shared `MTLTexture`.
 
 ### Blend Modes
 
@@ -191,7 +193,7 @@ for each pixel (u, v):
 
 ## Metal Acceleration and Explicit Failures
 
-``MetalMPRAdapter`` is a Metal-only adapter. It requires a Metal device, command queue, shader library, and compute pipelines before it can generate MPR slices. Applications should treat those requirements as the runtime contract for MPR, present an explicit unsupported state when the contract is not satisfied, and propagate compute-path failures to callers.
+``MetalMPRAdapter`` is a Metal-only adapter. It requires a Metal device, command queue, shader library, and compute pipelines before it can generate MPR texture frames. Applications should treat those requirements as the runtime contract for MPR, present an explicit unsupported state when the contract is not satisfied, and propagate compute-path failures to callers.
 
 ### Performance
 
@@ -206,6 +208,8 @@ for each pixel (u, v):
 
 ### Metal Initialization
 
+The examples below use ``MetalMPRAdapter/makeSlabTexture(dataset:volumeTexture:plane:thickness:steps:blend:)`` because it is the preferred path for synchronized multi-viewport MPR that reuses a shared 3D texture. For a single viewport that does not manage `volumeTexture` explicitly, ``MetalMPRAdapter/makeTextureFrame(dataset:plane:thickness:steps:blend:)`` is the simpler convenience wrapper.
+
 ```swift
 guard let device = MTLCreateSystemDefaultDevice() else {
     // Present an explicit unsupported-runtime state.
@@ -214,13 +218,19 @@ guard let device = MTLCreateSystemDefaultDevice() else {
 
 do {
     let adapter = try MetalMPRAdapter(device: device)
-    let slice = try await adapter.makeSlab(
+    let factory = VolumeTextureFactory(dataset: dataset)
+    guard let volumeTexture = factory.generate(device: device) else {
+        throw VolumeTextureFactory.TextureUploadError.textureCreationFailed
+    }
+    let frame = try await adapter.makeSlabTexture(
         dataset: dataset,
+        volumeTexture: volumeTexture,
         plane: plane,
         thickness: 5,
         steps: 10,
         blend: .average
     )
+    print(frame.texture)
 } catch {
     // Present the Metal setup or rendering failure to the caller.
     throw error
@@ -266,10 +276,10 @@ import MTKUI
 import SwiftUI
 
 struct MPRView: View {
-    @StateObject private var volumeController = VolumetricSceneController()
-    @StateObject private var axialController = VolumetricSceneController()
-    @StateObject private var coronalController = VolumetricSceneController()
-    @StateObject private var sagittalController = VolumetricSceneController()
+    @StateObject private var volumeController = VolumeViewportController()
+    @StateObject private var axialController = VolumeViewportController()
+    @StateObject private var coronalController = VolumeViewportController()
+    @StateObject private var sagittalController = VolumeViewportController()
 
     var body: some View {
         MPRGridComposer(
@@ -315,7 +325,7 @@ Window/level adjustments flow through the grid:
    ```
 5. Each controller regenerates its slice with the new intensity window
 
-Slab thickness follows a similar pattern via ``VolumetricSceneController/setMprSlab(thickness:steps:)``.
+Slab thickness follows a similar pattern via ``VolumeViewportController/setMprSlab(thickness:steps:)``.
 
 ## Code Examples
 
@@ -330,34 +340,39 @@ guard let device = MTLCreateSystemDefaultDevice() else {
     return
 }
 let adapter = try MetalMPRAdapter(device: device)
+let factory = VolumeTextureFactory(dataset: dataset)
+guard let volumeTexture = factory.generate(device: device) else {
+    return
+}
 
-// Define axial plane at Z = 128
-let plane = MPRPlaneGeometry.axial(at: 128, dataset: dataset)
+// Define an axial plane at the middle of the volume using the dataset geometry
+let plane = MPRPlaneGeometryFactory.makePlane(for: dataset, axis: .z, slicePosition: 0.5)
 
 // Generate single slice
-let slice = try await adapter.makeSlab(
+let frame = try await adapter.makeSlabTexture(
     dataset: dataset,
+    volumeTexture: volumeTexture,
     plane: plane,
     thickness: 1,
     steps: 1,
     blend: .single
 )
 
-// Access slice data
-print("Slice dimensions: \(slice.width) × \(slice.height)")
-print("Intensity range: \(slice.intensityRange)")
-print("Pixel spacing: \(slice.pixelSpacing ?? SIMD2<Float>(0, 0))")
+// Access frame metadata
+print("Slice dimensions: \(frame.texture.width) × \(frame.texture.height)")
+print("Intensity range: \(frame.intensityRange)")
 ```
 
 ### Generate MIP Slab
 
 ```swift
-// 10mm thick slab with maximum intensity projection
-let slabPlane = MPRPlaneGeometry.axial(at: 128, dataset: dataset)
-let mipSlab = try await adapter.makeSlab(
+// Thick slab with maximum intensity projection
+let slabPlane = MPRPlaneGeometryFactory.makePlane(for: dataset, axis: .z, slicePosition: 0.5)
+let mipSlab = try await adapter.makeSlabTexture(
     dataset: dataset,
+    volumeTexture: volumeTexture,
     plane: slabPlane,
-    thickness: 10,   // 10 voxels thick
+    thickness: 10,   // resolved against the dataset spacing along the plane normal
     steps: 20,       // 20 samples for smooth MIP
     blend: .maximum  // Maximum intensity projection
 )
@@ -382,8 +397,9 @@ let obliquePlane = MPRPlaneGeometry(
     normalWorld: ...    // Cross product of U and V in world space
 )
 
-let obliqueSlice = try await adapter.makeSlab(
+let obliqueFrame = try await adapter.makeSlabTexture(
     dataset: dataset,
+    volumeTexture: volumeTexture,
     plane: obliquePlane,
     thickness: 5,
     steps: 10,
@@ -397,15 +413,16 @@ let obliqueSlice = try await adapter.makeSlab(
 // Override slab parameters via command
 try await adapter.send(.setSlab(thickness: 15, steps: 30))
 
-// Next makeSlab call uses overridden parameters
-let thickSlab = try await adapter.makeSlab(
+// Next makeSlabTexture call uses overridden parameters
+let thickSlab = try await adapter.makeSlabTexture(
     dataset: dataset,
+    volumeTexture: volumeTexture,
     plane: plane,
     thickness: 5,   // Overridden to 15
     steps: 10,      // Overridden to 30
     blend: .maximum
 )
-// Overrides are cleared after makeSlab returns
+// Overrides are cleared after makeSlabTexture returns
 ```
 
 ### Blend Mode Switching
@@ -415,8 +432,9 @@ let thickSlab = try await adapter.makeSlab(
 try await adapter.send(.setBlend(.minimum))
 
 // Generate MinIP slab (highlights airways)
-let minipSlab = try await adapter.makeSlab(
+let minipSlab = try await adapter.makeSlabTexture(
     dataset: dataset,
+    volumeTexture: volumeTexture,
     plane: plane,
     thickness: 10,
     steps: 20,
@@ -449,7 +467,14 @@ Thick-slab generation cost scales **linearly** with `steps`:
 **Optimization**: `steps` can be lower than `thickness` for faster (but slightly noisier) results:
 ```swift
 // Fast MIP: 20-voxel slab with only 10 samples
-let fastMIP = try await adapter.makeSlab(..., thickness: 20, steps: 10, blend: .maximum)
+let fastMIP = try await adapter.makeSlabTexture(
+    dataset: dataset,
+    volumeTexture: volumeTexture,
+    plane: plane,
+    thickness: 20,
+    steps: 10,
+    blend: .maximum
+)
 ```
 
 ### Blend Mode Cost
@@ -480,7 +505,7 @@ The volume texture is loaded once and reused for all subsequent slices, making r
 - ``MetalMPRAdapter`` — Main MPR rendering interface
 - ``MPRReslicePort`` — MPR protocol definition
 - ``MPRPlaneGeometry`` — Plane geometry structure
-- ``MPRSlice`` — 2D slice result structure
+- ``MPRTextureFrame`` — 2D texture-native MPR frame
 - ``MPRBlendMode`` — Slab blending modes
 - ``MPRPlaneAxis`` — Anatomical plane axes
 - ``MPRGridComposer`` — SwiftUI synchronized grid layout

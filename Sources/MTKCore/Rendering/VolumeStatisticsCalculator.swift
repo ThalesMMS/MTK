@@ -109,6 +109,7 @@ public final class VolumeStatisticsCalculator {
         let percentilesBufferLength = percentiles.count * MemoryLayout<Float>.stride
         let percentileBinsBufferLength = percentiles.count * MemoryLayout<UInt32>.stride
 
+        // StorageModePolicy.md: statistics buffers are CPU-visible compute outputs.
         guard forcedFailure != .bufferAllocationFailed,
               let histogramBuffer = device.makeBuffer(length: histogramBufferLength, options: .storageModeShared),
               let cumulativeSumBuffer = device.makeBuffer(length: cumulativeSumBufferLength, options: .storageModeShared),
@@ -287,6 +288,7 @@ public final class VolumeStatisticsCalculator {
         let histogramBufferLength = binCount * MemoryLayout<UInt32>.stride
         let resultBufferLength = MemoryLayout<UInt32>.stride
 
+        // StorageModePolicy.md: Otsu buffers are CPU-visible compute outputs.
         guard forcedFailure != .bufferAllocationFailed,
               let histogramBuffer = device.makeBuffer(length: histogramBufferLength, options: .storageModeShared),
               let resultBuffer = device.makeBuffer(length: resultBufferLength, options: .storageModeShared) else {

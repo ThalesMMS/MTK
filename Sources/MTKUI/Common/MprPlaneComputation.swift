@@ -11,19 +11,12 @@ import MTKCore
 
 #if os(iOS) || os(macOS)
 
-extension simd_float4x4 {
-    func transformPoint(_ point: SIMD3<Float>) -> SIMD3<Float> {
-        let result = self * SIMD4<Float>(point.x, point.y, point.z, 1)
-        return SIMD3<Float>(result.x, result.y, result.z)
-    }
-}
-
 struct MprPlaneComputation {
     let originVoxel: SIMD3<Float>
     let axisUVoxel: SIMD3<Float>
     let axisVVoxel: SIMD3<Float>
 
-    static func make(axis: VolumetricSceneController.Axis,
+    static func make(axis: VolumeViewportController.Axis,
                      index: Int,
                      dims: SIMD3<Float>,
                      rotation: simd_quatf) -> MprPlaneComputation {
@@ -116,7 +109,7 @@ extension MprPlaneComputation {
         )
     }
 
-    static func defaultAxes(for axis: VolumetricSceneController.Axis) -> (u: SIMD3<Float>, v: SIMD3<Float>) {
+    static func defaultAxes(for axis: VolumeViewportController.Axis) -> (u: SIMD3<Float>, v: SIMD3<Float>) {
         switch axis {
         case .x:
             return (SIMD3<Float>(0, 1, 0), SIMD3<Float>(0, 0, 1))
@@ -127,7 +120,7 @@ extension MprPlaneComputation {
         }
     }
 
-    static func planeCenterVoxel(for axis: VolumetricSceneController.Axis,
+    static func planeCenterVoxel(for axis: VolumeViewportController.Axis,
                                  index: Int,
                                  dims: SIMD3<Float>) -> SIMD3<Float> {
         let span = simd_max(dims - SIMD3<Float>(repeating: 1), SIMD3<Float>(repeating: 0))

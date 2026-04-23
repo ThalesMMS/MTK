@@ -18,8 +18,8 @@ import MetalPerformanceShaders
 ///
 /// `MetalRaycaster` manages Metal pipeline states, textures, and command buffers for
 /// high-performance volume rendering. It provides a simplified interface for:
-/// - Fragment-based volume rendering (SceneKit integration)
-/// - Compute-based volume rendering (standalone rendering)
+/// - Raster pipeline creation for compatibility paths
+/// - Compute-based volume rendering
 /// - Dataset texture management
 /// - Optional MPS empty space acceleration structure generation
 ///
@@ -33,8 +33,8 @@ import MetalPerformanceShaders
 ///
 /// ## Overview
 ///
-/// The raycaster maintains separate pipeline caches for fragment and compute rendering:
-/// - **Fragment pipelines**: Used by SceneKit materials (``VolumeCubeMaterial``, ``MPRPlaneMaterial``)
+/// The raycaster maintains separate pipeline caches for raster and compute rendering:
+/// - **Fragment pipelines**: Optional compatibility render pipelines
 /// - **Compute pipelines**: Used by compute-based renderers (DVR, MIP, MinIP)
 ///
 /// ## Pipeline Caching
@@ -54,7 +54,7 @@ import MetalPerformanceShaders
 /// // Load dataset
 /// let resources = try raycaster.load(dataset: dataset)
 ///
-/// // Create fragment pipeline for SceneKit
+/// // Create a fragment pipeline
 /// let fragmentPipeline = try raycaster.makeFragmentPipeline(
 ///     colorPixelFormat: .bgra8Unorm,
 ///     depthPixelFormat: .depth32Float
@@ -306,11 +306,11 @@ public final class MetalRaycaster {
     /// - Apple Silicon Macs
     public var isMetalPerformanceShadersAvailable: Bool { mpsAvailable }
 
-    /// Creates a fragment-based rendering pipeline for SceneKit integration.
+    /// Creates a fragment-based rendering pipeline.
     ///
-    /// Fragment pipelines are used by ``VolumeCubeMaterial`` and ``MPRPlaneMaterial``
-    /// for rendering volumes within SceneKit scenes. Pipelines are cached by their
-    /// configuration signature (color/depth format, sample count) to avoid recompilation.
+    /// Fragment pipelines are available for compatibility render paths. Pipelines
+    /// are cached by their configuration signature (color/depth format, sample
+    /// count) to avoid recompilation.
     ///
     /// - Parameters:
     ///   - colorPixelFormat: Pixel format for the color attachment (e.g., `.bgra8Unorm`).
@@ -318,7 +318,7 @@ public final class MetalRaycaster {
     ///   - sampleCount: Number of MSAA samples (1 = no MSAA).
     ///   - label: Optional debug label for the pipeline state.
     ///
-    /// - Returns: A configured `MTLRenderPipelineState` ready for use with SceneKit.
+    /// - Returns: A configured `MTLRenderPipelineState`.
     ///
     /// - Throws: ``Error/pipelineUnavailable(function:)`` if required shader functions
     ///   (`volume_vertex`, `volume_fragment`) are missing from the library.
@@ -332,7 +332,7 @@ public final class MetalRaycaster {
     /// ## Usage
     ///
     /// ```swift
-    /// // Create pipeline matching SceneKit's drawable configuration
+    /// // Create a pipeline for a drawable configuration
     /// let pipeline = try raycaster.makeFragmentPipeline(
     ///     colorPixelFormat: .bgra8Unorm,
     ///     depthPixelFormat: .depth32Float,
@@ -383,7 +383,7 @@ public final class MetalRaycaster {
     /// Creates a compute-based rendering pipeline for standalone volume rendering.
     ///
     /// Compute pipelines are used by ``MetalVolumeRenderingAdapter`` and ``MetalMPRAdapter``
-    /// for offscreen rendering without SceneKit. Pipelines are cached by rendering technique
+    /// for offscreen rendering. Pipelines are cached by rendering technique
     /// to avoid recompilation.
     ///
     /// - Parameters:

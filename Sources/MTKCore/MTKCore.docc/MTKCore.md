@@ -6,7 +6,11 @@ Core rendering engine and domain models for medical volumetric visualization wit
 
 MTKCore provides the foundational building blocks for GPU-accelerated medical volume rendering on iOS and macOS. Built on Metal with optional Metal Performance Shaders acceleration, it supports Direct Volume Rendering (DVR), Maximum Intensity Projection (MIP), and Multi-Planar Reconstruction (MPR).
 
-The framework handles the pipeline from DICOM data loading through GPU texture creation, ray marching computation, and transfer function application.
+The official clinical rendering path is Metal-native. The target flow is `DICOM / VolumeDataset -> VolumeResourceManager -> GPU textures -> MTKRenderingEngine -> ViewportRenderGraph -> render passes -> PresentationPass -> MTKView/CAMetalLayer drawable`. `MTLTexture` is the official result type for interactive rendering frames. `CGImage` is for export, snapshot, debug, and test readback use cases only; it is not the interactive display path.
+
+The accepted architecture decision is recorded in [Architecture/ClinicalRenderingADR.md](../../../Architecture/ClinicalRenderingADR.md). The framework handles the pipeline from DICOM data loading through GPU texture creation, ray marching computation, and transfer function application. Synchronized viewports should share GPU resources by handle, including volume textures, transfer textures, acceleration textures, and intermediate pass outputs.
+
+> Note: Historical SceneKit integration was removed from the main package. SceneKit examples may be extracted to a separate experimental package in the future.
 
 ### Key Features
 
@@ -23,6 +27,7 @@ The framework handles the pipeline from DICOM data loading through GPU texture c
 - <doc:GettingStarted>
 - ``VolumeDataset``
 - ``MetalVolumeRenderingAdapter``
+- ``VolumeRenderFrame``
 - ``DicomVolumeLoader``
 
 ### Volume Data Management
@@ -127,7 +132,27 @@ let renderer = try MetalVolumeRenderingAdapter(device: device)
 // Configure for medical CT visualization
 try await renderer.setHuWindow(min: -500, max: 1200)
 try await renderer.setPreset(.softTissue)
+
+let request = VolumeRenderRequest(
+    dataset: dataset,
+    transferFunction: VolumeTransferFunction.defaultGrayscale(for: dataset),
+    viewportSize: CGSize(width: 512, height: 512),
+    camera: VolumeRenderRequest.Camera(
+        position: SIMD3<Float>(0.5, 0.5, 2),
+        target: SIMD3<Float>(0.5, 0.5, 0.5),
+        up: SIMD3<Float>(0, 1, 0),
+        fieldOfView: 45
+    ),
+    samplingDistance: 0.002,
+    compositing: .frontToBack,
+    quality: .interactive
+)
+
+let frame = try await renderer.renderFrame(using: request)
+let texture = frame.texture
 ```
+
+Interactive rendering returns ``VolumeRenderFrame`` and presents the frame's `MTLTexture` through `MTKView` or `CAMetalLayer`. Snapshot/export code should call ``TextureSnapshotExporter`` when a CPU image is explicitly required.
 
 ## Platform Requirements
 
@@ -145,6 +170,8 @@ All rendering surfaces and adapters require a Metal-capable device. ``MetalVolum
 
 ``VolumeHistogramCalculator`` is pure Metal compute with no MPS dependency. ``VolumeStatisticsCalculator`` provides GPU compute plus a CPU implementation for environments without GPU compute; that CPU path is a statistics implementation, not a volume-rendering mode.
 
+The clinical backend for MTKCore is Metal-native. A bounding box or proxy plane may be used inside a specialized ray-entry/ray-exit pass, but public clinical integration should be expressed in Metal resources, render graph passes, and `MTKView`/`CAMetalLayer` presentation.
+
 ### MPS optional acceleration
 
 Metal Performance Shaders provide optional acceleration for specific features. ``MPSEmptySpaceAccelerator`` is available only when `MPSSupportsMTLDevice(_:)` is true and reports feature unavailability when MPS is not supported. Core volume rendering remains the Metal ray marching path.
@@ -153,5 +180,6 @@ MPR texture conversion can use MPS image conversion for compatible 2D normalized
 
 ## See Also
 
-- ``MTKSceneKit`` — SceneKit integration layer for volume materials and camera control
-- ``MTKUI`` — SwiftUI components and controllers for volumetric visualization
+> Note: For clinical applications, pair MTKCore's Metal adapters with ``MTKUI``. MTKUI is the recommended UI integration layer for SwiftUI apps because it preserves the Metal-native clinical boundary.
+
+- ``MTKUI`` — Recommended SwiftUI integration layer for clinical applications, built over MTKCore Metal volume and MPR adapters

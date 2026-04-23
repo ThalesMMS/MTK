@@ -8,7 +8,7 @@ import SwiftUI
 
 /// SwiftUI view modifier that attaches volumetric interaction gestures to a view.
 ///
-/// This modifier wires drag, pinch, and rotation gestures to a ``VolumetricSceneController``,
+/// This modifier wires drag, pinch, and rotation gestures to a ``VolumeViewportController``,
 /// enabling interactive camera control, volume rotation, MPR slice navigation, and windowing adjustments.
 /// The gesture behavior is controlled by a ``VolumeGestureConfiguration`` and state is tracked
 /// through a ``VolumeGestureState`` observable object.
@@ -21,21 +21,28 @@ import SwiftUI
 struct VolumeGesturesModifier: ViewModifier {
     /// Observable state tracking gesture events and accumulated windowing/slab changes.
     @ObservedObject private var state: VolumeGestureState
+    @State private var translationInteractionActive = false
+    @State private var magnificationInteractionActive = false
+    @State private var rotationInteractionActive = false
+    @State private var translationResetTask: Task<Void, Never>?
+    @State private var magnificationResetTask: Task<Void, Never>?
+    @State private var rotationResetTask: Task<Void, Never>?
 
-    /// The volumetric scene controller that will receive gesture-driven updates.
-    private let controller: VolumetricSceneController
+    /// The volume viewport controller that will receive gesture-driven updates.
+    private let controller: VolumeViewportController
 
     /// Configuration toggles that enable or disable specific gesture capabilities.
     private let configuration: VolumeGestureConfiguration
+    private let interruptedGestureResetDelay: UInt64 = 750_000_000
 
     /// Creates a gesture modifier bound to the specified controller, state, and configuration.
     ///
     /// - Parameters:
     ///   - state: Observable state object that records gesture events and publishes changes.
-    ///   - controller: Scene controller that will handle camera, rotation, and windowing updates.
+    ///   - controller: Viewport controller that will handle camera, rotation, and windowing updates.
     ///   - configuration: Toggles controlling which gestures are active.
     init(state: VolumeGestureState,
-         controller: VolumetricSceneController,
+         controller: VolumeViewportController,
          configuration: VolumeGestureConfiguration) {
         self.state = state
         self.controller = controller
@@ -55,6 +62,9 @@ struct VolumeGesturesModifier: ViewModifier {
             .simultaneousGesture(makeTranslationGesture(context: context))
             .simultaneousGesture(makeMagnificationGesture(context: context))
             .simultaneousGesture(makeRotationGesture(context: context))
+            .onDisappear {
+                resetActiveInteractions()
+            }
     }
 
     /// Builds a drag gesture that drives translation along the configured axis.
@@ -71,9 +81,22 @@ struct VolumeGesturesModifier: ViewModifier {
         return DragGesture(minimumDistance: 2)
             .onChanged { value in
                 guard configuration.allowsTranslation else { return }
+                if !translationInteractionActive {
+                    translationInteractionActive = true
+                    Task { await controller.beginAdaptiveSamplingInteraction() }
+                }
+                scheduleTranslationReset()
                 context.onTranslate(axis, value.translation)
             }
-            .onEnded { _ in context.onReset() }
+            .onEnded { _ in
+                translationResetTask?.cancel()
+                translationResetTask = nil
+                if translationInteractionActive {
+                    translationInteractionActive = false
+                    Task { await controller.endAdaptiveSamplingInteraction() }
+                }
+                context.onReset()
+            }
     }
 
     /// Builds a pinch gesture that drives camera zoom (dolly).
@@ -87,7 +110,20 @@ struct VolumeGesturesModifier: ViewModifier {
         MagnificationGesture()
             .onChanged { value in
                 guard configuration.allowsZoom else { return }
+                if !magnificationInteractionActive {
+                    magnificationInteractionActive = true
+                    Task { await controller.beginAdaptiveSamplingInteraction() }
+                }
+                scheduleMagnificationReset()
                 context.onZoom(value)
+            }
+            .onEnded { _ in
+                magnificationResetTask?.cancel()
+                magnificationResetTask = nil
+                if magnificationInteractionActive {
+                    magnificationInteractionActive = false
+                    Task { await controller.endAdaptiveSamplingInteraction() }
+                }
             }
     }
 
@@ -102,27 +138,99 @@ struct VolumeGesturesModifier: ViewModifier {
         RotationGesture()
             .onChanged { radians in
                 guard configuration.allowsRotation else { return }
+                if !rotationInteractionActive {
+                    rotationInteractionActive = true
+                    Task { await controller.beginAdaptiveSamplingInteraction() }
+                }
+                scheduleRotationReset()
                 context.onRotate(.volume, CGFloat(radians.radians))
             }
+            .onEnded { _ in
+                rotationResetTask?.cancel()
+                rotationResetTask = nil
+                if rotationInteractionActive {
+                    rotationInteractionActive = false
+                    Task { await controller.endAdaptiveSamplingInteraction() }
+                }
+            }
+    }
+
+    private func scheduleTranslationReset() {
+        translationResetTask?.cancel()
+        translationResetTask = Task { @MainActor in
+            guard await sleepForInterruptedGestureReset(),
+                  translationInteractionActive else { return }
+            translationInteractionActive = false
+            await controller.endAdaptiveSamplingInteraction()
+        }
+    }
+
+    private func scheduleMagnificationReset() {
+        magnificationResetTask?.cancel()
+        magnificationResetTask = Task { @MainActor in
+            guard await sleepForInterruptedGestureReset(),
+                  magnificationInteractionActive else { return }
+            magnificationInteractionActive = false
+            await controller.endAdaptiveSamplingInteraction()
+        }
+    }
+
+    private func scheduleRotationReset() {
+        rotationResetTask?.cancel()
+        rotationResetTask = Task { @MainActor in
+            guard await sleepForInterruptedGestureReset(),
+                  rotationInteractionActive else { return }
+            rotationInteractionActive = false
+            await controller.endAdaptiveSamplingInteraction()
+        }
+    }
+
+    private func sleepForInterruptedGestureReset() async -> Bool {
+        do {
+            try await Task.sleep(nanoseconds: interruptedGestureResetDelay)
+            return !Task.isCancelled
+        } catch {
+            return false
+        }
+    }
+
+    private func resetActiveInteractions() {
+        translationResetTask?.cancel()
+        magnificationResetTask?.cancel()
+        rotationResetTask?.cancel()
+        translationResetTask = nil
+        magnificationResetTask = nil
+        rotationResetTask = nil
+
+        let activeCount = [translationInteractionActive,
+                           magnificationInteractionActive,
+                           rotationInteractionActive].filter { $0 }.count
+        translationInteractionActive = false
+        magnificationInteractionActive = false
+        rotationInteractionActive = false
+
+        for _ in 0..<activeCount {
+            Task { await controller.endAdaptiveSamplingInteraction() }
+        }
     }
 }
 
 /// SwiftUI view extensions for volumetric gesture handling.
 public extension View {
-    /// Attaches interactive volumetric gestures to the view, forwarding drag, pinch, and rotation to a scene controller.
+    /// Attaches interactive volumetric gestures to the view, forwarding drag, pinch, and rotation to a viewport controller.
     ///
     /// This modifier enables multi-touch interaction for volumetric rendering, including camera orbit, MPR slice navigation,
     /// zoom/dolly, and volume rotation. Gesture capabilities can be selectively enabled or disabled via the configuration parameter.
     ///
     /// ```swift
-    /// VolumetricDisplayContainer(controller: coordinator.controller)
+    /// VolumeViewportContainer(controller: coordinator.controller)
     ///     .volumeGestures(controller: coordinator.controller)
     /// ```
     ///
     /// For MPR-specific interactions with constrained translation axes:
     ///
     /// ```swift
-    /// VolumetricDisplayContainer(controller: coordinator.controller)
+    /// VolumeViewportContainer(controller: coordinator.controller)
     ///     .volumeGestures(
     ///         controller: coordinator.controller,
     ///         configuration: VolumeGestureConfiguration(translationAxis: .axial)
@@ -130,7 +238,7 @@ public extension View {
     /// ```
     ///
     /// - Parameters:
-    ///   - controller: The volumetric scene controller that will handle gesture-driven updates.
+    ///   - controller: The volume viewport controller that will handle gesture-driven updates.
     ///     This controller receives camera, rotation, windowing, and slab thickness events.
     ///   - state: Optional observable state object for tracking gesture events. When `nil`, a new
     ///     state instance is created automatically. Pass a shared instance to coordinate gesture
@@ -141,9 +249,9 @@ public extension View {
     ///
     /// - Returns: A view modified with simultaneous drag, magnification, and rotation gesture recognizers.
     ///
-    /// - SeeAlso: ``VolumeGestureConfiguration``, ``VolumeGestureState``, ``VolumetricSceneController``
+    /// - SeeAlso: ``VolumeGestureConfiguration``, ``VolumeGestureState``, ``VolumeViewportController``
     @MainActor
-    func volumeGestures(controller: VolumetricSceneController,
+    func volumeGestures(controller: VolumeViewportController,
                         state: VolumeGestureState? = nil,
                         configuration: VolumeGestureConfiguration = .default) -> some View {
         let resolvedState = state ?? VolumeGestureState()

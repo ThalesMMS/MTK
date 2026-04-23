@@ -223,16 +223,18 @@ final class TransferCacheIntensityRangeTests: XCTestCase {
         XCTAssertNotEqual(dataset1.intensityRange, dataset2.intensityRange)
 
         let request1 = makeRenderRequest(dataset: dataset1, transfer: transfer)
-        let result1 = try await adapter.renderImage(using: request1)
+        let frame1 = try await adapter.renderFrame(using: request1)
         let transferTexture1 = await adapter.debugTransferCacheTexture
         let unwrappedTransferTexture1 = try XCTUnwrap(transferTexture1)
-        XCTAssertNotNil(result1.cgImage, "First render should produce an image")
+        XCTAssertEqual(frame1.texture.width, Int(request1.viewportSize.width))
+        XCTAssertEqual(frame1.texture.height, Int(request1.viewportSize.height))
 
         let request2 = makeRenderRequest(dataset: dataset2, transfer: transfer)
-        let result2 = try await adapter.renderImage(using: request2)
+        let frame2 = try await adapter.renderFrame(using: request2)
         let transferTexture2 = await adapter.debugTransferCacheTexture
         let unwrappedTransferTexture2 = try XCTUnwrap(transferTexture2)
-        XCTAssertNotNil(result2.cgImage, "Second render with different intensityRange should produce an image")
+        XCTAssertEqual(frame2.texture.width, Int(request2.viewportSize.width))
+        XCTAssertEqual(frame2.texture.height, Int(request2.viewportSize.height))
 
         XCTAssertNotEqual(ObjectIdentifier(unwrappedTransferTexture1),
                           ObjectIdentifier(unwrappedTransferTexture2),

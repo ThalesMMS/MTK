@@ -15,6 +15,20 @@ MTKCore implements four primary volume rendering techniques, each optimized for 
 
 All techniques are GPU-accelerated using Metal shaders with adaptive sampling. Empty space skipping is available in DVR mode via shader heuristics that do not require MPS, and optional MPS-accelerated precomputed structures are available when MPS support is reported by the device. `MetalVolumeRenderingAdapter` is a Metal-only adapter: Metal initialization and rendering failures surface as explicit errors.
 
+Interactive rendering is GPU-native. ``MetalVolumeRenderingAdapter/renderFrame(using:)`` returns ``VolumeRenderFrame`` with an `MTLTexture` plus metadata for presentation, profiling, and debugging. Present that texture through `MTKView` or `CAMetalLayer`. `CGImage` creation is an explicit snapshot/export/readback operation via ``TextureSnapshotExporter`` and is not part of the normal interactive display path.
+
+## Storage Mode Policy
+
+MTKCore keeps interactive resources GPU-native and uses CPU-visible storage only at explicit ingestion or readback boundaries:
+
+- **Volume textures**: use `.private` storage in the async and chunked upload paths. CPU voxel data is staged through shared buffers, then copied or converted into the final 3D texture for rendering.
+- **Transfer function textures**: use `.shared` storage because they are small, CPU-authored lookup tables updated from UI state.
+- **Output textures**: use `.private` storage. Render passes write them on the GPU and presentation copies or samples them without CPU access.
+- **Staging buffers**: use `.storageModeShared` with `.cpuCacheModeWriteCombined` for one-way CPU writes during upload.
+- **Readback resources**: use `.shared` or `.managed` only for snapshot, export, debug, and tests. Readback is not part of the interactive rendering path.
+
+The synchronous ``VolumeTextureFactory/generate(device:)`` path remains a CPU reference path for tests and small debug uploads. Prefer ``VolumeTextureFactory/generateAsync(device:commandQueue:)`` or ``ChunkedVolumeUploader`` when the final rendering resource should be private.
+
 ## Core Concepts
 
 ### Ray Marching

@@ -250,6 +250,20 @@ public struct DicomImportResult {
     }
 }
 
+public struct DicomStreamingImportResult {
+    public let metadata: VolumeUploadDescriptor
+    public let sourceURL: URL
+    public let seriesDescription: String
+
+    public init(metadata: VolumeUploadDescriptor,
+                sourceURL: URL,
+                seriesDescription: String) {
+        self.metadata = metadata
+        self.sourceURL = sourceURL
+        self.seriesDescription = seriesDescription
+    }
+}
+
 /// Progress updates during DICOM volume loading.
 ///
 /// Emitted by ``DicomVolumeLoader/loadVolume(from:progress:completion:)`` to track parsing and
@@ -458,7 +472,9 @@ public final class DicomVolumeLoader {
                 var minHU = Int32.max
                 var maxHU = Int32.min
                 var encounteredFatalError = false
+                var huConversionMilliseconds = 0.0
 
+                let parseStartedAt = CFAbsoluteTimeGetCurrent()
                 let volume = try self.loader.loadSeries(at: directoryURL, progress: { fraction, slicesLoaded, sliceData, partialVolume in
                     if encounteredFatalError { return }
 
@@ -495,6 +511,7 @@ public final class DicomVolumeLoader {
                     guard convertedData != nil else { return }
 
                     if let sliceData = sliceData {
+                        let huStartedAt = CFAbsoluteTimeGetCurrent()
                         convertedData!.withUnsafeMutableBytes { destBuffer in
                             guard let destPtr = destBuffer.bindMemory(to: Int16.self).baseAddress else { return }
                             let sliceVoxelCount = Int(dimensions.x) * Int(dimensions.y)
@@ -524,11 +541,13 @@ public final class DicomVolumeLoader {
                                 }
                             }
                         }
+                        huConversionMilliseconds += ClinicalProfiler.milliseconds(from: huStartedAt)
                     }
                     DispatchQueue.main.async {
                         progress(.reading(fraction))
                     }
                 })
+                let loaderMilliseconds = ClinicalProfiler.milliseconds(from: parseStartedAt)
 
                 if encounteredFatalError {
                     if let cleanupRoot = prepared.cleanupRoot {
@@ -541,6 +560,29 @@ public final class DicomVolumeLoader {
                     self.logger.error("DICOM loader did not produce voxel data for \(sourceURL.lastPathComponent)")
                     throw DicomVolumeLoaderError.missingResult
                 }
+                ClinicalProfiler.shared.recordSample(
+                    stage: .dicomParse,
+                    cpuTime: max(0, loaderMilliseconds - huConversionMilliseconds),
+                    viewport: .unknown,
+                    metadata: [
+                        "source": sourceURL.lastPathComponent,
+                        "path": "DicomVolumeLoader.loadVolume",
+                        "dimensions": "\(dimensions.x)x\(dimensions.y)x\(dimensions.z)"
+                    ],
+                    device: self.device
+                )
+                ClinicalProfiler.shared.recordSample(
+                    stage: .huConversion,
+                    cpuTime: huConversionMilliseconds,
+                    memory: convertedData.count,
+                    viewport: .unknown,
+                    metadata: [
+                        "source": sourceURL.lastPathComponent,
+                        "path": "DicomVolumeLoader.loadVolume",
+                        "dimensions": "\(dimensions.x)x\(dimensions.y)x\(dimensions.z)"
+                    ],
+                    device: self.device
+                )
 
                 let range = Self.intensityRange(minHU: minHU, maxHU: maxHU)
                 var dataset = self.makeDataset(data: convertedData,
@@ -585,6 +627,158 @@ public final class DicomVolumeLoader {
         }
     }
 
+    public func loadVolumeStreaming(from url: URL,
+                                    sliceHandler: @escaping DicomStreamingSliceHandler,
+                                    progress: @escaping (DicomVolumeProgress) -> Void,
+                                    completion: @escaping (Result<DicomStreamingImportResult, Error>) -> Void) {
+        let sourceURL = url.standardizedFileURL
+        logger.info("Starting streaming DICOM import from \(sourceURL.path(percentEncoded: false))")
+        DispatchQueue.global(qos: .userInitiated).async {
+            var encounteredFatalError = false
+            var cleanupRoot: URL?
+            defer {
+                if let cleanupRoot {
+                    try? FileManager.default.removeItem(at: cleanupRoot)
+                }
+            }
+            do {
+                let prepared = try self.prepareDirectory(from: url)
+                cleanupRoot = prepared.cleanupRoot
+                let directoryURL = prepared.url
+
+                var metadata: VolumeUploadDescriptor?
+                var dimensions = SIMD3<Int32>(repeating: 0)
+                var spacing = SIMD3<Float>(repeating: 0)
+                var orientation = matrix_identity_float3x3
+                var origin = SIMD3<Float>.zero
+                var slope: Double = 1.0
+                var intercept: Double = 0.0
+                var isSigned = false
+                var receivedSlice = false
+                var sliceHandlerMilliseconds = 0.0
+
+                func configureMetadata(from partialVolume: any DICOMSeriesVolumeProtocol) {
+                    dimensions = SIMD3(Int32(partialVolume.width),
+                                        Int32(partialVolume.height),
+                                        Int32(partialVolume.depth))
+                    let meterScale: Float = 0.001
+                    spacing = SIMD3(Float(partialVolume.spacingX) * meterScale,
+                                    Float(partialVolume.spacingY) * meterScale,
+                                    Float(partialVolume.spacingZ) * meterScale)
+                    orientation = partialVolume.orientation
+                    origin = SIMD3<Float>(partialVolume.origin) * meterScale
+                    slope = partialVolume.rescaleSlope == 0 ? 1.0 : partialVolume.rescaleSlope
+                    intercept = partialVolume.rescaleIntercept
+                    isSigned = partialVolume.isSignedPixel
+
+                    metadata = self.makeUploadDescriptor(width: Int(dimensions.x),
+                                                         height: Int(dimensions.y),
+                                                         depth: Int(dimensions.z),
+                                                         spacing: spacing,
+                                                         orientationMatrix: orientation,
+                                                         origin: origin,
+                                                         sourcePixelFormat: isSigned ? .int16Signed : .int16Unsigned,
+                                                         intensityRange: Self.intensityRange(minHU: Int32.max,
+                                                                                             maxHU: Int32.min))
+                }
+
+                let parseStartedAt = CFAbsoluteTimeGetCurrent()
+                let volume = try self.loader.loadSeries(at: directoryURL, progress: { fraction, slicesLoaded, sliceData, partialVolume in
+                    if encounteredFatalError { return }
+
+                    guard let partialVolume = partialVolume as? any DICOMSeriesVolumeProtocol else { return }
+
+                    if metadata == nil {
+                        if partialVolume.bitsAllocated != 16 {
+                            encounteredFatalError = true
+                            DispatchQueue.main.async {
+                                completion(.failure(DicomVolumeLoaderError.unsupportedBitDepth))
+                            }
+                            return
+                        }
+
+                        configureMetadata(from: partialVolume)
+                        DispatchQueue.main.async {
+                            progress(.started(totalSlices: Int(partialVolume.depth)))
+                        }
+                    }
+
+                    if let sliceData {
+                        let sliceIndex = max(Int(slicesLoaded) - 1, 0)
+                        receivedSlice = true
+                        let sliceHandlerStartedAt = CFAbsoluteTimeGetCurrent()
+                        sliceHandler(sliceIndex,
+                                     sliceData,
+                                     slope,
+                                     intercept,
+                                     isSigned)
+                        sliceHandlerMilliseconds += ClinicalProfiler.milliseconds(from: sliceHandlerStartedAt)
+                    }
+
+                    DispatchQueue.main.async {
+                        progress(.reading(fraction))
+                    }
+                })
+                let parseMilliseconds = max(0, ClinicalProfiler.milliseconds(from: parseStartedAt) - sliceHandlerMilliseconds)
+
+                if encounteredFatalError {
+                    return
+                }
+
+                guard let finalVolume = volume as? any DICOMSeriesVolumeProtocol else {
+                    self.logger.error("Streaming DICOM loader did not produce volume metadata for \(sourceURL.lastPathComponent)")
+                    throw DicomVolumeLoaderError.missingResult
+                }
+
+                if metadata == nil {
+                    guard finalVolume.bitsAllocated == 16 else {
+                        throw DicomVolumeLoaderError.unsupportedBitDepth
+                    }
+                    configureMetadata(from: finalVolume)
+                }
+
+                guard receivedSlice, let metadata else {
+                    self.logger.error("Streaming DICOM loader did not produce slice data for \(sourceURL.lastPathComponent)")
+                    throw DicomVolumeLoaderError.missingResult
+                }
+
+                let result = DicomStreamingImportResult(
+                    metadata: metadata,
+                    sourceURL: url,
+                    seriesDescription: finalVolume.seriesDescription
+                )
+                ClinicalProfiler.shared.recordSample(
+                    stage: .dicomParse,
+                    cpuTime: parseMilliseconds,
+                    viewport: .unknown,
+                    metadata: [
+                        "source": sourceURL.lastPathComponent,
+                        "path": "DicomVolumeLoader.loadVolumeStreaming",
+                        "dimensions": "\(dimensions.x)x\(dimensions.y)x\(dimensions.z)"
+                    ],
+                    device: self.device
+                )
+
+                self.logger.info("Streaming DICOM import completed for \(sourceURL.lastPathComponent) (\(dimensions.x)x\(dimensions.y)x\(dimensions.z))")
+                DispatchQueue.main.async {
+                    completion(.success(result))
+                }
+            } catch let error as NSError {
+                if encounteredFatalError { return }
+                self.logger.error("Streaming DICOM import failed for \(sourceURL.lastPathComponent): \(error.localizedDescription)")
+                DispatchQueue.main.async {
+                    completion(.failure(DicomVolumeLoaderError.bridgeError(error)))
+                }
+            } catch {
+                if encounteredFatalError { return }
+                self.logger.error("Streaming DICOM import failed for \(sourceURL.lastPathComponent): \(error.localizedDescription)")
+                DispatchQueue.main.async {
+                    completion(.failure(error))
+                }
+            }
+        }
+    }
+
     private func prepareDirectory(from url: URL) throws -> PreparedDirectory {
         if url.hasDirectoryPath {
             logger.info("Using DICOM directory at \(url.path(percentEncoded: false))")
@@ -607,6 +801,12 @@ public final class DicomVolumeLoader {
         let temporaryDirectory = URL(fileURLWithPath: NSTemporaryDirectory(),
                                      isDirectory: true).appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        var shouldCleanupTemporaryDirectory = true
+        defer {
+            if shouldCleanupTemporaryDirectory {
+                try? FileManager.default.removeItem(at: temporaryDirectory)
+            }
+        }
 
         let archive: Archive
         do {
@@ -621,35 +821,46 @@ public final class DicomVolumeLoader {
         }
 
         var extractedEntries = 0
+        var skippedEntries = 0
         for entry in archive {
-            // Validate entry path to prevent path traversal attacks
-            let sanitizedPath = try Self.sanitizeZipEntryPath(entry.path)
-            let destinationURL = temporaryDirectory.appendingPathComponent(sanitizedPath)
-            let destinationDir = destinationURL.deletingLastPathComponent()
-            try FileManager.default.createDirectory(at: destinationDir, withIntermediateDirectories: true)
-            _ = try archive.extract(entry, to: destinationURL)
-            extractedEntries += 1
+            switch try Self.extractionDisposition(for: entry.path) {
+            case .skip:
+                skippedEntries += 1
+            case .extract(let sanitizedPath):
+                let destinationURL = temporaryDirectory.appendingPathComponent(sanitizedPath)
+                let destinationDir = destinationURL.deletingLastPathComponent()
+                try FileManager.default.createDirectory(at: destinationDir, withIntermediateDirectories: true)
+                _ = try archive.extract(entry, to: destinationURL)
+                extractedEntries += 1
+            }
         }
-        logger.info("Extracted \(extractedEntries) entries from \(url.lastPathComponent)")
+        logger.info("Extracted \(extractedEntries) entries from \(url.lastPathComponent) (skipped \(skippedEntries) hidden/metadata entries)")
 
         // If the archive expands to a single directory, dive into it for cleanliness.
         let contents = try FileManager.default.contentsOfDirectory(at: temporaryDirectory,
                                                                    includingPropertiesForKeys: [.isDirectoryKey],
                                                                    options: [.skipsHiddenFiles])
         if contents.count == 1, (try contents.first?.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+            shouldCleanupTemporaryDirectory = false
             return PreparedDirectory(url: contents[0], cleanupRoot: temporaryDirectory)
         }
 
+        shouldCleanupTemporaryDirectory = false
         return PreparedDirectory(url: temporaryDirectory, cleanupRoot: temporaryDirectory)
     }
 }
 
 private extension DicomVolumeLoader {
-    /// Validate and sanitize ZIP entry path to prevent path traversal attacks
+    enum ZipEntryExtractionDisposition {
+        case extract(String)
+        case skip
+    }
+
+    /// Validate and sanitize ZIP entry paths while skipping non-DICOM metadata files.
     /// - Parameter entryPath: Raw path from ZIP entry
-    /// - Returns: Sanitized path safe for extraction
+    /// - Returns: Extraction disposition for the entry
     /// - Throws: DicomVolumeLoaderError.pathTraversal if path is malicious
-    static func sanitizeZipEntryPath(_ entryPath: String) throws -> String {
+    static func extractionDisposition(for entryPath: String) throws -> ZipEntryExtractionDisposition {
         // Reject absolute paths
         guard !entryPath.hasPrefix("/") else {
             throw DicomVolumeLoaderError.pathTraversal
@@ -662,10 +873,6 @@ private extension DicomVolumeLoader {
             if component == ".." {
                 throw DicomVolumeLoaderError.pathTraversal
             }
-            // Reject hidden files/directories (security best practice)
-            if component.hasPrefix(".") && component != "." {
-                throw DicomVolumeLoaderError.pathTraversal
-            }
         }
 
         // Filter out current directory references and join
@@ -674,7 +881,13 @@ private extension DicomVolumeLoader {
             throw DicomVolumeLoaderError.pathTraversal
         }
 
-        return sanitizedComponents.joined(separator: "/")
+        // Ignore Finder/hidden metadata instead of rejecting the entire archive.
+        if sanitizedComponents.contains("__MACOSX") ||
+            sanitizedComponents.contains(where: { $0.hasPrefix(".") }) {
+            return .skip
+        }
+
+        return .extract(sanitizedComponents.joined(separator: "/"))
     }
 
     static func intensityRange(minHU: Int32, maxHU: Int32) -> ClosedRange<Int32> {
@@ -719,6 +932,36 @@ private extension DicomVolumeLoader {
                              intensityRange: intensityRange,
                              orientation: orientation,
                              recommendedWindow: recommendedWindow)
+    }
+
+    func makeUploadDescriptor(width: Int,
+                              height: Int,
+                              depth: Int,
+                              spacing: SIMD3<Float>,
+                              orientationMatrix: simd_float3x3,
+                              origin: SIMD3<Float>,
+                              sourcePixelFormat: VolumePixelFormat,
+                              intensityRange: ClosedRange<Int32>,
+                              recommendedWindow: ClosedRange<Int32>? = nil) -> VolumeUploadDescriptor {
+        let row = SIMD3<Float>(orientationMatrix.columns.0.x,
+                               orientationMatrix.columns.0.y,
+                               orientationMatrix.columns.0.z)
+        let column = SIMD3<Float>(orientationMatrix.columns.1.x,
+                                  orientationMatrix.columns.1.y,
+                                  orientationMatrix.columns.1.z)
+        let orientation = VolumeOrientation(row: row,
+                                            column: column,
+                                            origin: origin)
+        return VolumeUploadDescriptor(
+            dimensions: VolumeDimensions(width: width, height: height, depth: depth),
+            spacing: VolumeSpacing(x: Double(spacing.x),
+                                   y: Double(spacing.y),
+                                   z: Double(spacing.z)),
+            sourcePixelFormat: sourcePixelFormat,
+            intensityRange: intensityRange,
+            orientation: orientation,
+            recommendedWindow: recommendedWindow
+        )
     }
 
     func computeRecommendedWindow(for dataset: VolumeDataset,

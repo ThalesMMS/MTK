@@ -35,7 +35,8 @@ extension MetalRaycaster {
     /// - 512×512 slice: ~5-10ms
     /// - 1024×1024 slice: ~20-40ms
     ///
-    /// For interactive rendering, use GPU-accelerated ``makeFragmentPipeline(colorPixelFormat:depthPixelFormat:sampleCount:label:)``
+    /// For interactive rendering, use GPU-accelerated pipelines such as
+    /// ``makeFragmentPipeline(colorPixelFormat:depthPixelFormat:sampleCount:label:)``
     /// or ``makeComputePipeline(for:label:)`` instead.
     ///
     /// ## Usage

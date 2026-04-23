@@ -15,17 +15,13 @@ let package = Package(
             targets: ["MTKCore"]
         ),
         .library(
-            name: "MTKSceneKit",
-            targets: ["MTKSceneKit"]
-        ),
-        .library(
             name: "MTKUI",
             targets: ["MTKUI"]
         )
     ],
     dependencies: [
         .package(url: "https://github.com/weichsel/ZIPFoundation.git", from: "0.9.19"),
-        .package(path: "../DICOM-Decoder"),
+        .package(path: "../DICOM-decoder"),
         .package(url: "https://github.com/apple/swift-docc-plugin", from: "1.0.0")
     ],
     targets: [
@@ -33,7 +29,7 @@ let package = Package(
             name: "MTKCore",
             dependencies: [
                 .product(name: "ZIPFoundation", package: "ZIPFoundation"),
-                .product(name: "DicomCore", package: "DICOM-Decoder")
+                .product(name: "DicomCore", package: "DICOM-decoder")
             ],
             path: "Sources/MTKCore",
             resources: [
@@ -43,13 +39,8 @@ let package = Package(
                 .plugin(name: "MTKShaderPlugin")
             ]
         ),
-        .target(
-            name: "MTKSceneKit",
-            dependencies: [
-                "MTKCore"
-            ],
-            path: "Sources/MTKSceneKit"
-        ),
+        // MTKUI intentionally stays independent from any legacy 3D wrapper. The
+        // clinical UI path is Metal-native and must not widen its public contract.
         .target(
             name: "MTKUI",
             dependencies: [
@@ -63,13 +54,6 @@ let package = Package(
                 "MTKCore"
             ],
             path: "Tests/MTKCoreTests"
-        ),
-        .testTarget(
-            name: "MTKSceneKitTests",
-            dependencies: [
-                "MTKSceneKit"
-            ],
-            path: "Tests/MTKSceneKitTests"
         ),
         .testTarget(
             name: "MTKUITests",

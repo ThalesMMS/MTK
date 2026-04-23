@@ -37,4 +37,9 @@ class MetalMPRComputeAdapterTestCase: XCTestCase {
             debugOptions: debugOptions
         )
     }
+
+    func makeVolumeTexture(for dataset: VolumeDataset) async throws -> any MTLTexture {
+        try await VolumeTextureFactory(dataset: dataset)
+            .generateAsync(device: device, commandQueue: commandQueue)
+    }
 }

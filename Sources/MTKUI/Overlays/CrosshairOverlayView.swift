@@ -27,7 +27,7 @@ import SwiftUI
 /// ### Basic centered crosshair
 ///
 /// ```swift
-/// VolumetricDisplayContainer(controller: sceneController) {
+/// VolumeViewportContainer(controller: viewportController) {
 ///     CrosshairOverlayView()
 /// }
 /// ```
@@ -50,7 +50,7 @@ import SwiftUI
 /// @State private var cursorOffset: CGPoint = .zero
 ///
 /// var body: some View {
-///     VolumetricDisplayContainer(controller: sceneController) {
+///     VolumeViewportContainer(controller: viewportController) {
 ///         CrosshairOverlayView(position: cursorOffset)
 ///     }
 ///     .gesture(
@@ -85,8 +85,9 @@ public struct CrosshairOverlayView: View {
 
     /// Offset from the geometric center for crosshair intersection.
     ///
-    /// Expressed in points relative to the view's center. Positive x moves right, positive y
-    /// moves down. Defaults to `.zero` for a perfectly centered crosshair.
+    /// Expressed in points relative to the view's center in the displayed screen space.
+    /// Positive x moves right, positive y moves down. Controllers must pre-apply any MPR
+    /// display transform so the crosshair stays aligned with the presented texture.
     private let position: CGPoint
 
     /// Creates a crosshair overlay with optional styling and position offset.
@@ -137,4 +138,3 @@ public struct CrosshairOverlayView: View {
     }
 }
 #endif
-

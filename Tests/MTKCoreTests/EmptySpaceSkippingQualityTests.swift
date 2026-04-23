@@ -563,28 +563,14 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
         let bytesPerRow = bytesPerPixel * width
         let totalBytes = bytesPerRow * height
 
-        var baselineData = [UInt8](repeating: 0, count: totalBytes)
-        var acceleratedData = [UInt8](repeating: 0, count: totalBytes)
-
-        baseline.getBytes(
-            &baselineData,
-            bytesPerRow: bytesPerRow,
-            from: MTLRegion(
-                origin: MTLOrigin(x: 0, y: 0, z: 0),
-                size: MTLSize(width: width, height: height, depth: 1)
-            ),
-            mipmapLevel: 0
-        )
-
-        accelerated.getBytes(
-            &acceleratedData,
-            bytesPerRow: bytesPerRow,
-            from: MTLRegion(
-                origin: MTLOrigin(x: 0, y: 0, z: 0),
-                size: MTLSize(width: width, height: height, depth: 1)
-            ),
-            mipmapLevel: 0
-        )
+        // Intentional test-only readback for pixel-diff quality assertions.
+        // Production snapshot/export readback must go through TextureSnapshotExporter.
+        let baselineData = MPRTextureReadbackHelper.readBytes(from: baseline,
+                                                              bytesPerRow: bytesPerRow,
+                                                              byteCount: totalBytes)
+        let acceleratedData = MPRTextureReadbackHelper.readBytes(from: accelerated,
+                                                                 bytesPerRow: bytesPerRow,
+                                                                 byteCount: totalBytes)
 
         var differentPixels = 0
         var maxPixelError: Float = 0

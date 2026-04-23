@@ -45,7 +45,8 @@ import OSLog
 ///     transferFunction: transferFunction
 /// )
 ///
-/// let result = try await adapter.renderImage(using: request)
+/// let frame = try await adapter.renderFrame(using: request)
+/// let texture = frame.texture
 /// ```
 ///
 /// ## Topics
@@ -55,7 +56,7 @@ import OSLog
 /// - ``init(device:commandQueue:library:debugOptions:)``
 ///
 /// ### Rendering
-/// - ``renderImage(using:)``
+/// - ``renderFrame(using:)``
 /// - ``updatePreset(_:for:)``
 ///
 /// ### Configuration
@@ -116,10 +117,8 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
 
         let device: any MTLDevice
         let commandQueue: any MTLCommandQueue
-        let pipeline: any MTLComputePipelineState
-        let argumentManager: ArgumentEncoderManager
+        let raycastPass: VolumeRaycastPass
         let dispatchOptimizer: ThreadgroupDispatchOptimizer
-        let cameraBuffer: any MTLBuffer
         var datasetIdentity: DatasetIdentity?
         var volumeTexture: (any MTLTexture)?
         var transferCache: TransferCache?
@@ -127,16 +126,16 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
 
         init(device: any MTLDevice,
              commandQueue: any MTLCommandQueue,
-             pipeline: any MTLComputePipelineState,
-             argumentManager: ArgumentEncoderManager,
-             dispatchOptimizer: ThreadgroupDispatchOptimizer,
-             cameraBuffer: any MTLBuffer) {
+             raycastPass: VolumeRaycastPass,
+             dispatchOptimizer: ThreadgroupDispatchOptimizer) {
             self.device = device
             self.commandQueue = commandQueue
-            self.pipeline = pipeline
-            self.argumentManager = argumentManager
+            self.raycastPass = raycastPass
             self.dispatchOptimizer = dispatchOptimizer
-            self.cameraBuffer = cameraBuffer
+        }
+
+        var argumentManager: ArgumentEncoderManager {
+            raycastPass.argumentManager
         }
     }
 
@@ -213,36 +212,15 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
             throw InitializationError.shaderLibraryDeviceMismatch
         }
 
-        guard let function = lib.makeFunction(name: "volume_compute") else {
-            throw InitializationError.computeFunctionNotFound
-        }
-
-        let pipeline: any MTLComputePipelineState
-        do {
-            pipeline = try device.makeComputePipelineState(function: function)
-        } catch {
-            throw InitializationError.pipelineCreationFailed
-        }
-
-        let argumentManager = ArgumentEncoderManager(
-            device: device,
-            mtlFunction: function,
-            debugOptions: debugOptions
-        )
+        let raycastPass = try VolumeRaycastPass(device: device,
+                                                library: lib,
+                                                debugOptions: debugOptions)
         let dispatchOptimizer = ThreadgroupDispatchOptimizer(debugOptions: debugOptions)
-        guard let cameraBuffer = device.makeBuffer(length: CameraUniforms.stride,
-                                                   options: [.storageModeShared])
-        else {
-            throw InitializationError.cameraBufferAllocationFailed
-        }
-        cameraBuffer.label = "VolumeCompute.CameraUniforms"
 
         self.metalState = MetalState(device: device,
                                      commandQueue: queue,
-                                     pipeline: pipeline,
-                                     argumentManager: argumentManager,
-                                     dispatchOptimizer: dispatchOptimizer,
-                                     cameraBuffer: cameraBuffer)
+                                     raycastPass: raycastPass,
+                                     dispatchOptimizer: dispatchOptimizer)
     }
 
     /// Enables or disables diagnostic logging for debugging rendering issues.
@@ -264,15 +242,16 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
         }
     }
 
-    /// Renders a volumetric image from the provided request.
+    /// Renders a GPU-native volumetric frame from the provided request.
     ///
-    /// This is the primary rendering method. It renders via Metal compute shaders and
-    /// propagates Metal operation errors to the caller.
+    /// This is the primary interactive rendering method. It renders via Metal compute
+    /// shaders, returns the completed output `MTLTexture`, and does not perform CPU
+    /// readback or create a `CGImage`.
     ///
     /// - Parameter request: A ``VolumeRenderRequest`` specifying the dataset, camera,
     ///   viewport, compositing mode, and transfer function.
     ///
-    /// - Returns: A ``VolumeRenderResult`` containing the rendered image and metadata.
+    /// - Returns: A ``VolumeRenderFrame`` containing the rendered texture and metadata.
     ///
     /// - Throws: ``AdapterError/windowNotSpecified`` when no explicit or recommended window is
     ///   available, ``AdapterError/emptyColorPoints`` or ``AdapterError/emptyAlphaPoints`` when
@@ -310,12 +289,12 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
     ///     transferFunction: transferFunction
     /// )
     ///
-    /// let result = try await adapter.renderImage(using: request)
-    /// let image = result.cgImage
+    /// let frame = try await adapter.renderFrame(using: request)
+    /// let texture = frame.texture
     /// ```
-    public func renderImage(using request: VolumeRenderRequest) async throws -> VolumeRenderResult {
+    public func renderFrame(using request: VolumeRenderRequest) async throws -> VolumeRenderFrame {
         if diagnosticLoggingEnabled {
-            logger.info("[DIAG] renderImage called - viewport: \(request.viewportSize.width)x\(request.viewportSize.height), compositing: \(String(describing: request.compositing)), quality: \(String(describing: request.quality))")
+            logger.info("[DIAG] renderFrame called - viewport: \(request.viewportSize.width)x\(request.viewportSize.height), compositing: \(String(describing: request.compositing)), quality: \(String(describing: request.quality))")
         }
 
         var effectiveRequest = request
@@ -339,11 +318,47 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
             logger.info("[DIAG] Using window: \(window.lowerBound)...\(window.upperBound)")
         }
 
-        let result = try await renderWithMetal(state: metalState, request: effectiveRequest)
+        let startTime = CFAbsoluteTimeGetCurrent()
+        let frame = try await renderWithMetal(state: metalState,
+                                              request: effectiveRequest)
+        let renderTime = CFAbsoluteTimeGetCurrent() - startTime
+        let resolvedFrame = VolumeRenderFrame(
+            texture: frame.texture,
+            metadata: VolumeRenderFrame.Metadata(
+                viewportSize: frame.metadata.viewportSize,
+                viewportID: frame.metadata.viewportID,
+                samplingDistance: frame.metadata.samplingDistance,
+                compositing: frame.metadata.compositing,
+                quality: frame.metadata.quality,
+                pixelFormat: frame.metadata.pixelFormat,
+                renderTime: renderTime,
+                gpuStartTime: frame.metadata.gpuStartTime,
+                gpuEndTime: frame.metadata.gpuEndTime
+            )
+        )
         lastSnapshot = RenderSnapshot(dataset: request.dataset,
-                                      metadata: result.metadata,
+                                      metadata: resolvedFrame.metadata,
                                       window: window)
-        return result
+        return resolvedFrame
+    }
+
+    /// Renders a GPU-native texture for interactive presentation.
+    ///
+    /// This convenience method intentionally returns only the Metal texture needed by
+    /// onscreen presentation surfaces. Snapshot/export code should request a frame and
+    /// pass it to ``TextureSnapshotExporter`` only when CPU image data is required.
+    public func renderInteractiveTexture(using request: VolumeRenderRequest) async throws -> any MTLTexture {
+        let frame = try await renderFrame(using: request)
+        return frame.texture
+    }
+
+    func renderWithSharedVolumeTexture(using request: VolumeRenderRequest,
+                                       volumeTexture: any MTLTexture,
+                                       outputTexture: (any MTLTexture)? = nil) async throws -> VolumeRenderFrame {
+        try await renderWithMetal(state: metalState,
+                                  request: request,
+                                  datasetTexture: volumeTexture,
+                                  outputTexture: outputTexture)
     }
 
     /// Updates the active rendering preset for a dataset.
@@ -460,7 +475,7 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
 
     /// Sends a rendering command to update render parameters.
     ///
-    /// Commands set persistent overrides that apply to all subsequent ``renderImage(using:)`` calls
+    /// Commands set persistent overrides that apply to all subsequent ``renderFrame(using:)`` calls
     /// until changed or cleared.
     ///
     /// - Parameter command: The command to execute.

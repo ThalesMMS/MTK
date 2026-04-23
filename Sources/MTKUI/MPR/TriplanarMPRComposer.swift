@@ -4,6 +4,7 @@
 //  Thales Matheus Mendonca Santos - April 2026
 
 #if canImport(SwiftUI) && (os(iOS) || os(macOS))
+import MTKCore
 import SwiftUI
 import Combine
 #if canImport(UIKit)
@@ -16,7 +17,7 @@ import AppKit
 ///
 /// `TriplanarMPRComposer` presents tri-planar multi-planar reconstruction as a
 /// first-class layout without requiring a 3D volume controller. It coordinates three
-/// ``VolumetricSceneController`` instances, one for each anatomical plane, and keeps
+/// ``VolumeViewportController`` instances, one for each anatomical plane, and keeps
 /// shared MPR controls such as window/level and slab thickness synchronized across
 /// those panes only.
 ///
@@ -59,13 +60,13 @@ public struct TriplanarMPRComposer: View {
     }
 
     /// Controller for the axial MPR view.
-    private let axialController: VolumetricSceneController
+    private let axialController: VolumeViewportController
 
     /// Controller for the coronal MPR view.
-    private let coronalController: VolumetricSceneController
+    private let coronalController: VolumeViewportController
 
     /// Controller for the sagittal MPR view.
-    private let sagittalController: VolumetricSceneController
+    private let sagittalController: VolumeViewportController
 
     /// Visual style for overlay UI elements and controls.
     private let style: any VolumetricUIStyle
@@ -91,9 +92,9 @@ public struct TriplanarMPRComposer: View {
     ///
     /// - Important: Configure the three MPR controllers with the same dataset for
     ///   consistent crosshair, slice navigation, slab, and window/level behavior.
-    public init(axialController: VolumetricSceneController,
-                coronalController: VolumetricSceneController,
-                sagittalController: VolumetricSceneController,
+    public init(axialController: VolumeViewportController,
+                coronalController: VolumeViewportController,
+                sagittalController: VolumeViewportController,
                 style: any VolumetricUIStyle = DefaultVolumetricUIStyle(),
                 layout: Layout = .horizontal) {
         self.axialController = axialController
@@ -155,7 +156,7 @@ public struct TriplanarMPRComposer: View {
     }
 
     /// Returns the array of MPR controllers in anatomical order.
-    private var mprControllers: [VolumetricSceneController] {
+    private var mprControllers: [VolumeViewportController] {
         [axialController, coronalController, sagittalController]
     }
 
@@ -164,15 +165,15 @@ public struct TriplanarMPRComposer: View {
     /// The pane presents the controller's volumetric display with orientation labels, crosshair, and gesture handling, and applies consistent styling (square aspect ratio, background, rounded corners, and shadow).
     /// - Parameters:
     ///   - axis: The anatomical axis used to configure orientation labels and gesture translation.
-    ///   - controller: The `VolumetricSceneController` that provides the display and interaction state for the pane.
+    ///   - controller: The `VolumeViewportController` that provides the display and interaction state for the pane.
     /// - Returns: A view representing the composed, styled MPR pane.
     private func mprPane(axis: VolumeGestureAxis,
-                         controller: VolumetricSceneController) -> some View {
+                         controller: VolumeViewportController) -> some View {
         let gestureConfiguration = VolumeGestureConfiguration(translationAxis: axis)
-        return VolumetricDisplayContainer(controller: controller) {
+        return VolumeViewportContainer(controller: controller) {
             ZStack {
                 CrosshairOverlayView(style: style)
-                OrientationOverlayView(labels: labels(for: axis), style: style)
+                OrientationOverlayView(transform: displayTransform(for: axis, controller: controller), style: style)
                 gestureOverlay(controller: controller,
                                configuration: gestureConfiguration)
             }
@@ -185,7 +186,7 @@ public struct TriplanarMPRComposer: View {
 
     /// Creates the platform-specific gesture layer for an MPR pane.
     @ViewBuilder
-    private func gestureOverlay(controller: VolumetricSceneController,
+    private func gestureOverlay(controller: VolumeViewportController,
                                 configuration: VolumeGestureConfiguration) -> some View {
 #if os(iOS)
         VolumetricGestureOverlay(controller: controller,
@@ -214,7 +215,7 @@ public struct TriplanarMPRComposer: View {
         Task {
             let thicknessInVoxels = Int(thickness)
             let steps = max(thicknessInVoxels * 2, 6)
-            let snap = VolumetricSceneController.SlabConfiguration(thickness: thicknessInVoxels,
+            let snap = VolumeViewportController.SlabConfiguration(thickness: thicknessInVoxels,
                                                                    steps: steps)
             for controller in mprControllers {
                 await controller.setMprSlab(thickness: snap.thickness, steps: snap.steps)
@@ -238,19 +239,17 @@ public struct TriplanarMPRComposer: View {
         }
     }
 
-    /// Returns orientation labels for the given gesture axis.
-    /// - Parameter axis: The volume gesture axis representing the displayed plane.
-    /// - Returns: A tuple `(left, right, top, bottom)` containing single-character orientation labels for that plane; empty strings for the `.volume` axis.
-    private func labels(for axis: VolumeGestureAxis) -> (String, String, String, String) {
+    private func displayTransform(for axis: VolumeGestureAxis,
+                                  controller: VolumeViewportController) -> MPRDisplayTransform {
         switch axis {
         case .axial:
-            return ("R", "L", "A", "P")
+            return controller.currentDisplayTransform(for: .z)
         case .coronal:
-            return ("R", "L", "S", "I")
+            return controller.currentDisplayTransform(for: .y)
         case .sagittal:
-            return ("P", "A", "S", "I")
+            return controller.currentDisplayTransform(for: .x)
         case .volume:
-            return ("", "", "", "")
+            return .identity
         }
     }
 }

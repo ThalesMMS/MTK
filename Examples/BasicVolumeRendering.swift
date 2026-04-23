@@ -2,175 +2,112 @@
 //  BasicVolumeRendering.swift
 //  MTK Examples
 //
-//  Minimal example showing basic volume rendering setup
-//  Thales Matheus Mendonça Santos — November 2025
-//
-//  NOTE: This is example/documentation code showing minimal MTK API usage.
-//  For complete implementation with UI controls, see MTK_Integration_Example.swift
+//  Minimal engine-native volume rendering example.
 //
 
 import SwiftUI
 import MTKCore
 import MTKUI
 
-// MARK: - Basic Volume Rendering View
-
-/// Minimal SwiftUI view demonstrating basic volume rendering setup
+/// Example purpose: minimal volume rendering setup and coordinator lifecycle.
 ///
-/// This example shows the essential steps to display a volumetric dataset:
-/// 1. Create a VolumetricSceneCoordinator
-/// 2. Set up VolumetricDisplayContainer with optional overlays
-/// 3. Create a VolumeDataset from voxel data
-/// 4. Apply the dataset and configure window/preset
+/// ADR concepts demonstrated:
+/// `VolumeDataset -> VolumeViewportCoordinator / VolumeViewportController ->
+/// GPU upload -> MTKRenderingEngine render graph -> PresentationPass -> MTKView`.
+/// See `MTK/Architecture/ClinicalRenderingADR.md`.
+///
+/// Interactive display stays Metal-native as `MTLTexture` all the way to
+/// presentation. This example does not use SceneKit, and `CGImage` is never a
+/// display surface. `CGImage` is allowed only at explicit export boundaries.
 struct BasicVolumeRenderingView: View {
-
-    @StateObject private var coordinator = VolumetricSceneCoordinator.shared
-
-    var body: some View {
-        VolumetricDisplayContainer(controller: coordinator.controller) {
-            // Optional: Add overlay UI components
-            OrientationOverlayView()
-            CrosshairOverlayView()
-        }
-        .task {
-            // Load and configure volume dataset on appear
-            await setupVolume()
-        }
-    }
-
-    // MARK: - Volume Setup
-
-    private func setupVolume() async {
-        // Step 1: Create voxel data buffer
-        // In a real app, this would come from DICOM files or other medical imaging sources
-        let width = 256
-        let height = 256
-        let depth = 128
-        let voxelCount = width * height * depth
-
-        // Create sample data (in real usage, load actual medical imaging data)
-        let bytesPerVoxel = VolumePixelFormat.int16Signed.bytesPerVoxel
-        let voxels = Data(repeating: 0, count: voxelCount * bytesPerVoxel)
-
-        // Step 2: Build VolumeDataset with metadata
-        let dataset = VolumeDataset(
-            data: voxels,
-            dimensions: VolumeDimensions(width: width, height: height, depth: depth),
-            spacing: VolumeSpacing(x: 0.001, y: 0.001, z: 0.0015),  // meters per voxel
-            pixelFormat: .int16Signed,
-            intensityRange: (-1024)...3071  // Typical CT Hounsfield units range
-        )
-
-        // Step 3: Apply dataset to coordinator
-        coordinator.apply(dataset: dataset)
-
-        // Step 4: Configure window/level for visualization
-        // Typical soft tissue window in CT
-        coordinator.applyHuWindow(min: -500, max: 1200)
-
-        // Step 5: Apply transfer function preset
-        // Available presets: .bone, .softTissue, .lung, .angio, etc.
-        await coordinator.controller.setPreset(.softTissue)
-    }
-}
-
-// MARK: - Loading from DICOM
-
-/// Example showing how to load a DICOM dataset
-///
-/// Note: The demo uses DicomDecoderSeriesLoader as its canonical DICOM loader.
-/// See MTK-Demo for the complete DICOM loading flow.
-struct DicomLoadingExample: View {
-
-    @StateObject private var coordinator = VolumetricSceneCoordinator.shared
-    @State private var isLoading = false
-    @State private var errorMessage: String?
-
-    var body: some View {
-        VStack {
-            if isLoading {
-                ProgressView("Loading DICOM volume...")
-            } else {
-                VolumetricDisplayContainer(controller: coordinator.controller) {
-                    OrientationOverlayView()
-                }
-            }
-        }
-        .task {
-            // In a real app, get URL from file picker
-            // await loadDicomVolume(from: dicomZipURL)
-        }
-    }
-
-    private func loadDicomVolume(from url: URL) async {
-        isLoading = true
-        defer { isLoading = false }
-
-        // DicomVolumeLoader requires a DicomSeriesLoading bridge implementation
-        // See MTK-Demo/Source/Helper/DicomDecoderSeriesLoader.swift for reference
-
-        /*
-        let loader = DicomVolumeLoader()
-
-        do {
-            let dataset = try await loader.loadVolume(
-                from: url,
-                using: yourDicomSeriesLoader  // Implement DicomSeriesLoading protocol
-            )
-
-            coordinator.apply(dataset: dataset)
-            await coordinator.controller.setPreset(.softTissue)
-
-        } catch {
-            errorMessage = "Failed to load DICOM: \(error.localizedDescription)"
-        }
-        */
-    }
-}
-
-// MARK: - Runtime Availability Check
-
-/// Example showing explicit Metal requirement enforcement before rendering.
-///
-/// This pattern checks the Metal runtime contract before creating rendering
-/// components and surfaces an explicit unsupported state before any rendering UI
-/// is presented.
-struct AvailabilityCheckExample: View {
-
-    @State private var metalAvailable = false
+    @StateObject private var coordinator = VolumeViewportCoordinator.shared
+    @State private var didConfigureExample = false
 
     var body: some View {
         Group {
-            if metalAvailable {
-                BasicVolumeRenderingView()
+            if let controller = coordinator.controller {
+                VolumeViewportContainer(controller: controller) {
+                    CrosshairOverlayView()
+                }
             } else {
                 ContentUnavailableView(
                     "Metal Not Available",
                     systemImage: "exclamationmark.triangle",
-                    description: Text("Metal GPU required for volume rendering")
+                    description: Text("MTK volume rendering requires a Metal-capable device.")
                 )
             }
         }
-        .onAppear {
-            // For throwing initialization code, prefer:
-            // try MetalRuntimeAvailability.ensureAvailability()
-            metalAvailable = MetalRuntimeAvailability.isAvailable()
+        .task {
+            await configureExampleIfNeeded()
+        }
+    }
+
+    @MainActor
+    private func configureExampleIfNeeded() async {
+        guard coordinator.isMetalAvailable, !didConfigureExample else { return }
+        didConfigureExample = true
+
+        // ADR stage 1: create a VolumeDataset from voxel payload + geometry metadata.
+        let dataset = makeSampleDataset()
+
+        // ADR stage 2: hand the dataset to the viewport layer. The controller owns
+        // the Metal-native presentation surface; the dataset is uploaded before the
+        // render graph starts producing interactive frames for that MTKView.
+        coordinator.apply(dataset: dataset)
+
+        // ADR stage 3: configure visualization state that propagates to the active
+        // volume viewport before rendering.
+        coordinator.applyHuWindow(min: -160, max: 240)
+        coordinator.apply(
+            transferFunction: VolumeTransferFunctionLibrary.transferFunction(for: .ctSoftTissue)
+        )
+
+        // Camera state is configured through the controller API, not by manipulating
+        // textures or attempting CGImage-based display shortcuts.
+        if let controller = coordinator.controller {
+            await controller.resetCamera()
+            await controller.dollyCamera(delta: -0.15)
+        }
+    }
+
+    private func makeSampleDataset() -> VolumeDataset {
+        let width = 256
+        let height = 256
+        let depth = 160
+        let voxelCount = width * height * depth
+        let bytesPerVoxel = VolumePixelFormat.int16Signed.bytesPerVoxel
+        let voxels = Data(repeating: 0, count: voxelCount * bytesPerVoxel)
+
+        return VolumeDataset(
+            data: voxels,
+            dimensions: VolumeDimensions(width: width, height: height, depth: depth),
+            spacing: VolumeSpacing(x: 0.0008, y: 0.0008, z: 0.0012),
+            pixelFormat: .int16Signed,
+            intensityRange: (-1024)...3071,
+            recommendedWindow: -160...240
+        )
+    }
+}
+
+/// Companion example showing explicit runtime gating before creating rendering UI.
+struct AvailabilityCheckExample: View {
+    var body: some View {
+        if MetalRuntimeAvailability.isAvailable() {
+            BasicVolumeRenderingView()
+        } else {
+            ContentUnavailableView(
+                "Metal Not Available",
+                systemImage: "exclamationmark.triangle",
+                description: Text("Metal GPU required for volume rendering.")
+            )
         }
     }
 }
 
-// MARK: - Usage Notes
-
 /*
  ## Basic Usage
 
- Simply embed BasicVolumeRenderingView in your SwiftUI hierarchy:
-
  ```swift
- import SwiftUI
- import MTKCore
- import MTKUI
-
  @main
  struct MyApp: App {
      var body: some Scene {
@@ -181,55 +118,27 @@ struct AvailabilityCheckExample: View {
  }
  ```
 
- ## Adding Gesture Support
+ ## Multi-Viewport Layouts
 
- Enable user interaction with volumeGestures modifier:
+ Use `ClinicalViewportGrid` when the UI needs the standard 2x2 clinical layout
+ with axial, coronal, sagittal, and 3D viewports sharing one dataset upload.
 
- ```swift
- VolumetricDisplayContainer(controller: coordinator.controller) {
-     OrientationOverlayView()
- }
- .volumeGestures(
-     controller: coordinator.controller,
-     state: .constant(.idle),
-     configuration: VolumeGestureConfiguration()
- )
- ```
+ Use `TriplanarMPRViewerExample` when the workflow is MPR-only and should keep
+ the resource graph focused on axial/coronal/sagittal viewports.
 
- ## Multi-Plane Reconstruction (MPR)
+ ## Snapshot / Export
 
- For axial/coronal/sagittal review without a 3D pane, use TriplanarMPRComposer:
+ Keep interactive display on `MTKView`. For explicit readback or export:
 
  ```swift
- TriplanarMPRComposer(
-     axialController: coordinator.controller(for: .z),
-     coronalController: coordinator.controller(for: .y),
-     sagittalController: coordinator.controller(for: .x)
- )
+ let snapshotExporter = TextureSnapshotExporter()
+ let frame = try await coordinator.renderVolumeSnapshotFrame()
+ try await snapshotExporter.writePNG(from: frame, to: url)
  ```
 
- For the 2×2 layout with tri-planar MPR plus 3D context, use MPRGridComposer:
+ If a caller explicitly needs `CGImage`, create it only at that export boundary:
 
  ```swift
- MPRGridComposer(
-     volumeController: coordinator.controller,
-     axialController: coordinator.controller(for: .z),
-     coronalController: coordinator.controller(for: .y),
-     sagittalController: coordinator.controller(for: .x)
- )
+ let image = try await snapshotExporter.makeCGImage(from: frame)
  ```
-
- ## Available Transfer Function Presets
-
- - .bone — Optimized for bone/skeletal imaging
- - .softTissue — General soft tissue visualization
- - .lung — Lung parenchyma and airways
- - .angio — Vascular/angiography studies
- - .chest — Chest CT with contrast
-
- ## Next Steps
-
- - See MTK_Integration_Example.swift for complete UI controls
- - See MTK-Demo app for DICOM loading and advanced features
- - Consult MTK README.md for package setup and dependencies
  */

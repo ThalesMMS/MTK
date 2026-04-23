@@ -525,6 +525,7 @@ private extension MPSEmptySpaceAccelerator {
         depth: Int,
         mipLevels: Int
     ) throws -> any MTLTexture {
+        // StorageModePolicy.md: ESS acceleration textures are GPU-only intermediates.
         let descriptor = MTLTextureDescriptor()
         descriptor.textureType = .type3D
         descriptor.pixelFormat = .rg16Float  // R=min, G=max intensity

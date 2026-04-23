@@ -2,7 +2,7 @@
 //  VolumetricRendererState.swift
 //  MTKUI
 //
-//  Lightweight state snapshot broadcasted by VolumetricSceneCoordinator so that
+//  Lightweight state snapshot broadcasted by VolumeViewportCoordinator so that
 //  UI layers can observe dataset/HU/TF updates without spelunking inside app targets.
 //
 
@@ -30,19 +30,19 @@ public struct VolumetricRendererState {
     public var dataset: DatasetSummary?
     public var huWindow: VolumetricHUWindowMapping?
     public var transferFunction: TransferFunction?
-    public var normalizedMprPositions: [VolumetricSceneController.Axis: Float]
+    public var normalizedMprPositions: [VolumeViewportController.Axis: Float]
 
     public init(dataset: DatasetSummary? = nil,
                 huWindow: VolumetricHUWindowMapping? = nil,
                 transferFunction: TransferFunction? = nil,
-                normalizedMprPositions: [VolumetricSceneController.Axis: Float] = [:]) {
+                normalizedMprPositions: [VolumeViewportController.Axis: Float] = [:]) {
         self.dataset = dataset
         self.huWindow = huWindow
         self.transferFunction = transferFunction
         self.normalizedMprPositions = normalizedMprPositions
     }
 
-    public func normalizedPosition(for axis: VolumetricSceneController.Axis) -> Float {
+    public func normalizedPosition(for axis: VolumeViewportController.Axis) -> Float {
         normalizedMprPositions[axis] ?? 0.5
     }
 

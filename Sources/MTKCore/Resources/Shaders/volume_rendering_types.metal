@@ -2,7 +2,6 @@
 #define volume_rendering_types_metal
 
 #include <metal_stdlib>
-#include "../MPR/Shared.metal"
 
 using namespace metal;
 

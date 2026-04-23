@@ -23,7 +23,8 @@ import Foundation
 /// ```swift
 /// do {
 ///     try MetalRuntimeAvailability.ensureAvailability()
-///     let controller = VolumetricSceneController()
+///     let controller = try VolumeViewportController()
+///     _ = controller
 /// } catch {
 ///     // Surface the unsupported runtime state to the user.
 ///     print("Metal runtime requirement not satisfied: \(error)")

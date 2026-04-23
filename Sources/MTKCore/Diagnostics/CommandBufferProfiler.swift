@@ -56,6 +56,12 @@ public enum CommandBufferProfiler {
         }
     }
 
+    public static func logSnapshotReadback(_ metrics: SnapshotMetrics,
+                                           category: String = "Snapshot") {
+        let logger = Logger(subsystem: "com.mtk.volumerendering", category: category)
+        logger.info("SnapshotReadback [\(metrics.label)] completed: \(metrics.formattedSummary)")
+    }
+
     private static func interval(_ start: CFTimeInterval, _ end: CFTimeInterval) -> Double? {
         guard start > 0, end > 0 else { return nil }
         return max(0, (end - start) * 1000.0)

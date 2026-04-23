@@ -4,6 +4,7 @@
 //  Thales Matheus Mendonça Santos — October 2025
 
 #if canImport(SwiftUI)
+import MTKCore
 import SwiftUI
 
 /// A SwiftUI overlay view that displays anatomical orientation labels for medical imaging.
@@ -28,7 +29,7 @@ import SwiftUI
 /// ### Axial plane orientation
 ///
 /// ```swift
-/// VolumetricDisplayContainer(controller: sceneController) {
+/// VolumeViewportContainer(controller: viewportController) {
 ///     OrientationOverlayView(
 ///         labels: (
 ///             leading: "R",   // Right
@@ -87,7 +88,7 @@ import SwiftUI
 /// @State private var currentAxis: MPRAxis = .axial
 ///
 /// var body: some View {
-///     VolumetricDisplayContainer(controller: sceneController) {
+///     VolumeViewportContainer(controller: viewportController) {
 ///         OrientationOverlayView(labels: currentAxis.orientationLabels)
 ///     }
 ///     .onChange(of: mprSliceAxis) { newAxis in
@@ -190,6 +191,16 @@ public struct OrientationOverlayView: View {
         self.style = style
     }
 
+    /// Creates an orientation overlay from a derived MPR display transform.
+    ///
+    /// - Parameters:
+    ///   - transform: The display transform that already resolved screen-edge labels.
+    ///   - style: The visual style configuration. Defaults to ``DefaultVolumetricUIStyle``.
+    public init(transform: MPRDisplayTransform,
+                style: any VolumetricUIStyle = DefaultVolumetricUIStyle()) {
+        self.init(labels: transform.labels, style: style)
+    }
+
     /// The SwiftUI view hierarchy rendering the orientation labels.
     ///
     /// Uses a `ZStack` to overlay perpendicular `VStack` (top/bottom labels) and `HStack`
@@ -215,8 +226,8 @@ public struct OrientationOverlayView: View {
         .foregroundStyle(style.overlayForeground)
         .padding(8)
         .background(style.overlayBackground.cornerRadius(8))
+        .environment(\.layoutDirection, .leftToRight)
         .accessibilityIdentifier("VolumetricOrientationOverlay")
     }
 }
 #endif
-

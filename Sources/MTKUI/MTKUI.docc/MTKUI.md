@@ -4,40 +4,49 @@ SwiftUI components and controllers for medical volumetric visualization interfac
 
 ## Overview
 
-MTKUI provides SwiftUI components, scene controllers, and gesture handling for building medical volumetric visualization applications on iOS and macOS. Built on top of MTKCore, it includes MPR grids, interactive overlays, camera controls, and windowing tools for medical imaging workflows.
+MTKUI provides SwiftUI components, viewport controllers, and gesture handling for building medical volumetric visualization applications on iOS and macOS. Built on top of MTKCore, it includes MPR grids, interactive overlays, camera controls, and windowing tools for medical imaging workflows.
 
-The framework handles scene coordination, gesture interpretation, UI overlays, and telemetry for a single MTKUI rendering path backed by MTKCore Metal volume and MPR adapters.
+The framework handles viewport coordination, gesture interpretation, UI overlays, and telemetry for a single MTKUI rendering path backed by MTKCore Metal volume and MPR adapters. The accepted architecture decision is recorded in [Architecture/ClinicalRenderingADR.md](../../../Architecture/ClinicalRenderingADR.md). The clinical presentation target is `MTKView`/`CAMetalLayer`, with interactive frames represented as `MTLTexture` outputs. `CGImage` is allowed only for explicit snapshot/export/readback workflows behind `SnapshotExporting`/`TextureSnapshotExporter`, not the interactive display contract.
+
+MTKUI has no legacy 3D-wrapper dependency in its clinical UI path. This separation is intentional: MTKUI is the Metal-native SwiftUI integration layer over MTKCore adapters.
+
+MTKUI controllers coordinate synchronized viewports over shared GPU resources owned by the underlying renderer/resource manager. Volume, MPR, projection, and overlay views should consume shared volume textures, transfer textures, and auxiliary textures by handle instead of treating each viewport as an isolated renderer.
 
 ### Key Features
 
-- **Scene Management**: VolumetricSceneController orchestrates image-surface presentation, camera state, and MTKCore Metal volume/MPR adapters
+- **Viewport Management**: VolumeViewportController orchestrates viewport presentation, camera state, and MTKCore Metal volume/MPR adapters
 - **SwiftUI Integration**: Native SwiftUI views and modifiers with Combine-based state management
 - **MPR Grid Layouts**: Synchronized tri-planar (axial/coronal/sagittal) views with crosshair navigation
 - **Interactive Overlays**: Medical imaging overlays for window/level, slab thickness, orientation markers, and crosshairs
 - **Gesture Handling**: Unified gesture system for camera rotation, pan, zoom, and MPR slice navigation
-- **Scene Coordination**: Singleton coordinator manages controller lifecycle and state synchronization across surfaces
+- **Viewport Coordination**: Singleton coordinator manages controller lifecycle and state synchronization across surfaces
 
 ## Topics
 
 ### Essentials
 
-- ``VolumetricSceneController``
-- ``VolumetricDisplayContainer``
-- ``VolumetricSceneCoordinator``
+- ``VolumeViewportController``
+- ``VolumeViewportContainer``
+- ``MetalViewportView``
+- ``MetalViewportSurface``
+- ``VolumeViewportCoordinator``
 
-### Scene Controllers
+### Viewport Controllers
 
-Scene controllers orchestrate volumetric rendering, camera interaction, and volume state management.
+Viewport controllers orchestrate volumetric rendering, camera interaction, and volume state management.
 
-- ``VolumetricSceneController``
-- ``VolumetricSceneControlling``
-- ``VolumetricSceneCoordinator``
+- ``VolumeViewportController``
+- ``VolumeViewportControlling``
+- ``VolumeViewportCoordinator``
 
 ### SwiftUI Components
 
 SwiftUI views and containers for embedding volumetric rendering into your application.
 
-- ``VolumetricDisplayContainer``
+- ``VolumeViewportContainer``
+- ``MetalViewportView``
+- ``MetalViewportContainer``
+- ``MTKViewRepresentable``
 - ``TriplanarMPRComposer``
 - ``MPRGridComposer``
 - ``MPRPanelView``
@@ -56,7 +65,7 @@ Medical imaging overlays for user controls and visual feedback.
 
 ### Gesture Interactions
 
-Gesture handling and camera interaction for volumetric scenes.
+Gesture handling and camera interaction for volume viewports.
 
 - ``VolumeGesturesModifier``
 - ``VolumeGestureConfiguration``
@@ -69,12 +78,25 @@ Published state and telemetry for UI synchronization and debugging.
 - ``VolumetricRendererState``
 - ``RenderingTelemetry``
 
+### Metal-Native Viewport Boundary
+
+``MetalViewportSurface`` is the official clinical Metal-native presentation surface. It owns an `MTKView`, tracks drawable pixel size from bounds and backing scale, and presents completed `MTLTexture` frames through ``MTKCore/PresentationPass`` without `CGImage` readback.
+
+The supported frame flow is `compute/render pass -> persistent outputTexture -> PresentationPass -> drawable -> present`. Rendering directly into the drawable is not the primary path because drawables are short-lived presentation resources, acquisition may block on display pacing, and presented drawables cannot be reused for adaptive scheduling, inspection, export, or later overlay composition.
+
+``MetalViewportSurface`` is the only clinical presentation surface. Image-backed presentation glue is outside the clinical path and must not be used as an interactive presentation boundary. The architectural boundary remains Metal-native: MTKUI owns SwiftUI composition and viewport hosting, and MTKCore owns Metal volume and MPR adapters.
+
 ### Render Surfaces
 
-Abstraction layer for adapter-rendered image surfaces.
+MTKUI containers host clinical viewports through ``MetalViewportView``, ``MetalViewportContainer``, and ``MTKViewRepresentable``. ``MetalViewportSurface`` is the concrete Metal-native surface for clinical viewport work. It configures `MTKView` for demand-driven presentation, reports drawable-size changes so callers can recreate persistent output textures, and keeps presentation state per viewport instance.
 
-- ``RenderSurface``
-- ``ImageSurface``
+Volume rendering hands `VolumeRenderFrame.texture` to the Metal-backed surface for interactive presentation. MPR presentation follows the same Metal-native rule through GPU frame contracts and `PresentationPass`, not `CGImage` display glue. `CGImage` is allowed only for explicit snapshot/export readback through `TextureSnapshotExporter`. See [Architecture/ClinicalRenderingADR.md](../../../Architecture/ClinicalRenderingADR.md) for the clinical architecture contract.
+
+- ``MetalViewportView``
+- ``MetalViewportContainer``
+- ``MTKViewRepresentable``
+- ``MetalViewportSurface``
+- ``MTKCore/PresentationPass``
 
 ### UI Styling
 
@@ -84,11 +106,11 @@ Customizable styling protocols for volumetric UI components.
 
 ## Quick Start
 
-Use ``VolumetricSceneCoordinator`` as the entry point for MTKUI. The shared
+Use ``VolumeViewportCoordinator`` as the entry point for MTKUI. The shared
 coordinator owns controller lifecycle, keeps shared rendering state in sync, and
-hands each view the surface-specific ``VolumetricSceneController`` it should use.
+hands each view the surface-specific ``VolumeViewportController`` it should use.
 
-Create a basic volumetric scene with SwiftUI:
+Create a basic volume viewport with SwiftUI:
 
 ```swift
 import SwiftUI
@@ -96,16 +118,16 @@ import MTKUI
 import MTKCore
 
 struct VolumetricView: View {
-    @StateObject private var coordinator = VolumetricSceneCoordinator.shared
+    @StateObject private var coordinator = VolumeViewportCoordinator.shared
     @State private var level: Double = 40
     @State private var window: Double = 400
 
-    private var controller: VolumetricSceneController {
+    private var controller: VolumeViewportController {
         coordinator.controller
     }
 
     var body: some View {
-        VolumetricDisplayContainer(controller: controller) {
+        VolumeViewportContainer(controller: controller) {
             // Optional overlays
             VStack {
                 Spacer()
@@ -143,7 +165,7 @@ import SwiftUI
 import MTKUI
 
 struct TriplanarMPRView: View {
-    let coordinator = VolumetricSceneCoordinator.shared
+    let coordinator = VolumeViewportCoordinator.shared
 
     var body: some View {
         TriplanarMPRComposer(
@@ -172,7 +194,7 @@ import SwiftUI
 import MTKUI
 
 struct MPRGridView: View {
-    let coordinator = VolumetricSceneCoordinator.shared
+    let coordinator = VolumeViewportCoordinator.shared
 
     var body: some View {
         MPRGridComposer(
@@ -201,15 +223,16 @@ workflow.
 
 MTKUI follows a coordinator-controller pattern:
 
-1. **VolumetricSceneCoordinator**: Singleton managing controller instances and state synchronization
-2. **VolumetricSceneController**: Per-surface controller handling rendering, camera, and volume state
-3. **VolumetricDisplayContainer**: SwiftUI view wrapping render surfaces with overlay support
+1. **VolumeViewportCoordinator**: Singleton managing controller instances and state synchronization
+2. **VolumeViewportController**: Per-surface controller handling rendering, camera, and volume state
+3. **VolumeViewportContainer**: SwiftUI view wrapping render surfaces with overlay support
 4. **Gesture Modifiers**: SwiftUI gesture modifiers forwarding interactions to controllers
 
 This architecture enables:
 - State synchronization across MPR views
+- Shared GPU resources across synchronized viewports
 - Singleton access for SwiftUI views
-- Comprehensive scene lifecycle management
+- Comprehensive viewport lifecycle management
 - Combine-based reactive updates
 
 ## Platform Requirements

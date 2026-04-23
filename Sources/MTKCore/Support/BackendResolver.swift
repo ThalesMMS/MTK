@@ -8,7 +8,7 @@
 //  persisting the check result via UserDefaults.
 //
 //  Note: This struct focuses on Metal runtime availability checking. Related
-//  rendering-mode types live in MTKUI/VolumetricSceneController.swift to avoid
+//  rendering-mode types live in MTKUI/VolumeViewportController.swift to avoid
 //  circular dependencies.
 //
 //  Extracted from: Isis DICOM Viewer/Presentation/ViewModels/Viewer/VolumetricSessionState.swift

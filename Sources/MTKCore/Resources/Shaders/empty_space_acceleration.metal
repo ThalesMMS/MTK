@@ -2,7 +2,7 @@
 #define empty_space_acceleration_metal
 
 #include <metal_stdlib>
-#include "../MPR/Shared.metal"
+#include "volume_shader_common.metal"
 #include "volume_rendering_types.metal"
 
 using namespace metal;
