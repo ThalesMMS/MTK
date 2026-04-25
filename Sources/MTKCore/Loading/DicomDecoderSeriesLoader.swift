@@ -77,7 +77,7 @@ public final class DicomDecoderSeriesLoader: DicomSeriesLoading {
         guard url.isFileURL else {
             throw NSError(domain: "br.thalesmms.dicom.decoder",
                           code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: "URL fornecida não é um caminho local."])
+                          userInfo: [NSLocalizedDescriptionKey: "The provided URL is not a local path."])
         }
 
         cachedVolume = nil

@@ -41,6 +41,7 @@ public protocol VolumeRenderingPortExtended: VolumeRenderingPort {
     func resetClipBounds() async throws
     func setClipPlanePreset(_ preset: Int) async throws
     func setClipPlaneOffset(_ offset: Float) async throws
+    var supportsAlignClipBoxToView: Bool { get }
     func alignClipBoxToView() async throws
     func alignClipPlaneToView() async throws
     
@@ -52,4 +53,10 @@ public protocol VolumeRenderingPortExtended: VolumeRenderingPort {
     func getVolumeMetadata() async throws -> VolumeMetadata?
     func getCurrentRenderingQuality() async throws -> Float
     func getChannelControlSnapshot() async throws -> [ChannelControlSnapshot]
+}
+
+public extension VolumeRenderingPortExtended {
+    var supportsAlignClipBoxToView: Bool {
+        false
+    }
 }

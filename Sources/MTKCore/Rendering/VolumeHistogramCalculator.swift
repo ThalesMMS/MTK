@@ -342,7 +342,7 @@ private extension VolumeHistogramCalculator {
         }
 
         guard let function = library.makeFunction(name: functionName) else {
-            logger.error("Função Metal \(functionName) não encontrada.")
+            logger.error("Metal function \(functionName) not found.")
             return nil
         }
         function.label = MTL_label.calculate_histogram
@@ -356,7 +356,7 @@ private extension VolumeHistogramCalculator {
             pipelineCache[functionName] = pipeline
             return pipeline
         } catch {
-            logger.error("Falha ao criar pipeline de histograma: \(error.localizedDescription)")
+            logger.error("Failed to create histogram pipeline: \(error.localizedDescription)")
             return nil
         }
     }

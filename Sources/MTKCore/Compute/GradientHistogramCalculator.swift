@@ -199,7 +199,7 @@ private extension GradientHistogramCalculator {
         }
 
         guard let function = library.makeFunction(name: functionName) else {
-            logger.error("Função Metal \(functionName) não encontrada.")
+            logger.error("Metal function \(functionName) not found.")
             return nil
         }
         function.label = MTL_label.calculate_gradient_histogram
@@ -213,7 +213,7 @@ private extension GradientHistogramCalculator {
             pipelineCache[functionName] = pipeline
             return pipeline
         } catch {
-            logger.error("Falha ao criar pipeline de histograma de gradiente: \(error.localizedDescription)")
+            logger.error("Failed to create gradient histogram pipeline: \(error.localizedDescription)")
             return nil
         }
     }

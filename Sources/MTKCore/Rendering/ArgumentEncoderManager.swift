@@ -128,7 +128,7 @@ public final class ArgumentEncoderManager {
         // StorageModePolicy.md: argument buffers are CPU-authored per-dispatch state.
         guard let argumentBuffer = device.makeBuffer(length: argumentBufferLength,
                                                      options: [.cpuCacheModeWriteCombined, .storageModeShared]) else {
-            logger.error("Falha ao criar argument buffer (len=\(argumentBufferLength)).")
+            logger.error("Failed to create argument buffer (len=\(argumentBufferLength)).")
             return
         }
 
@@ -191,7 +191,7 @@ public final class ArgumentEncoderManager {
             if let sampler {
                 argumentEncoder.setSamplerState(sampler, index: ArgumentIndex.sampler.rawValue)
             } else {
-                logger.error("Falha ao criar sampler para filtro \(String(describing: filter)).")
+                logger.error("Failed to create sampler for filter \(String(describing: filter)).")
             }
         } else if currentSamplerFilter != filter {
             sampler = makeSampler(filter: filter)
@@ -200,7 +200,7 @@ public final class ArgumentEncoderManager {
             if let sampler {
                 argumentEncoder.setSamplerState(sampler, index: ArgumentIndex.sampler.rawValue)
             } else {
-                logger.error("Falha ao recriar sampler para filtro \(String(describing: filter)).")
+                logger.error("Failed to recreate sampler for filter \(String(describing: filter)).")
             }
         } else if debugOptions.isDebugMode {
             print("arg sampler index:\(ArgumentIndex.sampler.rawValue), \(String(describing: type(of: sampler))), reuse")

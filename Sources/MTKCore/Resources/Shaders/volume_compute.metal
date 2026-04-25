@@ -27,7 +27,7 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
     }
 #endif
 
-    // Coordenadas de dispositivo normalizadas (-1 .. +1).
+    // Normalized device coordinates (-1 .. +1).
     const float x = (float(gid.x) + 0.5f) / float(width);
     const float y = (float(height - 1 - gid.y) + 0.5f) / float(height);
     const float2 ndc = float2(x * 2.0f - 1.0f,

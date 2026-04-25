@@ -11,9 +11,9 @@ import simd
 import MTKCore
 
 public struct ToneCurveConfiguration: Sendable, Equatable {
-    public let controlPoints: [SIMD2<Float>]
-    public let gain: Float
-    public let channel: Int
+    public var controlPoints: [SIMD2<Float>]
+    public var gain: Float
+    public var channel: Int
     
     public init(controlPoints: [SIMD2<Float>], gain: Float, channel: Int) {
         self.controlPoints = controlPoints

@@ -165,6 +165,22 @@ public actor MTKRenderingEngine {
         resourceManager.release(handle: handle)
     }
 
+    public func clearVolume(for viewports: [ViewportID]) async {
+        var seenViewports = Set<ViewportID>()
+        for viewport in viewports where seenViewports.insert(viewport).inserted {
+            guard var state = self.viewports[viewport],
+                  let handle = state.resourceHandle
+            else {
+                await mprFrameCache.invalidate(viewport)
+                continue
+            }
+            state.resourceHandle = nil
+            self.viewports[viewport] = state
+            await mprFrameCache.invalidate(viewport)
+            resourceManager.release(handle: handle)
+        }
+    }
+
     public func setVolume(_ dataset: VolumeDataset,
                           for viewport: ViewportID) async throws {
         guard let initialState = viewports[viewport] else {

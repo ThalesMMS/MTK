@@ -138,6 +138,7 @@ public protocol VolumetricSeriesDataProvider {
 // MARK: - Internal Type Definitions (placeholders for external types)
 
 /// Represents 3D volumetric dimensions.
+/// Replace with the upstream dimensions type used by your loader layer if needed.
 public struct VolumetricDimensions {
     public var width: Int
     public var height: Int
@@ -151,6 +152,7 @@ public struct VolumetricDimensions {
 }
 
 /// Represents physical spacing between voxels.
+/// Replace with the upstream spacing type used by your loader layer if needed.
 public struct VolumetricSpacing {
     public var x: Double
     public var y: Double
@@ -164,6 +166,7 @@ public struct VolumetricSpacing {
 }
 
 /// Represents volumetric orientation in space.
+/// Replace with the upstream orientation type used by your loader layer if needed.
 public struct VolumetricOrientation {
     public var row: SIMD3<Float>
     public var column: SIMD3<Float>
@@ -177,6 +180,7 @@ public struct VolumetricOrientation {
 }
 
 /// Pixel format enumeration for volumetric data.
+/// Replace with the upstream pixel format type used by your loader layer if needed.
 public enum VolumetricPixelFormat {
     case int16Signed
     case int16Unsigned
@@ -193,6 +197,7 @@ public enum VolumetricPixelFormat {
 }
 
 /// Represents complete volumetric series data.
+/// Replace with the upstream series type used by your loader layer if needed.
 public struct VolumetricSeriesData: VolumetricSeriesDataProvider {
     public var voxels: Data
     public var dimensions: VolumetricDimensions

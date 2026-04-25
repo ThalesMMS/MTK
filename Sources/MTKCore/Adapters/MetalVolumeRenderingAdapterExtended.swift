@@ -131,6 +131,10 @@ extension MetalVolumeRenderingAdapter: VolumeRenderingPortExtended {
         extendedState.clipPlaneOffset = offset
     }
 
+    public nonisolated var supportsAlignClipBoxToView: Bool {
+        false
+    }
+
     public func alignClipBoxToView() async throws {
         throw AdapterError.notImplemented
     }
