@@ -15,13 +15,15 @@ public protocol VolumetricUIStyle {
 }
 
 public struct DefaultVolumetricUIStyle: VolumetricUIStyle {
-    public init() {}
+    public let lineWidth: CGFloat
+
+    public init(crosshairLineWidth: CGFloat = 1.0) {
+        self.lineWidth = crosshairLineWidth
+    }
 
     public var crosshairColor: Color { .accentColor }
     public var scalebarColor: Color { .secondary }
     public var overlayBackground: Color { Color.black.opacity(0.55) }
     public var overlayForeground: Color { .primary }
-    public var lineWidth: CGFloat { 1.0 }
 }
 #endif
-

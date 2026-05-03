@@ -78,6 +78,7 @@ struct VolumeGesturesModifier: ViewModifier {
     /// - Returns: A drag gesture configured with minimum distance and axis-aware handling.
     private func makeTranslationGesture(context: VolumeGestureContext) -> some Gesture {
         let axis = configuration.translationAxis ?? .volume
+        let sensitivity = CGFloat(configuration.translationSensitivity)
         return DragGesture(minimumDistance: 2)
             .onChanged { value in
                 guard configuration.allowsTranslation else { return }
@@ -86,7 +87,8 @@ struct VolumeGesturesModifier: ViewModifier {
                     Task { await controller.beginAdaptiveSamplingInteraction() }
                 }
                 scheduleTranslationReset()
-                context.onTranslate(axis, value.translation)
+                context.onTranslate(axis, CGSize(width: value.translation.width * sensitivity,
+                                                height: value.translation.height * sensitivity))
             }
             .onEnded { _ in
                 translationResetTask?.cancel()
@@ -107,7 +109,8 @@ struct VolumeGesturesModifier: ViewModifier {
     /// - Parameter context: Callback context for routing gesture events.
     /// - Returns: A magnification gesture that forwards zoom factors when ``VolumeGestureConfiguration/allowsZoom`` is enabled.
     private func makeMagnificationGesture(context: VolumeGestureContext) -> some Gesture {
-        MagnificationGesture()
+        let sensitivity = CGFloat(configuration.zoomSensitivity)
+        return MagnificationGesture()
             .onChanged { value in
                 guard configuration.allowsZoom else { return }
                 if !magnificationInteractionActive {
@@ -115,7 +118,8 @@ struct VolumeGesturesModifier: ViewModifier {
                     Task { await controller.beginAdaptiveSamplingInteraction() }
                 }
                 scheduleMagnificationReset()
-                context.onZoom(value)
+                let adjusted = 1.0 + (value - 1.0) * sensitivity
+                context.onZoom(adjusted)
             }
             .onEnded { _ in
                 magnificationResetTask?.cancel()
@@ -135,7 +139,8 @@ struct VolumeGesturesModifier: ViewModifier {
     /// - Parameter context: Callback context for routing gesture events.
     /// - Returns: A rotation gesture that forwards angle changes when ``VolumeGestureConfiguration/allowsRotation`` is enabled.
     private func makeRotationGesture(context: VolumeGestureContext) -> some Gesture {
-        RotationGesture()
+        let sensitivity = CGFloat(configuration.rotationSensitivity)
+        return RotationGesture()
             .onChanged { radians in
                 guard configuration.allowsRotation else { return }
                 if !rotationInteractionActive {
@@ -143,7 +148,7 @@ struct VolumeGesturesModifier: ViewModifier {
                     Task { await controller.beginAdaptiveSamplingInteraction() }
                 }
                 scheduleRotationReset()
-                context.onRotate(.volume, CGFloat(radians.radians))
+                context.onRotate(.volume, CGFloat(radians.radians) * sensitivity)
             }
             .onEnded { _ in
                 rotationResetTask?.cancel()

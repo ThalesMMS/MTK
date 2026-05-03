@@ -115,6 +115,31 @@ final class ChunkedVolumeUploaderTests: XCTestCase {
         XCTAssertEqual(handle.metadata.estimatedBytes, ResourceMemoryEstimator.estimate(for: texture))
     }
 
+#if DEBUG
+    func test_resourceManagerAcquireFromStreamUpdatesDebugUploadCounters() async throws {
+        let dimensions = VolumeDimensions(width: 2, height: 2, depth: 1)
+        let descriptor = VolumeUploadDescriptor(
+            dimensions: dimensions,
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+            sourcePixelFormat: .int16Signed
+        )
+        let manager = VolumeResourceManager(device: device,
+                                            commandQueue: commandQueue)
+        let slices = [
+            makeSignedSlice(index: 0, values: [1, 2, 3, 4])
+        ]
+
+        _ = try await manager.acquireFromStream(descriptor: descriptor,
+                                                slices: SliceSequence(slices))
+        _ = try await manager.acquireFromStream(descriptor: descriptor,
+                                                slices: SliceSequence(slices))
+
+        XCTAssertEqual(manager.debugCounters.volumeTextureCreates, 2)
+        XCTAssertEqual(manager.debugCounters.volumeCacheHits, 1)
+        XCTAssertEqual(manager.debugTextureCount, 1)
+    }
+#endif
+
     func test_uploadCancellationStopsPendingSliceIngest() async throws {
         let dimensions = VolumeDimensions(width: 2, height: 2, depth: 2)
         let slices = DelayedSliceSequence(

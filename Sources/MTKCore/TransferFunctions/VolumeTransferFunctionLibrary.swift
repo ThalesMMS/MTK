@@ -15,8 +15,16 @@ import Foundation
 /// and anatomical regions.
 ///
 /// ## Available Presets
-/// - **CT Presets**: ctEntire, ctArteries, ctLung, ctBone, ctCardiac, ctLiverVasculature, ctChestContrast, ctSoftTissue, ctPulmonaryArteries, ctFat
-/// - **MR Presets**: mrT2Brain, mrAngio
+///
+/// All built-in presets are represented by ``VolumeRenderingBuiltinPreset``.
+/// Each preset case exposes user-facing display metadata via:
+///
+/// - ``VolumeRenderingBuiltinPreset/displayName``
+/// - ``VolumeRenderingBuiltinPreset/modality``
+/// - ``VolumeRenderingBuiltinPreset/category``
+///
+/// To enumerate available presets, iterate over ``VolumeRenderingBuiltinPreset/allCases``
+/// and use the metadata above to group and label them in your UI.
 ///
 /// ## Usage
 /// ```swift

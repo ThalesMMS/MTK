@@ -78,8 +78,13 @@ public struct VolumeViewportContainer<Overlays: View>: View {
     /// The controller managing the volume viewport and render surface.
     @ObservedObject private var controller: VolumeViewportController
 
+    private let configuration: VolumeViewportConfiguration
+
     /// Tracks the last logged size to avoid redundant log entries.
     @State private var lastLoggedSize: CGSize = .zero
+
+    /// Prevents overlapping initial configuration tasks when dataset signals arrive together.
+    @State private var isApplyingInitialConfiguration = false
 
     /// Logger for size tracking and diagnostics.
     private let logger = Logger(subsystem: "com.isis.viewer", category: "VolumeViewportContainer")
@@ -107,8 +112,10 @@ public struct VolumeViewportContainer<Overlays: View>: View {
     /// }
     /// ```
     public init(controller: VolumeViewportController,
+                configuration: VolumeViewportConfiguration = .default,
                 @ViewBuilder overlays: @escaping () -> Overlays) {
         self.controller = controller
+        self.configuration = configuration
         self.overlays = overlays
     }
 
@@ -125,10 +132,24 @@ public struct VolumeViewportContainer<Overlays: View>: View {
             ZStack {
                 MetalViewportView(surface: controller.surface)
                     .accessibilityIdentifier("VolumetricRenderSurface")
+
                 overlays()
+
+                builtInOverlays()
             }
-            .onAppear { logSize(proxy.size) }
+            .onAppear {
+                logSize(proxy.size)
+                applyInitialConfigurationIfNeeded()
+            }
             .onChange(of: proxy.size) { logSize($0) }
+            .onReceive(controller.$datasetApplied) { isApplied in
+                guard isApplied else { return }
+                applyInitialConfigurationIfNeeded()
+            }
+            .onReceive(controller.$datasetIntensityRange) { range in
+                guard range != nil else { return }
+                applyInitialConfigurationIfNeeded()
+            }
         }
     }
 }
@@ -140,8 +161,10 @@ public extension VolumeViewportContainer where Overlays == EmptyView {
     /// This convenience initializer creates a container that displays only the volumetric
     /// render surface, without any additional overlays.
     ///
-    /// - Parameter controller: The ``VolumeViewportController`` managing the volume viewport
-    ///   state and render surface.
+    /// - Parameters:
+    ///   - controller: The ``VolumeViewportController`` managing the volume viewport
+    ///     state and render surface.
+    ///   - configuration: The viewport UI configuration to apply.
     ///
     /// ## Example
     ///
@@ -156,29 +179,61 @@ public extension VolumeViewportContainer where Overlays == EmptyView {
     /// ```
     ///
     /// - Note: For containers with overlays, use ``init(controller:overlays:)`` instead.
-    init(controller: VolumeViewportController) {
-        self.init(controller: controller) { EmptyView() }
+    init(controller: VolumeViewportController,
+         configuration: VolumeViewportConfiguration = .default) {
+        self.init(controller: controller, configuration: configuration) { EmptyView() }
     }
 }
 
 /// Private helpers for size tracking and logging.
 private extension VolumeViewportContainer {
+    @ViewBuilder
+    func builtInOverlays() -> some View {
+        if configuration.overlays.showsCrosshair {
+            CrosshairOverlayView(style: DefaultVolumetricUIStyle(crosshairLineWidth: configuration.crosshair.lineWidth))
+        }
+        if configuration.overlays.showsOrientationLabels {
+            let labels = configuration.overlays.orientationLabels
+            OrientationOverlayView(
+                labels: (leading: labels.leading, trailing: labels.trailing, top: labels.top, bottom: labels.bottom),
+                style: DefaultVolumetricUIStyle()
+            )
+        }
+        if configuration.overlays.showsGestureOverlay {
+            VolumetricHUD(controller: controller)
+        }
+    }
+
+    func applyInitialConfigurationIfNeeded() {
+        guard !isApplyingInitialConfiguration else { return }
+
+        let minHU = Int32((configuration.windowLevel.defaultLevel - configuration.windowLevel.defaultWindow / 2).rounded())
+        let maxHU = Int32((configuration.windowLevel.defaultLevel + configuration.windowLevel.defaultWindow / 2).rounded())
+        let usesPlaceholderDomain = controller.huWindow?.minHU == minHU &&
+            controller.huWindow?.maxHU == maxHU &&
+            controller.huWindow?.tfMin == 0 &&
+            controller.huWindow?.tfMax == 1
+
+        guard (controller.statePublisher.windowLevelState == .init() || usesPlaceholderDomain),
+              let datasetRange = controller.dataset?.intensityRange else {
+            return
+        }
+
+        let mapping = VolumetricHUWindowMapping.makeHuWindowMapping(
+            minHU: minHU,
+            maxHU: maxHU,
+            datasetRange: datasetRange,
+            transferDomain: controller.transferFunctionDomain
+        )
+
+        isApplyingInitialConfiguration = true
+        Task { @MainActor in
+            defer { isApplyingInitialConfiguration = false }
+            await controller.setHuWindow(mapping)
+        }
+    }
+
     /// Logs container size changes for diagnostics.
-    ///
-    /// This method tracks size changes and emits log entries when the container dimensions
-    /// change. Degenerate sizes (width or height ≤ 1pt) trigger warnings, while normal
-    /// size changes are logged at debug level.
-    ///
-    /// - Parameter size: The new container size in points.
-    ///
-    /// ## Behavior
-    ///
-    /// - Size changes are deduplicated; identical consecutive sizes don't generate new log entries.
-    /// - Sizes with width or height ≤ 1pt emit a warning about degenerate dimensions.
-    /// - Normal size changes emit debug-level log entries.
-    ///
-    /// - Important: This method updates the `lastLoggedSize` state to track the most recent
-    ///   logged size.
     func logSize(_ size: CGSize) {
         guard size != lastLoggedSize else { return }
         lastLoggedSize = size

@@ -113,13 +113,18 @@ extension VolumeViewportController {
         try await (volumeRenderer as any VolumeRenderingPort).renderFrame(using: plan.request)
     }
 
-    /// Creates a production-quality CGImage snapshot of the volume using the provided dataset and volumetric render method.
-    /// 
+    /// Creates a production-quality `CGImage` snapshot of the volume using the provided dataset and volumetric render method.
+    ///
+    /// - Important: This API performs an explicit GPU→CPU readback for export/debug workflows.
+    ///   It must not be used for interactive on-screen rendering.
+    ///   Interactive rendering should present the GPU-native `VolumeRenderFrame.texture` via `MetalViewportSurface`.
+    ///
     /// This produces a final/export-quality image without altering interaction tracking or adaptive sampling state.
     /// - Parameters:
     ///   - dataset: The volume dataset to render.
     ///   - method: The volumetric rendering method and compositing settings to use.
     /// - Returns: A `CGImage` containing the rendered production-quality snapshot.
+    @available(*, deprecated, message: "Export/debug-only. For interactive use, render a VolumeRenderFrame (MTLTexture) and present via MetalViewportSurface; convert to CGImage only via TextureSnapshotExporter when explicitly exporting.")
     func renderVolumeSnapshot(dataset: VolumeDataset,
                               method: VolumetricRenderMethod) async throws -> CGImage {
         // Snapshot/export requests production quality without mutating interaction tracking.

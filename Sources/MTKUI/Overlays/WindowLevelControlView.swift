@@ -219,6 +219,9 @@ public struct WindowLevelControlView: View {
         .background(style.overlayBackground.cornerRadius(8))
         .foregroundStyle(style.overlayForeground)
         .accessibilityIdentifier("VolumetricWindowLevelControls")
+        #if os(iOS)
+        .hoverEffect(.highlight)
+        #endif
     }
 }
 #endif

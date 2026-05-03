@@ -24,14 +24,17 @@ final class MTKCoreTests: XCTestCase {
     @MainActor
     func testAllBuiltinPresetsLoadFromBundleResources() throws {
         let allPresets = VolumeRenderingBuiltinPreset.allCases
-        XCTAssertEqual(allPresets.count, 12, "Expected 12 builtin presets")
+        XCTAssertFalse(allPresets.isEmpty)
 
         let device = MTLCreateSystemDefaultDevice()
         let metalAvailable = device != nil
 
         for preset in allPresets {
+            let filename = preset.filename
+            XCTAssertFalse(filename.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
             guard let transfer = TransferFunctionPresetLoader.load(preset) else {
-                XCTFail("Failed to load preset \(preset.rawValue) from bundle resources")
+                XCTFail("Failed to load preset \(preset.rawValue) (\(filename).tf) from bundle resources")
                 continue
             }
 

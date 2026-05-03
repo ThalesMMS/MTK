@@ -11,27 +11,53 @@ import Combine
 #endif
 import simd
 
-/// Configuration toggles describing which gesture capabilities are active.
+/// Configuration describing which gesture capabilities are active for a volumetric viewport.
+///
+/// Use this type to enable/disable interaction modes (translation, zoom, rotation, window/level,
+/// slab thickness) and to tune gesture sensitivity.
 public struct VolumeGestureConfiguration: Sendable, Equatable {
     public var allowsTranslation: Bool
     public var allowsZoom: Bool
     public var allowsRotation: Bool
     public var allowsWindowLevel: Bool
     public var allowsSlabThickness: Bool
+
+    public var isEnabled: Bool {
+        allowsTranslation || allowsZoom || allowsRotation || allowsWindowLevel || allowsSlabThickness
+    }
+
+    /// How drag gestures are interpreted.
     public var translationAxis: VolumeGestureAxis?
+
+    /// Scalar applied to drag translation before it is forwarded to the controller.
+    ///
+    /// Use values < 1.0 to reduce sensitivity and > 1.0 to increase sensitivity.
+    public var translationSensitivity: Double
+
+    /// Scalar applied to pinch magnification deltas before they are forwarded to the controller.
+    public var zoomSensitivity: Double
+
+    /// Scalar applied to rotation radians before they are forwarded to the controller.
+    public var rotationSensitivity: Double
 
     public init(allowsTranslation: Bool = true,
                 allowsZoom: Bool = true,
                 allowsRotation: Bool = true,
                 allowsWindowLevel: Bool = true,
                 allowsSlabThickness: Bool = true,
-                translationAxis: VolumeGestureAxis? = nil) {
+                translationAxis: VolumeGestureAxis? = nil,
+                translationSensitivity: Double = 1.0,
+                zoomSensitivity: Double = 1.0,
+                rotationSensitivity: Double = 1.0) {
         self.allowsTranslation = allowsTranslation
         self.allowsZoom = allowsZoom
         self.allowsRotation = allowsRotation
         self.allowsWindowLevel = allowsWindowLevel
         self.allowsSlabThickness = allowsSlabThickness
         self.translationAxis = translationAxis
+        self.translationSensitivity = translationSensitivity
+        self.zoomSensitivity = zoomSensitivity
+        self.rotationSensitivity = rotationSensitivity
     }
 
     public static let `default` = VolumeGestureConfiguration()
@@ -146,7 +172,7 @@ public final class VolumeGestureState: ObservableObject {
 #endif
 
 #if canImport(SwiftUI) && os(iOS)
- 
+
 extension VolumeViewportController {
     public func gestureContext(using state: VolumeGestureState) -> VolumeGestureContext {
         let handler = VolumeGestureContext(

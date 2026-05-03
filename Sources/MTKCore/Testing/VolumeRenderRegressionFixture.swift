@@ -107,7 +107,7 @@ public enum VolumeRenderRegressionFixture {
         )
     }
 
-    public static func imagePixelSummary(_ image: CGImage) -> PixelSummary? {
+    public static func imagePixelSummary(_ image: CoreGraphics.CGImage) -> PixelSummary? {
         let width = image.width
         let height = image.height
         var pixels = [UInt8](repeating: 0, count: width * height * 4)
@@ -140,7 +140,7 @@ public enum VolumeRenderRegressionFixture {
                             maxAlpha: maxAlpha)
     }
 
-    public static func imageContainsVisiblePixels(_ image: CGImage) -> Bool {
+    public static func imageContainsVisiblePixels(_ image: CoreGraphics.CGImage) -> Bool {
         guard let summary = imagePixelSummary(image) else {
             return false
         }
@@ -153,18 +153,31 @@ public enum VolumeRenderRegressionFixture {
         let width = readableTexture.width
         let height = readableTexture.height
         let bytesPerRow = width * 4
+        let exporter = TextureSnapshotExporter()
+        let frame = VolumeRenderFrame(
+            texture: readableTexture,
+            metadata: .init(viewportSize: CGSize(width: width, height: height),
+                            samplingDistance: 1,
+                            compositing: .frontToBack,
+                            quality: .interactive,
+                            pixelFormat: readableTexture.pixelFormat)
+        )
+        let image = try exporter.makeCGImageSynchronously(from: frame)
         var pixels = [UInt8](repeating: 0, count: bytesPerRow * height)
-        try pixels.withUnsafeMutableBytes { pointer in
-            guard let baseAddress = pointer.baseAddress else {
-                throw SnapshotExportError.readbackFailed(
-                    "VolumeRenderRegressionFixture.texturePixelSummary could not access the pixel buffer base address."
-                )
-            }
-            readableTexture.getBytes(baseAddress,
-                                     bytesPerRow: bytesPerRow,
-                                     from: MTLRegionMake2D(0, 0, width, height),
-                                     mipmapLevel: 0)
+        let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue)
+            .union(.byteOrder32Little)
+        guard let context = CGContext(data: &pixels,
+                                      width: width,
+                                      height: height,
+                                      bitsPerComponent: 8,
+                                      bytesPerRow: bytesPerRow,
+                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: bitmapInfo.rawValue) else {
+            throw SnapshotExportError.readbackFailed(
+                "VolumeRenderRegressionFixture.texturePixelSummary could not create bitmap context."
+            )
         }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
 
         var maxBlue: UInt8 = 0
         var maxGreen: UInt8 = 0

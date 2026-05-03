@@ -3,6 +3,36 @@
 //  MTKCore
 //
 //  Essential DICOM geometry: maps WORLD(mm, LPS) <-> VOXEL(i,j,k) <-> TEX([0,1]^3)
+//
+//  Documented geometry rules (as used by the MTK DICOM import pipeline):
+//
+//  Coordinate system
+//  - World space is patient space in millimeters using DICOM's LPS convention:
+//      +X = Left, +Y = Posterior, +Z = Superior.
+//  - Voxel index space is (i,j,k) where:
+//      i = column index (x in image plane), j = row index (y in image plane),
+//      k = slice index (increasing along the slice normal).
+//  - Texture space is normalized [0,1]^3 with a 0.5-voxel center offset.
+//
+//  Orientation (IOP)
+//  - ImageOrientationPatient provides two direction vectors in LPS:
+//      iopRow = direction of increasing i (columns)
+//      iopCol = direction of increasing j (rows)
+//  - The slice normal used by MTK is computed as cross(iopRow, iopCol) and normalized.
+//    (Right-handed with respect to DICOM's IOP definition.)
+//  - This file does not validate orthogonality; validation is performed in the DICOM parser/loader.
+//
+//  Slice ordering (IPP)
+//  - The canonical slice index order is defined by sorting slices by ImagePositionPatient (IPP)
+//    projected onto the slice normal derived from IOP.
+//  - After sorting, the first slice's IPP becomes ipp0 (the translation/origin for voxelToWorld).
+//  - The spacingZ used for voxelToWorld should be positive in index space; reverse/negative
+//    acquisition order is handled by sorting before constructing the volume.
+//
+//  Voxel-to-world transform
+//  - voxelToWorld uses the standard DICOM affine:
+//      world = ipp0 + i*(spacingX*iopRow) + j*(spacingY*iopCol) + k*(spacingZ*iopNorm)
+//
 //  Originally from MTK-Demo — Migrated to MTKCore for reusability.
 //  Thales Matheus Mendonça Santos — November 2025
 //

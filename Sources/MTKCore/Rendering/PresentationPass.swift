@@ -207,7 +207,12 @@ public struct PresentationPass: Sendable {
         CommandBufferProfiler.captureTimes(for: commandBuffer,
                                            label: "present",
                                            category: "Benchmark")
+        let drawableWidth = drawable.texture.width
+        let drawableHeight = drawable.texture.height
+        let drawablePixelFormat = drawable.texture.pixelFormat
         commandBuffer.addCompletedHandler { buffer in
+            // Invoked on an arbitrary queue. Avoid capturing non-Sendable Objective-C
+            // backed objects (like CAMetalDrawable) inside this closure.
             defer {
                 lease?.release()
             }
@@ -219,7 +224,7 @@ public struct PresentationPass: Sendable {
                 )
                 onCommandBufferFailure?(failure)
                 Self.lifecycleLogger.error(
-                    "Presentation command buffer failed status=\(buffer.status.rawValue) error=\(String(describing: buffer.error)) sourceLabel=\(sourceTexture.label ?? "nil") sourceSize=\(sourceTexture.width)x\(sourceTexture.height) drawableSize=\(drawable.texture.width)x\(drawable.texture.height)"
+                    "Presentation command buffer failed status=\(buffer.status.rawValue) error=\(String(describing: buffer.error)) sourceLabel=\(sourceTexture.label ?? "nil") sourceSize=\(sourceTexture.width)x\(sourceTexture.height) drawableSize=\(drawableWidth)x\(drawableHeight)"
                 )
                 return
             }
@@ -230,7 +235,8 @@ public struct PresentationPass: Sendable {
             let profilerMetadata = profilerMetadata(
                 presentation: metadata,
                 sourceTexture: sourceTexture,
-                drawableTexture: drawable.texture,
+                drawableTextureSize: (drawableWidth, drawableHeight),
+                drawablePixelFormat: drawablePixelFormat,
                 timing: timing
             )
             ClinicalProfiler.shared.recordSample(
@@ -239,8 +245,8 @@ public struct PresentationPass: Sendable {
                 gpuTime: timing.gpuTime > 0 ? timing.gpuTime : nil,
                 memory: nil,
                 viewport: ProfilingViewportContext(
-                    resolutionWidth: drawable.texture.width,
-                    resolutionHeight: drawable.texture.height,
+                    resolutionWidth: drawableWidth,
+                    resolutionHeight: drawableHeight,
                     viewportType: metadata.viewportType,
                     quality: metadata.quality,
                     renderMode: metadata.renderMode
@@ -249,7 +255,7 @@ public struct PresentationPass: Sendable {
                 device: sourceTexture.device
             )
             Self.lifecycleLogger.debug(
-                "Presented output texture sourceLabel=\(sourceTexture.label ?? "nil") sourceSize=\(sourceTexture.width)x\(sourceTexture.height) drawableSize=\(drawable.texture.width)x\(drawable.texture.height) pixelFormat=\(sourceTexture.pixelFormat) status=\(buffer.status.rawValue)"
+                "Presented output texture sourceLabel=\(sourceTexture.label ?? "nil") sourceSize=\(sourceTexture.width)x\(sourceTexture.height) drawableSize=\(drawableWidth)x\(drawableHeight) pixelFormat=\(sourceTexture.pixelFormat) status=\(buffer.status.rawValue)"
             )
         }
         commandBuffer.commit()
@@ -309,7 +315,8 @@ public struct PresentationPass: Sendable {
 
     private func profilerMetadata(presentation: PresentationFrameMetadata,
                                   sourceTexture: any MTLTexture,
-                                  drawableTexture: any MTLTexture,
+                                  drawableTextureSize: (width: Int, height: Int),
+                                  drawablePixelFormat: MTLPixelFormat,
                                   timing: CommandBufferTimings) -> [String: String] {
         var metadata = [
             "cpuPresentTimeMilliseconds": String(format: "%.6f", timing.cpuTime),
@@ -317,11 +324,11 @@ public struct PresentationPass: Sendable {
             "kernelTimeMilliseconds": String(format: "%.6f", timing.kernelTime),
             "requestedDrawableSize": format(size: presentation.requestedDrawableSize),
             "sourceTextureSize": "\(sourceTexture.width)x\(sourceTexture.height)",
-            "drawableWidth": "\(drawableTexture.width)",
-            "drawableHeight": "\(drawableTexture.height)",
-            "drawableSize": "\(drawableTexture.width)x\(drawableTexture.height)",
+            "drawableWidth": "\(drawableTextureSize.width)",
+            "drawableHeight": "\(drawableTextureSize.height)",
+            "drawableSize": "\(drawableTextureSize.width)x\(drawableTextureSize.height)",
             "sourcePixelFormat": "\(sourceTexture.pixelFormat)",
-            "drawablePixelFormat": "\(drawableTexture.pixelFormat)"
+            "drawablePixelFormat": "\(drawablePixelFormat)"
         ]
         if let renderGraphRoute = presentation.renderGraphRoute {
             metadata["renderGraphRoute"] = renderGraphRoute

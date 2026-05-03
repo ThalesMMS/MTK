@@ -103,6 +103,145 @@ public enum VolumeRenderingBuiltinPreset: String, CaseIterable, Sendable, Identi
     /// Optimized for time-of-flight (TOF) and contrast-enhanced MR angiography.
     case mrAngio
 
+    public enum Modality: String, Sendable {
+        case ct
+        case mr
+    }
+
+    public enum Category: String, Sendable {
+        case general
+        case vascular
+        case skeletal
+        case pulmonary
+        case softTissue
+        case fat
+        case neurological
+        case cardiac
+        case hepatic
+    }
+
     /// Unique identifier (raw string value).
     public var id: String { rawValue }
+
+    /// The bundled transfer function preset filename (without extension).
+    ///
+    /// This delegates to `TransferFunctionPresetLoader.filenameForPreset(_:)`, which is the
+    /// single source of truth for the preset → resource mapping.
+    public var filename: String {
+        TransferFunctionPresetLoader.filenameForPreset(self)
+    }
+
+    /// Imaging modality that this preset is intended for.
+    public var modality: Modality {
+        switch self {
+        case .ctArteries, .ctEntire, .ctLung, .ctBone, .ctCardiac, .ctLiverVasculature, .ctChestContrast, .ctSoftTissue, .ctPulmonaryArteries, .ctFat:
+            return .ct
+        case .mrT2Brain, .mrAngio:
+            return .mr
+        }
+    }
+
+    /// High-level category for UI grouping/filtering.
+    public var category: Category {
+        switch self {
+        case .ctEntire:
+            return .general
+        case .ctSoftTissue:
+            return .softTissue
+        case .ctArteries, .ctPulmonaryArteries, .mrAngio:
+            return .vascular
+        case .ctLiverVasculature:
+            return .hepatic
+        case .ctBone:
+            return .skeletal
+        case .ctLung, .ctChestContrast:
+            return .pulmonary
+        case .ctFat:
+            return .fat
+        case .mrT2Brain:
+            return .neurological
+        case .ctCardiac:
+            return .cardiac
+        }
+    }
+
+    /// A human-readable, localized display name for this built-in preset.
+    ///
+    /// Intended for use in UI pickers/menus.
+    public var displayName: String {
+        switch self {
+        case .ctArteries:
+            return NSLocalizedString(
+                "VolumeRenderingBuiltinPreset.ctArteries.displayName",
+                value: "CT Arteries",
+                comment: "Display name for the CT arteries volume rendering preset"
+            )
+        case .ctEntire:
+            return NSLocalizedString(
+                "VolumeRenderingBuiltinPreset.ctEntire.displayName",
+                value: "CT Entire",
+                comment: "Display name for the CT entire volume rendering preset"
+            )
+        case .ctLung:
+            return NSLocalizedString(
+                "VolumeRenderingBuiltinPreset.ctLung.displayName",
+                value: "CT Lung",
+                comment: "Display name for the CT lung volume rendering preset"
+            )
+        case .ctBone:
+            return NSLocalizedString(
+                "VolumeRenderingBuiltinPreset.ctBone.displayName",
+                value: "CT Bone",
+                comment: "Display name for the CT bone volume rendering preset"
+            )
+        case .ctCardiac:
+            return NSLocalizedString(
+                "VolumeRenderingBuiltinPreset.ctCardiac.displayName",
+                value: "CT Cardiac",
+                comment: "Display name for the CT cardiac volume rendering preset"
+            )
+        case .ctLiverVasculature:
+            return NSLocalizedString(
+                "VolumeRenderingBuiltinPreset.ctLiverVasculature.displayName",
+                value: "CT Liver Vasculature",
+                comment: "Display name for the CT liver vasculature volume rendering preset"
+            )
+        case .mrT2Brain:
+            return NSLocalizedString(
+                "VolumeRenderingBuiltinPreset.mrT2Brain.displayName",
+                value: "MR T2 Brain",
+                comment: "Display name for the MR T2 brain volume rendering preset"
+            )
+        case .ctChestContrast:
+            return NSLocalizedString(
+                "VolumeRenderingBuiltinPreset.ctChestContrast.displayName",
+                value: "CT Chest Contrast",
+                comment: "Display name for the CT chest contrast volume rendering preset"
+            )
+        case .ctSoftTissue:
+            return NSLocalizedString(
+                "VolumeRenderingBuiltinPreset.ctSoftTissue.displayName",
+                value: "CT Soft Tissue",
+                comment: "Display name for the CT soft tissue volume rendering preset"
+            )
+        case .ctPulmonaryArteries:
+            return NSLocalizedString(
+                "VolumeRenderingBuiltinPreset.ctPulmonaryArteries.displayName",
+                value: "CT Pulmonary Arteries",
+                comment: "Display name for the CT pulmonary arteries volume rendering preset"
+            )
+        case .ctFat:
+            return NSLocalizedString(
+                "VolumeRenderingBuiltinPreset.ctFat.displayName",
+                value: "CT Fat",
+                comment: "Display name for the CT fat volume rendering preset"
+            )
+        case .mrAngio:
+            return NSLocalizedString(
+                "VolumeRenderingBuiltinPreset.mrAngio.displayName",
+                value: "MR Angio",
+                comment: "Display name for the MR angiography volume rendering preset"
+            )
+        }
+    }
 }

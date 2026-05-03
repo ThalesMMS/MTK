@@ -88,11 +88,18 @@ extension ClinicalViewportGridController {
         }
     }
 
-    /// Compute the drawable pixel size for the surface associated with the given axis, clamping each dimension to at least 1.
-    /// - Parameter axis: The axis whose surface drawable size to query.
-    /// - Returns: A `CGSize` derived from the surface's `drawablePixelSize` where both width and height are at least `1`.
+    /// Compute the drawable pixel size for the surface associated with the given axis.
+    ///
+    /// Crosshair positioning is computed in the pane's **layout point space** (SwiftUI coordinate
+    /// space), not in the Metal drawable pixel space. Using drawable pixel dimensions here would
+    /// scale the offset by the display scale factor (e.g. 2x/3x on iOS), causing visible
+    /// misalignment between the crosshair overlay (points) and the rendered texture (pixels).
+    ///
+    /// - Parameter axis: The axis whose surface size to query.
+    /// - Returns: A `CGSize` derived from the surface's `drawableSize` (points) where both width
+    ///   and height are at least `1`.
     func drawableSize(for axis: MTKCore.Axis) -> CGSize {
-        let size = surface(for: axis).drawablePixelSize
+        let size = surface(for: axis).metalView.bounds.size
         return CGSize(width: max(size.width, 1), height: max(size.height, 1))
     }
 

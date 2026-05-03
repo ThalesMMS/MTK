@@ -35,7 +35,7 @@ public enum TransferFunctionPresetLoader {
         lock.unlock()
 
         // Map preset enum to filename
-        let filename = filenameForPreset(preset)
+        let filename = preset.filename
 
         // Locate resource in bundle
         guard let url = VolumeRenderingResources.bundle.url(
@@ -59,8 +59,10 @@ public enum TransferFunctionPresetLoader {
         return transferFunction
     }
 
-    /// Maps preset enum cases to their corresponding .tf filenames
-    private static func filenameForPreset(_ preset: VolumeRenderingBuiltinPreset) -> String {
+    /// Maps preset enum cases to their corresponding `.tf` filenames.
+    ///
+    /// Note: This is intentionally the single source of truth for resource file names.
+    public static func filenameForPreset(_ preset: VolumeRenderingBuiltinPreset) -> String {
         switch preset {
         case .ctEntire:
             return "ct_entire"

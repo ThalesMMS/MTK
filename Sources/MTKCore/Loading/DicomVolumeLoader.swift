@@ -12,12 +12,13 @@ import Metal
 import OSLog
 import simd
 import ZIPFoundation
+import DicomCore
 
 /// Orchestrates DICOM volume loading from directories, ZIP archives, or individual files.
 ///
 /// Handles ZIP extraction, delegates DICOM parsing to a ``DicomSeriesLoading`` implementation,
-/// converts pixel values to Hounsfield Units, and optionally computes GPU-accelerated window/level
-/// recommendations via histogram percentiles.
+/// converts pixel values to Hounsfield Units, and chooses deterministic window/level recommendations
+/// from DICOM WC/WW metadata or modality-specific fallbacks.
 ///
 /// ## Example
 ///
@@ -45,15 +46,11 @@ import ZIPFoundation
 /// ## Topics
 ///
 /// ### Initialization
-/// - ``init(seriesLoader:device:commandQueue:histogramCalculator:statisticsCalculator:)``
+/// - ``init(seriesLoader:device:)``
 /// - ``init()``
 ///
 /// ### Loading Volumes
 /// - ``loadVolume(from:progress:completion:)``
-///
-/// ### GPU Acceleration
-/// - ``histogramCalculator``
-/// - ``statisticsCalculator``
 ///
 /// ### Progress Translation
 /// - ``uiUpdate(from:)``
@@ -64,40 +61,17 @@ public final class DicomVolumeLoader {
     /// Optional Metal device for GPU-accelerated statistics computation.
     private let device: (any MTLDevice)?
 
-    /// Optional command queue for GPU-accelerated statistics computation.
-    private let commandQueue: (any MTLCommandQueue)?
-
-    /// Optional histogram calculator for GPU-accelerated histogram computation.
-    ///
-    /// When provided (along with ``statisticsCalculator``), auto-windowing computes 2nd/98th
-    /// percentile window recommendations from volume intensity histogram.
-    public var histogramCalculator: VolumeHistogramCalculator?
-
-    /// Optional statistics calculator for GPU-accelerated percentile and Otsu computations.
-    ///
-    /// Used with ``histogramCalculator`` to compute recommended window/level from histogram percentiles.
-    public var statisticsCalculator: VolumeStatisticsCalculator?
-
-    /// Initialize with a custom DICOM series loader and optional GPU acceleration.
+    /// Initialize with a custom DICOM series loader.
     ///
     /// - Parameters:
     ///   - seriesLoader: DICOM series loading implementation (``DicomDecoderSeriesLoader`` or custom bridge)
-    ///   - device: Optional Metal device for GPU-accelerated auto-windowing statistics
-    ///   - commandQueue: Optional command queue for GPU operations
-    ///   - histogramCalculator: Optional histogram calculator for intensity distribution analysis
-    ///   - statisticsCalculator: Optional statistics calculator for percentile-based window recommendations
+    ///   - device: Optional Metal device used for profiling metadata
     ///
-    /// - Note: GPU parameters are optional. When omitted, window recommendations default to intensity range min/max.
+    /// - Note: Window recommendations come from DICOM WC/WW metadata when present, otherwise from deterministic fallbacks.
     public init(seriesLoader: DicomSeriesLoading,
-                device: (any MTLDevice)? = nil,
-                commandQueue: (any MTLCommandQueue)? = nil,
-                histogramCalculator: VolumeHistogramCalculator? = nil,
-                statisticsCalculator: VolumeStatisticsCalculator? = nil) {
+                device: (any MTLDevice)? = nil) {
         self.loader = seriesLoader
         self.device = device
-        self.commandQueue = commandQueue
-        self.histogramCalculator = histogramCalculator
-        self.statisticsCalculator = statisticsCalculator
     }
     
     private struct PreparedDirectory {
@@ -114,7 +88,7 @@ public final class DicomVolumeLoader {
     /// 1. If source is a ZIP, extracts to temporary directory with path traversal validation
     /// 2. Delegates DICOM parsing to ``DicomSeriesLoading`` implementation
     /// 3. Converts pixel values to Hounsfield Units using DICOM Rescale Slope/Intercept
-    /// 4. Optionally computes 2nd/98th percentile window recommendation via GPU histogram
+    /// 4. Selects a recommended window from DICOM WC/WW metadata or deterministic fallback policy
     /// 5. Constructs ``VolumeDataset`` with spatial metadata from Image Orientation/Position Patient
     ///
     /// - Parameters:
@@ -167,6 +141,8 @@ public final class DicomVolumeLoader {
                 var maxHU = Int32.min
                 var encounteredFatalError = false
                 var huConversionMilliseconds = 0.0
+
+                var warnings: [DicomImportWarning] = []
 
                 let parseStartedAt = CFAbsoluteTimeGetCurrent()
                 let volume = try self.loader.loadSeries(at: directoryURL, progress: { fraction, slicesLoaded, sliceData, partialVolume in
@@ -279,33 +255,88 @@ public final class DicomVolumeLoader {
                 )
 
                 let range = Self.intensityRange(minHU: minHU, maxHU: maxHU)
-                var dataset = self.makeDataset(data: convertedData,
-                                               width: Int(dimensions.x),
-                                               height: Int(dimensions.y),
-                                               depth: Int(dimensions.z),
-                                               spacing: spacing,
-                                               orientationMatrix: orientation,
-                                               origin: origin,
-                                               intensityRange: range)
+
+                // When GPU auto-windowing is unavailable, fall back to a clinically reasonable default.
+                // For CT volumes (HU-clamped to [-1024, 3071]), the standard Soft Tissue window is a
+                // good deterministic default when the file does not provide WC/WW metadata.
+                //
+                // For MR, intensities are not standardized; use the full intensity range to avoid a
+                // misleading clinical-looking window.
+                let dicomVolume = volume as? any DICOMSeriesVolumeProtocol
+                let recommendedWindow: ClosedRange<Int32>?
+                if let center = dicomVolume?.windowCenter,
+                   let width = dicomVolume?.windowWidth {
+                    let bounds = WindowLevelMath.bounds(forWidth: Float(width), level: Float(center))
+                    recommendedWindow = Int32(bounds.min.rounded(.down))...Int32(bounds.max.rounded(.up))
+                } else if dicomVolume?.modality.uppercased() == "MR" {
+                    recommendedWindow = range
+                    if let warning = dicomVolume.flatMap(Self.missingWindowMetadataWarning(for:)) {
+                        warnings.append(warning)
+                    }
+                } else {
+                    recommendedWindow = WindowLevelPresetLibrary.softTissue.windowRange
+                    if let warning = dicomVolume.flatMap(Self.missingWindowMetadataWarning(for:)) {
+                        warnings.append(warning)
+                    } else {
+                        warnings.append(Self.missingWindowMetadataWarningForUnknownVolume())
+                    }
+                }
+
+                let baseDataset = self.makeDataset(data: convertedData,
+                                                   width: Int(dimensions.x),
+                                                   height: Int(dimensions.y),
+                                                   depth: Int(dimensions.z),
+                                                   spacing: spacing,
+                                                   orientationMatrix: orientation,
+                                                   origin: origin,
+                                                   intensityRange: range,
+                                                   recommendedWindow: recommendedWindow)
 
                 if let cleanupRoot = prepared.cleanupRoot {
                     try? FileManager.default.removeItem(at: cleanupRoot)
                 }
 
-                self.computeRecommendedWindow(for: dataset,
-                                              intensityRange: range) { updatedDataset in
-                    if let updatedDataset {
-                        dataset = updatedDataset
-                    }
+                // NOTE: GPU auto-windowing (histogram percentile computation) is intentionally not run
+                // during `loadVolume` to avoid re-entrancy/exclusivity hazards when callers read back
+                // the dataset immediately in the completion handler. The renderer can still auto-window
+                // later if desired.
+                let result = DicomImportResult(dataset: baseDataset,
+                                               sourceURL: url,
+                                               seriesDescription: (volume as? any DICOMSeriesVolumeProtocol)?.seriesDescription ?? "",
+                                               warnings: warnings)
 
-                    let result = DicomImportResult(dataset: dataset,
-                                                   sourceURL: url,
-                                                   seriesDescription: (volume as? any DICOMSeriesVolumeProtocol)?.seriesDescription ?? "")
+                self.logger.info("DICOM import completed for \(sourceURL.lastPathComponent) (\(dimensions.x)x\(dimensions.y)x\(dimensions.z))")
+                DispatchQueue.main.async {
+                    completion(.success(result))
+                }
+            } catch let error as DicomSeriesLoaderError {
+                self.logger.error("DICOM import failed for \(sourceURL.lastPathComponent): \(String(describing: error))")
+                let mapped: Error
+                switch error {
+                case .unsupportedBitDepth:
+                    mapped = DicomVolumeLoaderError.unsupportedBitDepth
+                case .unsupportedTransferSyntax(let uid):
+                    mapped = DicomVolumeLoaderError.unsupportedTransferSyntax(uid: uid)
+                case .unsupportedSamplesPerPixel(let samples):
+                    mapped = DicomVolumeLoaderError.unsupportedPixelData(reason: "Unsupported samples per pixel: \(samples)")
+                case .inconsistentDimensions:
+                    mapped = DicomVolumeLoaderError.invalidGeometry(reason: "Inconsistent slice dimensions")
+                case .inconsistentOrientation, .invalidImageOrientation:
+                    mapped = DicomVolumeLoaderError.invalidGeometry(reason: "Inconsistent/invalid slice orientation")
+                case .inconsistentPixelRepresentation:
+                    mapped = DicomVolumeLoaderError.unsupportedPixelData(reason: "Inconsistent signed/unsigned pixel representation")
+                case .duplicateSlicePosition:
+                    mapped = DicomVolumeLoaderError.duplicateSlicePosition
+                case .variableSliceSpacing(let median, let maxDeviation):
+                    mapped = DicomVolumeLoaderError.variableSliceSpacing(median: median, maxDeviation: maxDeviation)
+                case .noDicomFiles:
+                    mapped = DicomVolumeLoaderError.missingResult
+                case .failedToDecode(let url):
+                    mapped = DicomVolumeLoaderError.bridgeError(NSError(domain: "DicomCore", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to decode DICOM file: \(url.lastPathComponent)"]))
+                }
 
-                    self.logger.info("DICOM import completed for \(sourceURL.lastPathComponent) (\(dimensions.x)x\(dimensions.y)x\(dimensions.z))")
-                    DispatchQueue.main.async {
-                        completion(.success(result))
-                    }
+                DispatchQueue.main.async {
+                    completion(.failure(mapped))
                 }
             } catch let error as NSError {
                 self.logger.error("DICOM import failed for \(sourceURL.lastPathComponent): \(error.localizedDescription)")
@@ -436,10 +467,21 @@ public final class DicomVolumeLoader {
                     throw DicomVolumeLoaderError.missingResult
                 }
 
+                let (streamingRecommendedWindow, warnings) = Self.streamingWindowRecommendation(for: finalVolume)
+                let finalMetadata = VolumeUploadDescriptor(
+                    dimensions: metadata.dimensions,
+                    spacing: metadata.spacing,
+                    sourcePixelFormat: metadata.sourcePixelFormat,
+                    intensityRange: metadata.intensityRange,
+                    orientation: metadata.orientation,
+                    recommendedWindow: streamingRecommendedWindow,
+                    cacheKey: metadata.cacheKey
+                )
                 let result = DicomStreamingImportResult(
-                    metadata: metadata,
+                    metadata: finalMetadata,
                     sourceURL: url,
-                    seriesDescription: finalVolume.seriesDescription
+                    seriesDescription: finalVolume.seriesDescription,
+                    warnings: warnings
                 )
                 ClinicalProfiler.shared.recordSample(
                     stage: .dicomParse,
@@ -456,6 +498,37 @@ public final class DicomVolumeLoader {
                 self.logger.info("Streaming DICOM import completed for \(sourceURL.lastPathComponent) (\(dimensions.x)x\(dimensions.y)x\(dimensions.z))")
                 DispatchQueue.main.async {
                     completion(.success(result))
+                }
+            } catch let error as DicomSeriesLoaderError {
+                if encounteredFatalError { return }
+                self.logger.error("Streaming DICOM import failed for \(sourceURL.lastPathComponent): \(String(describing: error))")
+
+                let mapped: Error
+                switch error {
+                case .unsupportedBitDepth:
+                    mapped = DicomVolumeLoaderError.unsupportedBitDepth
+                case .unsupportedTransferSyntax(let uid):
+                    mapped = DicomVolumeLoaderError.unsupportedTransferSyntax(uid: uid)
+                case .unsupportedSamplesPerPixel(let samples):
+                    mapped = DicomVolumeLoaderError.unsupportedPixelData(reason: "Unsupported samples per pixel: \(samples)")
+                case .inconsistentDimensions:
+                    mapped = DicomVolumeLoaderError.invalidGeometry(reason: "Inconsistent slice dimensions")
+                case .inconsistentOrientation, .invalidImageOrientation:
+                    mapped = DicomVolumeLoaderError.invalidGeometry(reason: "Inconsistent/invalid slice orientation")
+                case .inconsistentPixelRepresentation:
+                    mapped = DicomVolumeLoaderError.unsupportedPixelData(reason: "Inconsistent signed/unsigned pixel representation")
+                case .duplicateSlicePosition:
+                    mapped = DicomVolumeLoaderError.duplicateSlicePosition
+                case .variableSliceSpacing(let median, let maxDeviation):
+                    mapped = DicomVolumeLoaderError.variableSliceSpacing(median: median, maxDeviation: maxDeviation)
+                case .noDicomFiles:
+                    mapped = DicomVolumeLoaderError.missingResult
+                case .failedToDecode(let url):
+                    mapped = DicomVolumeLoaderError.bridgeError(NSError(domain: "DicomCore", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to decode DICOM file: \(url.lastPathComponent)"]))
+                }
+
+                DispatchQueue.main.async {
+                    completion(.failure(mapped))
                 }
             } catch let error as NSError {
                 if encounteredFatalError { return }
@@ -599,6 +672,58 @@ private extension DicomVolumeLoader {
         return minHU...maxHU
     }
 
+    static func missingWindowMetadataWarning(for volume: any DICOMSeriesVolumeProtocol) -> DicomImportWarning? {
+        guard volume.windowCenter == nil || volume.windowWidth == nil else { return nil }
+
+        if volume.modality.uppercased() == "MR" {
+            return DicomImportWarning(
+                code: .usedFallbackWindow,
+                message: "WindowCenter/WindowWidth not found; using full intensity range for MR as a deterministic fallback.",
+                context: volume.seriesDescription
+            )
+        }
+
+        return DicomImportWarning(
+            code: .usedFallbackWindow,
+            message: "WindowCenter/WindowWidth not found; using default CT soft tissue window (W400/L40) until auto-windowing runs.",
+            context: volume.seriesDescription
+        )
+    }
+
+    static func missingWindowMetadataWarningForUnknownVolume() -> DicomImportWarning {
+        DicomImportWarning(
+            code: .usedFallbackWindow,
+            message: "DICOM volume metadata unavailable; using default CT soft tissue window (W400/L40) as a deterministic fallback.",
+            context: nil
+        )
+    }
+
+    static func streamingWindowRecommendation(
+        for volume: any DICOMSeriesVolumeProtocol
+    ) -> (recommendedWindow: ClosedRange<Int32>?, warnings: [DicomImportWarning]) {
+        if let center = volume.windowCenter,
+           let width = volume.windowWidth {
+            let bounds = WindowLevelMath.bounds(forWidth: Float(width), level: Float(center))
+            return (Int32(bounds.min.rounded(.down))...Int32(bounds.max.rounded(.up)), [])
+        }
+
+        let message: String
+        let recommendedWindow: ClosedRange<Int32>?
+        if volume.modality.uppercased() == "MR" {
+            message = "WindowCenter/WindowWidth not found; apply full intensity-range windowing for MR before rendering."
+            recommendedWindow = nil
+        } else {
+            message = "WindowCenter/WindowWidth not found; using default CT soft tissue window (W400/L40) for streaming metadata."
+            recommendedWindow = WindowLevelPresetLibrary.softTissue.windowRange
+        }
+
+        return (recommendedWindow, [DicomImportWarning(
+            code: .usedFallbackWindow,
+            message: message,
+            context: volume.seriesDescription
+        )])
+    }
+
     func makeDataset(data: Data,
                      width: Int,
                      height: Int,
@@ -658,86 +783,6 @@ private extension DicomVolumeLoader {
         )
     }
 
-    func computeRecommendedWindow(for dataset: VolumeDataset,
-                                  intensityRange: ClosedRange<Int32>,
-                                  completion: @escaping (VolumeDataset?) -> Void) {
-        guard let histogramCalculator,
-              let statisticsCalculator,
-              let device,
-              let commandQueue else {
-            completion(nil)
-            return
-        }
-
-        let factory = VolumeTextureFactory(dataset: dataset)
-        guard let volumeTexture = factory.generate(device: device) else {
-            logger.warning("Failed to create Metal texture for histogram computation")
-            completion(nil)
-            return
-        }
-        volumeTexture.label = "VolumeTexture3D.Histogram"
-
-        let channelCount = 1
-        let voxelMin = Int32(intensityRange.lowerBound)
-        let voxelMax = Int32(intensityRange.upperBound)
-
-        histogramCalculator.computeHistogram(for: volumeTexture,
-                                             channelCount: channelCount,
-                                             voxelMin: voxelMin,
-                                             voxelMax: voxelMax,
-                                             bins: 0) { [weak self] histogramResult in
-            guard let self else {
-                completion(nil)
-                return
-            }
-
-            switch histogramResult {
-            case .success(let histograms):
-                let percentiles: [Float] = [0.02, 0.98]
-                statisticsCalculator.computePercentiles(from: histograms,
-                                                       percentiles: percentiles) { [weak self] percentilesResult in
-                    guard let self else {
-                        completion(nil)
-                        return
-                    }
-
-                    switch percentilesResult {
-                    case .success(let percentileBins):
-                        guard percentileBins.count == 2 else {
-                            self.logger.warning("Expected 2 percentile bins, got \(percentileBins.count)")
-                            completion(nil)
-                            return
-                        }
-
-                        let binToHU = { (bin: UInt32) -> Int32 in
-                            let binCount = histograms[0].count
-                            let normalizedBin = Float(bin) / Float(binCount - 1)
-                            let huValue = Float(voxelMin) + normalizedBin * Float(voxelMax - voxelMin)
-                            return Int32(huValue.rounded())
-                        }
-
-                        let minHU = binToHU(percentileBins[0])
-                        let maxHU = binToHU(percentileBins[1])
-                        let recommendedWindow = minHU...maxHU
-
-                        var updatedDataset = dataset
-                        updatedDataset.recommendedWindow = recommendedWindow
-
-                        self.logger.info("Computed recommended window: [\(minHU), \(maxHU)] from percentiles [2%, 98%]")
-                        completion(updatedDataset)
-
-                    case .failure(let error):
-                        self.logger.warning("Failed to compute percentiles: \(error.localizedDescription)")
-                        completion(nil)
-                    }
-                }
-
-            case .failure(let error):
-                self.logger.warning("Failed to compute histogram: \(error.localizedDescription)")
-                completion(nil)
-            }
-        }
-    }
 }
 
 public extension DicomVolumeLoader {

@@ -3,12 +3,14 @@
 //  Minimal SwiftUI container syncing orthogonal MPR panes.
 //  Thales Matheus Mendonça Santos — October 2025
 
-#if canImport(SwiftUI) && os(iOS)
+#if canImport(SwiftUI) && (os(iOS) || os(macOS))
 import MTKCore
 import SwiftUI
 import Combine
 #if canImport(UIKit)
 import UIKit
+#elseif canImport(AppKit)
+import AppKit
 #endif
 
 /// A SwiftUI view that composes a synchronized multi-planar reconstruction (MPR) grid layout.
@@ -101,6 +103,8 @@ public struct MPRGridComposer: View {
     /// Controller for the 3D volumetric view (bottom-right pane).
     private let volumeController: VolumeViewportController
 
+    private let configuration: VolumeViewportConfiguration
+
     /// Controller for the axial MPR view (top-left pane).
     private let axialController: VolumeViewportController
 
@@ -118,6 +122,9 @@ public struct MPRGridComposer: View {
 
     /// Current slab thickness in millimeters applied to all MPR views.
     @State private var slabThickness: Double = 3
+
+    /// Tracks whether the default MPR window has already been seeded.
+    @State private var initialWindowLevelSeeded = false
 
     /// Creates an MPR grid composer with four synchronized volumetric controllers.
     ///
@@ -147,11 +154,13 @@ public struct MPRGridComposer: View {
                 axialController: VolumeViewportController,
                 coronalController: VolumeViewportController,
                 sagittalController: VolumeViewportController,
+                configuration: VolumeViewportConfiguration = .default,
                 style: any VolumetricUIStyle = DefaultVolumetricUIStyle()) {
         self.volumeController = volumeController
         self.axialController = axialController
         self.coronalController = coronalController
         self.sagittalController = sagittalController
+        self.configuration = configuration
         self.style = style
     }
 
@@ -185,6 +194,19 @@ public struct MPRGridComposer: View {
         }
         .padding()
         .onAppear {
+            guard !initialWindowLevelSeeded else { return }
+            initialWindowLevelSeeded = true
+
+            Task {
+                let defaultWindow = configuration.windowLevel.defaultWindow
+                let defaultLevel = configuration.windowLevel.defaultLevel
+                let min = Int32(defaultLevel - defaultWindow / 2)
+                let max = Int32(defaultLevel + defaultWindow / 2)
+                for controller in mprControllers {
+                    await controller.setMprHuWindow(min: min, max: max)
+                }
+            }
+
             windowLevel = WindowLevelShift(window: axialController.windowLevelState.window,
                                            level: axialController.windowLevelState.level)
         }
@@ -212,17 +234,19 @@ public struct MPRGridComposer: View {
     /// - Note: The gesture configuration restricts translation to the specified anatomical axis.
     private func mprPane(axis: VolumeGestureAxis,
                          controller: VolumeViewportController) -> some View {
-        let gestureConfiguration = VolumeGestureConfiguration(translationAxis: axis)
-        return VolumeViewportContainer(controller: controller) {
+        let gestureConfiguration = gestureConfiguration(for: axis)
+        return VolumeViewportContainer(controller: controller, configuration: configuration) {
             ZStack {
-                CrosshairOverlayView(style: style)
-                OrientationOverlayView(transform: displayTransform(for: axis), style: style)
-                VolumetricGestureOverlay(controller: controller,
-                                         configuration: gestureConfiguration)
+                #if os(iOS)
+                if gestureConfiguration.isEnabled {
+                    VolumetricGestureOverlay(controller: controller,
+                                             configuration: gestureConfiguration)
+                }
+                #endif
             }
         }
         .aspectRatio(1, contentMode: .fit)
-        .background(Color(.systemBackground))
+        .background(platformBackgroundColor)
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .shadow(color: .black.opacity(0.15), radius: 4, x: 0, y: 2)
     }
@@ -241,7 +265,8 @@ public struct MPRGridComposer: View {
     /// - Note: Unlike MPR panes, the 3D view is not affected by window/level adjustments
     ///   from the control panel.
     private func volumePane() -> some View {
-        return VolumeViewportContainer(controller: volumeController) {
+        let gestureConfiguration = gestureConfiguration(for: .volume)
+        return VolumeViewportContainer(controller: volumeController, configuration: configuration) {
             ZStack {
                 VStack {
                     Spacer()
@@ -255,7 +280,12 @@ public struct MPRGridComposer: View {
                         Spacer()
                     }
                 }
-                VolumetricGestureOverlay(controller: volumeController)
+                #if os(iOS)
+                if gestureConfiguration.isEnabled {
+                    VolumetricGestureOverlay(controller: volumeController,
+                                             configuration: gestureConfiguration)
+                }
+                #endif
             }
         }
         .aspectRatio(1, contentMode: .fit)
@@ -324,6 +354,12 @@ public struct MPRGridComposer: View {
         }
     }
 
+    private func gestureConfiguration(for axis: VolumeGestureAxis) -> VolumeGestureConfiguration {
+        var gestureConfiguration = configuration.gestures
+        gestureConfiguration.translationAxis = axis
+        return gestureConfiguration
+    }
+
     /// Returns the array of MPR controllers (axial, coronal, sagittal).
     ///
     /// This computed property provides a convenient collection of the three MPR controllers
@@ -359,8 +395,18 @@ private extension VolumeGestureAxis {
     }
 }
 
-/// Private helpers for grid index mapping.
+/// Private helpers for composer styling and grid index mapping.
 private extension MPRGridComposer {
+    private var platformBackgroundColor: Color {
+        #if canImport(UIKit)
+        return Color(uiColor: .systemBackground)
+        #elseif canImport(AppKit)
+        return Color(nsColor: .windowBackgroundColor)
+        #else
+        return Color.clear
+        #endif
+    }
+
     /// Returns the grid index for a given anatomical axis.
     ///
     /// Maps anatomical plane axes to their position in the grid layout:

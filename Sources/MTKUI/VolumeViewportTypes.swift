@@ -1,6 +1,9 @@
 import Foundation
 import MTKCore
 
+/// Rendering methods supported by MTKUI's volume viewports.
+///
+/// These map to MTKCore's ``VolumeRenderRequest/Compositing`` modes.
 public enum VolumetricRenderMethod: String, CaseIterable, Identifiable, Sendable {
     case dvr
     case mip
@@ -36,6 +39,7 @@ public enum VolumetricRenderMethod: String, CaseIterable, Identifiable, Sendable
     }
 }
 
+/// Blend modes used when rendering MPR slabs.
 public enum VolumetricMPRBlendMode: Int, CaseIterable, Identifiable, Sendable {
     case single = 0
     case mip = 1
@@ -58,6 +62,7 @@ public enum VolumetricMPRBlendMode: Int, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// Helper describing a window/level mapping in Hounsfield Units plus its normalized transfer-function range.
 public struct VolumetricHUWindowMapping: Equatable, Sendable {
     public var minHU: Int32
     public var maxHU: Int32

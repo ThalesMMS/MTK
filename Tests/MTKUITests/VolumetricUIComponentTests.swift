@@ -13,7 +13,36 @@ final class VolumetricUIComponentTests: XCTestCase {
         throw XCTSkip("Stub controller is no longer used on macOS. Real controller requires GPU resources.")
     }
 
+    func testVolumeGestureConfigurationIsEnabledReflectsCapabilities() {
+        let disabled = VolumeGestureConfiguration(allowsTranslation: false,
+                                                  allowsZoom: false,
+                                                  allowsRotation: false,
+                                                  allowsWindowLevel: false,
+                                                  allowsSlabThickness: false)
+        XCTAssertFalse(disabled.isEnabled)
+
+        var enabled = disabled
+        enabled.allowsZoom = true
+        XCTAssertTrue(enabled.isEnabled)
+    }
+
 #if canImport(SwiftUI)
+    func testDefaultVolumetricUIStyleUsesConfiguredCrosshairLineWidth() {
+        let style = DefaultVolumetricUIStyle(crosshairLineWidth: 3)
+
+        XCTAssertEqual(style.lineWidth, 3)
+    }
+
+    func testVolumeViewportOverlayConfigurationSupportsCustomOrientationLabels() {
+        let defaultLabels = VolumeViewportOverlayConfiguration.default.orientationLabels
+        XCTAssertEqual(defaultLabels, MPRLabels(leading: "L", trailing: "R", top: "A", bottom: "P"))
+
+        let localizedLabels = MPRLabels(leading: "Esq", trailing: "Dir", top: "Ant", bottom: "Post")
+        let configuration = VolumeViewportOverlayConfiguration(orientationLabels: localizedLabels)
+
+        XCTAssertEqual(configuration.orientationLabels, localizedLabels)
+    }
+
     func testGestureOverlayCompiles() throws {
 #if os(iOS)
         try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "Metal not available - skipping GPU-dependent test")

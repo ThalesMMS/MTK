@@ -66,8 +66,14 @@ extension ClinicalViewportGridController {
     ///   - window: Optional intensity window to apply to the viewport; pass `nil` to keep the current window.
     /// - Throws: An error if the engine fails to apply the configuration for the corresponding viewport.
     func configureSlice(axis: MTKCore.Axis, window: ClosedRange<Int32>?) async throws {
+        let viewport = viewportID(for: axis)
+        #if DEBUG
+        if debugWindowConfigurationFailureViewports.contains(viewport) {
+            throw MTKRenderingEngine.EngineError.viewportNotFound(viewport)
+        }
+        #endif
         try await engine.configure(
-            viewportID(for: axis),
+            viewport,
             slicePosition: normalizedPositions[axis] ?? 0.5,
             window: window
         )
@@ -105,6 +111,11 @@ extension ClinicalViewportGridController {
     /// - Parameter window: A closed range of voxel intensity values (e.g., Hounsfield units) to apply to the volume; pass `nil` to clear or use the engine's default.
     /// - Throws: Propagates any error thrown by the rendering engine if configuration fails.
     func configureVolumeWindow(_ window: ClosedRange<Int32>?) async throws {
+        #if DEBUG
+        if debugWindowConfigurationFailureViewports.contains(volumeViewportID) {
+            throw MTKRenderingEngine.EngineError.viewportNotFound(volumeViewportID)
+        }
+        #endif
         try await engine.configure(volumeViewportID, window: window)
     }
 

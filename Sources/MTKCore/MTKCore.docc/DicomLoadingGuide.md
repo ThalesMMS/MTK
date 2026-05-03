@@ -159,22 +159,20 @@ sliceData.withUnsafeBytes { rawBuffer in
 }
 ```
 
-### 4. Compute Recommended Window
+### 4. Select Recommended Window
 
-Optionally use GPU-accelerated histogram percentiles (2nd/98th) for auto-windowing:
+Use DICOM WC/WW metadata when present, then fall back deterministically:
 
 ```swift
-histogramCalculator.computeHistogram(for: volumeTexture, channelCount: 1, voxelMin: minHU, voxelMax: maxHU) { histogramResult in
-    statisticsCalculator.computePercentiles(from: histograms, percentiles: [0.02, 0.98]) { percentilesResult in
-        // Convert percentile bins to HU values
-        let minHU = binToHU(percentileBins[0])
-        let maxHU = binToHU(percentileBins[1])
-        dataset.recommendedWindow = minHU...maxHU
-    }
+if let center = dicomVolume.windowCenter, let width = dicomVolume.windowWidth {
+    let bounds = WindowLevelMath.bounds(forWidth: Float(width), level: Float(center))
+    dataset.recommendedWindow = Int32(bounds.min.rounded(.down))...Int32(bounds.max.rounded(.up))
+} else if dicomVolume.modality.uppercased() == "MR" {
+    dataset.recommendedWindow = dataset.intensityRange
+} else {
+    dataset.recommendedWindow = WindowLevelPresetLibrary.softTissue.windowRange
 }
 ```
-
-If ``DicomVolumeLoader/histogramCalculator`` or ``DicomVolumeLoader/statisticsCalculator`` are `nil`, the recommended window defaults to the dataset's full intensity range.
 
 ### 5. Construct VolumeDataset
 
@@ -394,40 +392,25 @@ loader.loadVolume(from: url, progress: { _ in }, completion: { result in
 })
 ```
 
-## GPU-Accelerated Auto-Windowing
+## Recommended Window Selection
 
-Enable histogram-based window recommendations by providing Metal resources:
+``DicomVolumeLoader`` chooses a deterministic display window during import:
+
+- DICOM `WindowCenter`/`WindowWidth` metadata when both tags are present
+- full intensity range for MR when WC/WW metadata is missing
+- CT soft tissue preset when WC/WW metadata is missing for other modalities
 
 ```swift
-import Metal
-
-guard let device = MTLCreateSystemDefaultDevice(),
-      let commandQueue = device.makeCommandQueue() else {
-    fatalError("Metal unavailable")
-}
-
-let histogramCalculator = VolumeHistogramCalculator()
-let statisticsCalculator = VolumeStatisticsCalculator()
-
-let loader = DicomVolumeLoader(
-    seriesLoader: DicomDecoderSeriesLoader(),
-    device: device,
-    commandQueue: commandQueue,
-    histogramCalculator: histogramCalculator,
-    statisticsCalculator: statisticsCalculator
-)
+let loader = DicomVolumeLoader(seriesLoader: DicomDecoderSeriesLoader())
 
 loader.loadVolume(from: url, progress: { _ in }, completion: { result in
     if case .success(let importResult) = result {
-        // dataset.recommendedWindow contains 2nd/98th percentile HU range
         if let window = importResult.dataset.recommendedWindow {
             print("Recommended window: [\(window.lowerBound), \(window.upperBound)] HU")
         }
     }
 })
 ```
-
-**Performance:** Histogram computation adds ~200-500ms overhead for typical 512×512×300 CT volumes on Apple Silicon.
 
 ## Best Practices
 
@@ -443,14 +426,8 @@ Reuse the same loader instance when loading multiple series:
 class DicomImporter {
     private let loader: DicomVolumeLoader
 
-    init(device: MTLDevice, commandQueue: MTLCommandQueue) {
-        self.loader = DicomVolumeLoader(
-            seriesLoader: DicomDecoderSeriesLoader(),
-            device: device,
-            commandQueue: commandQueue,
-            histogramCalculator: VolumeHistogramCalculator(),
-            statisticsCalculator: VolumeStatisticsCalculator()
-        )
+    init() {
+        self.loader = DicomVolumeLoader(seriesLoader: DicomDecoderSeriesLoader())
     }
 
     func importSeries(from url: URL, completion: @escaping (Result<DicomImportResult, Error>) -> Void) {

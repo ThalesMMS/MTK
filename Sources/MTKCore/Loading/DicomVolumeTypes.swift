@@ -6,7 +6,36 @@
 //
 
 import Foundation
+import OSLog
 import simd
+
+/// A non-fatal issue encountered during DICOM import.
+///
+/// Warnings are collected and returned alongside successful imports in ``DicomImportResult``.
+/// They are intended for developer-facing diagnostics and UI display.
+public struct DicomImportWarning: Sendable, Hashable {
+    public enum Code: String, Sendable, Hashable {
+        case usedFallbackWindow
+        case usedFallbackSpacing
+        case usedFallbackOrientation
+        case missingMetadata
+        case inconsistentMetadata
+        case partialSeries
+        case other
+    }
+
+    public let code: Code
+    public let message: String
+
+    /// Optional human-readable context, such as the series description associated with the warning.
+    public let context: String?
+
+    public init(code: Code, message: String, context: String? = nil) {
+        self.code = code
+        self.message = message
+        self.context = context
+    }
+}
 
 /// Protocol abstraction for DICOM series volume metadata and pixel data.
 ///
@@ -85,6 +114,23 @@ public protocol DICOMSeriesVolumeProtocol {
 
     /// Human-readable series description from DICOM metadata (0008,103E).
     var seriesDescription: String { get }
+
+    /// Imaging modality (e.g. "CT", "MR") from DICOM metadata (0008,0060).
+    ///
+    /// Used for modality-specific defaults such as window/level fallback policy.
+    var modality: String { get }
+
+    /// Window center from DICOM metadata (0028,1050), when present.
+    var windowCenter: Double? { get }
+
+    /// Window width from DICOM metadata (0028,1051), when present.
+    var windowWidth: Double? { get }
+}
+
+public extension DICOMSeriesVolumeProtocol {
+    var modality: String { "" }
+    var windowCenter: Double? { nil }
+    var windowWidth: Double? { nil }
 }
 
 /// Protocol abstraction for DICOM series loading implementations.
@@ -165,6 +211,26 @@ public enum DicomVolumeLoaderError: Error {
     /// or multi-component (RGB) volumes will trigger this error.
     case unsupportedBitDepth
 
+    /// Pixel data is not supported by the current pipeline.
+    ///
+    /// Examples: multi-frame, RGB/palette color, float pixel data.
+    case unsupportedPixelData(reason: String)
+
+    /// The transfer syntax is not supported by the current decoder/backend.
+    ///
+    /// This commonly indicates compressed pixel data (JPEG/JPEG2000/RLE) in a series being loaded via
+    /// the pure-Swift DICOM-Decoder path.
+    case unsupportedTransferSyntax(uid: String)
+
+    /// Required geometry metadata is missing or invalid.
+    case invalidGeometry(reason: String)
+
+    /// Slice spacing varies beyond supported tolerance.
+    case variableSliceSpacing(median: Double, maxDeviation: Double)
+
+    /// Duplicate slice position detected (ambiguous 3D reconstruction).
+    case duplicateSlicePosition
+
     /// DICOM parser returned nil or empty volume data.
     ///
     /// Indicates the series loader completed without producing voxel data, possibly due to
@@ -191,6 +257,16 @@ extension DicomVolumeLoaderError: LocalizedError {
             return "Could not access the selected files."
         case .unsupportedBitDepth:
             return "Only 16-bit scalar DICOM series are supported at this time."
+        case .unsupportedPixelData(let reason):
+            return "Unsupported pixel data: \(reason)"
+        case .unsupportedTransferSyntax(let uid):
+            return "Unsupported transfer syntax: \(uid)"
+        case .invalidGeometry(let reason):
+            return "Invalid DICOM geometry: \(reason)"
+        case .variableSliceSpacing(let median, let maxDeviation):
+            return "Variable slice spacing detected (median=\(median)mm, maxDeviation=\(maxDeviation)mm)."
+        case .duplicateSlicePosition:
+            return "Duplicate slice position detected in the series."
         case .missingResult:
             return "The DICOM series conversion returned no data."
         case .pathTraversal:
@@ -236,16 +312,27 @@ public struct DicomImportResult {
     /// Typical values: "CT Head", "MR T2 FLAIR", "Chest CTA". Empty string if tag is missing.
     public let seriesDescription: String
 
+    /// Non-fatal issues encountered during import.
+    ///
+    /// This is intended for developer-facing diagnostics (logging/UI) and lets the loader
+    /// proceed with explicit, deterministic fallbacks instead of silently best-effort behavior.
+    public let warnings: [DicomImportWarning]
+
     /// Create a DICOM import result.
     ///
     /// - Parameters:
     ///   - dataset: Loaded volume dataset
     ///   - sourceURL: Original source URL
     ///   - seriesDescription: Series description from DICOM metadata
-    public init(dataset: VolumeDataset, sourceURL: URL, seriesDescription: String) {
+    ///   - warnings: Non-fatal import warnings
+    public init(dataset: VolumeDataset,
+                sourceURL: URL,
+                seriesDescription: String,
+                warnings: [DicomImportWarning] = []) {
         self.dataset = dataset
         self.sourceURL = sourceURL
         self.seriesDescription = seriesDescription
+        self.warnings = warnings
     }
 }
 
@@ -253,13 +340,16 @@ public struct DicomStreamingImportResult {
     public let metadata: VolumeUploadDescriptor
     public let sourceURL: URL
     public let seriesDescription: String
+    public let warnings: [DicomImportWarning]
 
     public init(metadata: VolumeUploadDescriptor,
                 sourceURL: URL,
-                seriesDescription: String) {
+                seriesDescription: String,
+                warnings: [DicomImportWarning] = []) {
         self.metadata = metadata
         self.sourceURL = sourceURL
         self.seriesDescription = seriesDescription
+        self.warnings = warnings
     }
 }
 

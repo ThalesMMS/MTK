@@ -13,6 +13,7 @@ import simd
 
 public typealias Camera = VolumeRenderRequest.Camera
 
+@available(*, deprecated, message: "ProfilingOptions is kept for compatibility. Internally, MTKRenderingEngine uses RenderProfiler.")
 public struct ProfilingOptions: Equatable, Sendable {
     public var measureUploadTime: Bool
     public var measureRenderTime: Bool
@@ -24,6 +25,17 @@ public struct ProfilingOptions: Equatable, Sendable {
         self.measureUploadTime = measureUploadTime
         self.measureRenderTime = measureRenderTime
         self.measurePresentTime = measurePresentTime
+    }
+
+    func isEnabled(stage: ProfilingStage) -> Bool {
+        switch stage {
+        case .dicomParse, .huConversion, .textureUpload, .texturePreparation:
+            return measureUploadTime
+        case .renderGraphRoute, .mprReslice, .volumeRaycast, .memorySnapshot:
+            return measureRenderTime
+        case .presentationPass, .snapshotReadback:
+            return measurePresentTime
+        }
     }
 }
 
@@ -101,8 +113,14 @@ public actor MTKRenderingEngine {
     private var pendingOutputTextureLeases: [ViewportID: [ObjectIdentifier: WeakOutputTextureLeaseBox]] = [:]
     private var profilingOptions = ProfilingOptions()
     private var lastFrameTimings: FrameMetadata?
+    private var debugPostAcquireRenderFailure: MetalVolumeRenderingAdapter.RenderingError?
     private let logger = os.Logger(subsystem: "com.mtk.volumerendering",
                                    category: "MTKRenderingEngine")
+    private let viewportLifecycleController = ViewportLifecycleController()
+    private let routeResolver = RenderRouteResolver()
+    private let profiler = RenderProfiler()
+    private let metadataBuilder = FrameMetadataBuilder()
+    private let renderPassDispatcher: RenderPassDispatcher
 
     private final class WeakOutputTextureLeaseBox {
         weak var lease: OutputTextureLease?
@@ -135,6 +153,14 @@ public actor MTKRenderingEngine {
         self.mprAdapter = try MetalMPRAdapter(device: resolvedDevice,
                                               commandQueue: resolvedQueue)
         self.mprFrameCache = await MainActor.run { MPRFrameCache<ViewportID>() }
+        self.renderPassDispatcher = RenderPassDispatcher(
+            device: resolvedDevice,
+            volumeAdapter: volumeAdapter,
+            mprAdapter: mprAdapter,
+            resourceManager: resourceManager,
+            mprFrameCache: mprFrameCache,
+            profiler: profiler
+        )
     }
 
     public func createViewport(_ descriptor: ViewportDescriptor) async throws -> ViewportID {
@@ -315,12 +341,16 @@ public actor MTKRenderingEngine {
         guard let state = viewports[viewport] else {
             throw EngineError.viewportNotFound(viewport)
         }
+
         let routeResolutionStartedAt = profilingOptions.measureRenderTime ? CFAbsoluteTimeGetCurrent() : nil
         let renderNode: ViewportRenderNode
         do {
-            renderNode = try renderGraph.buildRenderNode(viewportID: viewport,
-                                                         viewportType: state.descriptor.type,
-                                                         resourceHandle: state.resourceHandle)
+            renderNode = try routeResolver.resolveNode(
+                viewportID: viewport,
+                viewportType: state.descriptor.type,
+                resourceHandle: state.resourceHandle,
+                using: renderGraph
+            )
         } catch RenderGraphError.missingResourceHandle {
             throw EngineError.volumeNotSet(viewport)
         }
@@ -334,14 +364,19 @@ public actor MTKRenderingEngine {
                                                                         dataset: $0,
                                                                         route: renderNode.resolvedRoute) } ?? false
         do {
-            try renderGraph.validateRenderRequirements(node: renderNode,
-                                                       datasetAvailable: dataset != nil,
-                                                       volumeTextureAvailable: volumeTexture != nil,
-                                                       surfaceAvailable: true,
-                                                       transferTextureAvailable: transferTextureReady)
+            try routeResolver.validateRequirements(
+                for: renderNode,
+                datasetAvailable: dataset != nil,
+                volumeTextureAvailable: volumeTexture != nil,
+                surfaceAvailable: true,
+                transferTextureAvailable: transferTextureReady,
+                using: renderGraph
+            )
         } catch RenderGraphError.missingDataset,
                 RenderGraphError.missingVolumeTexture {
             throw EngineError.volumeResourceUnavailable
+        } catch {
+            throw error
         }
         guard let dataset else {
             throw EngineError.volumeResourceUnavailable
@@ -351,28 +386,19 @@ public actor MTKRenderingEngine {
         }
 
         let route = renderNode.resolvedRoute
-        let routeViewportSize = VolumetricMath.clampViewportSize(state.currentSize)
-        let routeResolutionElapsed = routeResolutionStartedAt.map { ClinicalProfiler.milliseconds(from: $0) } ?? 0
-        ClinicalProfiler.shared.recordSample(
-            stage: .renderGraphRoute,
-            cpuTime: routeResolutionElapsed,
-            viewport: ProfilingViewportContext(
-                resolutionWidth: routeViewportSize.width,
-                resolutionHeight: routeViewportSize.height,
-                viewportType: route.viewportType.profilingName,
-                quality: state.quality.profilingName,
-                renderMode: route.compositing?.profilingName ?? state.descriptor.type.renderModeName
-            ),
-            routeName: route.profilingName,
-            metadata: [
-                "path": "MTKRenderingEngine.resolveRoute",
-                "viewportID": String(describing: viewport),
-                "renderPassPipeline": route.passPipelineName
-            ],
+        profiler.recordRouteResolution(
+            startedAt: routeResolutionStartedAt,
+            route: route,
+            viewportSize: state.currentSize,
+            viewportID: viewport,
+            viewportTypeName: route.viewportType.profilingName,
+            qualityName: state.quality.profilingName,
+            renderModeName: route.compositing?.profilingName ?? state.descriptor.type.renderModeName,
+            options: profilingOptions,
             device: device
         )
 
-        let renderStartedAt = profilingOptions.measureRenderTime ? CFAbsoluteTimeGetCurrent() : nil
+        let profilingScope = profiler.makeScope(options: profilingOptions)
         let texture: any MTLTexture
         let outputTextureLease: OutputTextureLease?
         let isRaycastFrame: Bool
@@ -387,28 +413,36 @@ public actor MTKRenderingEngine {
         case .volumeRaycast:
             isRaycastFrame = true
             mprFrame = nil
-            let volumeFrame = try await renderVolume(
-                state: state,
-                dataset: dataset,
-                volumeTexture: volumeTexture,
-                compositing: primaryPass.compositing ?? route.compositing ?? .frontToBack
-            )
+            let volumeFrame: RenderPassDispatcher.VolumeRenderFrameResult
+            do {
+                defer {
+                    debugPostAcquireRenderFailure = nil
+                }
+                volumeFrame = try await renderPassDispatcher.renderVolume(
+                    state: state,
+                    dataset: dataset,
+                    volumeTexture: volumeTexture,
+                    compositing: primaryPass.compositing ?? route.compositing ?? .frontToBack,
+                    debugPostAcquireRenderFailure: debugPostAcquireRenderFailure
+                )
+            }
             texture = volumeFrame.texture
             outputTextureLease = volumeFrame.lease
             trackPendingOutputTextureLease(volumeFrame.lease, for: viewport)
 
         case .mprReslice:
             isRaycastFrame = false
-            let frame = try await renderMPR(
+            let mprResult = try await renderPassDispatcher.renderMPR(
                 viewport: viewport,
                 state: state,
                 axis: primaryPass.axis ?? .axial,
                 dataset: dataset,
                 volumeTexture: volumeTexture,
-                route: route
+                route: route,
+                profilingOptions: profilingOptions
             )
-            mprFrame = frame
-            texture = frame.texture
+            mprFrame = mprResult.frame
+            texture = mprResult.frame.texture
             outputTextureLease = nil
 
         case .presentation, .mprPresentation, .overlay:
@@ -421,41 +455,32 @@ public actor MTKRenderingEngine {
             throw RenderGraphError.passProducedNoFrame(viewport, primaryPass.kind)
         }
 
-        let renderDuration = renderStartedAt.map { CFAbsoluteTimeGetCurrent() - $0 }
-        let viewportSize = VolumetricMath.clampViewportSize(state.currentSize)
-        let context = ProfilingViewportContext(
-            resolutionWidth: viewportSize.width,
-            resolutionHeight: viewportSize.height,
-            viewportType: route.viewportType.profilingName,
-            quality: state.quality.profilingName,
-            renderMode: route.compositing?.profilingName ?? state.descriptor.type.renderModeName
-        )
-        ClinicalProfiler.shared.recordMemorySnapshot(
-            from: resourceManager,
-            viewport: context,
-            metadata: [
-                "path": "MTKRenderingEngine.resourceMetrics",
-                "renderGraphRoute": route.profilingName,
-                "renderPassPipeline": route.passPipelineName,
-                "viewportID": String(describing: viewport)
-            ]
-        )
-        let metadata = FrameMetadata(
+        profiler.recordMemorySnapshot(
+            resourceManager: resourceManager,
+            route: route,
             viewportSize: state.currentSize,
-            renderTime: renderDuration,
-            raycastTime: isRaycastFrame ? renderDuration : nil,
-            uploadTime: profilingOptions.measureUploadTime ? resourceManager.uploadTime(for: handle) : nil,
-            presentTime: nil,
-            renderGraphRoute: route.profilingName
+            viewportID: viewport,
+            viewportTypeName: route.viewportType.profilingName,
+            qualityName: state.quality.profilingName,
+            renderModeName: route.compositing?.profilingName ?? state.descriptor.type.renderModeName,
+            options: profilingOptions
         )
-        lastFrameTimings = metadata
 
-        let frame = RenderFrame(texture: texture,
-                                viewportID: viewport,
-                                route: route,
-                                metadata: metadata,
-                                mprFrame: mprFrame,
-                                outputTextureLease: outputTextureLease)
+        let renderDuration = profilingScope.renderDuration()
+        let inputs = FrameMetadataBuilder.Inputs(
+            viewportID: viewport,
+            viewportSize: state.currentSize,
+            route: route,
+            texture: texture,
+            mprFrame: mprFrame,
+            outputTextureLease: outputTextureLease,
+            renderDuration: renderDuration,
+            raycastDuration: isRaycastFrame ? renderDuration : nil,
+            uploadDuration: profilingScope.measureUploadTime ? resourceManager.uploadTime(for: handle) : nil,
+            presentDuration: nil
+        )
+        let frame = metadataBuilder.makeFrame(from: inputs)
+        lastFrameTimings = frame.metadata
         try renderGraph.validateFrame(frame)
         return frame
     }
@@ -465,7 +490,12 @@ public actor MTKRenderingEngine {
         guard var state = viewports[viewport] else {
             throw EngineError.viewportNotFound(viewport)
         }
-        state.currentSize = size
+        let snapshot = ViewportLifecycleController.ViewportStateSnapshot(
+            descriptor: state.descriptor,
+            currentSize: state.currentSize
+        )
+        let next = viewportLifecycleController.resized(snapshot, to: size)
+        state.currentSize = next.currentSize
         viewports[viewport] = state
         await mprFrameCache.invalidate(viewport)
     }
@@ -476,13 +506,17 @@ public actor MTKRenderingEngine {
         guard var state = viewports[viewport] else {
             throw EngineError.viewportNotFound(viewport)
         }
-        let nextDescriptor = ViewportDescriptor(type: type,
-                                                initialSize: state.currentSize,
-                                                label: label ?? state.descriptor.label)
-        guard state.descriptor != nextDescriptor else {
+        let snapshot = ViewportLifecycleController.ViewportStateSnapshot(
+            descriptor: state.descriptor,
+            currentSize: state.currentSize
+        )
+        let next = viewportLifecycleController.reconfigured(snapshot,
+                                                           type: type,
+                                                           label: label)
+        guard state.descriptor != next.descriptor else {
             return
         }
-        state.descriptor = nextDescriptor
+        state.descriptor = next.descriptor
         viewports[viewport] = state
         await mprFrameCache.invalidate(viewport)
     }
@@ -633,48 +667,6 @@ public struct ViewportResourceDiagnostic: Sendable, Equatable {
 #endif
 
 private extension MTKRenderingEngine {
-    typealias VolumeTextureLeasePair = (texture: any MTLTexture, lease: OutputTextureLease)
-
-    func renderVolume(state: ViewportState,
-                      dataset: VolumeDataset,
-                      volumeTexture: any MTLTexture,
-                      compositing: VolumeRenderRequest.Compositing) async throws -> VolumeTextureLeasePair {
-        let window = state.window ?? dataset.recommendedWindow ?? dataset.intensityRange
-        try await volumeAdapter.send(.setWindow(min: window.lowerBound, max: window.upperBound))
-
-        let request = VolumeRenderRequest(
-            dataset: dataset,
-            transferFunction: state.transferFunction ?? VolumeTransferFunction.defaultGrayscale(for: dataset),
-            viewportSize: state.currentSize,
-            camera: state.camera,
-            samplingDistance: state.samplingDistance,
-            compositing: compositing,
-            quality: state.quality
-        )
-
-        let viewport = VolumetricMath.clampViewportSize(state.currentSize)
-        let outputTextureLease = try resourceManager.acquireOutputTextureWithLease(width: viewport.width,
-                                                                                   height: viewport.height,
-                                                                                   pixelFormat: .bgra8Unorm)
-        let outputTexture = outputTextureLease.texture
-        logger.info("Volume render path compositing=\(String(describing: compositing)) outputTextureLabel=\(outputTexture.label ?? "nil") outputSize=\(outputTexture.width)x\(outputTexture.height) volumeTextureLabel=\(volumeTexture.label ?? "nil")")
-        let frame: VolumeRenderFrame
-        do {
-            frame = try await volumeAdapter.renderTexture(
-                using: request,
-                volumeTexture: volumeTexture,
-                outputTexture: outputTexture
-            )
-        } catch {
-            resourceManager.releaseOutputTextureLease(outputTextureLease)
-            logger.error("Volume render failed compositing=\(String(describing: compositing)) error=\(String(describing: error))")
-            throw error
-        }
-
-        logger.debug("Volume render completed outputTextureLabel=\(frame.texture.label ?? "nil") outputSize=\(frame.texture.width)x\(frame.texture.height)")
-        return (frame.texture, outputTextureLease)
-    }
-
     func trackPendingOutputTextureLease(_ lease: OutputTextureLease,
                                         for viewport: ViewportID) {
         reapPendingOutputTextureLeases(for: viewport)
@@ -715,63 +707,6 @@ private extension MTKRenderingEngine {
         logger.debug("Released pending output texture leases viewport=\(String(describing: viewport)) releasedLeaseCount=\(leases.count)")
     }
 
-    func renderMPR(viewport: ViewportID,
-                   state: ViewportState,
-                   axis: Axis,
-                   dataset: VolumeDataset,
-                   volumeTexture: any MTLTexture,
-                   route: RenderRoute) async throws -> MPRTextureFrame {
-        let plane = MPRPlaneGeometryFactory
-            .makePlane(for: dataset,
-                       axis: axis.mprPlaneAxis,
-                       slicePosition: state.slicePosition)
-            .sizedForOutput(state.currentSize)
-        let signature = MPRFrameSignature(planeGeometry: plane,
-                                          slabThickness: state.slabThickness,
-                                          slabSteps: state.slabSteps,
-                                          blend: state.mprBlend)
-        if let frame = await mprFrameCache.cachedFrame(for: viewport,
-                                                       matching: signature) {
-            return frame
-        }
-
-        let resliceStartedAt = CFAbsoluteTimeGetCurrent()
-        let frame = try await mprAdapter.makeSlabTexture(
-            dataset: dataset,
-            volumeTexture: volumeTexture,
-            plane: plane,
-            thickness: state.slabThickness,
-            steps: state.slabSteps,
-            blend: state.mprBlend
-        )
-        let viewportSize = VolumetricMath.clampViewportSize(state.currentSize)
-        ClinicalProfiler.shared.recordSample(
-            stage: .mprReslice,
-            cpuTime: ClinicalProfiler.milliseconds(from: resliceStartedAt),
-            memory: ResourceMemoryEstimator.estimate(for: frame.texture),
-            viewport: ProfilingViewportContext(
-                resolutionWidth: viewportSize.width,
-                resolutionHeight: viewportSize.height,
-                viewportType: route.viewportType.profilingName,
-                quality: state.quality.profilingName,
-                renderMode: state.mprBlend.profilingName
-            ),
-            metadata: [
-                "path": "MTKRenderingEngine.renderMPR",
-                "renderGraphRoute": route.profilingName,
-                "renderPassPipeline": route.passPipelineName,
-                "viewportID": String(describing: viewport),
-                "slabThickness": String(state.slabThickness),
-                "slabSteps": String(state.slabSteps)
-            ],
-            device: device
-        )
-        await mprFrameCache.store(frame,
-                                  for: viewport,
-                                  signature: signature)
-        return frame
-    }
-
     func isTransferTextureReady(for state: ViewportState,
                                 dataset: VolumeDataset,
                                 route: RenderRoute) -> Bool {
@@ -794,6 +729,14 @@ extension MTKRenderingEngine {
     public var debugResourceTextureCount: Int {
         resourceManager.debugTextureCount
     }
+
+    #if DEBUG
+    @_spi(Testing)
+    public var debugVolumeUploadCounts: (textureCreates: Int, cacheHits: Int) {
+        (resourceManager.debugCounters.volumeTextureCreates,
+         resourceManager.debugCounters.volumeCacheHits)
+    }
+    #endif
 
     @_spi(Testing)
     public var debugResourceReferenceCount: Int {
@@ -919,5 +862,12 @@ extension MTKRenderingEngine {
     public func debugRenderRoute(for viewport: ViewportID) throws -> RenderRoute? {
         guard let state = viewports[viewport] else { return nil }
         return renderGraph.resolveRoute(for: state.descriptor.type)
+    }
+
+    @_spi(Testing)
+    public func debugFailNextVolumeRenderAfterOutputLeaseAcquire(
+        with error: MetalVolumeRenderingAdapter.RenderingError = .commandEncodingFailed
+    ) {
+        debugPostAcquireRenderFailure = error
     }
 }

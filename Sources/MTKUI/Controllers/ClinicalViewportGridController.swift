@@ -57,6 +57,9 @@ public final class ClinicalViewportGridController: ObservableObject {
     var currentDataset: VolumeDataset?
     var displayTransformsByAxis: [MTKCore.Axis: MPRDisplayTransform] = [:]
     var viewportAxesByID: [ViewportID: MTKCore.Axis] = [:]
+#if DEBUG
+    var debugWindowConfigurationFailureViewports = Set<ViewportID>()
+#endif
 
     static let centeredNormalizedPositions: [MTKCore.Axis: Float] = [
         .axial: 0.5,
@@ -449,17 +452,29 @@ public final class ClinicalViewportGridController: ObservableObject {
         await commitWindowLevel()
     }
 
-    /// Commits the current MPR window/level to axial, coronal, and sagittal viewports only.
-    ///
-    /// The controller attempts to configure all three MPR axes before deciding
-    /// whether the shared commit succeeded. Any axis-specific failure is stored
-    /// Commits the controller's current MPR window range to all three MPR viewports.
+    /// Commits the controller's current MPR window range to the volume and MPR viewports.
     /// 
-    /// If the current committed range already matches the controller's window range, this method does nothing. It attempts to configure each MPR axis with the new range; if any axis fails to configure, the method records the corresponding error for that viewport and aborts without updating the committed range or scheduling renders. On success, the committed range is updated and all MPR viewports are scheduled for rendering.
+    /// If the current committed range already matches the controller's window range, this method does nothing. It attempts to configure the volume viewport first, then each MPR axis with the new range; if any step fails, the method restores the previously committed range, records the corresponding error, and aborts without updating the committed range or scheduling renders. On success, the committed range is updated and all viewports are scheduled for rendering.
     public func commitWindowLevel() async {
         let range = windowLevel.range
         guard committedMPRWindowRange != range else { return }
+        let previousRange = committedMPRWindowRange
         var failures: [(ViewportID, any Error)] = []
+
+        do {
+            try await configureVolumeWindow(range)
+        } catch {
+            failures.append((volumeViewportID, error))
+        }
+
+        guard failures.isEmpty else {
+            restoreWindowState(to: previousRange)
+            for (viewport, error) in failures {
+                recordError(error, for: viewport)
+            }
+            return
+        }
+
         for axis in MTKCore.Axis.allCases {
             do {
                 try await configureSlice(axis: axis, window: range)
@@ -467,7 +482,11 @@ public final class ClinicalViewportGridController: ObservableObject {
                 failures.append((viewportID(for: axis), error))
             }
         }
+
         guard failures.isEmpty else {
+            let restoreFailures = await restoreCommittedWindowRange(previousRange)
+            failures.append(contentsOf: restoreFailures)
+            restoreWindowState(to: previousRange)
             for (viewport, error) in failures {
                 recordError(error, for: viewport)
             }
@@ -475,6 +494,31 @@ public final class ClinicalViewportGridController: ObservableObject {
         }
         committedMPRWindowRange = range
         scheduleMPRRenderAll()
+        scheduleRender(for: volumeViewportID)
+    }
+
+    private func restoreCommittedWindowRange(_ range: ClosedRange<Int32>?) async -> [(ViewportID, any Error)] {
+        var failures: [(ViewportID, any Error)] = []
+        do {
+            try await configureVolumeWindow(range)
+        } catch {
+            failures.append((volumeViewportID, error))
+        }
+        for axis in MTKCore.Axis.allCases {
+            do {
+                try await configureSlice(axis: axis, window: range)
+            } catch {
+                failures.append((viewportID(for: axis), error))
+            }
+        }
+        return failures
+    }
+
+    private func restoreWindowState(to range: ClosedRange<Int32>?) {
+        committedMPRWindowRange = range
+        if let range {
+            windowLevel = WindowLevelShift(range: range)
+        }
     }
 
     /// Updates the MPR slab thickness (in slices) and applies the corresponding slab steps to all MPR viewports.
@@ -539,9 +583,36 @@ public final class ClinicalViewportGridController: ObservableObject {
     ///   - axis: The MPR axis whose plane the `normalizedPoint` is expressed in (axial, coronal, or sagittal).
     ///   - normalizedPoint: A point in the axis plane using normalized coordinates (typically in the 0–1 range); non-finite components are ignored and cause no change.
     public func setCrosshair(in axis: MTKCore.Axis, normalizedPoint: CGPoint) async {
+        await applyCrosshairChange(from: axis, normalizedPoint: normalizedPoint)
+    }
+
+    /// Applies a crosshair drag that originated from a particular MPR axis.
+    ///
+    /// This method is the single source of truth for translating a gesture-driven crosshair drag into per-axis
+    /// normalized slice positions and per-axis drawable pixel offsets. The originating axis always receives an
+    /// updated offset so the drag feels responsive, while the two perpendicular axes receive updated normalized
+    /// slice positions (and corresponding offsets).
+    ///
+    /// Update direction rules:
+    /// - Drag in `.axial` updates `.sagittal` + `.coronal` slice positions.
+    /// - Drag in `.coronal` updates `.sagittal` + `.axial` slice positions.
+    /// - Drag in `.sagittal` updates `.coronal` + `.axial` slice positions.
+    ///
+    /// The `normalizedPositions` dictionary is the shared model. Viewports derive their slice configuration and
+    /// crosshair overlays from this shared state, preventing per-pane divergence.
+    public func applyCrosshairChange(from axis: MTKCore.Axis, normalizedPoint: CGPoint) async {
         guard normalizedPoint.x.isFinite, normalizedPoint.y.isFinite else { return }
+
+        // Always update the offset for the axis the user is directly interacting with.
+        let x = clampNormalized(Float(normalizedPoint.x))
+        let y = clampNormalized(Float(normalizedPoint.y))
+        let size = drawableSize(for: axis)
+        let dragOffset = CGPoint(x: CGFloat(x - 0.5) * size.width,
+                                 y: CGFloat(y - 0.5) * size.height)
+        _ = setCrosshairOffset(dragOffset, for: axis)
+
         let planeUpdates = normalizedPositionUpdates(from: normalizedPoint, in: axis)
-        var scheduledViewports = Set<ViewportID>()
+        var scheduledViewports = Set<ViewportID>([viewportID(for: axis)])
 
         for (changedAxis, position) in planeUpdates {
             guard setNormalizedPosition(position, for: changedAxis) else { continue }

@@ -73,6 +73,15 @@ final class VolumeResourceManager {
         case textureLeased
     }
 
+    #if DEBUG
+    struct DebugCounters: Equatable, Sendable {
+        var volumeTextureCreates: Int = 0
+        var volumeCacheHits: Int = 0
+    }
+
+    private(set) var debugCounters = DebugCounters()
+    #endif
+
     private struct DatasetIdentity: Hashable, Sendable {
         let count: Int
         let dimensions: VolumeDimensions
@@ -168,7 +177,7 @@ final class VolumeResourceManager {
         case stream(StreamIdentity)
     }
 
-    private struct CachedResource {
+    internal struct CachedResource {
         var dataset: VolumeDataset
         var texture: any MTLTexture
         var referenceCount: Int
@@ -192,35 +201,16 @@ final class VolumeResourceManager {
         }
     }
 
-    private struct TransferTextureEntry {
-        var texture: any MTLTexture
-        var estimatedBytes: Int
-        var lastAccessTime: CFAbsoluteTime
-
-        var metadata: VolumeResourceHandle.Metadata {
-            VolumeResourceHandle.Metadata(
-                resourceType: .transferFunction,
-                debugLabel: texture.label,
-                estimatedBytes: estimatedBytes,
-                pixelFormat: texture.pixelFormat,
-                storageMode: texture.storageMode,
-                dimensions: VolumeResourceHandle.Metadata.Dimensions(
-                    width: texture.width,
-                    height: texture.height,
-                    depth: texture.depth
-                )
-            )
-        }
-    }
 
     private var textureCache: [ResourceIdentity: CachedResource] = [:]
     private var handleMap: [VolumeResourceHandle: ResourceIdentity] = [:]
     private var handleReferenceCounts: [VolumeResourceHandle: Int] = [:]
-    private var transferTextureEntries: [ObjectIdentifier: TransferTextureEntry] = [:]
+    private let transferFunctionCache = TransferFunctionCache()
     private let device: any MTLDevice
     private let commandQueue: any MTLCommandQueue
+    private let textureUploader: VolumeTextureUploader
     private let featureFlags: FeatureFlags
-    private let outputPool: OutputTexturePool
+    private let textureLeasePool: TextureLeasePool
     private let lifecycleLogger = os.Logger(subsystem: "com.mtk.volumerendering",
                                             category: "ResourceLifecycle")
 
@@ -229,8 +219,9 @@ final class VolumeResourceManager {
          featureFlags: FeatureFlags? = nil) {
         self.device = device
         self.commandQueue = commandQueue
+        self.textureUploader = VolumeTextureUploader(device: device, commandQueue: commandQueue)
         self.featureFlags = featureFlags ?? FeatureFlags.evaluate(for: device)
-        self.outputPool = OutputTexturePool(featureFlags: self.featureFlags)
+        self.textureLeasePool = TextureLeasePool(featureFlags: self.featureFlags)
     }
 
     /// Acquires a volume resource and mutates `textureCache` and `handleMap`.
@@ -257,23 +248,28 @@ final class VolumeResourceManager {
             let handle = VolumeResourceHandle(metadata: cached.metadata)
             handleMap[handle] = identity
             handleReferenceCounts[handle] = 1
+            #if DEBUG
+            debugCounters.volumeCacheHits += 1
+            #endif
             logLifecycle(resourceType: "volume",
                          action: "acquired",
                          estimatedBytes: cached.estimatedBytes)
             return handle
         }
 
-        let startedAt = CFAbsoluteTimeGetCurrent()
-        let texture = try await VolumeTextureFactory(dataset: dataset)
-            .generateAsync(device: device, commandQueue: commandQueue)
+        let uploadResult = try await textureUploader.upload(dataset: dataset)
+        let texture = uploadResult.texture
         texture.label = "MTKRenderingEngine.VolumeTexture3D"
+        #if DEBUG
+        debugCounters.volumeTextureCreates += 1
+        #endif
 
         let cached = CachedResource(
             dataset: dataset,
             texture: texture,
             referenceCount: 1,
-            uploadTime: CFAbsoluteTimeGetCurrent() - startedAt,
-            peakMemoryBytes: nil,
+            uploadTime: uploadResult.uploadTime,
+            peakMemoryBytes: uploadResult.peakMemoryBytes,
             storageMode: texture.storageMode,
             pixelFormat: texture.pixelFormat,
             dimensions: VolumeResourceHandle.Metadata.Dimensions(
@@ -299,25 +295,19 @@ final class VolumeResourceManager {
         slices: S,
         progress: ChunkedVolumeUploader.ProgressHandler? = nil
     ) async throws -> VolumeResourceHandle where S.Element == VolumeUploadSlice {
-        let hasher = StreamContentFingerprintAccumulator()
-        let hashingSlices = HashedVolumeUploadSliceSequence(base: slices,
-                                                            intensityRange: descriptor.intensityRange,
-                                                            hasher: hasher)
-        let startedAt = CFAbsoluteTimeGetCurrent()
-        let uploader = try ChunkedVolumeUploader(device: device,
-                                                 commandQueue: commandQueue)
-        let metricsRecorder = VolumeUploadMetricsRecorder()
-        let forwardingProgress: VolumeUploadProgressHandler? = makeForwardingProgress(
-            progress,
-            metricsRecorder: metricsRecorder
+        let upload = try await textureUploader.upload(
+            descriptor: descriptor,
+            slices: slices,
+            progress: progress
         )
-        let texture = try await uploader.upload(slices: hashingSlices,
-                                                descriptor: descriptor,
-                                                progress: forwardingProgress)
+        let texture = upload.result.texture
         texture.label = "MTKRenderingEngine.VolumeTexture3D"
+        #if DEBUG
+        debugCounters.volumeTextureCreates += 1
+        #endif
         let identity = ResourceIdentity.stream(
             StreamIdentity(descriptor: descriptor,
-                           contentFingerprint: hasher.value)
+                           contentFingerprint: upload.contentFingerprint)
         )
 
         if var cached = textureCache[identity] {
@@ -326,6 +316,9 @@ final class VolumeResourceManager {
             let handle = VolumeResourceHandle(metadata: cached.metadata)
             handleMap[handle] = identity
             handleReferenceCounts[handle] = 1
+            #if DEBUG
+            debugCounters.volumeCacheHits += 1
+            #endif
             logLifecycle(resourceType: "volume",
                          action: "acquired",
                          estimatedBytes: cached.estimatedBytes)
@@ -336,8 +329,8 @@ final class VolumeResourceManager {
             dataset: makeReferenceDataset(from: descriptor),
             texture: texture,
             referenceCount: 1,
-            uploadTime: CFAbsoluteTimeGetCurrent() - startedAt,
-            peakMemoryBytes: metricsRecorder.metrics?.peakMemoryBytes,
+            uploadTime: upload.result.uploadTime,
+            peakMemoryBytes: upload.result.peakMemoryBytes,
             storageMode: texture.storageMode,
             pixelFormat: texture.pixelFormat,
             dimensions: VolumeResourceHandle.Metadata.Dimensions(
@@ -365,26 +358,21 @@ final class VolumeResourceManager {
         commandQueue: any MTLCommandQueue,
         progress: VolumeUploadProgressHandler? = nil
     ) async throws -> VolumeResourceHandle where S.Element == SliceData {
-        let hasher = StreamContentFingerprintAccumulator()
-        let uploadSlices = HashedSliceDataUploadSequence(base: sliceStream,
-                                                         expectedPixelFormat: metadata.sourcePixelFormat,
-                                                         intensityRange: metadata.intensityRange,
-                                                         hasher: hasher)
-        let startedAt = CFAbsoluteTimeGetCurrent()
-        let uploader = try ChunkedVolumeUploader(device: device,
-                                                 commandQueue: commandQueue)
-        let metricsRecorder = VolumeUploadMetricsRecorder()
-        let forwardingProgress = makeForwardingProgress(progress,
-                                                        metricsRecorder: metricsRecorder)
+        let upload = try await textureUploader.upload(
+            sliceStream: sliceStream,
+            metadata: metadata,
+            progress: progress
+        )
 
-        let texture = try await uploader.upload(slices: uploadSlices,
-                                                descriptor: metadata,
-                                                progress: forwardingProgress)
+        let texture = upload.result.texture
         texture.label = "MTKRenderingEngine.VolumeTexture3D"
+        #if DEBUG
+        debugCounters.volumeTextureCreates += 1
+        #endif
 
         let identity = ResourceIdentity.stream(
             StreamIdentity(descriptor: metadata,
-                           contentFingerprint: hasher.value)
+                           contentFingerprint: upload.contentFingerprint)
         )
 
         if var cached = textureCache[identity] {
@@ -393,6 +381,9 @@ final class VolumeResourceManager {
             let handle = VolumeResourceHandle(metadata: cached.metadata)
             handleMap[handle] = identity
             handleReferenceCounts[handle] = 1
+            #if DEBUG
+            debugCounters.volumeCacheHits += 1
+            #endif
             logLifecycle(resourceType: "volume",
                          action: "acquired",
                          estimatedBytes: cached.estimatedBytes)
@@ -403,8 +394,8 @@ final class VolumeResourceManager {
             dataset: makeReferenceDataset(from: metadata),
             texture: texture,
             referenceCount: 1,
-            uploadTime: CFAbsoluteTimeGetCurrent() - startedAt,
-            peakMemoryBytes: metricsRecorder.metrics?.peakMemoryBytes,
+            uploadTime: upload.result.uploadTime,
+            peakMemoryBytes: upload.result.peakMemoryBytes,
             storageMode: texture.storageMode,
             pixelFormat: texture.pixelFormat,
             dimensions: VolumeResourceHandle.Metadata.Dimensions(
@@ -504,32 +495,27 @@ final class VolumeResourceManager {
         return textureCache[identity]?.metadata
     }
 
+    private let memoryMetrics = ResourceMemoryMetrics()
+
     var estimatedGPUMemoryBytes: Int {
         memoryBreakdown().total
     }
 
     func memoryBreakdown() -> ResourceMemoryBreakdown {
-        ResourceMemoryBreakdown(
-            volumeTextures: textureCache.values.reduce(0) { $0 + $1.estimatedBytes },
-            transferTextures: transferTextureEntries.values.reduce(0) { $0 + $1.estimatedBytes },
-            outputTextures: outputPool.estimatedBytes
+        let snapshot = memoryMetrics.snapshot(
+            volumeTextures: textureCache.values,
+            transferFunctionCache: transferFunctionCache,
+            textureLeasePool: textureLeasePool
         )
+        return snapshot.breakdown
     }
 
     func resourceMetrics() -> GPUResourceMetrics {
-        let breakdown = memoryBreakdown()
-        let uploadPeakMemoryBytes = textureCache.values.compactMap(\.peakMemoryBytes).max()
-        return GPUResourceMetrics(
-            estimatedMemoryBytes: breakdown.total,
-            volumeTextureCount: textureCache.count,
-            transferTextureCount: transferTextureEntries.count,
-            outputTexturePoolSize: outputPool.textureCount,
-            uploadPeakMemoryBytes: uploadPeakMemoryBytes,
-            breakdown: breakdown,
-            resources: textureCache.values.map(\.metadata) +
-                transferTextureEntries.values.map(\.metadata) +
-                outputPool.metadata
-        )
+        memoryMetrics.snapshot(
+            volumeTextures: textureCache.values,
+            transferFunctionCache: transferFunctionCache,
+            textureLeasePool: textureLeasePool
+        ).asGPUResourceMetrics()
     }
 
     func gpuResourceMetrics() -> GPUResourceMetrics {
@@ -539,27 +525,27 @@ final class VolumeResourceManager {
     func acquireOutputTexture(width: Int,
                               height: Int,
                               pixelFormat: MTLPixelFormat) throws -> any MTLTexture {
-        try outputPool.acquire(width: width,
-                               height: height,
-                               pixelFormat: pixelFormat,
+        try textureLeasePool.acquire(width: width,
+                                    height: height,
+                                    pixelFormat: pixelFormat,
                                device: device)
     }
 
     func acquireOutputTextureWithLease(width: Int,
                                        height: Int,
                                        pixelFormat: MTLPixelFormat) throws -> OutputTextureLease {
-        try outputPool.acquireWithLease(width: width,
-                                        height: height,
-                                        pixelFormat: pixelFormat,
+        try textureLeasePool.acquireWithLease(width: width,
+                                             height: height,
+                                             pixelFormat: pixelFormat,
                                         device: device)
     }
 
     func releaseOutputTexture(_ texture: any MTLTexture) {
-        outputPool.release(texture: texture)
+        textureLeasePool.release(texture: texture)
     }
 
     func releaseOutputTextureLease(_ lease: OutputTextureLease) {
-        outputPool.release(lease)
+        textureLeasePool.release(lease)
     }
 
     func resizeOutputTexture(from texture: any MTLTexture,
@@ -568,24 +554,25 @@ final class VolumeResourceManager {
         // Resize is kept for legacy/manual output management paths. Pooled
         // textures that are currently owned by an OutputTextureLease should be
         // released through that lease instead of being resized in-place.
-        if outputPool.hasLease(for: texture) {
+        if textureLeasePool.hasLease(for: texture) {
             throw OutputTextureError.textureLeased
         }
 
-        return try outputPool.resize(from: texture,
-                                     toWidth: width,
-                                     toHeight: height,
+        return try textureLeasePool.resize(from: texture,
+                                           toWidth: width,
+                                           toHeight: height,
                                      device: device)
     }
 
     @MainActor
     func transferTexture(for preset: VolumeRenderingBuiltinPreset,
                          device: any MTLDevice) -> (any MTLTexture)? {
-        guard let texture = TransferFunctions.texture(for: preset, device: device) else {
-            return nil
+        let texture = transferFunctionCache.texture(for: preset, device: device)
+        if let texture {
+            logLifecycle(resourceType: "transferFunction",
+                         action: "acquired",
+                         estimatedBytes: ResourceMemoryEstimator.estimate(for: texture))
         }
-
-        trackTransferTexture(texture)
         return texture
     }
 
@@ -593,73 +580,15 @@ final class VolumeResourceManager {
     func transferTexture(for function: VolumeTransferFunction,
                          device: any MTLDevice,
                          options: TransferFunctions.TextureOptions? = nil) -> (any MTLTexture)? {
-        guard let transferFunction = makeTransferFunction(from: function),
-              let texture = TransferFunctions.texture(for: transferFunction,
-                                                      device: device,
-                                                      options: options ?? .default) else {
-            return nil
+        let texture = transferFunctionCache.texture(for: function,
+                                                    device: device,
+                                                    options: options)
+        if let texture {
+            logLifecycle(resourceType: "transferFunction",
+                         action: "acquired",
+                         estimatedBytes: ResourceMemoryEstimator.estimate(for: texture))
         }
-
-        trackTransferTexture(texture)
         return texture
-    }
-
-    private func trackTransferTexture(_ texture: any MTLTexture) {
-        let id = ObjectIdentifier(texture as AnyObject)
-        let now = CFAbsoluteTimeGetCurrent()
-
-        if var entry = transferTextureEntries[id] {
-            entry.texture = texture
-            entry.lastAccessTime = now
-            transferTextureEntries[id] = entry
-            logLifecycle(resourceType: "transferFunction",
-                         action: "acquired",
-                         estimatedBytes: entry.estimatedBytes)
-        } else {
-            transferTextureEntries[id] = TransferTextureEntry(
-                texture: texture,
-                estimatedBytes: ResourceMemoryEstimator.estimate(for: texture),
-                lastAccessTime: now
-            )
-            logLifecycle(resourceType: "transferFunction",
-                         action: "acquired",
-                         estimatedBytes: transferTextureEntries[id]?.estimatedBytes ?? 0)
-        }
-    }
-
-    private func makeTransferFunction(from function: VolumeTransferFunction) -> TransferFunction? {
-        guard !function.colourPoints.isEmpty,
-              !function.opacityPoints.isEmpty
-        else {
-            return nil
-        }
-
-        let intensityValues = function.colourPoints.map(\.intensity) + function.opacityPoints.map(\.intensity)
-        let minimum = intensityValues.min() ?? -1024
-        let maximum = intensityValues.max() ?? 3071
-
-        var transfer = TransferFunction()
-        transfer.name = "VolumeResourceManager.TransferFunction"
-        transfer.minimumValue = min(minimum, maximum)
-        transfer.maximumValue = max(minimum, maximum)
-        transfer.shift = 0
-        transfer.colorSpace = .linear
-        transfer.colourPoints = function.colourPoints.map { point in
-            TransferFunction.ColorPoint(
-                dataValue: point.intensity,
-                colourValue: TransferFunction.RGBAColor(
-                    r: point.colour.x,
-                    g: point.colour.y,
-                    b: point.colour.z,
-                    a: point.colour.w
-                )
-            )
-        }
-        transfer.alphaPoints = function.opacityPoints.map { point in
-            TransferFunction.AlphaPoint(dataValue: point.intensity,
-                                        alphaValue: point.opacity)
-        }
-        return transfer
     }
 
     private func makeReferenceDataset(from descriptor: VolumeUploadDescriptor) -> VolumeDataset {
@@ -672,15 +601,6 @@ final class VolumeResourceManager {
                       recommendedWindow: descriptor.recommendedWindow)
     }
 
-    private func makeForwardingProgress(_ progress: VolumeUploadProgressHandler?,
-                                        metricsRecorder: VolumeUploadMetricsRecorder) -> VolumeUploadProgressHandler {
-        { event in
-            if case .completed(let metrics) = event {
-                metricsRecorder.record(metrics)
-            }
-            progress?(event)
-        }
-    }
 
     private func logLifecycle(resourceType: String,
                               action: String,
@@ -697,22 +617,6 @@ private enum StreamUploadError: Error {
     case sliceSignednessMismatch(sliceIndex: Int, expected: VolumePixelFormat, actual: VolumePixelFormat)
 }
 
-private final class VolumeUploadMetricsRecorder: @unchecked Sendable {
-    private let lock = NSLock()
-    private var recordedMetrics: VolumeUploadMetrics?
-
-    var metrics: VolumeUploadMetrics? {
-        lock.lock()
-        defer { lock.unlock() }
-        return recordedMetrics
-    }
-
-    func record(_ metrics: VolumeUploadMetrics) {
-        lock.lock()
-        recordedMetrics = metrics
-        lock.unlock()
-    }
-}
 
 private final class StreamContentFingerprintAccumulator: @unchecked Sendable {
     private static let fnvOffsetBasis: UInt64 = 14_695_981_039_346_656_037
@@ -861,65 +765,61 @@ private extension VolumePixelFormat {
     }
 }
 
+#if DEBUG
+
 extension VolumeResourceManager {
-    var debugTextureCount: Int {
-        textureCache.count
+    private var debugAccess: ResourceDebugAccess {
+        ResourceDebugAccess(
+            volumeTextureCount: { self.textureCache.count },
+            transferTextureCount: { self.transferFunctionCache.textureCount },
+            outputTextureCount: { self.textureLeasePool.debugTextureCount },
+            memoryBreakdown: { self.memoryBreakdown() },
+            outputPoolTextureCount: { self.textureLeasePool.textureCount },
+            outputPoolInUseCount: { self.textureLeasePool.inUseCount },
+            totalReferenceCount: { self.textureCache.values.reduce(0) { $0 + $1.referenceCount } },
+            volumeTextureObjectIdentifier: { handle in
+                guard let texture = self.texture(for: handle) else { return nil }
+                return ObjectIdentifier(texture as AnyObject)
+            },
+            transferTextureLastAccessTime: { texture in
+                self.transferFunctionCache.debugLastAccessTime(for: texture)
+            },
+            outputTextureIsInUse: { texture in
+                self.textureLeasePool.debugIsInUse(texture)
+            },
+            outputTextureLeaseCount: { self.textureLeasePool.debugLeaseCount },
+            outputTextureLeaseAcquiredCount: { self.textureLeasePool.debugLeaseAcquiredCount },
+            outputTextureLeasePresentedCount: { self.textureLeasePool.debugLeasePresentedCount },
+            outputTextureLeaseReleasedCount: { self.textureLeasePool.debugLeaseReleasedCount },
+            outputTextureLeasePendingCount: { self.textureLeasePool.debugLeasePendingCount }
+        )
     }
 
-    var debugTransferTextureCount: Int {
-        transferTextureEntries.count
-    }
-
-    var debugOutputTextureCount: Int {
-        outputPool.debugTextureCount
-    }
-
-    var debugMemoryBreakdown: ResourceMemoryBreakdown {
-        memoryBreakdown()
-    }
-
-    var debugOutputPoolTextureCount: Int {
-        outputPool.textureCount
-    }
-
-    var debugOutputPoolInUseCount: Int {
-        outputPool.inUseCount
-    }
-
-    var debugTotalReferenceCount: Int {
-        textureCache.values.reduce(0) { $0 + $1.referenceCount }
-    }
+    var debugTextureCount: Int { debugAccess.volumeTextureCount }
+    var debugTransferTextureCount: Int { debugAccess.transferTextureCount }
+    var debugOutputTextureCount: Int { debugAccess.outputTextureCount }
+    var debugMemoryBreakdown: ResourceMemoryBreakdown { debugAccess.memoryBreakdown }
+    var debugOutputPoolTextureCount: Int { debugAccess.outputPoolTextureCount }
+    var debugOutputPoolInUseCount: Int { debugAccess.outputPoolInUseCount }
+    var debugTotalReferenceCount: Int { debugAccess.totalReferenceCount }
 
     func debugTextureObjectIdentifier(for handle: VolumeResourceHandle) -> ObjectIdentifier? {
-        guard let texture = texture(for: handle) else { return nil }
-        return ObjectIdentifier(texture as AnyObject)
+        debugAccess.volumeTextureObjectIdentifier(for: handle)
     }
 
     func debugTransferTextureLastAccessTime(for texture: any MTLTexture) -> CFAbsoluteTime? {
-        transferTextureEntries[ObjectIdentifier(texture as AnyObject)]?.lastAccessTime
+        debugAccess.transferTextureLastAccessTime(for: texture)
     }
 
     func debugOutputTextureIsInUse(_ texture: any MTLTexture) -> Bool? {
-        outputPool.debugIsInUse(texture)
+        debugAccess.outputTextureIsInUse(texture)
     }
 
-    var debugOutputTextureLeaseCount: Int {
-        outputPool.debugLeaseCount
-    }
-
-    var debugOutputTextureLeaseAcquiredCount: Int {
-        outputPool.debugLeaseAcquiredCount
-    }
-
-    var debugOutputTextureLeasePresentedCount: Int {
-        outputPool.debugLeasePresentedCount
-    }
-
-    var debugOutputTextureLeaseReleasedCount: Int {
-        outputPool.debugLeaseReleasedCount
-    }
-
-    var debugOutputTextureLeasePendingCount: Int {
-        outputPool.debugLeasePendingCount
-    }
+    var debugOutputTextureLeaseCount: Int { debugAccess.outputTextureLeaseCount }
+    var debugOutputTextureLeaseAcquiredCount: Int { debugAccess.outputTextureLeaseAcquiredCount }
+    var debugOutputTextureLeasePresentedCount: Int { debugAccess.outputTextureLeasePresentedCount }
+    var debugOutputTextureLeaseReleasedCount: Int { debugAccess.outputTextureLeaseReleasedCount }
+    var debugOutputTextureLeasePendingCount: Int { debugAccess.outputTextureLeasePendingCount }
 }
+
+#endif

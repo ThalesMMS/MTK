@@ -71,6 +71,7 @@ final class ClinicalGridRoutingTests: MTKRenderingEngineTestCase {
     func testClinicalGridRenderRecordsRenderGraphRouteSample() async throws {
         let viewports = try await createClinicalGridViewports(fourthType: .projection(mode: .aip))
         try await engine.setVolume(testDataset, for: viewportIDs(for: viewports))
+        await engine.setProfilingOptions(.init(measureRenderTime: true))
 
         let frame = try await engine.render(viewports.fourth)
         defer { frame.outputTextureLease?.release() }

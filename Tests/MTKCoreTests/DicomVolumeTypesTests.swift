@@ -121,6 +121,7 @@ final class DicomVolumeTypesTests: XCTestCase {
         XCTAssertEqual(result.metadata, descriptor)
         XCTAssertEqual(result.sourceURL, url)
         XCTAssertEqual(result.seriesDescription, description)
+        XCTAssertTrue(result.warnings.isEmpty)
     }
 
     func testDicomStreamingImportResultAllowsEmptySeriesDescription() {
@@ -136,6 +137,26 @@ final class DicomVolumeTypesTests: XCTestCase {
         let result = DicomStreamingImportResult(metadata: descriptor, sourceURL: url, seriesDescription: "")
 
         XCTAssertEqual(result.seriesDescription, "")
+    }
+
+    func testDicomStreamingImportResultStoresWarnings() {
+        let dimensions = VolumeDimensions(width: 2, height: 2, depth: 2)
+        let descriptor = VolumeUploadDescriptor(
+            dimensions: dimensions,
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+            sourcePixelFormat: .int16Signed,
+            intensityRange: 0...100
+        )
+        let warning = DicomImportWarning(code: .usedFallbackWindow,
+                                         message: "Fallback window",
+                                         context: "MR")
+
+        let result = DicomStreamingImportResult(metadata: descriptor,
+                                                sourceURL: URL(fileURLWithPath: "/tmp/test"),
+                                                seriesDescription: "",
+                                                warnings: [warning])
+
+        XCTAssertEqual(result.warnings, [warning])
     }
 
     // MARK: - DicomVolumeProgress
@@ -227,6 +248,11 @@ final class DicomVolumeTypesTests: XCTestCase {
         XCTAssertEqual(volume.seriesDescription, "Test CT")
     }
 
+    func testDICOMSeriesVolumeProtocolDefaultsModalityForExistingConformers() {
+        let volume: any DICOMSeriesVolumeProtocol = MinimalDICOMSeriesVolume()
+        XCTAssertEqual(volume.modality, "")
+    }
+
     // MARK: - DicomSeriesLoading protocol
 
     func testMockDicomSeriesLoaderConformsToProtocol() throws {
@@ -264,6 +290,23 @@ private struct MockDICOMSeriesVolume: DICOMSeriesVolumeProtocol {
     var rescaleIntercept: Double { -1024.0 }
     var isSignedPixel: Bool { true }
     var seriesDescription: String { "Test CT" }
+    var modality: String { "CT" }
+}
+
+private struct MinimalDICOMSeriesVolume: DICOMSeriesVolumeProtocol {
+    var bitsAllocated: Int { 16 }
+    var width: Int { 1 }
+    var height: Int { 1 }
+    var depth: Int { 1 }
+    var spacingX: Double { 1 }
+    var spacingY: Double { 1 }
+    var spacingZ: Double { 1 }
+    var orientation: simd_float3x3 { matrix_identity_float3x3 }
+    var origin: SIMD3<Float> { .zero }
+    var rescaleSlope: Double { 1 }
+    var rescaleIntercept: Double { 0 }
+    var isSignedPixel: Bool { true }
+    var seriesDescription: String { "" }
 }
 
 private class MockDicomSeriesLoader: DicomSeriesLoading {

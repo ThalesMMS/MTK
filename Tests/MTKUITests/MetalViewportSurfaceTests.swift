@@ -163,6 +163,42 @@ final class MetalViewportSurfaceTests: XCTestCase {
         XCTAssertNil(surface.presentedTexture)
     }
 
+#if os(macOS)
+    /// Issue #132 fixed: macOS validates lease-pool lifecycle directly to avoid
+    /// CAMetalLayer completion-timing sensitivity under SwiftPM/xctest.
+    func testDirectLeaseReleaseDrainsPoolOnMacOS() async throws {
+        let device = try requireMetalDevice()
+        let engine = try await MTKRenderingEngine(device: device)
+        let viewport = try await engine.createViewport(
+            ViewportDescriptor(type: .volume3D,
+                               initialSize: CGSize(width: 8, height: 8))
+        )
+        try await engine.setVolume(makeDataset(), for: viewport)
+
+        for _ in 0..<3 {
+            let frame = try await engine.render(viewport)
+            let lease = try XCTUnwrap(frame.outputTextureLease)
+
+            XCTAssertFalse(lease.isReleased)
+            lease.release()
+            XCTAssertTrue(lease.isReleased)
+        }
+
+        let poolInUseCount = await engine.debugOutputPoolInUseCount
+        let poolTextureCount = await engine.debugOutputPoolTextureCount
+        let leaseAcquiredCount = await engine.debugOutputTextureLeaseAcquiredCount
+        let leasePresentedCount = await engine.debugOutputTextureLeasePresentedCount
+        let leaseReleasedCount = await engine.debugOutputTextureLeaseReleasedCount
+
+        XCTAssertEqual(poolInUseCount, 0)
+        XCTAssertEqual(poolTextureCount, 1)
+        XCTAssertEqual(leaseAcquiredCount, 3)
+        XCTAssertEqual(leasePresentedCount, 0)
+        XCTAssertEqual(leaseReleasedCount, 3)
+    }
+#else
+    /// Issue #132 fixed: surface presentation releases the output texture lease
+    /// after the presentation command buffer completes.
     func testSurfacePresentationReleasesLeaseAfterCommandBufferCompletion() async throws {
         let device = try requireMetalDevice()
         let engine = try await MTKRenderingEngine(device: device)
@@ -196,6 +232,7 @@ final class MetalViewportSurfaceTests: XCTestCase {
         XCTAssertEqual(leasePresentedCount, 3)
         XCTAssertEqual(leaseReleasedCount, 3)
     }
+#endif
 
     func testSurfacePresentationRecordsProfilerMetrics() async throws {
         let device = try requireMetalDevice()

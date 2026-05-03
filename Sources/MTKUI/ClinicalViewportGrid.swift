@@ -15,6 +15,14 @@ import UIKit
 import AppKit
 #endif
 
+/// A ready-to-use SwiftUI 2×2 clinical viewport grid backed by the MTK rendering engine.
+///
+/// `ClinicalViewportGrid` is intended as an embeddable, production-quality building block.
+/// It owns or displays a ``ClinicalViewportGridController`` and renders four synchronized
+/// viewports (volume and/or MPR), with an optional per-viewport overlay hook for diagnostics.
+///
+/// - Note: This view is available on iOS and macOS.
+/// - Important: Mutate the controller only from the main actor.
 @MainActor
 public struct ClinicalViewportGrid: View {
     @StateObject private var store: ClinicalViewportGridControllerStore
@@ -130,7 +138,6 @@ private struct ClinicalViewportGridContent: View {
     private let viewportOverlay: ((ClinicalViewportDebugSnapshot) -> AnyView)?
     @State private var draftWindowLevel = WindowLevelShift(window: 400, level: 40)
     @State private var draftSlabThickness = 3.0
-    @State private var lastDragTranslation: [MTKCore.Axis: CGSize] = [:]
     @State private var pendingMPRGestureTasks: [MTKCore.Axis: Task<Void, Never>] = [:]
     @State private var activeMPRGestures = Set<MTKCore.Axis>()
     @State private var lastVolumeDragTranslation = CGSize.zero
@@ -181,23 +188,42 @@ private struct ClinicalViewportGridContent: View {
             let spacing: CGFloat = 12
             let paneSide = max(min((proxy.size.width - spacing) / 2,
                                    (proxy.size.height - spacing) / 2), 1)
+            let usePlaceholders = paneSide < 4
+
             VStack(spacing: spacing) {
                 HStack(spacing: spacing) {
-                    mprPane(axis: .axial, surface: controller.axialSurface, title: "Axial")
-                        .frame(width: paneSide, height: paneSide)
-                    mprPane(axis: .coronal, surface: controller.coronalSurface, title: "Coronal")
-                        .frame(width: paneSide, height: paneSide)
+                    gridPane(usePlaceholders: usePlaceholders, size: paneSide) {
+                        mprPane(axis: .axial, surface: controller.axialSurface, title: "Axial")
+                    }
+                    gridPane(usePlaceholders: usePlaceholders, size: paneSide) {
+                        mprPane(axis: .coronal, surface: controller.coronalSurface, title: "Coronal")
+                    }
                 }
                 HStack(spacing: spacing) {
-                    mprPane(axis: .sagittal, surface: controller.sagittalSurface, title: "Sagittal")
-                        .frame(width: paneSide, height: paneSide)
-                    volumePane(surface: controller.volumeSurface)
-                        .frame(width: paneSide, height: paneSide)
+                    gridPane(usePlaceholders: usePlaceholders, size: paneSide) {
+                        mprPane(axis: .sagittal, surface: controller.sagittalSurface, title: "Sagittal")
+                    }
+                    gridPane(usePlaceholders: usePlaceholders, size: paneSide) {
+                        volumePane(surface: controller.volumeSurface)
+                    }
                 }
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
         }
         .aspectRatio(1, contentMode: .fit)
+    }
+
+    private func gridPane<Content: View>(usePlaceholders: Bool,
+                                        size: CGFloat,
+                                        @ViewBuilder content: () -> Content) -> some View {
+        ZStack {
+            if usePlaceholders {
+                Color.clear
+            } else {
+                content()
+            }
+        }
+        .frame(width: size, height: size)
     }
 
     private func mprPane(axis: MTKCore.Axis, surface: MetalViewportSurface, title: String) -> some View {
@@ -254,14 +280,14 @@ private struct ClinicalViewportGridContent: View {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
                 guard size.width > 0, size.height > 0 else { return }
+
+                // Treat the gesture as a crosshair drag (absolute location). Avoid also using the same
+                // drag to scroll slices; that created conflicting semantics and platform differences.
                 let shouldBeginInteraction = activeMPRGestures.insert(axis).inserted
                 let normalized = CGPoint(
                     x: min(max(value.location.x / size.width, 0), 1),
                     y: min(max(value.location.y / size.height, 0), 1)
                 )
-                let previous = lastDragTranslation[axis] ?? .zero
-                let deltaY = value.translation.height - previous.height
-                lastDragTranslation[axis] = value.translation
 
                 let beginInteractionTask = shouldBeginInteraction
                     ? Task { @MainActor in await controller.beginAdaptiveSamplingInteraction() }
@@ -271,15 +297,9 @@ private struct ClinicalViewportGridContent: View {
                     await beginInteractionTask?.value
                     guard !Task.isCancelled else { return }
                     await controller.setCrosshair(in: axis, normalizedPoint: normalized)
-                    guard !Task.isCancelled else { return }
-                    if abs(deltaY) > 0 {
-                        await controller.scrollSlice(axis: axis,
-                                                     deltaNormalized: -Float(deltaY / max(size.height, 1)))
-                    }
                 }
             }
             .onEnded { _ in
-                lastDragTranslation[axis] = .zero
                 pendingMPRGestureTasks[axis]?.cancel()
                 pendingMPRGestureTasks[axis] = nil
                 if activeMPRGestures.remove(axis) != nil {

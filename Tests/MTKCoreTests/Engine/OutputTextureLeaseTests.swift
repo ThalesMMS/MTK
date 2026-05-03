@@ -7,7 +7,7 @@ import XCTest
 final class OutputTextureLeaseTests: XCTestCase {
     func test_releaseMarksTextureAsNotInUse() throws {
         let device = try makeDevice()
-        let pool = OutputTexturePool()
+        let pool = TextureLeasePool()
         let lease = try pool.acquireWithLease(width: 24,
                                               height: 24,
                                               pixelFormat: .bgra8Unorm,
@@ -25,7 +25,7 @@ final class OutputTextureLeaseTests: XCTestCase {
 
     func test_releaseIsIdempotent() throws {
         let device = try makeDevice()
-        let pool = OutputTexturePool()
+        let pool = TextureLeasePool()
         let lease = try pool.acquireWithLease(width: 24,
                                               height: 24,
                                               pixelFormat: .bgra8Unorm,
@@ -39,7 +39,7 @@ final class OutputTextureLeaseTests: XCTestCase {
     }
 
     func test_releaseUnknownTextureIDDoesNotCrash() {
-        let pool = OutputTexturePool()
+        let pool = TextureLeasePool()
 
         pool.debugReleaseUnknownLeaseTextureID()
 
@@ -49,7 +49,7 @@ final class OutputTextureLeaseTests: XCTestCase {
 
     func test_deinitWithoutExplicitReleaseUsesSafetyNet() throws {
         let device = try makeDevice()
-        let pool = OutputTexturePool()
+        let pool = TextureLeasePool()
         let texture: any MTLTexture
         do {
             let lease = try pool.acquireWithLease(width: 24,
@@ -67,7 +67,7 @@ final class OutputTextureLeaseTests: XCTestCase {
 
     func test_concurrentReleaseDoesNotCorruptState() throws {
         let device = try makeDevice()
-        let pool = OutputTexturePool()
+        let pool = TextureLeasePool()
         let lease = try pool.acquireWithLease(width: 24,
                                               height: 24,
                                               pixelFormat: .bgra8Unorm,

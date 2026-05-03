@@ -50,6 +50,8 @@ public struct MTKViewRepresentable: UIViewRepresentable {
     public func updateUIView(_ uiView: ContainerView, context: Context) {
         uiView.host(surface.view)
         surface.setContentScale(Self.contentScale(for: uiView, hostedView: surface.view))
+        uiView.setNeedsLayout()
+        uiView.layoutIfNeeded()
     }
 
     private static func contentScale(for container: UIView, hostedView: UIView) -> CGFloat {
@@ -112,6 +114,8 @@ public struct MTKViewRepresentable: NSViewRepresentable {
     public func updateNSView(_ nsView: ContainerView, context: Context) {
         nsView.host(surface.view)
         surface.setContentScale(Self.contentScale(for: nsView, hostedView: surface.view))
+        nsView.needsLayout = true
+        nsView.layoutSubtreeIfNeeded()
     }
 
     private static func contentScale(for container: ContainerView?, hostedView: NSView?) -> CGFloat {

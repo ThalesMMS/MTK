@@ -32,7 +32,11 @@ final class DicomStreamingPipelineTests: XCTestCase {
         XCTAssertEqual(success.metadata.spacing.x, 0.001, accuracy: 0.000_000_01)
         XCTAssertEqual(success.metadata.spacing.y, 0.002, accuracy: 0.000_000_01)
         XCTAssertEqual(success.metadata.spacing.z, 0.003, accuracy: 0.000_000_01)
+        XCTAssertEqual(success.metadata.recommendedWindow, WindowLevelPresetLibrary.softTissue.windowRange)
         XCTAssertEqual(success.seriesDescription, "Streaming Test Series")
+        XCTAssertEqual(success.warnings.first?.code, .usedFallbackWindow)
+        XCTAssertEqual(success.warnings.first?.message,
+                       "WindowCenter/WindowWidth not found; using default CT soft tissue window (W400/L40) for streaming metadata.")
 
         let captured = slices.values
         XCTAssertEqual(captured.map(\.index), [0, 1])
@@ -50,6 +54,59 @@ final class DicomStreamingPipelineTests: XCTestCase {
             if case .reading(let fraction) = event { return fraction == 1.0 }
             return false
         })
+    }
+
+    func test_loadVolumeStreamingCarriesDicomWindowRecommendation() throws {
+        let loader = DicomVolumeLoader(
+            seriesLoader: StreamingMockSeriesLoader(
+                volume: TestStreamingVolume(windowCenter: 40, windowWidth: 400)
+            )
+        )
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let expectation = expectation(description: "Streaming DICOM load")
+        var result: Result<DicomStreamingImportResult, Error>?
+
+        loader.loadVolumeStreaming(from: directory,
+                                   sliceHandler: { _, _, _, _, _ in },
+                                   progress: { _ in },
+                                   completion: { outcome in
+                                       result = outcome
+                                       expectation.fulfill()
+                                   })
+
+        wait(for: [expectation], timeout: 5)
+
+        let success = try XCTUnwrap(result?.get())
+        XCTAssertEqual(success.metadata.recommendedWindow, -160...239)
+        XCTAssertTrue(success.warnings.isEmpty)
+    }
+
+    func test_loadVolumeStreamingEmitsMRSpecificMissingWindowWarning() throws {
+        let loader = DicomVolumeLoader(
+            seriesLoader: StreamingMockSeriesLoader(volume: TestStreamingVolume(modality: "MR"))
+        )
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let expectation = expectation(description: "Streaming DICOM load")
+        var result: Result<DicomStreamingImportResult, Error>?
+
+        loader.loadVolumeStreaming(from: directory,
+                                   sliceHandler: { _, _, _, _, _ in },
+                                   progress: { _ in },
+                                   completion: { outcome in
+                                       result = outcome
+                                       expectation.fulfill()
+                                   })
+
+        wait(for: [expectation], timeout: 5)
+
+        let success = try XCTUnwrap(result?.get())
+        XCTAssertNil(success.metadata.recommendedWindow)
+        XCTAssertEqual(success.warnings.first?.message,
+                       "WindowCenter/WindowWidth not found; apply full intensity-range windowing for MR before rendering.")
     }
 
     func test_dicomSliceStreamFeedsVolumeResourceManagerUpload() async throws {
@@ -140,6 +197,46 @@ final class DicomStreamingPipelineTests: XCTestCase {
         XCTAssertEqual(manager.debugTextureCount, 2)
     }
 
+#if DEBUG
+    func test_sliceDataStreamUpdatesDebugUploadCounters() async throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal device unavailable on this test runner")
+        }
+
+        let metadata = VolumeUploadDescriptor(
+            dimensions: VolumeDimensions(width: 2, height: 2, depth: 1),
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+            sourcePixelFormat: .int16Signed
+        )
+        let manager = VolumeResourceManager(device: device,
+                                            commandQueue: commandQueue)
+
+        _ = try await manager.acquireFromStream(
+            sliceStream: AsyncStream { continuation in
+                continuation.yield(makeSlice(index: 0, values: [1, 2, 3, 4]))
+                continuation.finish()
+            },
+            metadata: metadata,
+            device: device,
+            commandQueue: commandQueue
+        )
+        _ = try await manager.acquireFromStream(
+            sliceStream: AsyncStream { continuation in
+                continuation.yield(makeSlice(index: 0, values: [1, 2, 3, 4]))
+                continuation.finish()
+            },
+            metadata: metadata,
+            device: device,
+            commandQueue: commandQueue
+        )
+
+        XCTAssertEqual(manager.debugCounters.volumeTextureCreates, 2)
+        XCTAssertEqual(manager.debugCounters.volumeCacheHits, 1)
+        XCTAssertEqual(manager.debugTextureCount, 1)
+    }
+#endif
+
     func test_sliceDataStreamUsesDescriptorIntensityRangeForClamp() async throws {
         guard let device = MTLCreateSystemDefaultDevice(),
               let commandQueue = device.makeCommandQueue() else {
@@ -215,9 +312,14 @@ final class DicomStreamingPipelineTests: XCTestCase {
 }
 
 private final class StreamingMockSeriesLoader: DicomSeriesLoading {
+    private let volume: TestStreamingVolume
+
+    init(volume: TestStreamingVolume = TestStreamingVolume()) {
+        self.volume = volume
+    }
+
     func loadSeries(at url: URL,
                     progress: ((Double, UInt, Data?, Any) -> Void)?) throws -> Any {
-        let volume = TestStreamingVolume()
         progress?(0.5, 1, [Int16(1), 2, 3, 4].withUnsafeBytes { Data($0) }, volume)
         progress?(1.0, 2, [Int16(5), 6, 7, 8].withUnsafeBytes { Data($0) }, volume)
         return volume
@@ -225,19 +327,43 @@ private final class StreamingMockSeriesLoader: DicomSeriesLoading {
 }
 
 private struct TestStreamingVolume: DICOMSeriesVolumeProtocol {
-    let bitsAllocated = 16
-    let width = 2
-    let height = 2
-    let depth = 2
-    let spacingX = 1.0
-    let spacingY = 2.0
-    let spacingZ = 3.0
-    let orientation = matrix_identity_float3x3
-    let origin = SIMD3<Float>(repeating: 0)
-    let rescaleSlope = 2.0
-    let rescaleIntercept = -10.0
-    let isSignedPixel = true
-    let seriesDescription = "Streaming Test Series"
+    let bitsAllocated: Int
+    let width: Int
+    let height: Int
+    let depth: Int
+    let spacingX: Double
+    let spacingY: Double
+    let spacingZ: Double
+    let orientation: simd_float3x3
+    let origin: SIMD3<Float>
+    let rescaleSlope: Double
+    let rescaleIntercept: Double
+    let isSignedPixel: Bool
+    let seriesDescription: String
+    let modality: String
+    var windowCenter: Double?
+    var windowWidth: Double?
+
+    init(modality: String = "CT",
+         windowCenter: Double? = nil,
+         windowWidth: Double? = nil) {
+        self.bitsAllocated = 16
+        self.width = 2
+        self.height = 2
+        self.depth = 2
+        self.spacingX = 1.0
+        self.spacingY = 2.0
+        self.spacingZ = 3.0
+        self.orientation = matrix_identity_float3x3
+        self.origin = SIMD3<Float>(repeating: 0)
+        self.rescaleSlope = 2.0
+        self.rescaleIntercept = -10.0
+        self.isSignedPixel = true
+        self.seriesDescription = "Streaming Test Series"
+        self.modality = modality
+        self.windowCenter = windowCenter
+        self.windowWidth = windowWidth
+    }
 }
 
 private struct RecordedSlice: Sendable {

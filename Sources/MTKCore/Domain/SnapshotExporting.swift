@@ -17,9 +17,17 @@ import Foundation
 /// ``VolumeRenderFrame/texture`` directly through a Metal-native surface.
 public protocol SnapshotExporting: Sendable {
     /// Converts a completed render frame into a CPU-backed `CGImage`.
+    ///
+    /// - Important: This is an explicit GPU→CPU readback boundary.
+    ///   Do not use this for interactive on-screen presentation. Interactive
+    ///   rendering must remain GPU-resident as `MTLTexture` and be presented via
+    ///   `MTKView`/`CAMetalLayer` (e.g. `MetalViewportSurface`).
     func makeCGImage(from frame: VolumeRenderFrame) async throws -> CGImage
 
     /// Writes a completed render frame as a PNG image.
+    ///
+    /// - Important: This is an explicit GPU→CPU readback + encoding boundary.
+    ///   Keep it out of interactive rendering loops.
     ///
     /// Future export formats such as TIFF or DICOM Secondary Capture should be
     /// added as new explicit export operations instead of changing interactive

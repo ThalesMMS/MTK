@@ -6,6 +6,13 @@
 #if canImport(SwiftUI)
 import SwiftUI
 
+/// A small SwiftUI control panel for navigating an MPR slice along a single axis.
+///
+/// `MPRPanelView` presents a normalized 0...1 slider that maps to the current MPR plane position
+/// for the given axis. It calls ``VolumeViewportController/setMprPlane(axis:normalized:)`` as the
+/// slider moves.
+///
+/// - Important: This view mutates the controller on the main actor.
 @MainActor
 public struct MPRPanelView: View {
     private let controller: VolumeViewportController

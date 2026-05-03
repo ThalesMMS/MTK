@@ -12,6 +12,16 @@ import Metal
 import MTKCore
 import simd
 
+/// Main MTKUI controller for presenting and interacting with a volumetric viewport.
+///
+/// `VolumeViewportController` is the primary entry point for downstream apps integrating MTKUI.
+/// It owns a Metal-backed ``MetalViewportSurface`` plus adapter state used to render:
+///
+/// - 3D volume views (DVR / MIP / MinIP / AIP)
+/// - Multi-planar reconstruction (MPR) slice views
+///
+/// The controller is `@MainActor` isolated. Update properties and call methods from SwiftUI/UI
+/// code, or explicitly hop to the main actor.
 @MainActor
 public final class VolumeViewportController: VolumeViewportControlling, ObservableObject {
     public enum Error: Swift.Error {
@@ -95,7 +105,8 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     public var windowLevelState: VolumetricWindowLevelState { statePublisher.windowLevelState }
     public var adaptiveSamplingEnabled: Bool { statePublisher.adaptiveSamplingEnabled }
     public var renderQualityState: RenderQualityState { statePublisher.qualityState }
-    public internal(set) var datasetApplied = false
+    @Published public internal(set) var datasetApplied = false
+    @Published public internal(set) var datasetIntensityRange: ClosedRange<Int32>?
     public internal(set) var lastRenderError: (any Swift.Error)?
 
     public var transferFunctionDomain: ClosedRange<Float>? {
@@ -220,6 +231,7 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     public func applyDataset(_ dataset: VolumeDataset) async {
         guard self.dataset != dataset || datasetApplied == false else { return }
         self.dataset = dataset
+        datasetIntensityRange = dataset.intensityRange
         mprVolumeTextureCache.invalidate()
         invalidateMPRCache()
         geometry = makeGeometry(from: dataset)

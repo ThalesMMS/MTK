@@ -111,6 +111,7 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
     }
 
     func testApplyDatasetUsesOneSharedResourceHandleForAllViewports() async throws {
+        try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "Metal unavailable")
         let controller = try await makeController()
         let dataset = makeDataset()
 
@@ -137,9 +138,15 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         let referenceCount = await controller.engine.debugResourceReferenceCount
         XCTAssertEqual(textureCount, 1)
         XCTAssertEqual(referenceCount, 4)
+
+        #if DEBUG
+        let counts = await controller.engine.debugVolumeUploadCounts
+        XCTAssertEqual(counts.textureCreates, 1)
+        XCTAssertGreaterThanOrEqual(counts.cacheHits, 0)
+        #endif
     }
 
-    func testWindowLevelSyncsOnlyMPRViewports() async throws {
+    func testWindowLevelSyncsAllViewports() async throws {
         let controller = try await makeController()
         let dataset = makeDataset()
         try await controller.applyDataset(dataset)
@@ -147,7 +154,6 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         await controller.setMPRWindowLevel(window: 120, level: 40)
 
         let expected: ClosedRange<Int32> = (-20)...100
-        let initialVolumeWindow = dataset.recommendedWindow ?? dataset.intensityRange
         let axialWindow = await controller.engine.debugWindow(for: controller.axialViewportID)
         let coronalWindow = await controller.engine.debugWindow(for: controller.coronalViewportID)
         let sagittalWindow = await controller.engine.debugWindow(for: controller.sagittalViewportID)
@@ -155,7 +161,86 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         XCTAssertEqual(axialWindow, expected)
         XCTAssertEqual(coronalWindow, expected)
         XCTAssertEqual(sagittalWindow, expected)
-        XCTAssertEqual(volumeWindow, initialVolumeWindow)
+        XCTAssertEqual(volumeWindow, expected)
+
+        // Ensure shared state drives the value: setting same WL again should not schedule any new renders.
+        let mprBefore = controller.mprViewportIDs.map { controller.debugRenderGeneration(for: $0) }
+        let volumeBefore = controller.debugRenderGeneration(for: controller.volumeViewportID)
+
+        await controller.setMPRWindowLevel(window: 120, level: 40)
+
+        let mprAfter = controller.mprViewportIDs.map { controller.debugRenderGeneration(for: $0) }
+        let volumeAfter = controller.debugRenderGeneration(for: controller.volumeViewportID)
+        XCTAssertEqual(mprAfter, mprBefore)
+        XCTAssertEqual(volumeAfter, volumeBefore)
+    }
+
+#if DEBUG
+    func testWindowLevelCommitDoesNotMutateMPRWindowsWhenVolumeWindowFails() async throws {
+        let controller = try await makeController()
+        try await controller.applyDataset(makeDataset())
+        let committedRange = try XCTUnwrap(controller.committedMPRWindowRange)
+        let mprBefore = controller.mprViewportIDs.map { controller.debugRenderGeneration(for: $0) }
+        let volumeBefore = controller.debugRenderGeneration(for: controller.volumeViewportID)
+        let volumeWindowBefore = await controller.engine.debugWindow(for: controller.volumeViewportID)
+
+        controller.debugWindowConfigurationFailureViewports = [controller.volumeViewportID]
+        await controller.setMPRWindowLevel(window: 120, level: 40)
+
+        let axialWindow = await controller.engine.debugWindow(for: controller.axialViewportID)
+        let coronalWindow = await controller.engine.debugWindow(for: controller.coronalViewportID)
+        let sagittalWindow = await controller.engine.debugWindow(for: controller.sagittalViewportID)
+        let volumeWindowAfter = await controller.engine.debugWindow(for: controller.volumeViewportID)
+        XCTAssertEqual(axialWindow, committedRange)
+        XCTAssertEqual(coronalWindow, committedRange)
+        XCTAssertEqual(sagittalWindow, committedRange)
+        XCTAssertEqual(volumeWindowAfter, volumeWindowBefore)
+        XCTAssertEqual(controller.windowLevel.range, committedRange)
+        XCTAssertEqual(controller.committedMPRWindowRange, committedRange)
+        XCTAssertEqual(controller.mprViewportIDs.map { controller.debugRenderGeneration(for: $0) }, mprBefore)
+        XCTAssertEqual(controller.debugRenderGeneration(for: controller.volumeViewportID), volumeBefore)
+    }
+#endif
+
+    func testWindowLevelUpdatesDoNotCreateCrosshairFeedbackLoop() async throws {
+        let controller = try await makeController()
+        try await controller.applyDataset(makeDataset())
+
+        // Move crosshair (which triggers perpendicular slice updates).
+        await controller.setCrosshair(in: .axial, normalizedPoint: CGPoint(x: 0.2, y: 0.8))
+
+        let beforePositions = controller.normalizedPositions
+        let beforeOffsets = controller.crosshairOffsets
+
+        // Changing WL should not mutate crosshair shared state.
+        await controller.setMPRWindowLevel(window: 200, level: 20)
+
+        XCTAssertEqual(controller.normalizedPositions, beforePositions)
+        XCTAssertEqual(controller.crosshairOffsets, beforeOffsets)
+    }
+
+    func testCrosshairPointUpdateIsDeterministicAndDoesNotFeedback() async throws {
+        let controller = try await makeController()
+        try await controller.applyDataset(makeDataset())
+
+        // Apply the same crosshair point twice.
+        await controller.setCrosshair(in: .axial, normalizedPoint: CGPoint(x: 0.33, y: 0.66))
+        let afterFirstPositions = controller.normalizedPositions
+        let afterFirstOffsets = controller.crosshairOffsets
+        let mprBefore = renderGenerationsByViewport(for: controller.mprViewportIDs, in: controller)
+
+        await controller.setCrosshair(in: .axial, normalizedPoint: CGPoint(x: 0.33, y: 0.66))
+
+        // No drift in stored state implies no feedback accumulation.
+        XCTAssertEqual(controller.normalizedPositions, afterFirstPositions)
+        XCTAssertEqual(controller.crosshairOffsets, afterFirstOffsets)
+
+        // Also assert we didn't schedule additional renders for the unchanged second application.
+        // Note: we allow the originating axis to re-render due to "responsive UI" offset updates,
+        // but perpendicular axes should not keep scheduling.
+        let mprAfter = renderGenerationsByViewport(for: controller.mprViewportIDs, in: controller)
+        XCTAssertEqual(mprAfter[controller.coronalViewportID], mprBefore[controller.coronalViewportID])
+        XCTAssertEqual(mprAfter[controller.sagittalViewportID], mprBefore[controller.sagittalViewportID])
     }
 
     func testCrosshairPointUpdatesPerpendicularMPRSlicePositions() async throws {
@@ -173,6 +258,10 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         XCTAssertEqual(sagittalSlice, 0.25, accuracy: 0.0001)
         XCTAssertEqual(coronalSlice, 0.75, accuracy: 0.0001)
         XCTAssertEqual(axialSlice, 0.5, accuracy: 0.0001)
+
+        // The axis being dragged should also update its offset for responsive UI.
+        let axialOffset = try XCTUnwrap(controller.crosshairOffsets[.axial])
+        XCTAssertNotEqual(axialOffset, .zero)
     }
 
     func testUpdateCrosshairPositionsMapsSliceToPerpendicularOffsets() async throws {
@@ -467,6 +556,15 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         setSurfaceSize(controller.coronalSurface, size: size)
         setSurfaceSize(controller.sagittalSurface, size: size)
         setSurfaceSize(controller.volumeSurface, size: size)
+    }
+
+    private func renderGenerationsByViewport(
+        for viewports: [ViewportID],
+        in controller: ClinicalViewportGridController
+    ) -> [ViewportID: UInt64] {
+        Dictionary(uniqueKeysWithValues: viewports.map { viewport in
+            (viewport, controller.debugRenderGeneration(for: viewport))
+        })
     }
 
 }

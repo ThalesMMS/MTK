@@ -286,7 +286,7 @@ final class MTKRenderingEngineResourceTests: MTKRenderingEngineTestCase {
         XCTAssertEqual(presentedCount, 1)
     }
 
-    func test_renderErrorReleasesLease() async throws {
+    func test_renderPreflightErrorDoesNotAcquireLease() async throws {
         let viewport = try await engine.createViewport(
             ViewportDescriptor(type: .volume3D,
                                initialSize: CGSize(width: 32, height: 32))
@@ -306,8 +306,31 @@ final class MTKRenderingEngineResourceTests: MTKRenderingEngineTestCase {
         let releasedCount = await engine.debugOutputTextureLeaseReleasedCount
         let pendingLeaseCount = await engine.debugOutputTextureLeasePendingCount
         XCTAssertEqual(inUseCount, 0)
+        XCTAssertEqual(releasedCount, 0)
+        XCTAssertEqual(pendingLeaseCount, 0)
+    }
+
+    func test_renderErrorReleasesLease_postAcquireFailure() async throws {
+        let viewport = try await engine.createViewport(
+            ViewportDescriptor(type: .volume3D,
+                               initialSize: CGSize(width: 32, height: 32))
+        )
+        try await engine.setVolume(testDataset, for: viewport)
+        await engine.debugFailNextVolumeRenderAfterOutputLeaseAcquire()
+
+        await XCTAssertThrowsErrorAsync {
+            _ = try await self.engine.render(viewport)
+        }
+
+        let inUseCount = await engine.debugOutputPoolInUseCount
+        let releasedCount = await engine.debugOutputTextureLeaseReleasedCount
+        let pendingLeaseCount = await engine.debugOutputTextureLeasePendingCount
+        XCTAssertEqual(inUseCount, 0)
         XCTAssertEqual(releasedCount, 1)
         XCTAssertEqual(pendingLeaseCount, 0)
+
+        let retryFrame = try await engine.render(viewport)
+        retryFrame.outputTextureLease?.release()
     }
 
     func test_destroyViewportWithNoPendingFramesLeavesPoolClean() async throws {

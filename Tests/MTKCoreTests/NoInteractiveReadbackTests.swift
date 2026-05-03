@@ -18,6 +18,7 @@ import XCTest
 final class NoInteractiveReadbackTests: MTKRenderingEngineTestCase {
     override func setUp() async throws {
         try await super.setUp()
+        await engine.setProfilingOptions(.init(measureRenderTime: true))
         ClinicalProfiler.shared.reset()
     }
 
@@ -239,6 +240,50 @@ final class NoInteractiveReadbackTests: MTKRenderingEngineTestCase {
 
         XCTAssertEqual(violations, [],
                        "CGImage display path must not reappear in production code. Violations: \(violations.joined(separator: ", "))")
+    }
+
+    func test_mtkuiDoesNotReferenceCGImagePresentationSymbols() throws {
+        let productionSources = try scanProductionSources(in: "")
+
+        let mtkuiFiles = productionSources.keys
+            .filter { $0.hasPrefix("Sources/MTKUI/") }
+            .sorted()
+
+        let allowedBoundaryTokens = ["snapshot", "export", "readback", "debug"]
+        let forbiddenTokens = [
+            "UIImage",
+            "NSImage",
+            "CIImage",
+            "Image(uiImage:",
+            "Image(nsImage:"
+        ]
+
+        let violations = mtkuiFiles.filter { file in
+            guard let source = productionSources[file] else { return false }
+
+            let normalizedFile = file.lowercased()
+            if allowedBoundaryTokens.contains(where: normalizedFile.contains) {
+                return false
+            }
+
+            let containsForbiddenSymbol = forbiddenTokens.contains(where: source.contains)
+            if containsForbiddenSymbol {
+                return true
+            }
+
+            // `CGImage` references are allowed only behind explicit snapshot/export/readback/debug boundaries.
+            if source.contains("CGImage") {
+                return allowedBoundaryTokens.contains(where: source.lowercased().contains) == false
+            }
+
+            return false
+        }
+
+        XCTAssertEqual(
+            violations,
+            [],
+            "MTKUI must not reference CGImage/UIImage/NSImage presentation symbols outside snapshot/export/readback/debug boundaries. Violations: \(violations.joined(separator: ", "))"
+        )
     }
 }
 

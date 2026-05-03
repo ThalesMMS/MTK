@@ -192,4 +192,10 @@ private final class BridgedVolume: DICOMSeriesVolumeProtocol {
 
     /// Human-readable series description from DICOM metadata (0008,103E).
     var seriesDescription: String { volume.seriesDescription }
+
+    /// Imaging modality (e.g. "CT", "MR") from DICOM metadata (0008,0060).
+    var modality: String { volume.modality }
+
+    var windowCenter: Double? { volume.windowCenter }
+    var windowWidth: Double? { volume.windowWidth }
 }
