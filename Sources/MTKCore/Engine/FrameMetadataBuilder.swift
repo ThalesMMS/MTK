@@ -22,6 +22,7 @@ struct FrameMetadataBuilder {
         let route: RenderRoute
         let texture: any MTLTexture
         let mprFrame: MPRTextureFrame?
+        let labelmapOverlays: [MPRLabelmapOverlay]
         let outputTextureLease: OutputTextureLease?
         let renderDuration: CFAbsoluteTime?
         let raycastDuration: CFAbsoluteTime?
@@ -48,6 +49,7 @@ struct FrameMetadataBuilder {
             route: inputs.route,
             metadata: metadata,
             mprFrame: inputs.mprFrame,
+            labelmapOverlays: inputs.labelmapOverlays,
             outputTextureLease: inputs.outputTextureLease
         )
     }

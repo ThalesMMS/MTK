@@ -69,4 +69,5 @@ public struct VolumetricRendererState {
     public var toneCurves: [ToneCurveSnapshot] = []
     public var clipBounds: ClipBoundsSnapshot?
     public var clipPlane: ClipPlaneSnapshot?
+    public var clipping: VolumeClippingState = .disabled
 }

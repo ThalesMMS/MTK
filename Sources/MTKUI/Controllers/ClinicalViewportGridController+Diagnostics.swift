@@ -174,29 +174,7 @@ extension ClinicalViewportGridController {
     /// - Parameter transferFunction: The source transfer function whose sanitized colour and alpha points (and `shift`) are used to produce control points.
     /// - Returns: A VolumeTransferFunction whose colour control points use each sanitized colour point's RGBA components and whose opacity control points use each sanitized alpha point's alpha value; intensities are computed as `point.dataValue + transferFunction.shift`.
     static func volumeTransferFunction(from transferFunction: TransferFunction) -> VolumeTransferFunction {
-        let colourPoints = transferFunction
-            .sanitizedColourPoints()
-            .map { point in
-                VolumeTransferFunction.ColourControlPoint(
-                    intensity: point.dataValue + transferFunction.shift,
-                    colour: SIMD4<Float>(
-                        point.colourValue.r,
-                        point.colourValue.g,
-                        point.colourValue.b,
-                        point.colourValue.a
-                    )
-                )
-            }
-        let opacityPoints = transferFunction
-            .sanitizedAlphaPoints()
-            .map { point in
-                VolumeTransferFunction.OpacityControlPoint(
-                    intensity: point.dataValue + transferFunction.shift,
-                    opacity: point.alphaValue
-                )
-            }
-        return VolumeTransferFunction(opacityPoints: opacityPoints,
-                                      colourPoints: colourPoints)
+        transferFunction.volumeTransferFunction()
     }
 
 #if DEBUG

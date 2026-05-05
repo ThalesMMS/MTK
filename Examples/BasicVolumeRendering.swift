@@ -9,10 +9,10 @@ import SwiftUI
 import MTKCore
 import MTKUI
 
-/// Example purpose: minimal volume rendering setup and coordinator lifecycle.
+/// Example purpose: minimal volume rendering setup through the public 3D viewport contract.
 ///
 /// ADR concepts demonstrated:
-/// `VolumeDataset -> VolumeViewportCoordinator / VolumeViewportController ->
+/// `VolumeDataset -> VolumeViewport3D ->
 /// GPU upload -> MTKRenderingEngine render graph -> PresentationPass -> MTKView`.
 /// See `MTK/Architecture/ClinicalRenderingADR.md`.
 ///
@@ -20,15 +20,13 @@ import MTKUI
 /// presentation. This example does not use SceneKit, and `CGImage` is never a
 /// display surface. `CGImage` is allowed only at explicit export boundaries.
 struct BasicVolumeRenderingView: View {
-    @StateObject private var coordinator = VolumeViewportCoordinator.shared
+    @State private var viewport: VolumeViewport3D?
     @State private var didConfigureExample = false
 
     var body: some View {
         Group {
-            if let controller = coordinator.controller {
-                VolumeViewportContainer(controller: controller) {
-                    CrosshairOverlayView()
-                }
+            if let viewport {
+                MetalViewportView(surface: viewport.surface)
             } else {
                 ContentUnavailableView(
                     "Metal Not Available",
@@ -44,30 +42,31 @@ struct BasicVolumeRenderingView: View {
 
     @MainActor
     private func configureExampleIfNeeded() async {
-        guard coordinator.isMetalAvailable, !didConfigureExample else { return }
+        guard MetalRuntimeAvailability.isAvailable(), !didConfigureExample else { return }
         didConfigureExample = true
 
         // ADR stage 1: create a VolumeDataset from voxel payload + geometry metadata.
         let dataset = makeSampleDataset()
 
-        // ADR stage 2: hand the dataset to the viewport layer. The controller owns
-        // the Metal-native presentation surface; the dataset is uploaded before the
-        // render graph starts producing interactive frames for that MTKView.
-        coordinator.apply(dataset: dataset)
+        guard let viewport = try? VolumeViewport3D() else { return }
+        self.viewport = viewport
+
+        // ADR stage 2: hand the dataset to the public viewport contract. The
+        // viewport owns the Metal-native presentation surface; the dataset is
+        // uploaded before interactive frames are presented to that MTKView.
+        await viewport.applyDataset(dataset)
 
         // ADR stage 3: configure visualization state that propagates to the active
         // volume viewport before rendering.
-        coordinator.applyHuWindow(min: -160, max: 240)
-        coordinator.apply(
-            transferFunction: VolumeTransferFunctionLibrary.transferFunction(for: .ctSoftTissue)
+        await viewport.setWindowLevel(window: 400, level: 40)
+        try? await viewport.setTransferFunction(
+            VolumeTransferFunctionLibrary.transferFunction(for: .ctSoftTissue)
         )
 
-        // Camera state is configured through the controller API, not by manipulating
+        // Camera state is configured through the viewport API, not by manipulating
         // textures or attempting CGImage-based display shortcuts.
-        if let controller = coordinator.controller {
-            await controller.resetCamera()
-            await controller.dollyCamera(delta: -0.15)
-        }
+        await viewport.resetCamera()
+        await viewport.dollyCamera(delta: -0.15)
     }
 
     private func makeSampleDataset() -> VolumeDataset {
@@ -132,7 +131,7 @@ struct AvailabilityCheckExample: View {
 
  ```swift
  let snapshotExporter = TextureSnapshotExporter()
- let frame = try await coordinator.renderVolumeSnapshotFrame()
+ let frame = try await viewport.renderSnapshotFrame()
  try await snapshotExporter.writePNG(from: frame, to: url)
  ```
 

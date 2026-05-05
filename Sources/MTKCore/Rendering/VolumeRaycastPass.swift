@@ -262,7 +262,7 @@ final class VolumeRaycastPass: @unchecked Sendable {
                                                                   width: width,
                                                                   height: height,
                                                                   mipmapped: false)
-        descriptor.usage = [.shaderWrite, .shaderRead, .pixelFormatView]
+        descriptor.usage = [.shaderWrite, .shaderRead, .renderTarget, .pixelFormatView]
         descriptor.storageMode = .private
 
         guard let texture = device.makeTexture(descriptor: descriptor) else {

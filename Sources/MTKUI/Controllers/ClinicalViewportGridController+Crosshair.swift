@@ -8,6 +8,7 @@
 import CoreGraphics
 import Foundation
 import MTKCore
+import simd
 
 extension ClinicalViewportGridController {
     /// Compute normalized position updates for the two axes perpendicular to the given axis based on a screen point.
@@ -20,6 +21,31 @@ extension ClinicalViewportGridController {
     ///   - `.sagittal` -> `(.coronal, texture.x)`, `(.axial, texture.y)`
     func normalizedPositionUpdates(from point: CGPoint,
                                    in axis: MTKCore.Axis) -> [(MTKCore.Axis, Float)] {
+        if let dataset = currentDataset {
+            let planeAxis = planeAxis(for: axis)
+            let plane = MPRPlaneGeometryFactory.makePlane(
+                for: dataset,
+                axis: planeAxis,
+                slicePosition: normalizedPositions[axis] ?? 0.5
+            )
+            let displayTransform = displayTransform(for: plane, axis: axis)
+            let normalizedPoint = CGPoint(x: CGFloat(clampNormalized(Float(point.x))),
+                                          y: CGFloat(clampNormalized(Float(point.y))))
+            if let pick = try? VolumePicking.pickMPR(
+                screenPoint: normalizedPoint,
+                viewportSize: CGSize(width: 1, height: 1),
+                dataset: dataset,
+                plane: plane,
+                displayTransform: displayTransform,
+                axis: planeAxis,
+                layers: volumeLayers
+            ) {
+                return normalizedPositionUpdates(fromVoxel: pick.voxel.continuousIndex,
+                                                 dimensions: dataset.dimensions,
+                                                 in: axis)
+            }
+        }
+
         let x = clampNormalized(Float(point.x))
         let y = clampNormalized(Float(point.y))
         let texture = displayTransform(for: axis).textureCoordinates(forScreen: SIMD2<Float>(x, y))
@@ -31,6 +57,31 @@ extension ClinicalViewportGridController {
         case .sagittal:
             return [(.coronal, clampNormalized(texture.x)), (.axial, clampNormalized(texture.y))]
         }
+    }
+
+    func normalizedPositionUpdates(fromVoxel voxel: SIMD3<Float>,
+                                   dimensions: VolumeDimensions,
+                                   in axis: MTKCore.Axis) -> [(MTKCore.Axis, Float)] {
+        let sagittal = normalizedPosition(forContinuousVoxelComponent: voxel.x,
+                                          count: dimensions.width)
+        let coronal = normalizedPosition(forContinuousVoxelComponent: voxel.y,
+                                         count: dimensions.height)
+        let axial = normalizedPosition(forContinuousVoxelComponent: voxel.z,
+                                       count: dimensions.depth)
+        switch axis {
+        case .axial:
+            return [(.sagittal, sagittal), (.coronal, coronal)]
+        case .coronal:
+            return [(.sagittal, sagittal), (.axial, axial)]
+        case .sagittal:
+            return [(.coronal, coronal), (.axial, axial)]
+        }
+    }
+
+    func normalizedPosition(forContinuousVoxelComponent component: Float,
+                            count: Int) -> Float {
+        guard count > 1 else { return 0 }
+        return clampNormalized(component / Float(count - 1))
     }
 
     /// Update the stored normalized position for the given axis if the clamped value differs from the current value.

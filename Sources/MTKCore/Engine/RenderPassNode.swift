@@ -7,14 +7,14 @@
 
 import Foundation
 
-public enum RenderPassKind: Hashable, Sendable {
+package enum RenderPassKind: Hashable, Sendable {
     case volumeRaycast
     case mprReslice
     case presentation
     case mprPresentation
     case overlay
 
-    public var profilingName: String {
+    package var profilingName: String {
         switch self {
         case .volumeRaycast:
             return "volumeRaycast"
@@ -30,7 +30,7 @@ public enum RenderPassKind: Hashable, Sendable {
     }
 }
 
-public enum RenderNodeDependency: Hashable, Sendable {
+package enum RenderNodeDependency: Hashable, Sendable {
     case volumeTexture
     case transferTexture
     case outputTexture
@@ -38,13 +38,13 @@ public enum RenderNodeDependency: Hashable, Sendable {
     case overlayInputs
 }
 
-public struct RenderPassNode: Equatable, Hashable, Sendable {
-    public var kind: RenderPassKind
-    public var compositing: VolumeRenderRequest.Compositing?
-    public var axis: Axis?
-    public var inputDependencies: [RenderNodeDependency]
+package struct RenderPassNode: Equatable, Hashable, Sendable {
+    package var kind: RenderPassKind
+    package var compositing: VolumeRenderRequest.Compositing?
+    package var axis: Axis?
+    package var inputDependencies: [RenderNodeDependency]
 
-    public init(kind: RenderPassKind,
+    package init(kind: RenderPassKind,
                 compositing: VolumeRenderRequest.Compositing? = nil,
                 axis: Axis? = nil,
                 inputDependencies: [RenderNodeDependency]) {
@@ -54,7 +54,7 @@ public struct RenderPassNode: Equatable, Hashable, Sendable {
         self.inputDependencies = inputDependencies
     }
 
-    public var profilingName: String {
+    package var profilingName: String {
         switch kind {
         case .volumeRaycast:
             return "volumeRaycast.\(compositing?.profilingName ?? "unknown")"

@@ -125,6 +125,7 @@ final class TransferFunctionCache {
         transfer.maximumValue = max(minimum, maximum)
         transfer.shift = 0
         transfer.colorSpace = .linear
+        transfer.gradientOpacity = function.gradientOpacity
         transfer.colourPoints = function.colourPoints.map { point in
             TransferFunction.ColorPoint(
                 dataValue: point.intensity,

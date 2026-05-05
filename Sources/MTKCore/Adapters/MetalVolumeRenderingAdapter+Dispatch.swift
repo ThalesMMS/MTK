@@ -106,6 +106,86 @@ extension MetalVolumeRenderingAdapter {
                                  metadata: metadata)
     }
 
+    func renderLayerStackWithMetal(state: MetalState,
+                                   request: VolumeRenderRequest) async throws -> VolumeRenderFrame {
+        let layers = try request.visibleScalarLayersForRendering()
+        guard let firstLayer = layers.first,
+              let firstScalar = firstLayer.scalarVolume else {
+            return try await renderWithMetal(state: state, request: request)
+        }
+
+        let viewport = VolumetricMath.clampViewportSize(request.viewportSize)
+        guard viewport.width > 0, viewport.height > 0 else {
+            throw RenderingError.outputTextureUnavailable
+        }
+
+        let baseRequest = request.replacingPrimaryVolume(with: firstLayer,
+                                                         scalarVolume: firstScalar)
+        var currentFrame = try await renderWithMetal(
+            state: state,
+            request: baseRequest,
+            outputTexture: makeStandaloneOutputTexture(width: viewport.width,
+                                                       height: viewport.height,
+                                                       device: state.device)
+        )
+        let compositePass = try VolumeLayerCompositePass(device: state.device)
+
+        for layer in layers.dropFirst() {
+            guard let scalar = layer.scalarVolume else { continue }
+            let overlayRequest = request.replacingPrimaryVolume(with: layer,
+                                                                scalarVolume: scalar)
+            let overlayFrame = try await renderWithMetal(
+                state: state,
+                request: overlayRequest,
+                outputTexture: makeStandaloneOutputTexture(width: viewport.width,
+                                                           height: viewport.height,
+                                                           device: state.device)
+            )
+            let destinationTexture = try makeStandaloneOutputTexture(width: viewport.width,
+                                                                     height: viewport.height,
+                                                                     device: state.device)
+            try await compositePass.composite(baseTexture: currentFrame.texture,
+                                             overlayTexture: overlayFrame.texture,
+                                             destinationTexture: destinationTexture,
+                                             overlayOpacity: layer.clampedOpacity,
+                                             blendMode: layer.blendMode,
+                                             commandQueue: state.commandQueue)
+            currentFrame = VolumeRenderFrame(
+                texture: destinationTexture,
+                metadata: VolumeRenderFrame.Metadata(
+                    viewportSize: currentFrame.metadata.viewportSize,
+                    samplingDistance: request.samplingDistance,
+                    compositing: request.compositing,
+                    quality: request.quality,
+                    pixelFormat: destinationTexture.pixelFormat
+                )
+            )
+        }
+
+        ClinicalProfiler.shared.recordSample(
+            stage: .volumeRaycast,
+            cpuTime: 0,
+            memory: layers.reduce(0) { total, layer in
+                total + ResourceMemoryEstimator.estimate(for: layer.scalarVolume?.dataset ?? request.dataset)
+            },
+            viewport: ProfilingViewportContext(
+                width: viewport.width,
+                height: viewport.height,
+                viewportType: "volume3D",
+                quality: request.quality,
+                renderMode: request.compositing
+            ),
+            metadata: [
+                "path": "MetalVolumeRenderingAdapter.renderLayerStackWithMetal",
+                "layerCount": String(layers.count),
+                "layerIDs": layers.map(\.id).joined(separator: ",")
+            ],
+            device: state.device
+        )
+
+        return currentFrame
+    }
+
     func makeStandaloneOutputTexture(width: Int,
                                      height: Int,
                                      device: any MTLDevice) throws -> any MTLTexture {
@@ -117,7 +197,7 @@ extension MetalVolumeRenderingAdapter {
                                                                   width: width,
                                                                   height: height,
                                                                   mipmapped: false)
-        descriptor.usage = [.shaderWrite, .shaderRead, .pixelFormatView]
+        descriptor.usage = [.shaderWrite, .shaderRead, .renderTarget, .pixelFormatView]
         descriptor.storageMode = .private
 
         guard let texture = device.makeTexture(descriptor: descriptor) else {
@@ -143,6 +223,7 @@ extension MetalVolumeRenderingAdapter {
             effectiveRequest.samplingDistance = samplingDistance
         }
 
+        effectiveRequest = try applyCompatibilityClippingIfNeeded(to: effectiveRequest)
         let window = try resolveWindow(for: effectiveRequest.dataset)
         let frame = try await renderWithSharedVolumeTexture(using: effectiveRequest,
                                                             volumeTexture: volumeTexture,
@@ -153,4 +234,62 @@ extension MetalVolumeRenderingAdapter {
         return frame
     }
 
+}
+
+extension VolumeRenderRequest {
+    func visibleScalarLayersForRendering() throws -> [VolumeLayer] {
+        var layers: [VolumeLayer] = []
+        for layer in self.layers {
+            guard layer.isVisible,
+                  layer.clampedOpacity > 0,
+                  layer.scalarVolume != nil else {
+                continue
+            }
+            guard layer.baseWorldToLayerWorld.isApproximatelyIdentity else {
+                throw MetalVolumeRenderingAdapter.AdapterError.unsupportedScalarLayerTransform(layer.id)
+            }
+            layers.append(layer)
+        }
+        if layers.isEmpty {
+            layers.append(
+                VolumeLayer(id: Self.primaryVolumeLayerID,
+                            dataset: dataset,
+                            transferFunction: transferFunction)
+            )
+        }
+        return layers
+    }
+
+    func replacingPrimaryVolume(with layer: VolumeLayer,
+                                scalarVolume: ScalarVolumeLayer) -> VolumeRenderRequest {
+        var request = self
+        request.dataset = scalarVolume.dataset
+        request.transferFunction = scalarVolume.transferFunction
+        request.layers = [layer]
+        return request
+    }
+}
+
+private extension simd_float4x4 {
+    var isApproximatelyIdentity: Bool {
+        isApproximatelyEqual(to: matrix_identity_float4x4, tolerance: 1e-5)
+    }
+
+    func isApproximatelyEqual(to other: simd_float4x4,
+                              tolerance: Float) -> Bool {
+        columns.0.isApproximatelyEqual(to: other.columns.0, tolerance: tolerance) &&
+            columns.1.isApproximatelyEqual(to: other.columns.1, tolerance: tolerance) &&
+            columns.2.isApproximatelyEqual(to: other.columns.2, tolerance: tolerance) &&
+            columns.3.isApproximatelyEqual(to: other.columns.3, tolerance: tolerance)
+    }
+}
+
+private extension SIMD4 where Scalar == Float {
+    func isApproximatelyEqual(to other: SIMD4<Float>,
+                              tolerance: Float) -> Bool {
+        abs(x - other.x) <= tolerance &&
+            abs(y - other.y) <= tolerance &&
+            abs(z - other.z) <= tolerance &&
+            abs(w - other.w) <= tolerance
+    }
 }

@@ -219,6 +219,56 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         XCTAssertEqual(controller.crosshairOffsets, beforeOffsets)
     }
 
+    func testVolumeLayerControlsSyncToEngineAndScheduleOnlyMPRViewports() async throws {
+        let controller = try await makeController()
+        try await controller.applyDataset(makeDataset())
+        let layer = try makeLabelmapLayer()
+        let mprBefore = controller.mprViewportIDs.map { controller.debugRenderGeneration(for: $0) }
+        let volumeBefore = controller.debugRenderGeneration(for: controller.volumeViewportID)
+
+        await controller.setVolumeLayers([layer])
+
+        let axialLayers = await controller.engine.debugVolumeLayers(for: controller.axialViewportID)
+        XCTAssertEqual(axialLayers, [layer])
+        XCTAssertEqual(controller.volumeLayers, [layer])
+        XCTAssertTrue(zip(controller.mprViewportIDs, mprBefore).allSatisfy { pair in
+            controller.debugRenderGeneration(for: pair.0) > pair.1
+        })
+        XCTAssertEqual(controller.debugRenderGeneration(for: controller.volumeViewportID), volumeBefore)
+
+        await controller.setVolumeLayerVisibility(id: layer.id, isVisible: false)
+        XCTAssertEqual(controller.volumeLayers.first?.isVisible, false)
+        await controller.setVolumeLayerOpacity(id: layer.id, opacity: 0.25)
+        XCTAssertEqual(controller.volumeLayers.first?.opacity, 0.25)
+    }
+
+    func testSurfaceMeshLayerControlsSyncToVolumeViewportOnly() async throws {
+        let controller = try await makeController()
+        try await controller.applyDataset(makeDataset())
+        let layer = makeSurfaceMeshLayer()
+        let mprBefore = controller.mprViewportIDs.map { controller.debugRenderGeneration(for: $0) }
+        let volumeBefore = controller.debugRenderGeneration(for: controller.volumeViewportID)
+
+        await controller.setSurfaceMeshLayers([layer])
+
+        let volumeLayers = await controller.engine.debugSurfaceMeshLayers(for: controller.volumeViewportID)
+        XCTAssertEqual(volumeLayers, [layer])
+        XCTAssertEqual(controller.surfaceMeshLayers, [layer])
+        for viewportID in controller.mprViewportIDs {
+            let mprSurfaceLayers = await controller.engine.debugSurfaceMeshLayers(for: viewportID)
+            XCTAssertEqual(mprSurfaceLayers, [])
+        }
+        XCTAssertTrue(zip(controller.mprViewportIDs, mprBefore).allSatisfy { pair in
+            controller.debugRenderGeneration(for: pair.0) == pair.1
+        })
+        XCTAssertGreaterThan(controller.debugRenderGeneration(for: controller.volumeViewportID), volumeBefore)
+
+        await controller.setSurfaceMeshLayerVisibility(id: layer.id, isVisible: false)
+        XCTAssertEqual(controller.surfaceMeshLayers.first?.isVisible, false)
+        await controller.setSurfaceMeshLayerOpacity(id: layer.id, opacity: 0.25)
+        XCTAssertEqual(controller.surfaceMeshLayers.first?.opacity, 0.25)
+    }
+
     func testCrosshairPointUpdateIsDeterministicAndDoesNotFeedback() async throws {
         let controller = try await makeController()
         try await controller.applyDataset(makeDataset())
@@ -262,6 +312,124 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         // The axis being dragged should also update its offset for responsive UI.
         let axialOffset = try XCTUnwrap(controller.crosshairOffsets[.axial])
         XCTAssertNotEqual(axialOffset, .zero)
+    }
+
+    func testCrosshairPointUsesPickingVoxelCoordinatesForSliceUpdates() async throws {
+        let controller = try await makeController()
+        let dataset = makePickingDataset(dimensions: VolumeDimensions(width: 5, height: 7, depth: 9))
+        try await controller.applyDataset(dataset)
+
+        let targetUV = SIMD2<Float>(1.0 / 4.0, 4.0 / 6.0)
+        let screenPoint = controller.displayTransform(for: .axial).screenCoordinates(forTexture: targetUV)
+        await controller.setCrosshair(in: .axial,
+                                      normalizedPoint: CGPoint(x: CGFloat(screenPoint.x),
+                                                               y: CGFloat(screenPoint.y)))
+
+        let sagittalSliceValue = await controller.engine.debugSlicePosition(for: controller.sagittalViewportID)
+        let coronalSliceValue = await controller.engine.debugSlicePosition(for: controller.coronalViewportID)
+        let sagittalSlice = try XCTUnwrap(sagittalSliceValue)
+        let coronalSlice = try XCTUnwrap(coronalSliceValue)
+        XCTAssertEqual(sagittalSlice, 1.0 / 4.0, accuracy: 0.0001)
+        XCTAssertEqual(coronalSlice, 4.0 / 6.0, accuracy: 0.0001)
+    }
+
+    func testClinicalSessionPickReturnsIntensityAndLabelForMPRViewport() async throws {
+        let controller = try await makeController()
+        setSurfaceSize(controller.axialSurface, size: CGSize(width: 100, height: 100))
+        let dataset = makePickingDataset(dimensions: VolumeDimensions(width: 4, height: 4, depth: 4))
+        try await controller.applyDataset(dataset)
+        await controller.setSlicePosition(axis: .axial, normalizedPosition: 2.0 / 3.0)
+        await controller.setVolumeLayers([try makeTargetLabelmapLayer(label: 9,
+                                                                       target: SIMD3<Int32>(1, 2, 2),
+                                                                       baseDataset: dataset)])
+
+        let session = ClinicalViewportSession(controller: controller)
+        let targetUV = SIMD2<Float>(1.0 / 3.0, 2.0 / 3.0)
+        let screenPoint = controller.displayTransform(for: .axial).screenCoordinates(forTexture: targetUV)
+        let viewportSize = controller.drawableSize(for: .axial)
+        let pick = try session.pick(
+            in: controller.axialViewportID,
+            screenPoint: CGPoint(x: CGFloat(screenPoint.x) * viewportSize.width,
+                                 y: CGFloat(screenPoint.y) * viewportSize.height)
+        )
+
+        XCTAssertEqual(pick.hitKind, .mprPlane(.z))
+        XCTAssertEqual(pick.voxel.index, SIMD3<Int32>(1, 2, 2))
+        XCTAssertEqual(pick.intensity.storedScalar, 221)
+        XCTAssertEqual(pick.label?.label, 9)
+    }
+
+    func testDicomGeometryCrosshairClicksSynchronizePerpendicularMPRAxes() async throws {
+        let controller = try await makeController()
+        let dataset = makeDicomPickingDataset()
+        let target = dicomPickingTarget
+        try await controller.applyDataset(dataset)
+
+        for axis in MTKCore.Axis.allCases {
+            await controller.setSlicePosition(axis: axis,
+                                              normalizedPosition: normalizedPosition(for: axis,
+                                                                                     target: target,
+                                                                                     dimensions: dataset.dimensions))
+            let screenPoint = try mprScreenPoint(for: target,
+                                                 axis: axis,
+                                                 dataset: dataset,
+                                                 controller: controller,
+                                                 viewportSize: CGSize(width: 1, height: 1))
+
+            await controller.setCrosshair(in: axis, normalizedPoint: screenPoint)
+
+            for affectedAxis in controller.perpendicularAxes(to: axis) {
+                let actual = try XCTUnwrap(controller.normalizedPositions[affectedAxis])
+                XCTAssertEqual(actual,
+                               normalizedPosition(for: affectedAxis,
+                                                  target: target,
+                                                  dimensions: dataset.dimensions),
+                               accuracy: 0.0001,
+                               "\(axis) click should update \(affectedAxis)")
+            }
+        }
+    }
+
+    func testClinicalSessionPickUsesDicomGeometryAfterResizeWindowAndTransferChanges() async throws {
+        let controller = try await makeController()
+        setMPRSurfaceSizes(controller, size: CGSize(width: 100, height: 100))
+        let dataset = makeDicomPickingDataset()
+        let target = dicomPickingTarget
+        try await controller.applyDataset(dataset)
+        await controller.setVolumeLayers([try makeTargetLabelmapLayer(label: 13,
+                                                                       target: target,
+                                                                       baseDataset: dataset)])
+        let session = ClinicalViewportSession(controller: controller)
+
+        let before = try await pickDicomTarget(axis: .axial,
+                                               target: target,
+                                               dataset: dataset,
+                                               controller: controller,
+                                               session: session)
+
+        await controller.setMPRWindowLevel(window: 80, level: 40)
+        try await controller.setTransferFunction(TransferFunction())
+        setMPRSurfaceSizes(controller, size: CGSize(width: 180, height: 120))
+
+        for axis in MTKCore.Axis.allCases {
+            let pick = try await pickDicomTarget(axis: axis,
+                                                 target: target,
+                                                 dataset: dataset,
+                                                 controller: controller,
+                                                 session: session)
+
+            XCTAssertEqual(pick.voxel.index, target, "\(axis)")
+            XCTAssertEqual(pick.intensity.storedScalar, before.intensity.storedScalar, "\(axis)")
+            XCTAssertEqual(pick.intensity.hounsfieldUnits,
+                           before.intensity.hounsfieldUnits,
+                           accuracy: 0.0001,
+                           "\(axis)")
+            XCTAssertEqual(pick.label?.label, 13, "\(axis)")
+            assertVector(pick.worldPoint,
+                         dataset.worldPoint(for: target),
+                         accuracy: 0.0001,
+                         "patient coordinate mismatch for \(axis)")
+        }
     }
 
     func testUpdateCrosshairPositionsMapsSliceToPerpendicularOffsets() async throws {
@@ -538,6 +706,184 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         )
     }
 
+    private func makeLabelmapLayer() throws -> VolumeLayer {
+        let dimensions = VolumeDimensions(width: 4, height: 4, depth: 4)
+        let values = [UInt16](repeating: 1, count: dimensions.voxelCount)
+        let dataset = VolumeDataset(
+            data: values.withUnsafeBytes { Data($0) },
+            dimensions: dimensions,
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+            pixelFormat: .int16Unsigned,
+            intensityRange: 0...1
+        )
+        let labelmap = try LabelmapVolume(
+            dataset: dataset,
+            segments: [LabelmapSegment(label: 1, color: SIMD4<Float>(1, 0, 0, 1))]
+        )
+        return VolumeLayer(id: "ui-grid-layer",
+                           labelmap: labelmap,
+                           opacity: 0.5)
+    }
+
+    private func makeSurfaceMeshLayer() -> SurfaceMeshLayer {
+        let mesh = SurfaceMesh(
+            id: "ui-grid-surface-mesh",
+            vertices: [
+                SIMD3<Float>(0.2, 0.2, 0.5),
+                SIMD3<Float>(0.8, 0.2, 0.5),
+                SIMD3<Float>(0.5, 0.8, 0.5)
+            ],
+            normals: [
+                SIMD3<Float>(0, 0, 1),
+                SIMD3<Float>(0, 0, 1),
+                SIMD3<Float>(0, 0, 1)
+            ],
+            indices: [0, 1, 2],
+            coordinateSpace: .textureNormalized
+        )
+        return SurfaceMeshLayer(id: "ui-grid-surface-layer",
+                                mesh: mesh,
+                                material: SurfaceMeshMaterial(color: SIMD4<Float>(1, 0, 0, 1)),
+                                opacity: 0.5)
+    }
+
+    private func makeTargetLabelmapLayer(label: UInt16,
+                                         target: SIMD3<Int32>,
+                                         baseDataset: VolumeDataset) throws -> VolumeLayer {
+        let dimensions = baseDataset.dimensions
+        var values = [UInt16](repeating: 0, count: dimensions.voxelCount)
+        let index = Int(target.z) * dimensions.width * dimensions.height
+            + Int(target.y) * dimensions.width
+            + Int(target.x)
+        values[index] = label
+        let dataset = VolumeDataset(
+            data: values.withUnsafeBytes { Data($0) },
+            dimensions: dimensions,
+            spacing: baseDataset.spacing,
+            pixelFormat: .int16Unsigned,
+            intensityRange: 0...Int32(label),
+            orientation: baseDataset.orientation
+        )
+        let labelmap = try LabelmapVolume(
+            dataset: dataset,
+            segments: [LabelmapSegment(label: label, color: SIMD4<Float>(1, 0, 0, 1))]
+        )
+        return VolumeLayer(id: "target-label",
+                           labelmap: labelmap,
+                           opacity: 1)
+    }
+
+    private func makePickingDataset(dimensions: VolumeDimensions) -> VolumeDataset {
+        var values: [Int16] = []
+        values.reserveCapacity(dimensions.voxelCount)
+        for z in 0..<dimensions.depth {
+            for y in 0..<dimensions.height {
+                for x in 0..<dimensions.width {
+                    values.append(Int16(x + y * 10 + z * 100))
+                }
+            }
+        }
+        return VolumeDataset(
+            data: values.withUnsafeBytes { Data($0) },
+            dimensions: dimensions,
+            spacing: VolumeSpacing(x: 0.8, y: 1.2, z: 2.4),
+            pixelFormat: .int16Signed,
+            intensityRange: 0...900,
+            recommendedWindow: 0...900
+        )
+    }
+
+    private var dicomPickingTarget: SIMD3<Int32> {
+        SIMD3<Int32>(2, 3, 4)
+    }
+
+    private func makeDicomPickingDataset() -> VolumeDataset {
+        let dimensions = VolumeDimensions(width: 5, height: 6, depth: 7)
+        var values: [Int16] = []
+        values.reserveCapacity(dimensions.voxelCount)
+        for z in 0..<dimensions.depth {
+            for y in 0..<dimensions.height {
+                for x in 0..<dimensions.width {
+                    values.append(Int16(x + y * 10 + z * 100))
+                }
+            }
+        }
+
+        return VolumeDataset(
+            data: values.withUnsafeBytes { Data($0) },
+            dimensions: dimensions,
+            spacing: VolumeSpacing(x: 0.8, y: 1.2, z: 2.4),
+            pixelFormat: .int16Signed,
+            intensityRange: 0...900,
+            orientation: VolumeOrientation(row: SIMD3<Float>(1, 0, 0),
+                                           column: SIMD3<Float>(0, -1, 0),
+                                           origin: SIMD3<Float>(10, -20, 5)),
+            recommendedWindow: 0...900,
+            clinicalMetadata: ClinicalImageMetadata(modality: "CT",
+                                                    seriesDescription: "DICOM oriented picking fixture",
+                                                    rescaleSlope: 1,
+                                                    rescaleIntercept: -1024,
+                                                    sourcePixelFormat: .int16Signed)
+        )
+    }
+
+    private func pickDicomTarget(axis: MTKCore.Axis,
+                                 target: SIMD3<Int32>,
+                                 dataset: VolumeDataset,
+                                 controller: ClinicalViewportGridController,
+                                 session: ClinicalViewportSession) async throws -> VolumePickResult {
+        await controller.setSlicePosition(axis: axis,
+                                          normalizedPosition: normalizedPosition(for: axis,
+                                                                                 target: target,
+                                                                                 dimensions: dataset.dimensions))
+        let screenPoint = try mprScreenPoint(for: target,
+                                             axis: axis,
+                                             dataset: dataset,
+                                             controller: controller,
+                                             viewportSize: controller.drawableSize(for: axis))
+        return try session.pick(in: controller.viewportID(for: axis),
+                                screenPoint: screenPoint)
+    }
+
+    private func mprScreenPoint(for target: SIMD3<Int32>,
+                                axis: MTKCore.Axis,
+                                dataset: VolumeDataset,
+                                controller: ClinicalViewportGridController,
+                                viewportSize: CGSize) throws -> CGPoint {
+        let planeAxis = controller.planeAxis(for: axis)
+        let plane = MPRPlaneGeometryFactory.makePlane(
+            for: dataset,
+            axis: planeAxis,
+            slicePosition: normalizedPosition(for: axis,
+                                              target: target,
+                                              dimensions: dataset.dimensions)
+        )
+        let screen = try VolumePicking.screenPoint(forWorldPoint: dataset.worldPoint(for: target),
+                                                   dataset: dataset,
+                                                   plane: plane,
+                                                   displayTransform: controller.displayTransform(for: plane, axis: axis),
+                                                   viewportSize: viewportSize)
+        return screen.screenPoint
+    }
+
+    private func normalizedPosition(for axis: MTKCore.Axis,
+                                    target: SIMD3<Int32>,
+                                    dimensions: VolumeDimensions) -> Float {
+        switch axis {
+        case .axial:
+            return normalizedPosition(component: target.z, count: dimensions.depth)
+        case .coronal:
+            return normalizedPosition(component: target.y, count: dimensions.height)
+        case .sagittal:
+            return normalizedPosition(component: target.x, count: dimensions.width)
+        }
+    }
+
+    private func normalizedPosition(component: Int32, count: Int) -> Float {
+        guard count > 1 else { return 0 }
+        return Float(component) / Float(count - 1)
+    }
+
     private func makeSyntheticDataset() -> VolumeDataset {
         VolumeRenderRegressionFixture.dataset()
     }
@@ -549,6 +895,12 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
     private func setSurfaceSize(_ surface: MetalViewportSurface, size: CGSize) {
         surface.view.frame = CGRect(origin: .zero, size: size)
         surface.setContentScale(1)
+    }
+
+    private func setMPRSurfaceSizes(_ controller: ClinicalViewportGridController, size: CGSize) {
+        setSurfaceSize(controller.axialSurface, size: size)
+        setSurfaceSize(controller.coronalSurface, size: size)
+        setSurfaceSize(controller.sagittalSurface, size: size)
     }
 
     private func setSnapshotSurfaceSizes(_ controller: ClinicalViewportGridController, size: CGSize) {
@@ -567,4 +919,23 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         })
     }
 
+}
+
+private extension VolumeDataset {
+    func worldPoint(for index: SIMD3<Int32>) -> SIMD3<Float> {
+        imageData.indexToWorld.transformPoint(SIMD3<Float>(Float(index.x),
+                                                           Float(index.y),
+                                                           Float(index.z)))
+    }
+}
+
+private func assertVector(_ actual: SIMD3<Float>,
+                          _ expected: SIMD3<Float>,
+                          accuracy: Float,
+                          _ message: String = "",
+                          file: StaticString = #filePath,
+                          line: UInt = #line) {
+    XCTAssertEqual(actual.x, expected.x, accuracy: accuracy, message, file: file, line: line)
+    XCTAssertEqual(actual.y, expected.y, accuracy: accuracy, message, file: file, line: line)
+    XCTAssertEqual(actual.z, expected.z, accuracy: accuracy, message, file: file, line: line)
 }

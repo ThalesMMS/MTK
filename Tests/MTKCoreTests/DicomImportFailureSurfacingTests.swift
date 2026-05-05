@@ -1,12 +1,11 @@
 import simd
 import XCTest
 
-import DicomCore
 @testable import MTKCore
 
 final class DicomImportFailureSurfacingTests: XCTestCase {
     func test_loadVolume_failsWithUnsupportedTransferSyntaxError() throws {
-        let loader = DicomVolumeLoader(seriesLoader: ErrorSeriesLoader(error: DicomSeriesLoaderError.unsupportedTransferSyntax("1.2.840.10008.1.2.4.90")))
+        let loader = DicomVolumeLoader(seriesLoader: ErrorSeriesLoader(error: DicomVolumeLoaderError.unsupportedTransferSyntax(uid: "1.2.840.10008.1.2.4.90")))
 
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -29,7 +28,7 @@ final class DicomImportFailureSurfacingTests: XCTestCase {
     }
 
     func test_loadVolume_failsWithUnsupportedPixelDataError() throws {
-        let loader = DicomVolumeLoader(seriesLoader: ErrorSeriesLoader(error: DicomSeriesLoaderError.unsupportedSamplesPerPixel(3)))
+        let loader = DicomVolumeLoader(seriesLoader: ErrorSeriesLoader(error: DicomVolumeLoaderError.unsupportedPixelData(reason: "Unsupported samples per pixel: 3")))
 
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -52,7 +51,7 @@ final class DicomImportFailureSurfacingTests: XCTestCase {
     }
 
     func test_loadVolume_failsWithDuplicateSlicePositionError() throws {
-        let loader = DicomVolumeLoader(seriesLoader: ErrorSeriesLoader(error: DicomSeriesLoaderError.duplicateSlicePosition))
+        let loader = DicomVolumeLoader(seriesLoader: ErrorSeriesLoader(error: DicomVolumeLoaderError.duplicateSlicePosition))
 
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -74,7 +73,7 @@ final class DicomImportFailureSurfacingTests: XCTestCase {
     }
 
     func test_loadVolume_failsWithVariableSliceSpacingError() throws {
-        let loader = DicomVolumeLoader(seriesLoader: ErrorSeriesLoader(error: DicomSeriesLoaderError.variableSliceSpacing(median: 1.0, maxDeviation: 0.35)))
+        let loader = DicomVolumeLoader(seriesLoader: ErrorSeriesLoader(error: DicomVolumeLoaderError.variableSliceSpacing(median: 1.0, maxDeviation: 0.35)))
 
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

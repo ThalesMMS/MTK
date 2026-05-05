@@ -1,6 +1,7 @@
 import CoreGraphics
 import Metal
 import XCTest
+import simd
 
 @_spi(Testing) @testable import MTKCore
 
@@ -112,6 +113,89 @@ final class MTKRenderingEngineResourceTests: MTKRenderingEngineTestCase {
         XCTAssertEqual(debugBreakdown, metrics.breakdown)
         XCTAssertEqual(debugOutputPoolTextureCount, 0)
         XCTAssertEqual(debugOutputPoolInUseCount, 0)
+    }
+
+    func test_scalarVolumeLayerAssignedToMultipleViewportsSharesOneHandleAndTexture() async throws {
+        let first = try await engine.createViewport(
+            ViewportDescriptor(type: .volume3D,
+                               initialSize: CGSize(width: 32, height: 32))
+        )
+        let second = try await engine.createViewport(
+            ViewportDescriptor(type: .volume3D,
+                               initialSize: CGSize(width: 32, height: 32))
+        )
+        let petDataset = VolumeDatasetTestFactory.makeTestDataset(
+            dimensions: testDataset.dimensions,
+            pixelFormat: .int16Signed,
+            seed: 42
+        )
+        let petLayer = VolumeLayer(id: "pet",
+                                   dataset: petDataset,
+                                   transferFunction: .defaultGrayscale(for: petDataset),
+                                   opacity: 0.5,
+                                   blendMode: .additive)
+
+        try await engine.setVolume(testDataset, for: [first, second])
+        try await engine.configure([first, second], volumeLayers: [petLayer])
+
+        let diagnostics = await engine.volumeLayerResourceSharingDiagnostics(for: [first, second])
+        let metrics = await engine.resourceMetrics()
+        let textureCount = await engine.debugResourceTextureCount
+        let referenceCount = await engine.debugResourceReferenceCount
+
+        XCTAssertEqual(diagnostics.count, 2)
+        XCTAssertEqual(Set(diagnostics.map(\.handle)).count, 1)
+        XCTAssertEqual(Set(diagnostics.map(\.textureObjectIdentifier)).count, 1)
+        XCTAssertEqual(textureCount, 2)
+        XCTAssertEqual(referenceCount, 4)
+        XCTAssertEqual(metrics.volumeTextureCount, 2)
+        XCTAssertEqual(metrics.breakdown.volumeTextures,
+                       ResourceMemoryEstimator.estimate(for: testDataset) +
+                       ResourceMemoryEstimator.estimate(for: petDataset))
+
+        try await engine.configure([first, second], volumeLayers: [])
+        let releasedDiagnostics = await engine.volumeLayerResourceSharingDiagnostics(for: [first, second])
+        let releasedMetrics = await engine.resourceMetrics()
+        let releasedTextureCount = await engine.debugResourceTextureCount
+        let releasedReferenceCount = await engine.debugResourceReferenceCount
+        XCTAssertTrue(releasedDiagnostics.isEmpty)
+        XCTAssertEqual(releasedTextureCount, 1)
+        XCTAssertEqual(releasedReferenceCount, 2)
+        XCTAssertEqual(releasedMetrics.volumeTextureCount, 1)
+    }
+
+    func test_nonIdentityScalarVolumeLayerTransformIsRejectedBeforeResourceAcquisition() async throws {
+        let viewport = try await engine.createViewport(
+            ViewportDescriptor(type: .volume3D,
+                               initialSize: CGSize(width: 32, height: 32))
+        )
+        let petDataset = VolumeDatasetTestFactory.makeTestDataset(
+            dimensions: testDataset.dimensions,
+            pixelFormat: .int16Signed,
+            seed: 42
+        )
+        var transform = matrix_identity_float4x4
+        transform.columns.3.x = 8
+        let petLayer = VolumeLayer(id: "translated-pet",
+                                   dataset: petDataset,
+                                   transferFunction: .defaultGrayscale(for: petDataset),
+                                   baseWorldToLayerWorld: transform)
+
+        try await engine.setVolume(testDataset, for: viewport)
+
+        do {
+            try await engine.configure(viewport, volumeLayers: [petLayer])
+            XCTFail("Expected non-identity scalar transform to be rejected")
+        } catch let error as MTKRenderingEngine.EngineError {
+            XCTAssertEqual(error, .unsupportedScalarLayerTransform("translated-pet"))
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        let textureCount = await engine.debugResourceTextureCount
+        let diagnostics = await engine.volumeLayerResourceSharingDiagnostics(for: [viewport])
+        XCTAssertEqual(textureCount, 1)
+        XCTAssertTrue(diagnostics.isEmpty)
     }
 
     func test_replacingDataset_invalidatesPreviousTextureForViewport() async throws {

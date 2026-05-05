@@ -8,13 +8,13 @@
 import Foundation
 import os.log
 
-public struct ViewportRenderGraph: Sendable {
+package struct ViewportRenderGraph: Sendable {
     private let logger = os.Logger(subsystem: "com.mtk.rendergraph",
                                    category: "ViewportRenderGraph")
 
-    public init() {}
+    package init() {}
 
-    public func overlayPassPipeline() -> [RenderPassNode] {
+    package func overlayPassPipeline() -> [RenderPassNode] {
         [
             RenderPassNode(kind: .overlay,
                            inputDependencies: [.overlayInputs, .outputTexture]),
@@ -23,7 +23,7 @@ public struct ViewportRenderGraph: Sendable {
         ]
     }
 
-    public func resolveRoute(for viewportType: ViewportType) -> RenderRoute {
+    package func resolveRoute(for viewportType: ViewportType) -> RenderRoute {
         switch viewportType {
         case .volume3D:
             return RenderRoute(
@@ -33,6 +33,8 @@ public struct ViewportRenderGraph: Sendable {
                     RenderPassNode(kind: .volumeRaycast,
                                    compositing: .frontToBack,
                                    inputDependencies: [.volumeTexture, .transferTexture, .outputTexture]),
+                    RenderPassNode(kind: .overlay,
+                                   inputDependencies: [.overlayInputs, .outputTexture]),
                     RenderPassNode(kind: .presentation,
                                    inputDependencies: [.outputTexture, .presentationTarget])
                 ]
@@ -92,7 +94,7 @@ public struct ViewportRenderGraph: Sendable {
         }
     }
 
-    public func buildRenderNode(viewportID: ViewportID,
+    package func buildRenderNode(viewportID: ViewportID,
                                 viewportType: ViewportType,
                                 resourceHandle: VolumeResourceHandle?) throws -> ViewportRenderNode {
         let route = resolveRoute(for: viewportType)
@@ -109,7 +111,7 @@ public struct ViewportRenderGraph: Sendable {
         return node
     }
 
-    public func validateRenderRequirements(node: ViewportRenderNode,
+    package func validateRenderRequirements(node: ViewportRenderNode,
                                            datasetAvailable: Bool,
                                            volumeTextureAvailable: Bool,
                                            surfaceAvailable: Bool,
@@ -154,15 +156,15 @@ public struct ViewportRenderGraph: Sendable {
         }
     }
 
-    public func logRouteResolution(viewportID: ViewportID, route: RenderRoute) {
+    package func logRouteResolution(viewportID: ViewportID, route: RenderRoute) {
         logger.debug("Resolved route viewportID=\(String(describing: viewportID)) viewportType=\(route.viewportType.profilingName) route=\(route.profilingName) pipeline=\(route.passPipelineName)")
     }
 
-    public func logValidationFailure(error: RenderGraphError) {
+    package func logValidationFailure(error: RenderGraphError) {
         logger.warning("Render graph validation failed error=\(error.localizedDescription, privacy: .public)")
     }
 
-    public func validateFrame(_ frame: RenderFrame) throws {
+    package func validateFrame(_ frame: RenderFrame) throws {
         guard let primaryPass = frame.route.primaryPass else {
             throw RenderGraphError.unmappedViewportRoute(frame.route.viewportType)
         }
@@ -204,7 +206,7 @@ public struct ViewportRenderGraph: Sendable {
         }
     }
 
-    public func validatePresentationSurface(for frame: RenderFrame,
+    package func validatePresentationSurface(for frame: RenderFrame,
                                             surfaceExists: Bool) throws {
         guard frame.route.presentationPass != nil else {
             throw RenderGraphError.unmappedViewportRoute(frame.route.viewportType)

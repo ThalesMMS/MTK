@@ -161,6 +161,34 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
         _ = (enabled, min, max)
     }
 
+    public func setVolumeLayers(_ layers: [MTKCore.VolumeLayer]) async { _ = layers }
+
+    public func setSurfaceMeshLayers(_ layers: [SurfaceMeshLayer]) async { _ = layers }
+
+    public func setVolumeClipping(_ clipping: VolumeClippingState) async throws {
+        _ = clipping
+    }
+
+    public func setVolumeLayerVisibility(id: String, isVisible: Bool) async {
+        _ = (id, isVisible)
+    }
+
+    public func setVolumeLayerOpacity(id: String, opacity: Float) async {
+        _ = (id, opacity)
+    }
+
+    public func setVolumeLayerBlendMode(id: String, blendMode: MTKCore.VolumeLayerBlendMode) async {
+        _ = (id, blendMode)
+    }
+
+    public func setSurfaceMeshLayerVisibility(id: String, isVisible: Bool) async {
+        _ = (id, isVisible)
+    }
+
+    public func setSurfaceMeshLayerOpacity(id: String, opacity: Float) async {
+        _ = (id, opacity)
+    }
+
     public func setMprBlend(_ mode: VolumetricMPRBlendMode) async { _ = mode }
 
     public func setMprSlab(thickness: Int, steps: Int) async {

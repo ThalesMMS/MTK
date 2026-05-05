@@ -39,6 +39,19 @@ public enum ClinicalVolumeViewportMode: String, CaseIterable, Sendable {
     case minip
     case aip
 
+    public init(renderMode: ClinicalTransferFunctionRenderMode) {
+        switch renderMode {
+        case .dvr:
+            self = .dvr
+        case .mip:
+            self = .mip
+        case .minip:
+            self = .minip
+        case .aip:
+            self = .aip
+        }
+    }
+
     var viewportType: ViewportType {
         switch self {
         case .dvr:

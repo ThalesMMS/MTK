@@ -696,7 +696,7 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
         return VolumeDataset(
             data: data,
             dimensions: dimensions,
-            spacing: VolumeSpacing(x: 0.001, y: 0.001, z: 0.001),
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
             pixelFormat: .int16Signed,
             intensityRange: (-1024)...3071
         )
@@ -737,7 +737,7 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
         return VolumeDataset(
             data: data,
             dimensions: dimensions,
-            spacing: VolumeSpacing(x: 0.001, y: 0.001, z: 0.001),
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
             pixelFormat: .int16Signed,
             intensityRange: (-1024)...3071
         )
@@ -769,7 +769,7 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
         return VolumeDataset(
             data: data,
             dimensions: dimensions,
-            spacing: VolumeSpacing(x: 0.001, y: 0.001, z: 0.001),
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
             pixelFormat: .int16Signed,
             intensityRange: (-1024)...3071
         )

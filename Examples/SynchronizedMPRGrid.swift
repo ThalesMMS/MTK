@@ -2,83 +2,92 @@
 //  SynchronizedMPRGrid.swift
 //  MTK Examples
 //
-//  SwiftUI example demonstrating embedding a synchronized MPR 2×2 grid using MTKUI.
+//  SwiftUI example demonstrating a synchronized clinical 2x2 grid.
 //
 
 import SwiftUI
 import MTKCore
 import MTKUI
 
-/// Copy‑pasteable example: embed a synchronized 2×2 MPR grid.
+/// Copy-pasteable example: embed a synchronized 2x2 MPR grid.
 ///
-/// This example uses `MPRGridComposer`, which is the convenience SwiftUI view that
-/// composes four `VolumeViewportController`s (axial/coronal/sagittal + 3D) into a
-/// single 2×2 layout, and keeps window/level + slab thickness synchronized across
-/// the three MPR panes.
-///
-/// If you need a more engine-native / clinically-oriented grid controller, also see:
-/// `MPRViewerExample` (ClinicalViewportGrid + ClinicalViewportGridController).
+/// The session owns axial, coronal, sagittal, and 3D viewports through the
+/// public MTKUI contract. Window/level, crosshair, and slice changes are routed
+/// through `ClinicalViewportSession`, not controller or render graph internals.
 struct SynchronizedMPRGridExample: View {
-    @StateObject private var coordinator = VolumeViewportCoordinator.shared
-
     @State private var didLoad = false
-
-    private var configuration: VolumeViewportConfiguration {
-        var config = VolumeViewportConfiguration.default
-        config.overlays.showsCrosshair = true
-        config.overlays.showsOrientationLabels = true
-        config.gestures.allowsTranslation = true
-        config.gestures.allowsZoom = true
-        config.gestures.allowsRotation = true
-        config.gestures.allowsWindowLevel = true
-        config.gestures.allowsSlabThickness = true
-        config.windowLevel.defaultWindow = 400
-        config.windowLevel.defaultLevel = 40
-        return config
-    }
+    @State private var session: ClinicalViewportSession?
+    @State private var errorMessage: String?
 
     var body: some View {
         Group {
-            if let volumeController = coordinator.controller,
-               let axialController = try? coordinator.controller(for: .z),
-               let coronalController = try? coordinator.controller(for: .y),
-               let sagittalController = try? coordinator.controller(for: .x) {
-                MPRGridComposer(
-                    volumeController: volumeController,
-                    axialController: axialController,
-                    coronalController: coronalController,
-                    sagittalController: sagittalController,
-                    configuration: configuration
+            if let session {
+                VStack(spacing: 12) {
+                    ClinicalViewportGrid(session: session)
+                    controls(for: session)
+                }
+            } else if let errorMessage {
+                ContentUnavailableView(
+                    "Failed to Prepare Clinical Grid",
+                    systemImage: "exclamationmark.triangle",
+                    description: Text(errorMessage)
                 )
             } else {
-                ProgressView()
+                ProgressView("Preparing clinical viewport grid...")
             }
         }
         .task {
-            guard coordinator.isMetalAvailable, await beginLoadingIfNeeded() else { return }
-
-            // Load your dataset (DICOM, NIfTI, etc.) and apply it to all four controllers.
-            let dataset = makeSampleDataset()
-            let transferFunction = VolumeTransferFunctionLibrary.transferFunction(for: .ctSoftTissue)
-
-            applyToCoordinator(dataset: dataset, transferFunction: transferFunction)
+            await loadIfNeeded()
+        }
+        .onDisappear {
+            let session = session
+            Task { await session?.shutdown() }
         }
     }
 
-    @MainActor
-    private func applyToCoordinator(dataset: VolumeDataset, transferFunction: TransferFunction?) {
-        coordinator.apply(dataset: dataset)
-        coordinator.apply(transferFunction: transferFunction)
-        coordinator.configureMPRDisplay(axis: .z, normalizedPosition: 0.5)
-        coordinator.configureMPRDisplay(axis: .y, normalizedPosition: 0.5)
-        coordinator.configureMPRDisplay(axis: .x, normalizedPosition: 0.5)
+    @ViewBuilder
+    private func controls(for session: ClinicalViewportSession) -> some View {
+        HStack(spacing: 12) {
+            Button("Axial +") {
+                Task { await session.scrollSlice(axis: .axial, deltaNormalized: 0.04) }
+            }
+
+            Button("Coronal +") {
+                Task { await session.scrollSlice(axis: .coronal, deltaNormalized: 0.04) }
+            }
+
+            Button("Center") {
+                Task {
+                    await session.setCrosshair(
+                        in: .axial,
+                        normalizedPoint: CGPoint(x: 0.5, y: 0.5)
+                    )
+                    await session.setMPRWindowLevel(window: 400, level: 40)
+                }
+            }
+        }
+        .buttonStyle(.bordered)
+        .padding(.horizontal)
     }
 
     @MainActor
-    private func beginLoadingIfNeeded() -> Bool {
-        guard !didLoad else { return false }
+    private func loadIfNeeded() async {
+        guard !didLoad else { return }
         didLoad = true
-        return true
+        errorMessage = nil
+
+        do {
+            let dataset = makeSampleDataset()
+            let transferFunction = VolumeTransferFunctionLibrary.transferFunction(for: .ctSoftTissue)
+            session = try await ClinicalViewportSession.make(
+                dataset: dataset,
+                transferFunction: transferFunction
+            )
+        } catch {
+            didLoad = false
+            session = nil
+            errorMessage = error.localizedDescription
+        }
     }
 
     private func makeSampleDataset() -> VolumeDataset {
@@ -93,7 +102,6 @@ struct SynchronizedMPRGridExample: View {
         return VolumeDataset(
             data: voxels,
             dimensions: VolumeDimensions(width: width, height: height, depth: depth),
-            // Demo spacing is expressed in millimeters.
             spacing: VolumeSpacing(x: 0.75, y: 0.75, z: 1.0),
             pixelFormat: .int16Signed,
             intensityRange: (-1024)...3071,

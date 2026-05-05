@@ -88,12 +88,9 @@ final class MPRTextureFrameTests: MetalMPRComputeAdapterTestCase {
             XCTAssertTrue(frame.textureFormatMatchesPixelFormat)
             XCTAssertEqual(frame.intensityRange, dataset.intensityRange)
 
-            let actual = try readSignedPixels(from: frame.texture)
+            let actual = try readSignedPixels(from: frame)
             let expected = expectedPixels(axis: axis, fixedIndex: 1, dimensions: dimensions)
-            XCTAssertEqual(actual.count, expected.count)
-            for (actualValue, expectedValue) in zip(actual, expected) {
-                XCTAssertLessThanOrEqual(abs(Int(actualValue) - Int(expectedValue)), 1)
-            }
+            XCTAssertEqual(actual, expected)
         }
     }
 
@@ -113,7 +110,7 @@ final class MPRTextureFrameTests: MetalMPRComputeAdapterTestCase {
             blend: .single
         )
 
-        let actual = try readSignedPixels(from: frame.texture)
+        let actual = try readSignedPixels(from: frame)
         let expected = cpuReferencePixels(dataset: dataset,
                                           plane: plane,
                                           thickness: 1,
@@ -145,7 +142,7 @@ final class MPRTextureFrameTests: MetalMPRComputeAdapterTestCase {
                 blend: blend
             )
 
-            let actual = try readSignedPixels(from: frame.texture)
+            let actual = try readSignedPixels(from: frame)
             let expected = cpuReferencePixels(dataset: dataset,
                                               plane: plane,
                                               thickness: 2,
@@ -159,6 +156,116 @@ final class MPRTextureFrameTests: MetalMPRComputeAdapterTestCase {
             // differing tie-breaks/rounding when stepping along the slab normal.
             // This keeps a modest per-pixel cap plus a stricter aggregate guard
             // so systematic drift cannot hide behind isolated tie-break differences.
+        }
+    }
+
+    func test_signedNegativeHUValuesSurviveSingleSliceMPR() async throws {
+        let dimensions = VolumeDimensions(width: 3, height: 2, depth: 2)
+        let dataset = makeSignedCoordinateDataset(dimensions: dimensions)
+        let volumeTexture = try await VolumeTextureFactory(dataset: dataset)
+            .generateAsync(device: device, commandQueue: commandQueue)
+        let plane = MPRPlaneGeometryFactory.makePlane(for: dataset,
+                                                      axis: .z,
+                                                      slicePosition: 0)
+
+        let frame = try await adapter.makeSlabTexture(
+            dataset: dataset,
+            volumeTexture: volumeTexture,
+            plane: plane,
+            thickness: 1,
+            steps: 1,
+            blend: .single
+        )
+
+        let actual = try readSignedPixels(from: frame)
+        let expected = [
+            signedCoordinateValue(x: 0, y: 0, z: 0),
+            signedCoordinateValue(x: 1, y: 0, z: 0),
+            signedCoordinateValue(x: 2, y: 0, z: 0),
+            signedCoordinateValue(x: 0, y: 1, z: 0),
+            signedCoordinateValue(x: 1, y: 1, z: 0),
+            signedCoordinateValue(x: 2, y: 1, z: 0)
+        ]
+
+        XCTAssertEqual(actual, expected)
+        XCTAssertEqual(actual.min(), -512)
+        XCTAssertEqual(frame.intensityRange, -1024...1024)
+    }
+
+    func test_nonIdentityAffineWorldPlaneMatchesCPUReference() async throws {
+        let dimensions = VolumeDimensions(width: 4, height: 4, depth: 4)
+        let orientation = VolumeOrientation(
+            row: SIMD3<Float>(0, 1, 0),
+            column: SIMD3<Float>(0, 0, 1),
+            origin: SIMD3<Float>(10, -20, 30)
+        )
+        let dataset = makeSignedCoordinateDataset(
+            dimensions: dimensions,
+            spacing: VolumeSpacing(x: 1.25, y: 2.5, z: 3.75),
+            orientation: orientation
+        )
+        let volumeTexture = try await VolumeTextureFactory(dataset: dataset)
+            .generateAsync(device: device, commandQueue: commandQueue)
+        let plane = makeAffineWorldPlane(
+            dataset: dataset,
+            originVoxel: SIMD3<Float>(0, 0, 1),
+            axisUVoxel: SIMD3<Float>(2, 2, 0),
+            axisVVoxel: SIMD3<Float>(0, 0, 2)
+        )
+
+        XCTAssertNotEqual(plane.originWorld, plane.originVoxel)
+        XCTAssertNotEqual(plane.axisUWorld, plane.axisUVoxel)
+
+        let frame = try await adapter.makeSlabTexture(
+            dataset: dataset,
+            volumeTexture: volumeTexture,
+            plane: plane,
+            thickness: 1,
+            steps: 1,
+            blend: .single
+        )
+
+        let actual = try readSignedPixels(from: frame)
+        let expected = cpuReferencePixels(dataset: dataset,
+                                          plane: plane,
+                                          thickness: 1,
+                                          steps: 1,
+                                          blend: .single)
+        assertSignedPixels(actual, equal: expected, accuracy: 1, "Affine oblique MPR mismatch")
+        assertMeanAbsoluteError(actual, expected, maximum: 0.5, "Affine oblique MPR aggregate mismatch")
+    }
+
+    func test_anisotropicSlabBlendModesUseExpectedSamples() async throws {
+        let dimensions = VolumeDimensions(width: 2, height: 2, depth: 5)
+        let dataset = makeZStackDataset(
+            dimensions: dimensions,
+            zValues: [-512, -256, 0, 256, 512],
+            spacing: VolumeSpacing(x: 0.7, y: 1.3, z: 2.5)
+        )
+        let volumeTexture = try await VolumeTextureFactory(dataset: dataset)
+            .generateAsync(device: device, commandQueue: commandQueue)
+        let plane = MPRPlaneGeometryFactory.makePlane(for: dataset,
+                                                      axis: .z,
+                                                      slicePosition: 0.5)
+
+        let expectations: [(blend: MPRBlendMode, value: Int16)] = [
+            (.maximum, 256),
+            (.minimum, -256),
+            (.average, 0)
+        ]
+
+        for expectation in expectations {
+            let frame = try await adapter.makeSlabTexture(
+                dataset: dataset,
+                volumeTexture: volumeTexture,
+                plane: plane,
+                thickness: 2,
+                steps: 3,
+                blend: expectation.blend
+            )
+
+            let actual = try readSignedPixels(from: frame)
+            XCTAssertEqual(actual, Array(repeating: expectation.value, count: 4), "Mismatch for \(expectation.blend)")
         }
     }
 
@@ -179,8 +286,56 @@ final class MPRTextureFrameTests: MetalMPRComputeAdapterTestCase {
             dimensions: dimensions,
             spacing: VolumeSpacing(x: 1, y: 1, z: 1),
             pixelFormat: .int16Signed,
-            intensityRange: 0...Int32((dimensions.width - 1) + (dimensions.height - 1) * 10 + (dimensions.depth - 1) * 100)
+            intensityRange: 0...1024
         )
+    }
+
+    private func makeSignedCoordinateDataset(dimensions: VolumeDimensions,
+                                             spacing: VolumeSpacing = VolumeSpacing(x: 1, y: 1, z: 1),
+                                             orientation: VolumeOrientation = .canonical) -> VolumeDataset {
+        var values: [Int16] = []
+        values.reserveCapacity(dimensions.voxelCount)
+
+        for z in 0..<dimensions.depth {
+            for y in 0..<dimensions.height {
+                for x in 0..<dimensions.width {
+                    values.append(signedCoordinateValue(x: x, y: y, z: z))
+                }
+            }
+        }
+
+        return VolumeDataset(
+            data: values.withUnsafeBytes { Data($0) },
+            dimensions: dimensions,
+            spacing: spacing,
+            pixelFormat: .int16Signed,
+            intensityRange: -1024...1024,
+            orientation: orientation
+        )
+    }
+
+    private func makeZStackDataset(dimensions: VolumeDimensions,
+                                   zValues: [Int16],
+                                   spacing: VolumeSpacing) -> VolumeDataset {
+        precondition(zValues.count == dimensions.depth)
+        var values: [Int16] = []
+        values.reserveCapacity(dimensions.voxelCount)
+
+        for z in 0..<dimensions.depth {
+            values.append(contentsOf: Array(repeating: zValues[z], count: dimensions.width * dimensions.height))
+        }
+
+        return VolumeDataset(
+            data: values.withUnsafeBytes { Data($0) },
+            dimensions: dimensions,
+            spacing: spacing,
+            pixelFormat: .int16Signed,
+            intensityRange: -1024...1024
+        )
+    }
+
+    private func signedCoordinateValue(x: Int, y: Int, z: Int) -> Int16 {
+        Int16(-512 + x * 16 + y * 64 + z * 256)
     }
 
     private func makeVoxelCenterPlane(axis: MPRPlaneAxis,
@@ -227,6 +382,33 @@ final class MPRTextureFrameTests: MetalMPRComputeAdapterTestCase {
         )
     }
 
+    private func makeAffineWorldPlane(dataset: VolumeDataset,
+                                      originVoxel: SIMD3<Float>,
+                                      axisUVoxel: SIMD3<Float>,
+                                      axisVVoxel: SIMD3<Float>) -> MPRPlaneGeometry {
+        let imageData = dataset.imageData
+        let originWorld = imageData.indexToWorld.transformPoint(originVoxel)
+        let axisUWorld = imageData.indexToWorld.transformPoint(originVoxel + axisUVoxel) - originWorld
+        let axisVWorld = imageData.indexToWorld.transformPoint(originVoxel + axisVVoxel) - originWorld
+        let originTexture = imageData.worldToTexture.transformPoint(originWorld)
+        let axisUTexture = imageData.worldToTexture.transformPoint(originWorld + axisUWorld) - originTexture
+        let axisVTexture = imageData.worldToTexture.transformPoint(originWorld + axisVWorld) - originTexture
+        let normalWorld = simd_normalize(simd_cross(axisUWorld, axisVWorld))
+
+        return MPRPlaneGeometry(
+            originVoxel: originVoxel,
+            axisUVoxel: axisUVoxel,
+            axisVVoxel: axisVVoxel,
+            originWorld: originWorld,
+            axisUWorld: axisUWorld,
+            axisVWorld: axisVWorld,
+            originTexture: originTexture,
+            axisUTexture: axisUTexture,
+            axisVTexture: axisVTexture,
+            normalWorld: normalWorld
+        )
+    }
+
     private func expectedPixels(axis: MPRPlaneAxis,
                                 fixedIndex: Int,
                                 dimensions: VolumeDimensions) -> [Int16] {
@@ -256,35 +438,11 @@ final class MPRTextureFrameTests: MetalMPRComputeAdapterTestCase {
         return expected
     }
 
-    private func readSignedPixels(from texture: any MTLTexture) throws -> [Int16] {
-        let bytesPerRow = texture.width * MemoryLayout<Int16>.stride
-        let byteCount = bytesPerRow * texture.height
-        guard let buffer = device.makeBuffer(length: byteCount, options: .storageModeShared),
-              let commandBuffer = commandQueue.makeCommandBuffer(),
-              let blitEncoder = commandBuffer.makeBlitCommandEncoder() else {
-            XCTFail("Failed to create Metal readback resources")
-            return []
-        }
-
-        blitEncoder.copy(from: texture,
-                         sourceSlice: 0,
-                         sourceLevel: 0,
-                         sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
-                         sourceSize: MTLSize(width: texture.width, height: texture.height, depth: 1),
-                         to: buffer,
-                         destinationOffset: 0,
-                         destinationBytesPerRow: bytesPerRow,
-                         destinationBytesPerImage: byteCount)
-        blitEncoder.endEncoding()
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
-
-        if let error = commandBuffer.error {
-            throw error
-        }
-
-        let pointer = buffer.contents().assumingMemoryBound(to: Int16.self)
-        return Array(UnsafeBufferPointer(start: pointer, count: texture.width * texture.height))
+    private func readSignedPixels(from frame: MPRTextureFrame) throws -> [Int16] {
+        try MPRTextureReadbackHelper.readValues(Int16.self,
+                                                from: frame,
+                                                device: device,
+                                                commandQueue: commandQueue)
     }
 
     private func assertSignedPixels(_ actual: [Int16],

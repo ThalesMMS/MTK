@@ -115,6 +115,15 @@ public protocol DICOMSeriesVolumeProtocol {
     /// Human-readable series description from DICOM metadata (0008,103E).
     var seriesDescription: String { get }
 
+    /// Study Instance UID (0020,000D), when available.
+    var studyInstanceUID: String? { get }
+
+    /// Series Instance UID (0020,000E), when available.
+    var seriesInstanceUID: String? { get }
+
+    /// Frame of Reference UID (0020,0052), when available.
+    var frameOfReferenceUID: String? { get }
+
     /// Imaging modality (e.g. "CT", "MR") from DICOM metadata (0008,0060).
     ///
     /// Used for modality-specific defaults such as window/level fallback policy.
@@ -129,14 +138,17 @@ public protocol DICOMSeriesVolumeProtocol {
 
 public extension DICOMSeriesVolumeProtocol {
     var modality: String { "" }
+    var studyInstanceUID: String? { nil }
+    var seriesInstanceUID: String? { nil }
+    var frameOfReferenceUID: String? { nil }
     var windowCenter: Double? { nil }
     var windowWidth: Double? { nil }
 }
 
 /// Protocol abstraction for DICOM series loading implementations.
 ///
-/// ``DicomVolumeLoader`` uses ``DicomDecoderSeriesLoader`` by default. This protocol keeps the loader
-/// injectable for unit tests and package-level adapters without implying demo runtime backend switching.
+/// ``DicomVolumeLoader`` consumes this protocol from MTKCore without depending on a concrete parser.
+/// Apps can inject test doubles, custom loaders, or the `MTKDicomBridge` decoder implementation.
 /// Implementations parse DICOM files in a directory, sort slices by Image Position Patient, and stream
 /// slice data incrementally via progress callbacks.
 ///

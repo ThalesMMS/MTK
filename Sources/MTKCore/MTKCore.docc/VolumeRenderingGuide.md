@@ -17,6 +17,35 @@ All techniques are GPU-accelerated using Metal shaders with adaptive sampling. E
 
 Interactive rendering is GPU-native. ``MetalVolumeRenderingAdapter/renderFrame(using:)`` returns ``VolumeRenderFrame`` with an `MTLTexture` plus metadata for presentation, profiling, and debugging. Present that texture through `MTKView` or `CAMetalLayer`. `CGImage` creation is an explicit snapshot/export/readback operation via ``TextureSnapshotExporter`` and is not part of the normal interactive display path.
 
+### Segmentation Surfaces
+
+MTKCore supports a v1 surface path for segmentation review:
+
+```text
+LabelmapVolume -> SurfaceMesh -> SurfaceMeshLayer -> volume3D viewport
+```
+
+``SurfaceMesh`` is the public polydata contract. It carries vertices, per-vertex normals, indexed triangles, a coordinate-space declaration, bounds, and segment metadata. ``MarchingCubesExtractor`` can extract a mesh from a `LabelmapVolume` label or from a scalar `VolumeDataset` threshold. Labelmap meshes carry the same label and segment id that MPR labelmap overlays use. By default, extracted vertices are written in `.worldMillimeters` using the source volume affine so spacing, origin, and orientation are preserved.
+
+The initial renderer is intentionally small: ``MetalSurfaceMeshRenderer`` draws visible ``SurfaceMeshLayer`` triangles into the 3D viewport output texture after volume raycasting. Opaque surfaces write mesh-local depth before semi-transparent surfaces, transparent layers are ordered back-to-front at the layer level, and volume crop/clip settings discard matching surface fragments. It does not yet composite against raycast volume depth.
+
+V1 limits: no smoothing, decimation, topology repair, advanced materials, GPU extraction, or true raycast-volume depth occlusion.
+
+### Multi-Volume Clinical Fusion
+
+MTKCore supports an initial 3D scalar-volume fusion path for workflows such as CT plus PET-like heat maps, registered MR sequences, dose maps over CT, or prior/current comparisons. A ``VolumeRenderRequest`` now carries a `layers` stack. The existing single-volume initializer remains source-compatible and is mapped to one primary scalar ``VolumeLayer`` using the request dataset and transfer function.
+
+Each scalar layer supplies its own ``VolumeDataset``, ``VolumeTransferFunction``, opacity, visibility, and blend mode. V1 blend modes are:
+
+- ``VolumeLayerBlendMode/sourceOver``: alpha-over compositing for contextual overlays.
+- ``VolumeLayerBlendMode/additive``: additive colour accumulation with clamp, useful for heat-like PET or dose overlays.
+
+The Metal path keeps a fast path for a single visible scalar layer. When multiple visible scalar layers are present, each layer is raycast with its own transfer function and opacity, then a small Metal composite pass blends the intermediate textures into the final output. This adds one raycast plus one composite step per additional visible scalar layer, and it requires extra output textures while the frame is built.
+
+``VolumeResourceManager`` reuses scalar volume textures by resource handle. Assigning the same scalar layer dataset to multiple viewports retains the existing handle instead of uploading duplicate 3D textures, and resource metrics include the shared layer textures and output texture pool memory.
+
+V1 does not solve DICOM registration. Scalar fusion assumes all layers are already registered and resampled into the base volume texture space. Non-identity scalar layer transforms are rejected with a structured error. Existing labelmap MPR affine handling remains supported for segmentation overlays. The v2 registration and resampling roadmap is tracked in [Architecture/MultiVolumeRegistration.md](../../../Architecture/MultiVolumeRegistration.md); until that plan is implemented, PET/CT, CT plus dose, MR T1/T2, and prior/current overlays require external alignment and resampling before entering MTK.
+
 ## Storage Mode Policy
 
 MTKCore keeps interactive resources GPU-native and uses CPU-visible storage only at explicit ingestion or readback boundaries:

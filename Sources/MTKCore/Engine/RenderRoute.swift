@@ -7,12 +7,12 @@
 
 import Foundation
 
-public struct RenderRoute: Equatable, Hashable, Sendable {
-    public var viewportType: ViewportType
-    public var compositing: VolumeRenderRequest.Compositing?
-    public var passPipeline: [RenderPassNode]
+package struct RenderRoute: Equatable, Hashable, Sendable {
+    package var viewportType: ViewportType
+    package var compositing: VolumeRenderRequest.Compositing?
+    package var passPipeline: [RenderPassNode]
 
-    public init(viewportType: ViewportType,
+    package init(viewportType: ViewportType,
                 compositing: VolumeRenderRequest.Compositing? = nil,
                 passPipeline: [RenderPassNode]) {
         self.viewportType = viewportType
@@ -20,15 +20,15 @@ public struct RenderRoute: Equatable, Hashable, Sendable {
         self.passPipeline = passPipeline
     }
 
-    public var primaryPass: RenderPassNode? {
+    package var primaryPass: RenderPassNode? {
         passPipeline.first
     }
 
-    public var presentationPass: RenderPassNode? {
+    package var presentationPass: RenderPassNode? {
         passPipeline.last
     }
 
-    public var passPipelineName: String {
+    package var passPipelineName: String {
         passPipeline.map(\.profilingName).joined(separator: " -> ")
     }
 }

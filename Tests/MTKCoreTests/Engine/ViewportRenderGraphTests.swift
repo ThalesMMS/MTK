@@ -7,14 +7,16 @@ import XCTest
 final class ViewportRenderGraphTests: XCTestCase {
     private let graph = ViewportRenderGraph()
 
-    func testVolume3DRouteUsesFrontToBackRaycastAndPresentation() throws {
+    func testVolume3DRouteUsesFrontToBackRaycastOverlayAndPresentation() throws {
         let route = graph.resolveRoute(for: .volume3D)
 
         XCTAssertEqual(route.compositing, .frontToBack)
-        XCTAssertEqual(route.passPipeline.map(\.kind), [.volumeRaycast, .presentation])
+        XCTAssertEqual(route.passPipeline.map(\.kind), [.volumeRaycast, .overlay, .presentation])
         XCTAssertEqual(route.passPipeline.first?.compositing, .frontToBack)
         XCTAssertEqual(route.passPipeline.first?.inputDependencies,
                        [.volumeTexture, .transferTexture, .outputTexture])
+        XCTAssertEqual(route.passPipeline[1].inputDependencies,
+                       [.overlayInputs, .outputTexture])
         XCTAssertEqual(route.passPipeline.last?.inputDependencies,
                        [.outputTexture, .presentationTarget])
     }

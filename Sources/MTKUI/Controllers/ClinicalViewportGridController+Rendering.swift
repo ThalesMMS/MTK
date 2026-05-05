@@ -208,6 +208,7 @@ extension ClinicalViewportGridController {
             logger.debug("Using MPR presentation transform viewport=\(viewportName(for: frame.viewportID)) orientation=\(transform?.orientation.rawValue ?? 0) flipHorizontal=\(transform?.flipHorizontal == true) flipVertical=\(transform?.flipVertical == true)")
             return try surface.present(mprFrame: mprFrame,
                                        window: windowLevel.range,
+                                       labelmapOverlays: frame.labelmapOverlays,
                                        transform: transform,
                                        presentationToken: generation)
 

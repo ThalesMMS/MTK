@@ -8,13 +8,13 @@
 import Foundation
 @preconcurrency import Metal
 
-public final class OutputTextureLease: @unchecked Sendable {
+package final class OutputTextureLease: @unchecked Sendable {
     private enum ReleaseOrigin {
         case explicit
         case deinitSafetyNet
     }
 
-    public let texture: any MTLTexture
+    package let texture: any MTLTexture
 
     let ownerPoolIdentifier: UUID
     let textureIdentifier: ObjectIdentifier
@@ -39,20 +39,19 @@ public final class OutputTextureLease: @unchecked Sendable {
         self.onRelease = onRelease
     }
 
-    public var isReleased: Bool {
+    package var isReleased: Bool {
         lock.lock()
         defer { lock.unlock() }
         return released
     }
 
-    @_spi(Testing)
-    public var isPresented: Bool {
+    package var isPresented: Bool {
         lock.lock()
         defer { lock.unlock() }
         return presented
     }
 
-    public func markPresented() {
+    package func markPresented() {
         let shouldNotify: Bool
 
         lock.lock()
@@ -69,7 +68,7 @@ public final class OutputTextureLease: @unchecked Sendable {
         }
     }
 
-    public func release() {
+    package func release() {
         release(origin: .explicit)
     }
 

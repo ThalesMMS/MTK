@@ -34,17 +34,7 @@ extension VolumeViewportController {
     /// - Parameter dataset: The volume dataset whose dimensions, voxel spacing, and orientation will be used.
     /// - Returns: A `DICOMGeometry` initialized with the dataset's cols, rows, slices, spacing (X/Y/Z) and orientation vectors (`iopRow`, `iopCol`, `ipp0`).
     func makeGeometry(from dataset: VolumeDataset) -> DICOMGeometry {
-        DICOMGeometry(
-            cols: Int32(dataset.dimensions.width),
-            rows: Int32(dataset.dimensions.height),
-            slices: Int32(dataset.dimensions.depth),
-            spacingX: Float(dataset.spacing.x),
-            spacingY: Float(dataset.spacing.y),
-            spacingZ: Float(dataset.spacing.z),
-            iopRow: dataset.orientation.row,
-            iopCol: dataset.orientation.column,
-            ipp0: dataset.orientation.origin
-        )
+        DICOMGeometry(imageData: dataset.imageData)
     }
 
     /// Resets the camera to a default state centered on the volume using the provided orientation.

@@ -12,7 +12,6 @@ import Metal
 import OSLog
 import simd
 import ZIPFoundation
-import DicomCore
 
 /// Orchestrates DICOM volume loading from directories, ZIP archives, or individual files.
 ///
@@ -23,7 +22,7 @@ import DicomCore
 /// ## Example
 ///
 /// ```swift
-/// let loader = DicomVolumeLoader() // Uses DicomDecoderSeriesLoader by default
+/// let loader = DicomVolumeLoader(seriesLoader: CustomDicomSeriesLoader())
 ///
 /// loader.loadVolume(from: folderURL, progress: { update in
 ///     switch update {
@@ -47,7 +46,6 @@ import DicomCore
 ///
 /// ### Initialization
 /// - ``init(seriesLoader:device:)``
-/// - ``init()``
 ///
 /// ### Loading Volumes
 /// - ``loadVolume(from:progress:completion:)``
@@ -64,7 +62,7 @@ public final class DicomVolumeLoader {
     /// Initialize with a custom DICOM series loader.
     ///
     /// - Parameters:
-    ///   - seriesLoader: DICOM series loading implementation (``DicomDecoderSeriesLoader`` or custom bridge)
+    ///   - seriesLoader: DICOM series loading implementation from an app, test, or bridge target
     ///   - device: Optional Metal device used for profiling metadata
     ///
     /// - Note: Window recommendations come from DICOM WC/WW metadata when present, otherwise from deterministic fallbacks.
@@ -105,7 +103,7 @@ public final class DicomVolumeLoader {
     /// ## Example
     ///
     /// ```swift
-    /// let loader = DicomVolumeLoader()
+    /// let loader = DicomVolumeLoader(seriesLoader: CustomDicomSeriesLoader())
     /// loader.loadVolume(from: selectedURL, progress: { update in
     ///     if case .reading(let fraction) = update {
     ///         self.progressBar.doubleValue = fraction
@@ -162,12 +160,11 @@ public final class DicomVolumeLoader {
                         dimensions = SIMD3(Int32(partialVolume.width),
                                             Int32(partialVolume.height),
                                             Int32(partialVolume.depth))
-                        let meterScale: Float = 0.001
-                        spacing = SIMD3(Float(partialVolume.spacingX) * meterScale,
-                                        Float(partialVolume.spacingY) * meterScale,
-                                        Float(partialVolume.spacingZ) * meterScale)
+                        spacing = SIMD3(Float(partialVolume.spacingX),
+                                        Float(partialVolume.spacingY),
+                                        Float(partialVolume.spacingZ))
                         orientation = partialVolume.orientation
-                        origin = SIMD3<Float>(partialVolume.origin) * meterScale
+                        origin = SIMD3<Float>(partialVolume.origin)
                         slope = partialVolume.rescaleSlope == 0 ? 1.0 : partialVolume.rescaleSlope
                         intercept = partialVolume.rescaleIntercept
                         isSigned = partialVolume.isSignedPixel
@@ -290,7 +287,11 @@ public final class DicomVolumeLoader {
                                                    orientationMatrix: orientation,
                                                    origin: origin,
                                                    intensityRange: range,
-                                                   recommendedWindow: recommendedWindow)
+                                                   recommendedWindow: recommendedWindow,
+                                                   clinicalMetadata: dicomVolume.map {
+                                                       Self.clinicalMetadata(for: $0,
+                                                                             sourcePixelFormat: $0.isSignedPixel ? .int16Signed : .int16Unsigned)
+                                                   })
 
                 if let cleanupRoot = prepared.cleanupRoot {
                     try? FileManager.default.removeItem(at: cleanupRoot)
@@ -309,34 +310,10 @@ public final class DicomVolumeLoader {
                 DispatchQueue.main.async {
                     completion(.success(result))
                 }
-            } catch let error as DicomSeriesLoaderError {
+            } catch let error as DicomVolumeLoaderError {
                 self.logger.error("DICOM import failed for \(sourceURL.lastPathComponent): \(String(describing: error))")
-                let mapped: Error
-                switch error {
-                case .unsupportedBitDepth:
-                    mapped = DicomVolumeLoaderError.unsupportedBitDepth
-                case .unsupportedTransferSyntax(let uid):
-                    mapped = DicomVolumeLoaderError.unsupportedTransferSyntax(uid: uid)
-                case .unsupportedSamplesPerPixel(let samples):
-                    mapped = DicomVolumeLoaderError.unsupportedPixelData(reason: "Unsupported samples per pixel: \(samples)")
-                case .inconsistentDimensions:
-                    mapped = DicomVolumeLoaderError.invalidGeometry(reason: "Inconsistent slice dimensions")
-                case .inconsistentOrientation, .invalidImageOrientation:
-                    mapped = DicomVolumeLoaderError.invalidGeometry(reason: "Inconsistent/invalid slice orientation")
-                case .inconsistentPixelRepresentation:
-                    mapped = DicomVolumeLoaderError.unsupportedPixelData(reason: "Inconsistent signed/unsigned pixel representation")
-                case .duplicateSlicePosition:
-                    mapped = DicomVolumeLoaderError.duplicateSlicePosition
-                case .variableSliceSpacing(let median, let maxDeviation):
-                    mapped = DicomVolumeLoaderError.variableSliceSpacing(median: median, maxDeviation: maxDeviation)
-                case .noDicomFiles:
-                    mapped = DicomVolumeLoaderError.missingResult
-                case .failedToDecode(let url):
-                    mapped = DicomVolumeLoaderError.bridgeError(NSError(domain: "DicomCore", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to decode DICOM file: \(url.lastPathComponent)"]))
-                }
-
                 DispatchQueue.main.async {
-                    completion(.failure(mapped))
+                    completion(.failure(error))
                 }
             } catch let error as NSError {
                 self.logger.error("DICOM import failed for \(sourceURL.lastPathComponent): \(error.localizedDescription)")
@@ -386,15 +363,15 @@ public final class DicomVolumeLoader {
                     dimensions = SIMD3(Int32(partialVolume.width),
                                         Int32(partialVolume.height),
                                         Int32(partialVolume.depth))
-                    let meterScale: Float = 0.001
-                    spacing = SIMD3(Float(partialVolume.spacingX) * meterScale,
-                                    Float(partialVolume.spacingY) * meterScale,
-                                    Float(partialVolume.spacingZ) * meterScale)
+                    spacing = SIMD3(Float(partialVolume.spacingX),
+                                    Float(partialVolume.spacingY),
+                                    Float(partialVolume.spacingZ))
                     orientation = partialVolume.orientation
-                    origin = SIMD3<Float>(partialVolume.origin) * meterScale
+                    origin = SIMD3<Float>(partialVolume.origin)
                     slope = partialVolume.rescaleSlope == 0 ? 1.0 : partialVolume.rescaleSlope
                     intercept = partialVolume.rescaleIntercept
                     isSigned = partialVolume.isSignedPixel
+                    let sourcePixelFormat: VolumePixelFormat = isSigned ? .int16Signed : .int16Unsigned
 
                     metadata = self.makeUploadDescriptor(width: Int(dimensions.x),
                                                          height: Int(dimensions.y),
@@ -402,9 +379,11 @@ public final class DicomVolumeLoader {
                                                          spacing: spacing,
                                                          orientationMatrix: orientation,
                                                          origin: origin,
-                                                         sourcePixelFormat: isSigned ? .int16Signed : .int16Unsigned,
+                                                         sourcePixelFormat: sourcePixelFormat,
                                                          intensityRange: Self.intensityRange(minHU: Int32.max,
-                                                                                             maxHU: Int32.min))
+                                                                                             maxHU: Int32.min),
+                                                         clinicalMetadata: Self.clinicalMetadata(for: partialVolume,
+                                                                                                 sourcePixelFormat: sourcePixelFormat))
                 }
 
                 let parseStartedAt = CFAbsoluteTimeGetCurrent()
@@ -475,7 +454,9 @@ public final class DicomVolumeLoader {
                     intensityRange: metadata.intensityRange,
                     orientation: metadata.orientation,
                     recommendedWindow: streamingRecommendedWindow,
-                    cacheKey: metadata.cacheKey
+                    cacheKey: metadata.cacheKey,
+                    clinicalMetadata: Self.clinicalMetadata(for: finalVolume,
+                                                            sourcePixelFormat: metadata.sourcePixelFormat)
                 )
                 let result = DicomStreamingImportResult(
                     metadata: finalMetadata,
@@ -499,36 +480,11 @@ public final class DicomVolumeLoader {
                 DispatchQueue.main.async {
                     completion(.success(result))
                 }
-            } catch let error as DicomSeriesLoaderError {
+            } catch let error as DicomVolumeLoaderError {
                 if encounteredFatalError { return }
                 self.logger.error("Streaming DICOM import failed for \(sourceURL.lastPathComponent): \(String(describing: error))")
-
-                let mapped: Error
-                switch error {
-                case .unsupportedBitDepth:
-                    mapped = DicomVolumeLoaderError.unsupportedBitDepth
-                case .unsupportedTransferSyntax(let uid):
-                    mapped = DicomVolumeLoaderError.unsupportedTransferSyntax(uid: uid)
-                case .unsupportedSamplesPerPixel(let samples):
-                    mapped = DicomVolumeLoaderError.unsupportedPixelData(reason: "Unsupported samples per pixel: \(samples)")
-                case .inconsistentDimensions:
-                    mapped = DicomVolumeLoaderError.invalidGeometry(reason: "Inconsistent slice dimensions")
-                case .inconsistentOrientation, .invalidImageOrientation:
-                    mapped = DicomVolumeLoaderError.invalidGeometry(reason: "Inconsistent/invalid slice orientation")
-                case .inconsistentPixelRepresentation:
-                    mapped = DicomVolumeLoaderError.unsupportedPixelData(reason: "Inconsistent signed/unsigned pixel representation")
-                case .duplicateSlicePosition:
-                    mapped = DicomVolumeLoaderError.duplicateSlicePosition
-                case .variableSliceSpacing(let median, let maxDeviation):
-                    mapped = DicomVolumeLoaderError.variableSliceSpacing(median: median, maxDeviation: maxDeviation)
-                case .noDicomFiles:
-                    mapped = DicomVolumeLoaderError.missingResult
-                case .failedToDecode(let url):
-                    mapped = DicomVolumeLoaderError.bridgeError(NSError(domain: "DicomCore", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to decode DICOM file: \(url.lastPathComponent)"]))
-                }
-
                 DispatchQueue.main.async {
-                    completion(.failure(mapped))
+                    completion(.failure(error))
                 }
             } catch let error as NSError {
                 if encounteredFatalError { return }
@@ -724,6 +680,27 @@ private extension DicomVolumeLoader {
         )])
     }
 
+    static func clinicalMetadata(for volume: any DICOMSeriesVolumeProtocol,
+                                 sourcePixelFormat: VolumePixelFormat) -> ClinicalImageMetadata {
+        ClinicalImageMetadata(
+            modality: nonEmpty(volume.modality),
+            seriesDescription: nonEmpty(volume.seriesDescription),
+            studyInstanceUID: volume.studyInstanceUID,
+            seriesInstanceUID: volume.seriesInstanceUID,
+            frameOfReferenceUID: volume.frameOfReferenceUID,
+            rescaleSlope: volume.rescaleSlope,
+            rescaleIntercept: volume.rescaleIntercept,
+            sourcePixelFormat: sourcePixelFormat,
+            windowCenter: volume.windowCenter,
+            windowWidth: volume.windowWidth
+        )
+    }
+
+    static func nonEmpty(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     func makeDataset(data: Data,
                      width: Int,
                      height: Int,
@@ -732,25 +709,21 @@ private extension DicomVolumeLoader {
                      orientationMatrix: simd_float3x3,
                      origin: SIMD3<Float>,
                      intensityRange: ClosedRange<Int32>,
-                     recommendedWindow: ClosedRange<Int32>? = nil) -> VolumeDataset {
+                     recommendedWindow: ClosedRange<Int32>? = nil,
+                     clinicalMetadata: ClinicalImageMetadata? = nil) -> VolumeDataset {
         let volumeDimensions = VolumeDimensions(width: width, height: height, depth: depth)
         let volumeSpacing = VolumeSpacing(x: Double(spacing.x),
                                           y: Double(spacing.y),
                                           z: Double(spacing.z))
-        let row = SIMD3<Float>(orientationMatrix.columns.0.x,
-                               orientationMatrix.columns.0.y,
-                               orientationMatrix.columns.0.z)
-        let column = SIMD3<Float>(orientationMatrix.columns.1.x,
-                                  orientationMatrix.columns.1.y,
-                                  orientationMatrix.columns.1.z)
-        let orientation = VolumeOrientation(row: row, column: column, origin: origin)
-        return VolumeDataset(data: data,
-                             dimensions: volumeDimensions,
-                             spacing: volumeSpacing,
-                             pixelFormat: .int16Signed,
-                             intensityRange: intensityRange,
-                             orientation: orientation,
-                             recommendedWindow: recommendedWindow)
+        let imageData = ImageData3D(dimensions: volumeDimensions,
+                                    spacing: volumeSpacing,
+                                    origin: origin,
+                                    direction: Self.directionMatrix(from: orientationMatrix),
+                                    pixelFormat: .int16Signed,
+                                    intensityRange: intensityRange,
+                                    recommendedWindow: recommendedWindow,
+                                    clinicalMetadata: clinicalMetadata)
+        return VolumeDataset(data: data, imageData: imageData)
     }
 
     func makeUploadDescriptor(width: Int,
@@ -761,7 +734,8 @@ private extension DicomVolumeLoader {
                               origin: SIMD3<Float>,
                               sourcePixelFormat: VolumePixelFormat,
                               intensityRange: ClosedRange<Int32>,
-                              recommendedWindow: ClosedRange<Int32>? = nil) -> VolumeUploadDescriptor {
+                              recommendedWindow: ClosedRange<Int32>? = nil,
+                              clinicalMetadata: ClinicalImageMetadata? = nil) -> VolumeUploadDescriptor {
         let row = SIMD3<Float>(orientationMatrix.columns.0.x,
                                orientationMatrix.columns.0.y,
                                orientationMatrix.columns.0.z)
@@ -779,8 +753,26 @@ private extension DicomVolumeLoader {
             sourcePixelFormat: sourcePixelFormat,
             intensityRange: intensityRange,
             orientation: orientation,
-            recommendedWindow: recommendedWindow
+            recommendedWindow: recommendedWindow,
+            clinicalMetadata: clinicalMetadata
         )
+    }
+
+    static func directionMatrix(from orientationMatrix: simd_float3x3) -> simd_float3x3 {
+        let row = SIMD3<Float>(orientationMatrix.columns.0.x,
+                               orientationMatrix.columns.0.y,
+                               orientationMatrix.columns.0.z)
+        let column = SIMD3<Float>(orientationMatrix.columns.1.x,
+                                  orientationMatrix.columns.1.y,
+                                  orientationMatrix.columns.1.z)
+        let slice = SIMD3<Float>(orientationMatrix.columns.2.x,
+                                 orientationMatrix.columns.2.y,
+                                 orientationMatrix.columns.2.z)
+        let sliceLength = simd_length(slice)
+        let normalizedSlice = sliceLength > Float.ulpOfOne
+            ? slice / sliceLength
+            : ImageData3D.normalizedCross(row, column, fallback: SIMD3<Float>(0, 0, 1))
+        return simd_float3x3(columns: (row, column, normalizedSlice))
     }
 
 }
@@ -818,20 +810,4 @@ public extension DicomVolumeLoader {
         }
     }
 
-    /// Convenience initializer using the default Swift-based DICOM decoder.
-    ///
-    /// Equivalent to `DicomVolumeLoader(seriesLoader: DicomDecoderSeriesLoader())`.
-    /// Uses the pure-Swift DICOM-Decoder package without external native dependencies.
-    ///
-    /// ## Example
-    ///
-    /// ```swift
-    /// let loader = DicomVolumeLoader() // Uses DicomDecoderSeriesLoader
-    /// loader.loadVolume(from: directoryURL, progress: { _ in }, completion: { result in
-    ///     // Handle result
-    /// })
-    /// ```
-    convenience init() {
-        self.init(seriesLoader: DicomDecoderSeriesLoader())
-    }
 }

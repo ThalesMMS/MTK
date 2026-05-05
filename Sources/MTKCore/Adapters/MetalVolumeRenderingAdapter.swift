@@ -312,6 +312,7 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
             }
         }
 
+        effectiveRequest = try applyCompatibilityClippingIfNeeded(to: effectiveRequest)
         let window = try resolveWindow(for: effectiveRequest.dataset)
 
         if diagnosticLoggingEnabled {
@@ -319,8 +320,14 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
         }
 
         let startTime = CFAbsoluteTimeGetCurrent()
-        let frame = try await renderWithMetal(state: metalState,
+        let frame: VolumeRenderFrame
+        if try effectiveRequest.visibleScalarLayersForRendering().count > 1 {
+            frame = try await renderLayerStackWithMetal(state: metalState,
+                                                        request: effectiveRequest)
+        } else {
+            frame = try await renderWithMetal(state: metalState,
                                               request: effectiveRequest)
+        }
         let renderTime = CFAbsoluteTimeGetCurrent() - startTime
         let resolvedFrame = VolumeRenderFrame(
             texture: frame.texture,

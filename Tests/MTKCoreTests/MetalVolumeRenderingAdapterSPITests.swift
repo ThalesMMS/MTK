@@ -131,6 +131,31 @@ final class MetalVolumeRenderingAdapterSPIPropertiesTests: XCTestCase {
         XCTAssertEqual(uniforms.useTFProj, 1)
     }
 
+    func testPublicClipPlaneRemovesPixelsAcrossVolumeCompositingModes() async throws {
+        let compositingModes: [VolumeRenderRequest.Compositing] = [
+            .frontToBack,
+            .maximumIntensity,
+            .minimumIntensity,
+            .averageIntensity
+        ]
+
+        for compositing in compositingModes {
+            var request = VolumeRenderRegressionFixture.request(compositing: compositing)
+            let plane = try VolumeClipPlane(textureCenteredNormal: SIMD3<Float>(0, 0, 1),
+                                            offset: -1,
+                                            dataset: request.dataset)
+            request.clipping = try VolumeClippingState(clipPlanes: [plane])
+
+            let frame = try await adapter.renderFrame(using: request)
+            let image = try await TextureSnapshotExporter().makeCGImage(from: frame)
+            let summary = try XCTUnwrap(VolumeRenderRegressionFixture.imagePixelSummary(image))
+
+            XCTAssertEqual(summary.maxBlue, 0, "compositing \(compositing)")
+            XCTAssertEqual(summary.maxGreen, 0, "compositing \(compositing)")
+            XCTAssertEqual(summary.maxRed, 0, "compositing \(compositing)")
+        }
+    }
+
     private func makeDataset() -> VolumeDataset {
         VolumeRenderRegressionFixture.dataset()
     }

@@ -39,13 +39,13 @@ public enum ProjectionMode: CaseIterable, Hashable, Sendable {
     }
 }
 
-public enum ViewportType: Hashable, Sendable {
+package enum ViewportType: Hashable, Sendable {
     case volume3D
     case mpr(axis: Axis)
     case projection(mode: ProjectionMode)
 }
 
-public struct ViewportDescriptor: Hashable, Sendable {
+package struct ViewportDescriptor: Hashable, Sendable {
     public var type: ViewportType
     public var initialSize: CGSize
     public var label: String?

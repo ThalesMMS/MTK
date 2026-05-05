@@ -19,7 +19,7 @@ import simd
 /// that cross into `MTKRenderingEngine` perform GPU work through that engine actor.
 @MainActor
 public final class ClinicalViewportGridController: ObservableObject {
-    public let engine: MTKRenderingEngine
+    package let engine: MTKRenderingEngine
     public let axialViewportID: ViewportID
     public let coronalViewportID: ViewportID
     public let sagittalViewportID: ViewportID
@@ -35,11 +35,14 @@ public final class ClinicalViewportGridController: ObservableObject {
     @Published public internal(set) var normalizedPositions: [MTKCore.Axis: Float] = ClinicalViewportGridController.centeredNormalizedPositions
     @Published public internal(set) var crosshairOffsets: [MTKCore.Axis: CGPoint] = ClinicalViewportGridController.centeredCrosshairOffsets
     @Published public internal(set) var sharedResourceHandle: VolumeResourceHandle?
+    @Published public internal(set) var volumeLayers: [MTKCore.VolumeLayer] = []
+    @Published public internal(set) var surfaceMeshLayers: [SurfaceMeshLayer] = []
     @Published public internal(set) var datasetApplied = false
     @Published public internal(set) var renderQualityState: RenderQualityState = .settled
     @Published public internal(set) var lastRenderErrors: [ViewportID: any Error] = [:]
     @Published public internal(set) var lastRenderError: (any Error)?
     @Published public internal(set) var volumeViewportMode: ClinicalVolumeViewportMode = .dvr
+    @Published public internal(set) var volumeClipping: VolumeClippingState = .disabled
     @Published public internal(set) var latestTimingSnapshot = ClinicalViewportTimingSnapshot()
     @Published public internal(set) var debugSnapshots: [ViewportID: ClinicalViewportDebugSnapshot] = [:]
 
@@ -55,6 +58,7 @@ public final class ClinicalViewportGridController: ObservableObject {
     var volumeCameraOffset = SIMD3<Float>(0, 0, 2)
     var volumeCameraUp = SIMD3<Float>(0, 1, 0)
     var currentDataset: VolumeDataset?
+    var currentVolumeTransferFunction: VolumeTransferFunction?
     var displayTransformsByAxis: [MTKCore.Axis: MPRDisplayTransform] = [:]
     var viewportAxesByID: [ViewportID: MTKCore.Axis] = [:]
 #if DEBUG
@@ -212,6 +216,7 @@ public final class ClinicalViewportGridController: ObservableObject {
         }
         sharedResourceHandle = nil
         currentDataset = nil
+        currentVolumeTransferFunction = nil
         displayTransformsByAxis.removeAll()
         datasetApplied = false
         lastRenderErrors.removeAll()
@@ -327,6 +332,7 @@ public final class ClinicalViewportGridController: ObservableObject {
             try await configureVolumeWindow(windowLevel.range)
             try await configureVolumeCamera()
             try await configureVolumeRenderQuality()
+            try await configureVolumeClipping()
             datasetApplied = true
 
             let volumeTextureLabel = await engine.volumeTextureLabel(for: volumeViewportID)
@@ -350,6 +356,7 @@ public final class ClinicalViewportGridController: ObservableObject {
             }
             sharedResourceHandle = nil
             currentDataset = nil
+            currentVolumeTransferFunction = nil
             displayTransformsByAxis.removeAll()
             viewportTimings.removeAll()
             latestTimingSnapshot = ClinicalViewportTimingSnapshot()
@@ -386,9 +393,109 @@ public final class ClinicalViewportGridController: ObservableObject {
     /// - Parameter transferFunction: The transfer function to apply to the volume rendering; pass `nil` to clear it.
     /// - Throws: Any error returned by the rendering engine while configuring the volume viewport.
     public func setTransferFunction(_ transferFunction: TransferFunction?) async throws {
+        let converted = transferFunction.map(Self.volumeTransferFunction)
         try await engine.configure(volumeViewportID,
-                                   transferFunction: transferFunction.map(Self.volumeTransferFunction))
+                                   transferFunction: converted)
+        currentVolumeTransferFunction = converted
         scheduleRender(for: volumeViewportID)
+    }
+
+    public func setVolumeLayers(_ layers: [MTKCore.VolumeLayer]) async {
+        volumeLayers = layers
+        await commitVolumeLayers()
+    }
+
+    public func setSurfaceMeshLayers(_ layers: [SurfaceMeshLayer]) async {
+        surfaceMeshLayers = layers
+        try? await engine.configure(volumeViewportID, surfaceMeshLayers: layers)
+        if datasetApplied {
+            scheduleRender(for: volumeViewportID)
+        }
+    }
+
+    public func setVolumeClipping(_ clipping: VolumeClippingState) async throws {
+        volumeClipping = clipping
+        try await configureVolumeClipping()
+        updateDebugSnapshot(for: volumeViewportID) { snapshot in
+            snapshot.lastPassExecuted = "configureVolumeClipping"
+            snapshot.presentationStatus = "scheduled"
+            snapshot.lastError = nil
+        }
+        if datasetApplied {
+            scheduleRender(for: volumeViewportID)
+        }
+    }
+
+    public func clearVolumeClipping() async throws {
+        try await setVolumeClipping(.disabled)
+    }
+
+    public func setVolumeLayerVisibility(id: String, isVisible: Bool) async {
+        guard let index = volumeLayers.firstIndex(where: { $0.id == id }),
+              volumeLayers[index].isVisible != isVisible else {
+            return
+        }
+        volumeLayers[index].isVisible = isVisible
+        await commitVolumeLayers()
+    }
+
+    public func setVolumeLayerOpacity(id: String, opacity: Float) async {
+        guard let index = volumeLayers.firstIndex(where: { $0.id == id }),
+              volumeLayers[index].opacity != opacity else {
+            return
+        }
+        volumeLayers[index].opacity = opacity
+        await commitVolumeLayers()
+    }
+
+    public func setVolumeLayerBlendMode(id: String, blendMode: MTKCore.VolumeLayerBlendMode) async {
+        guard let index = volumeLayers.firstIndex(where: { $0.id == id }),
+              volumeLayers[index].blendMode != blendMode else {
+            return
+        }
+        volumeLayers[index].blendMode = blendMode
+        await commitVolumeLayers()
+    }
+
+    private func commitVolumeLayers() async {
+        do {
+            try await engine.configure(allViewportIDs, volumeLayers: volumeLayers)
+            clearError(for: volumeViewportID)
+            scheduleRendersForVolumeLayers()
+        } catch {
+            recordError(error, for: volumeViewportID)
+        }
+    }
+
+    private func scheduleRendersForVolumeLayers() {
+        scheduleMPRRenderAll()
+        if volumeLayers.contains(where: { $0.scalarVolume != nil }) {
+            scheduleRender(for: volumeViewportID)
+        }
+    }
+
+    public func setSurfaceMeshLayerVisibility(id: String, isVisible: Bool) async {
+        guard let index = surfaceMeshLayers.firstIndex(where: { $0.id == id }),
+              surfaceMeshLayers[index].isVisible != isVisible else {
+            return
+        }
+        surfaceMeshLayers[index].isVisible = isVisible
+        try? await engine.configure(volumeViewportID, surfaceMeshLayers: surfaceMeshLayers)
+        if datasetApplied {
+            scheduleRender(for: volumeViewportID)
+        }
+    }
+
+    public func setSurfaceMeshLayerOpacity(id: String, opacity: Float) async {
+        guard let index = surfaceMeshLayers.firstIndex(where: { $0.id == id }),
+              surfaceMeshLayers[index].opacity != opacity else {
+            return
+        }
+        surfaceMeshLayers[index].opacity = opacity
+        try? await engine.configure(volumeViewportID, surfaceMeshLayers: surfaceMeshLayers)
+        if datasetApplied {
+            scheduleRender(for: volumeViewportID)
+        }
     }
 
     /// Reconfigures the volume viewport to the given mode, validates the engine's resolved descriptor, updates debug state, and schedules a render.

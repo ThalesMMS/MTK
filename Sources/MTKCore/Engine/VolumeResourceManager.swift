@@ -598,7 +598,8 @@ final class VolumeResourceManager {
                       pixelFormat: .int16Signed,
                       intensityRange: descriptor.intensityRange,
                       orientation: descriptor.orientation,
-                      recommendedWindow: descriptor.recommendedWindow)
+                      recommendedWindow: descriptor.recommendedWindow,
+                      clinicalMetadata: descriptor.clinicalMetadata)
     }
 
 

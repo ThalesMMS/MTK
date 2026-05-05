@@ -198,6 +198,45 @@ final class VolumeViewportControllerAdapterTests: XCTestCase {
         }
     }
 
+    func testVolumeLayerControlsUpdateControllerStateAndScheduleRender() async throws {
+        let device = try requireMetalDevice()
+        let controller = try makeController(device: device)
+        let dataset = makeSyntheticDataset()
+        await controller.applyDataset(dataset)
+        let layer = try makeLabelmapLayer(for: dataset)
+        let beforeSet = controller.renderGeneration
+
+        await controller.setVolumeLayers([layer])
+
+        XCTAssertEqual(controller.volumeLayers, [layer])
+        XCTAssertGreaterThan(controller.renderGeneration, beforeSet)
+
+        await controller.setVolumeLayerVisibility(id: layer.id, isVisible: false)
+        XCTAssertEqual(controller.volumeLayers.first?.isVisible, false)
+
+        await controller.setVolumeLayerOpacity(id: layer.id, opacity: 0.2)
+        XCTAssertEqual(controller.volumeLayers.first?.opacity, 0.2)
+    }
+
+    func testSurfaceMeshLayerControlsUpdateControllerStateAndScheduleRender() async throws {
+        let device = try requireMetalDevice()
+        let controller = try makeController(device: device)
+        await controller.applyDataset(makeSyntheticDataset())
+        let layer = makeSurfaceMeshLayer()
+        let beforeSet = controller.renderGeneration
+
+        await controller.setSurfaceMeshLayers([layer])
+
+        XCTAssertEqual(controller.surfaceMeshLayers, [layer])
+        XCTAssertGreaterThan(controller.renderGeneration, beforeSet)
+
+        await controller.setSurfaceMeshLayerVisibility(id: layer.id, isVisible: false)
+        XCTAssertEqual(controller.surfaceMeshLayers.first?.isVisible, false)
+
+        await controller.setSurfaceMeshLayerOpacity(id: layer.id, opacity: 0.2)
+        XCTAssertEqual(controller.surfaceMeshLayers.first?.opacity, 0.2)
+    }
+
     func testMPRSliceChangeInvalidatesCachedTextureFrame() async throws {
         let device = try requireMetalDevice()
         let controller = try makeController(device: device)
@@ -423,6 +462,47 @@ final class VolumeViewportControllerAdapterTests: XCTestCase {
 
     private func makeSyntheticDataset() -> VolumeDataset {
         VolumeRenderRegressionFixture.dataset()
+    }
+
+    private func makeLabelmapLayer(for base: VolumeDataset) throws -> VolumeLayer {
+        let values = [UInt16](repeating: 1, count: base.dimensions.voxelCount)
+        let dataset = VolumeDataset(
+            data: values.withUnsafeBytes { Data($0) },
+            dimensions: base.dimensions,
+            spacing: base.spacing,
+            pixelFormat: .int16Unsigned,
+            intensityRange: 0...1,
+            orientation: base.orientation
+        )
+        let labelmap = try LabelmapVolume(
+            dataset: dataset,
+            segments: [LabelmapSegment(label: 1, color: SIMD4<Float>(1, 0, 0, 1))]
+        )
+        return VolumeLayer(id: "volume-controller-layer",
+                           labelmap: labelmap,
+                           opacity: 0.5)
+    }
+
+    private func makeSurfaceMeshLayer() -> SurfaceMeshLayer {
+        let mesh = SurfaceMesh(
+            id: "volume-controller-surface-mesh",
+            vertices: [
+                SIMD3<Float>(0.2, 0.2, 0.5),
+                SIMD3<Float>(0.8, 0.2, 0.5),
+                SIMD3<Float>(0.5, 0.8, 0.5)
+            ],
+            normals: [
+                SIMD3<Float>(0, 0, 1),
+                SIMD3<Float>(0, 0, 1),
+                SIMD3<Float>(0, 0, 1)
+            ],
+            indices: [0, 1, 2],
+            coordinateSpace: .textureNormalized
+        )
+        return SurfaceMeshLayer(id: "volume-controller-surface-layer",
+                                mesh: mesh,
+                                material: SurfaceMeshMaterial(color: SIMD4<Float>(1, 0, 0, 1)),
+                                opacity: 0.5)
     }
 
     private func waitForRenderedTexture(_ controller: VolumeViewportController,

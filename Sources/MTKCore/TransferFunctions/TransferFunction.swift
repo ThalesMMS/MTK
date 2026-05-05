@@ -54,11 +54,13 @@ import simd
 /// ```
 ///
 /// - SeeAlso: `VolumeTransferFunctionLibrary`, `VolumeRenderingBuiltinPreset`
-public struct TransferFunction: Codable {
+public struct TransferFunction: Codable, Equatable, Sendable {
+    public static let currentVersion = 1
+
     /// Color space for color point interpolation.
     ///
     /// Defines how RGB color values are interpreted and interpolated.
-    public enum ColorSpace: String, Codable {
+    public enum ColorSpace: String, Codable, Equatable, Sendable {
         /// Linear RGB color space (no gamma correction).
         case linear
 
@@ -87,7 +89,7 @@ public struct TransferFunction: Codable {
     ///
     /// Represents a color with red, green, blue, and alpha components.
     /// Supports arithmetic operations for color interpolation.
-    public struct RGBAColor: Codable, Sizeable {
+    public struct RGBAColor: Codable, Equatable, Sendable, Sizeable {
         /// Red component (0...1).
         public var r: Float = 0
 
@@ -139,7 +141,7 @@ public struct TransferFunction: Codable {
     ///
     /// Used to define the color transfer function. Colors are interpolated
     /// linearly between control points.
-    public struct ColorPoint: Codable {
+    public struct ColorPoint: Codable, Equatable, Sendable {
         /// Volume data intensity value.
         ///
         /// Should be within the transfer function's `minimumValue...maximumValue` range.
@@ -147,13 +149,18 @@ public struct TransferFunction: Codable {
 
         /// RGBA color at this intensity.
         public var colourValue: RGBAColor = .init()
+
+        public init(dataValue: Float = 0, colourValue: RGBAColor = .init()) {
+            self.dataValue = dataValue
+            self.colourValue = colourValue
+        }
     }
 
     /// A control point mapping a data value to an alpha (opacity) value.
     ///
     /// Used to define the opacity transfer function. Alpha values are interpolated
     /// linearly between control points.
-    public struct AlphaPoint: Codable {
+    public struct AlphaPoint: Codable, Equatable, Sendable {
         /// Volume data intensity value.
         ///
         /// Should be within the transfer function's `minimumValue...maximumValue` range.
@@ -161,12 +168,17 @@ public struct TransferFunction: Codable {
 
         /// Opacity at this intensity (0 = transparent, 1 = opaque).
         public var alphaValue: Float = 0
+
+        public init(dataValue: Float = 0, alphaValue: Float = 0) {
+            self.dataValue = dataValue
+            self.alphaValue = alphaValue
+        }
     }
 
     /// Transfer function file format version.
     ///
     /// Used for forward/backward compatibility when loading `.tf` files.
-    public var version: Int?
+    public var version: Int? = Self.currentVersion
 
     /// Human-readable name for this transfer function (e.g., "CT Bone", "MR Angio").
     public var name: String = ""
@@ -177,11 +189,29 @@ public struct TransferFunction: Codable {
     /// Use `sanitizedColourPoints()` to ensure valid ranges and endpoints.
     public var colourPoints: [ColorPoint] = []
 
+    /// Metadata describing the clinical use, modality, tissue target, and provenance.
+    ///
+    /// Older `.tf` files may omit this field. New clinical presets populate it so
+    /// transfer functions can be shared, versioned, and grouped in UI.
+    public var metadata: TransferFunctionMetadata?
+
+    /// Rendering mode the preset was authored for.
+    ///
+    /// This does not replace user choice; it is the recommended default when applying
+    /// a preset to a viewport.
+    public var renderingIntent: TransferFunctionRenderingIntent?
+
     /// Alpha (opacity) control points defining the opacity transfer function.
     ///
     /// Opacity is interpolated linearly between points based on volume intensity.
     /// Use `sanitizedAlphaPoints()` to ensure valid ranges and endpoints.
     public var alphaPoints: [AlphaPoint] = []
+
+    /// Optional gradient opacity function multiplied into scalar opacity for DVR.
+    ///
+    /// When present, MTK builds a 2D transfer-function texture whose X axis is
+    /// intensity and Y axis is normalized gradient magnitude.
+    public var gradientOpacity: GradientOpacityFunction?
 
     /// Minimum volume intensity value.
     ///
@@ -215,8 +245,11 @@ public struct TransferFunction: Codable {
     private enum CodingKeys: String, CodingKey {
         case version
         case name
+        case metadata
+        case renderingIntent
         case colourPoints
         case alphaPoints
+        case gradientOpacity
         case minimumValue = "min"
         case maximumValue = "max"
         case shift
@@ -225,10 +258,13 @@ public struct TransferFunction: Codable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        version = try container.decodeIfPresent(Int.self, forKey: .version)
+        version = try container.decodeIfPresent(Int.self, forKey: .version) ?? Self.currentVersion
         name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
+        metadata = try container.decodeIfPresent(TransferFunctionMetadata.self, forKey: .metadata)
+        renderingIntent = try container.decodeIfPresent(TransferFunctionRenderingIntent.self, forKey: .renderingIntent)
         colourPoints = try container.decodeIfPresent([ColorPoint].self, forKey: .colourPoints) ?? []
         alphaPoints = try container.decodeIfPresent([AlphaPoint].self, forKey: .alphaPoints) ?? []
+        gradientOpacity = try container.decodeIfPresent(GradientOpacityFunction.self, forKey: .gradientOpacity)
         minimumValue = try container.decodeIfPresent(Float.self, forKey: .minimumValue) ?? minimumValue
         maximumValue = try container.decodeIfPresent(Float.self, forKey: .maximumValue) ?? maximumValue
         shift = try container.decodeIfPresent(Float.self, forKey: .shift) ?? shift

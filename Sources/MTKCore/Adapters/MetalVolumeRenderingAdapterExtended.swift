@@ -104,13 +104,9 @@ extension MetalVolumeRenderingAdapter: VolumeRenderingPortExtended {
     // MARK: - Clip Controls
 
     public func updateClipBounds(xMin: Float, xMax: Float, yMin: Float, yMax: Float, zMin: Float, zMax: Float) async throws {
-        let sanitized = ClipBoundsSnapshot(xMin: min(xMin, xMax),
-                                           xMax: max(xMin, xMax),
-                                           yMin: min(yMin, yMax),
-                                           yMax: max(yMin, yMax),
-                                           zMin: min(zMin, zMax),
-                                           zMax: max(zMin, zMax))
-        extendedState.clipBounds = sanitized
+        let cropBox = try VolumeCropBox(textureMin: SIMD3<Float>(xMin, yMin, zMin),
+                                        textureMax: SIMD3<Float>(xMax, yMax, zMax))
+        extendedState.clipBounds = ClipBoundsSnapshot(cropBox: cropBox)
         if extendedState.clipPlanePreset != 0 || abs(extendedState.clipPlaneOffset) > 1e-5 {
             if !clipPlaneApproximationLogged {
                 logger.info("Clip-plane/quaternion inputs reach MTK adapter; current Metal volume rendering applies axis-aligned clip bounds and preset clip planes.")
@@ -124,10 +120,16 @@ extension MetalVolumeRenderingAdapter: VolumeRenderingPortExtended {
     }
 
     public func setClipPlanePreset(_ preset: Int) async throws {
+        guard (0...3).contains(preset) else {
+            throw VolumeClippingError.invalidClipPlanePreset(preset)
+        }
         extendedState.clipPlanePreset = preset
     }
 
     public func setClipPlaneOffset(_ offset: Float) async throws {
+        guard offset.isFinite else {
+            throw VolumeClippingError.nonFiniteClipPlane
+        }
         extendedState.clipPlaneOffset = offset
     }
 

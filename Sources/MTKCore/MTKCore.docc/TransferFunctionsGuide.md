@@ -297,6 +297,73 @@ try await adapter.setPreset(.ctSoftTissue)
 try await adapter.setHuWindow(min: -100, max: 200)
 ```
 
+## Serializable Clinical Transfer Functions
+
+`TransferFunction` is the public v1 serialization contract for clinical transfer functions. Existing `.tf` files remain valid: when `version`, `metadata`, `renderingIntent`, or `gradientOpacity` are missing, MTK decodes the file as version 1 and preserves the existing `name`, `min`, `max`, `shift`, `colorSpace`, `colourPoints`, and `alphaPoints` fields.
+
+The v1 semantics are:
+
+- RGB color comes from `colourPoints`.
+- Scalar opacity comes from the piecewise `alphaPoints` function.
+- `colourValue.a` is preserved during round-trip for compatibility, but `alphaPoints` is the opacity contract.
+- `metadata` describes modality, tissue target, display name, provenance, and UI tags.
+- `renderingIntent` records the recommended mode (`dvr`, `mip`, `minip`, or `aip`) for applying the preset.
+- `gradientOpacity`, when present, multiplies scalar opacity by a gradient-magnitude opacity curve and uses a 2D transfer-function lookup texture.
+
+### Save and Load JSON
+
+```swift
+let preset = try ClinicalTransferFunctionPreset.ctVRBone.loadTransferFunction()
+
+let encoder = JSONEncoder()
+encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+let data = try encoder.encode(preset)
+try data.write(to: url)
+
+let restored = try JSONDecoder().decode(TransferFunction.self, from: data)
+```
+
+### Apply to a Clinical Viewport
+
+MTKUI viewports can apply the full public contract, including the preset's rendering intent:
+
+```swift
+import MTKCore
+import MTKUI
+
+let session = try await ClinicalViewportSession.make(dataset: dataset)
+try await session.applyClinicalTransferFunctionPreset(.ctMinIPLung)
+
+let custom = try JSONDecoder().decode(TransferFunction.self, from: savedData)
+try await session.applyTransferFunction(custom)
+```
+
+For lower-level MTKCore rendering, convert the public model to the render request type:
+
+```swift
+let transfer = try ClinicalTransferFunctionPreset.ctVRBone
+    .loadTransferFunction()
+    .volumeTransferFunction()
+
+let request = VolumeRenderRequest(
+    dataset: dataset,
+    transferFunction: transfer,
+    viewportSize: CGSize(width: 512, height: 512),
+    camera: camera,
+    samplingDistance: 1.0 / 512.0,
+    compositing: .frontToBack,
+    quality: .interactive
+)
+```
+
+### Built-In Clinical Catalog
+
+`ClinicalTransferFunctionPreset` wraps the existing CT/MR transfer-function resources with clinical metadata and rendering intent. The catalog includes lung, bone, soft tissue, vascular/arteries, pulmonary arteries, CT angio MIP, MR angio MIP, MinIP lung, and gradient-aware VR bone presets.
+
+### Format Evolution
+
+The v1 format is additive. New readers should ignore unknown fields, and new writers should keep the existing field names so older MTK versions can still recover the color and opacity curves. Future gradient or segmentation extensions should be added as optional top-level fields rather than changing the meaning of `colourPoints` or `alphaPoints`.
+
 ## Practical Workflows
 
 ### Workflow 1: CT Abdomen Exploration

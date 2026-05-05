@@ -27,22 +27,21 @@ public enum MPRPlaneGeometryFactory {
             originVoxel = SIMD3<Float>(sliceIndex, 0, 0)
             axisUVoxel = SIMD3<Float>(0, spans.y, 0)
             axisVVoxel = SIMD3<Float>(0, 0, spans.z)
-            expectedNormal = normalized(vector: dataset.orientation.row,
+            expectedNormal = normalized(vector: dataset.imageData.rowDirection,
                                         fallback: SIMD3<Float>(1, 0, 0))
         case .y:
             sliceIndex = spans.y * clampedPosition
             originVoxel = SIMD3<Float>(spans.x, sliceIndex, 0)
             axisUVoxel = SIMD3<Float>(-spans.x, 0, 0)
             axisVVoxel = SIMD3<Float>(0, 0, spans.z)
-            expectedNormal = normalized(vector: dataset.orientation.column,
+            expectedNormal = normalized(vector: dataset.imageData.columnDirection,
                                         fallback: SIMD3<Float>(0, 1, 0))
         case .z:
             sliceIndex = spans.z * clampedPosition
             originVoxel = SIMD3<Float>(0, 0, sliceIndex)
             axisUVoxel = SIMD3<Float>(spans.x, 0, 0)
             axisVVoxel = SIMD3<Float>(0, spans.y, 0)
-            expectedNormal = normalized(cross: dataset.orientation.row,
-                                        dataset.orientation.column,
+            expectedNormal = normalized(vector: dataset.imageData.sliceDirection,
                                         fallback: SIMD3<Float>(0, 0, 1))
         }
 
@@ -70,31 +69,18 @@ public enum MPRPlaneGeometryFactory {
 
     @_spi(Testing)
     public static func makeGeometry(for dataset: VolumeDataset) -> DICOMGeometry {
-        // Preserve the dataset's established world units so every transform
-        // used by the plane geometry and slab thickness calculation stays aligned.
-        DICOMGeometry(
-            cols: Int32(dataset.dimensions.width),
-            rows: Int32(dataset.dimensions.height),
-            slices: Int32(dataset.dimensions.depth),
-            spacingX: Float(dataset.spacing.x),
-            spacingY: Float(dataset.spacing.y),
-            spacingZ: Float(dataset.spacing.z),
-            iopRow: dataset.orientation.row,
-            iopCol: dataset.orientation.column,
-            ipp0: dataset.orientation.origin
-        )
+        DICOMGeometry(imageData: dataset.imageData)
     }
 
     @_spi(Testing)
     public static func effectiveNormalSpacing(for dataset: VolumeDataset,
                                               plane: MPRPlaneGeometry) -> Float {
         let normal = normalized(vector: plane.normalWorld, fallback: SIMD3<Float>(0, 0, 1))
-        let sliceNormal = normalized(cross: dataset.orientation.row,
-                                     dataset.orientation.column,
+        let sliceNormal = normalized(vector: dataset.imageData.sliceDirection,
                                      fallback: SIMD3<Float>(0, 0, 1))
-        let axisX = normalized(vector: dataset.orientation.row, fallback: SIMD3<Float>(1, 0, 0))
+        let axisX = normalized(vector: dataset.imageData.rowDirection, fallback: SIMD3<Float>(1, 0, 0))
             * Float(dataset.spacing.x)
-        let axisY = normalized(vector: dataset.orientation.column, fallback: SIMD3<Float>(0, 1, 0))
+        let axisY = normalized(vector: dataset.imageData.columnDirection, fallback: SIMD3<Float>(0, 1, 0))
             * Float(dataset.spacing.y)
         let axisZ = sliceNormal * Float(dataset.spacing.z)
         let projectedSpacings = [

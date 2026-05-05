@@ -45,6 +45,14 @@ extension VolumeViewportController {
                 telemetryQualityState = plan.qualityState
                 RenderingTelemetry.volumeRenderScheduled(qualityState: plan.qualityState)
                 let frame = try await renderVolumeFrame(using: plan)
+                if !surfaceMeshLayers.isEmpty {
+                    let renderer = try surfaceMeshRendererInstance()
+                    try await renderer.render(layers: surfaceMeshLayers,
+                                              dataset: dataset,
+                                              camera: plan.request.camera,
+                                              targetTexture: frame.texture,
+                                              clipping: volumeClipping)
+                }
                 guard !Task.isCancelled, generation == renderGeneration else { return }
                 lastRenderError = nil
                 try viewportSurface.present(frame: frame)
@@ -58,9 +66,11 @@ extension VolumeViewportController {
                                                 index: index,
                                                 blend: blend,
                                                 slab: slab)
+                let labelmapOverlays = try await mprLabelmapOverlays(for: frame)
                 guard !Task.isCancelled, generation == renderGeneration else { return }
                 try viewportSurface.present(mprFrame: frame,
-                                            window: resolvedMPRWindow(for: dataset))
+                                            window: resolvedMPRWindow(for: dataset),
+                                            labelmapOverlays: labelmapOverlays)
                 lastRenderError = nil
                 RenderingTelemetry.mprRenderCompleted(duration: Date().timeIntervalSince(started),
                                                       blend: blend.coreBlend,
@@ -186,8 +196,24 @@ extension VolumeViewportController {
             ),
             samplingDistance: 1 / samplingStep,
             compositing: method.compositing,
-            quality: forceFinalQuality ? .production : parameters.qualityTier
+            quality: forceFinalQuality ? .production : parameters.qualityTier,
+            clipping: volumeClipping,
+            layers: makeVolumeRenderLayers(baseDataset: dataset,
+                                           baseTransferFunction: transfer)
         )
+    }
+
+    private func makeVolumeRenderLayers(baseDataset: VolumeDataset,
+                                        baseTransferFunction: VolumeTransferFunction) -> [MTKCore.VolumeLayer] {
+        var layers = [
+            MTKCore.VolumeLayer(id: VolumeRenderRequest.primaryVolumeLayerID,
+                                dataset: baseDataset,
+                                transferFunction: baseTransferFunction)
+        ]
+        layers.append(contentsOf: volumeLayers.filter { layer in
+            layer.scalarVolume != nil && layer.isVisible && layer.clampedOpacity > 0
+        })
+        return layers
     }
 
     /// Maps a volume render request's quality tier to the controller's telemetry-oriented render quality state.

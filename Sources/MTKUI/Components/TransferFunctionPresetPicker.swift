@@ -29,3 +29,25 @@ public struct TransferFunctionPresetPicker: View {
         }
     }
 }
+
+/// A picker for clinical transfer-function presets that carry metadata and rendering intent.
+public struct ClinicalTransferFunctionPresetPicker: View {
+    @Binding private var selection: ClinicalTransferFunctionPreset
+    private let label: LocalizedStringKey
+
+    public init(
+        label: LocalizedStringKey = "Preset",
+        selection: Binding<ClinicalTransferFunctionPreset>
+    ) {
+        self.label = label
+        self._selection = selection
+    }
+
+    public var body: some View {
+        Picker(label, selection: $selection) {
+            ForEach(ClinicalTransferFunctionPreset.allCases, id: \.self) { preset in
+                Text(preset.displayName).tag(preset)
+            }
+        }
+    }
+}

@@ -61,6 +61,7 @@ public struct VolumeUploadDescriptor: Sendable, Equatable {
     public let orientation: VolumeOrientation
     public let recommendedWindow: ClosedRange<Int32>?
     public let cacheKey: String?
+    public let clinicalMetadata: ClinicalImageMetadata?
 
     public init(dimensions: VolumeDimensions,
                 spacing: VolumeSpacing,
@@ -68,7 +69,8 @@ public struct VolumeUploadDescriptor: Sendable, Equatable {
                 intensityRange: ClosedRange<Int32>? = nil,
                 orientation: VolumeOrientation = .canonical,
                 recommendedWindow: ClosedRange<Int32>? = nil,
-                cacheKey: String? = nil) {
+                cacheKey: String? = nil,
+                clinicalMetadata: ClinicalImageMetadata? = nil) {
         self.dimensions = dimensions
         self.spacing = spacing
         self.sourcePixelFormat = sourcePixelFormat
@@ -76,5 +78,16 @@ public struct VolumeUploadDescriptor: Sendable, Equatable {
         self.orientation = orientation
         self.recommendedWindow = recommendedWindow
         self.cacheKey = cacheKey
+        self.clinicalMetadata = clinicalMetadata
+    }
+
+    public var imageData: ImageData3D {
+        ImageData3D(dimensions: dimensions,
+                    spacing: spacing,
+                    orientation: orientation,
+                    pixelFormat: .int16Signed,
+                    intensityRange: intensityRange,
+                    recommendedWindow: recommendedWindow,
+                    clinicalMetadata: clinicalMetadata)
     }
 }

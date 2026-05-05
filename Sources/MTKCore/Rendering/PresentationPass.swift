@@ -29,7 +29,7 @@ public struct PresentationFrameMetadata: Sendable {
         self.renderGraphRoute = renderGraphRoute
     }
 
-    public init(frame: RenderFrame) {
+    package init(frame: RenderFrame) {
         self.init(
             requestedDrawableSize: frame.metadata.viewportSize,
             viewportType: frame.route.viewportType.profilingName,
@@ -114,7 +114,7 @@ public struct PresentationPass: Sendable {
     public init() {}
 
     @discardableResult
-    public func present(_ frame: RenderFrame,
+    package func present(_ frame: RenderFrame,
                         to drawable: (any CAMetalDrawable)?,
                         commandQueue: any MTLCommandQueue,
                         onCommandBufferFailure: ((PresentationPassCommandBufferError) -> Void)? = nil) throws -> CFAbsoluteTime {
@@ -130,8 +130,20 @@ public struct PresentationPass: Sendable {
     public func present(_ frame: VolumeRenderFrame,
                         to drawable: (any CAMetalDrawable)?,
                         commandQueue: any MTLCommandQueue,
-                        lease: OutputTextureLease? = nil,
                         onCommandBufferFailure: ((PresentationPassCommandBufferError) -> Void)? = nil) throws -> CFAbsoluteTime {
+        try present(frame,
+                    to: drawable,
+                    commandQueue: commandQueue,
+                    lease: nil,
+                    onCommandBufferFailure: onCommandBufferFailure)
+    }
+
+    @discardableResult
+    package func present(_ frame: VolumeRenderFrame,
+                         to drawable: (any CAMetalDrawable)?,
+                         commandQueue: any MTLCommandQueue,
+                         lease: OutputTextureLease?,
+                         onCommandBufferFailure: ((PresentationPassCommandBufferError) -> Void)? = nil) throws -> CFAbsoluteTime {
         try present(frame.texture,
                     metadata: PresentationFrameMetadata(frame: frame),
                     to: drawable,
@@ -150,8 +162,22 @@ public struct PresentationPass: Sendable {
                         metadata: PresentationFrameMetadata,
                         to drawable: (any CAMetalDrawable)?,
                         commandQueue: any MTLCommandQueue,
-                        lease: OutputTextureLease? = nil,
                         onCommandBufferFailure: ((PresentationPassCommandBufferError) -> Void)? = nil) throws -> CFAbsoluteTime {
+        try present(sourceTexture,
+                    metadata: metadata,
+                    to: drawable,
+                    commandQueue: commandQueue,
+                    lease: nil,
+                    onCommandBufferFailure: onCommandBufferFailure)
+    }
+
+    @discardableResult
+    package func present(_ sourceTexture: any MTLTexture,
+                         metadata: PresentationFrameMetadata,
+                         to drawable: (any CAMetalDrawable)?,
+                         commandQueue: any MTLCommandQueue,
+                         lease: OutputTextureLease?,
+                         onCommandBufferFailure: ((PresentationPassCommandBufferError) -> Void)? = nil) throws -> CFAbsoluteTime {
         let startedAt = CFAbsoluteTimeGetCurrent()
         Self.lifecycleLogger.info(
             "Presentation request sourceLabel=\(sourceTexture.label ?? "nil") sourceSize=\(sourceTexture.width)x\(sourceTexture.height) sourcePixelFormat=\(sourceTexture.pixelFormat) drawableRequestedSize=\(Int(metadata.requestedDrawableSize.width))x\(Int(metadata.requestedDrawableSize.height)) viewportType=\(metadata.viewportType) renderMode=\(metadata.renderMode)"
@@ -266,8 +292,20 @@ public struct PresentationPass: Sendable {
     public func present(_ sourceTexture: any MTLTexture,
                         to drawable: (any CAMetalDrawable)?,
                         commandQueue: any MTLCommandQueue,
-                        lease: OutputTextureLease? = nil,
                         onCommandBufferFailure: ((PresentationPassCommandBufferError) -> Void)? = nil) throws -> CFAbsoluteTime {
+        try present(sourceTexture,
+                    to: drawable,
+                    commandQueue: commandQueue,
+                    lease: nil,
+                    onCommandBufferFailure: onCommandBufferFailure)
+    }
+
+    @discardableResult
+    package func present(_ sourceTexture: any MTLTexture,
+                         to drawable: (any CAMetalDrawable)?,
+                         commandQueue: any MTLCommandQueue,
+                         lease: OutputTextureLease?,
+                         onCommandBufferFailure: ((PresentationPassCommandBufferError) -> Void)? = nil) throws -> CFAbsoluteTime {
         try present(
             sourceTexture,
             metadata: .textureOnly(size: CGSize(width: sourceTexture.width, height: sourceTexture.height)),

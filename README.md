@@ -11,11 +11,12 @@ Swift Package with Metal-native volume rendering, SwiftUI overlays, and DICOM lo
 ![UI Screenshot](screenshots/ui.png)
 
 ## Package layout
-- `MTKCore` — Domain types (`VolumeDataset`, orientation/spacing models), Metal helpers (`MetalRaycaster`, `VolumeTextureFactory`, `ShaderLibraryLoader`), transfer function models (`AdvancedToneCurveModel`, `VolumeTransferFunctionLibrary`), runtime availability guards, and the `DicomVolumeLoader` that wraps an injected `DicomSeriesLoading` bridge.
-- `MTKUI` — SwiftUI-friendly controllers and overlays (`VolumeViewportController`, `VolumeViewportCoordinator`, `VolumeViewportContainer`, `MetalViewportView`, `MetalViewportContainer`, `MetalViewportSurface`, gesture modifiers, overlays like `CrosshairOverlayView`, `WindowLevelControlView`, and `MPRGridComposer` for tri-planar layouts). MTKUI is the current UI layer over MTKCore Metal volume/MPR adapters. `MetalViewportSurface` is the official clinical `MTKView` presentation surface.
+- `MTKCore` — Domain types (`VolumeDataset`, orientation/spacing models), Metal helpers (`MetalRaycaster`, `VolumeTextureFactory`, `ShaderLibraryLoader`), serializable clinical transfer function models (`TransferFunction`, `ClinicalTransferFunctionPreset`, `AdvancedToneCurveModel`, `VolumeTransferFunctionLibrary`), runtime availability guards, and the `DicomVolumeLoader` protocol-based importer that wraps an injected `DicomSeriesLoading` bridge. MTKCore does not depend on a concrete DICOM parser.
+- `MTKUI` — SwiftUI-friendly public viewport contracts (`StackViewport`, `VolumeViewport`, `VolumeViewport3D`, `ClinicalViewportSession`) plus containers, overlays, and compatibility controllers. MTKUI is the UI layer over MTKCore Metal volume/MPR adapters. `MetalViewportSurface` is the official clinical `MTKView` presentation surface.
+- `MTKDicomBridge` — Optional bridge product that depends on the versioned `DICOM-Decoder` package and provides `DicomDecoderSeriesLoader` plus the convenience `DicomVolumeLoader()` initializer.
 
 ## Architecture
-The accepted clinical rendering architecture is documented in [Architecture/ClinicalRenderingADR.md](Architecture/ClinicalRenderingADR.md).
+The public app-facing API contract is documented in [Architecture/PublicAPI.md](Architecture/PublicAPI.md). The accepted clinical rendering architecture is documented in [Architecture/ClinicalRenderingADR.md](Architecture/ClinicalRenderingADR.md). Multi-volume registration and resampling follow the staged plan in [Architecture/MultiVolumeRegistration.md](Architecture/MultiVolumeRegistration.md).
 
 ```text
 DICOM / VolumeDataset
@@ -48,6 +49,20 @@ Bounding geometry can be a valid internal implementation detail for ray entry an
 
 `MetalViewportSurface` is the official MTKUI surface for drawable-backed clinical presentation. It presents completed 2D `MTLTexture` frames through `PresentationPass` into an `MTKView` drawable without `CGImage` conversion. The primary flow is `compute/render pass -> persistent outputTexture -> PresentationPass -> drawable -> present`; compute directly into the drawable is not the main path because drawables are ephemeral presentation targets, acquisition can be display-paced, and presented drawables cannot be reused for scheduling, inspection, export, or overlay composition.
 
+For application code, prefer the stable public wrappers: `VolumeDataset`/`ImageData3D`, `StackViewport`, `VolumeViewport`, `VolumeViewport3D`, `ClinicalViewportSession`, clinical transfer functions, `VolumeLayer`, `SurfaceMeshLayer`, and `MetalViewportSurface`/`MetalViewportView`. `MTKRenderingEngine`, `ViewportRenderGraph`, `VolumeResourceManager`, `RenderPassNode`, and output texture pools are implementation details behind those wrappers, not the recommended product API.
+
+## Segmentation surfaces
+MTKCore exposes a minimal `SurfaceMesh` contract with vertices, normals, indices, coordinate space, bounds, and segment metadata. `MarchingCubesExtractor` provides deterministic CPU extraction from `LabelmapVolume` labels or scalar `VolumeDataset` thresholds. Extracted labelmap meshes carry the same label/segment id that MPR labelmap overlays use. Extracted meshes default to `.worldMillimeters` coordinates through the source volume affine; `.textureNormalized` is available for callers that need texture-space geometry.
+
+The v1 render path is `labelmap 3D -> SurfaceMesh -> SurfaceMeshLayer -> volume3D viewport`. `MetalSurfaceMeshRenderer` draws indexed triangles into the existing Metal output texture after volume raycasting. Opaque surfaces write mesh-local depth first, semi-transparent surfaces render afterward with stable layer-level back-to-front ordering, and volume crop/clip settings are applied to the surface fragments. True raycast-volume depth occlusion, smoothing, decimation, topology repair, advanced materials, and GPU extraction remain out of scope for this version.
+
+## Multi-volume fusion
+MTKCore and MTKUI support v1 scalar volume fusion for registered layer stacks in a 3D viewport. `VolumeLayer` can carry scalar volume content with its own `VolumeDataset`, `VolumeTransferFunction`, opacity, visibility, and blend mode. `VolumeLayerBlendMode.sourceOver` is the default alpha-over mode, and `.additive` is available for PET-like heat or dose overlays.
+
+The existing single-volume `VolumeRenderRequest(dataset:transferFunction:...)`, `VolumeViewport3D.applyDataset`, and `ClinicalViewportSession` setup paths remain source-compatible. Multi-layer rendering keeps the one-layer fast path; additional visible scalar layers are raycast separately and composited through a Metal pass, so cost scales with the number of visible scalar layers. `VolumeResourceManager` shares layer resources by handle across viewports and reports layer memory in GPU resource metrics.
+
+V1 does not implement registration. Scalar layers must already be registered and resampled into the base volume texture space; non-identity scalar transforms are rejected with a clear error. Labelmap/MPR affine overlay support remains unchanged. The v2 plan for explicit `LayerTransform`, affine consumption, CPU/GPU resampling, PET/CT, MR multimodal, dose-map, and prior/current workflows is documented in [Architecture/MultiVolumeRegistration.md](Architecture/MultiVolumeRegistration.md). Until that plan is implemented, alignment and resampling are external preprocessing requirements.
+
 ## Requirements
 - Swift 5.10, Xcode 16
 - iOS 17+ / macOS 14+
@@ -77,31 +92,40 @@ Point Xcode/SwiftPM at the `MTK` directory (local checkout or Git URL) and depen
 )
 ```
 
+Add the optional bridge only when the app wants MTK's default Swift DICOM parser:
+
+```swift
+.target(
+    name: "YourApp",
+    dependencies: [
+        .product(name: "MTKCore", package: "MTK"),
+        .product(name: "MTKDicomBridge", package: "MTK")
+    ]
+)
+```
+
 SceneKit examples may be extracted to a separate experimental package in the future, but they are not part of the main package contract.
 
 ### Migration map for former MTKSceneKit consumers
 - Replace `MTKSceneKit` volume presentation (`VolumeCubeMaterial`) with `MTKCore` rendering through `MetalVolumeRenderingAdapter` and present the resulting frames with `MTKUI` containers such as `VolumeViewportContainer` and `MetalViewportSurface`.
 - Replace `MTKSceneKit` MPR presentation (`MPRPlaneMaterial`) with `MetalMPRAdapter` plus `MTKUI` layouts such as `MPRGridComposer` or `TriplanarMPRComposer`.
-- Replace `VolumeCameraController` and `CameraPose`-driven interaction with `VolumeViewportController`, `VolumeViewportCoordinator`, and `volumeGestures(controller:state:configuration:)`.
+- Replace `VolumeCameraController` and `CameraPose`-driven interaction with `StackViewport`, `VolumeViewport`, `VolumeViewport3D`, or `ClinicalViewportSession`.
 - Replace node/plane helper usage (`SCNNode+Volumetric`) with geometry and display helpers that stay in the Metal-native path, such as `MPRPlaneGeometryFactory` and `MPRDisplayTransformFactory`.
 - If you still need a standalone 3D wrapper for non-clinical experiments, keep that code outside the main package. There is no maintained `SceneKitExamples` package in this repository today.
 
 Recommended vs Legacy:
 - Recommended: `MetalVolumeRenderingAdapter` + `VolumeViewportContainer` / Legacy: deprecated `VolumeCubeMaterial`
 - Recommended: `MetalMPRAdapter` + `MPRGridComposer` or `TriplanarMPRComposer` / Legacy: deprecated `MPRPlaneMaterial`
-- Recommended: `VolumeViewportController` or `VolumeViewportCoordinator` / Legacy: deprecated `VolumeCameraController`, `CameraPose`, `SCNNode+Volumetric`
+- Recommended: `StackViewport`, `VolumeViewport`, `VolumeViewport3D`, or `ClinicalViewportSession` / Legacy: deprecated `VolumeCameraController`, `CameraPose`, `SCNNode+Volumetric`
 
 Compatibility note:
 - The current MTK package requires iOS 17+ and macOS 14+. Downstream apps that still need older platform support or a custom 3D wrapper should keep that compatibility layer outside this package.
 - Example code for the supported migration path lives in [`Examples/BasicVolumeRendering.swift`](Examples/BasicVolumeRendering.swift), [`Examples/MPRViewer.swift`](Examples/MPRViewer.swift), [`Examples/TriplanarMPRViewer.swift`](Examples/TriplanarMPRViewer.swift), and [`Examples/DicomLoader.swift`](Examples/DicomLoader.swift).
 
 ## Reproducible local setup
-`Package.swift` currently declares `DICOM-Decoder` as a local path dependency (`./DICOM-Decoder`). For a clean checkout, place the repositories side by side before resolving dependencies:
+`Package.swift` uses a versioned URL dependency for the optional `MTKDicomBridge` product, so a clean checkout does not require a sibling `DICOM-Decoder` directory:
 
 ```bash
-mkdir mtk-workspace
-cd mtk-workspace
-git clone https://github.com/ThalesMMS/DICOM-Decoder.git
 git clone https://github.com/ThalesMMS/MTK.git
 cd MTK/MTK
 swift package resolve
@@ -132,7 +156,7 @@ Some DICOM-oriented tests rely on optional local fixtures from `MTK-Demo/DICOM_E
 - Use `VolumeTextureFactory.debugPlaceholderDataset()` only for tests or explicit debug tooling that needs a minimal 1x1x1 volume.
 
 ## Quick start (SwiftUI)
-Minimal SwiftUI viewer that applies a volume and overlays UI controls:
+Minimal SwiftUI viewer that applies a volume through the public 3D viewport contract:
 
 ```swift
 import MTKCore
@@ -140,41 +164,56 @@ import MTKUI
 import SwiftUI
 
 struct VolumePreview: View {
-    @StateObject private var coordinator = VolumeViewportCoordinator.shared
+    @StateObject private var viewport = try! VolumeViewport3D()
 
     var body: some View {
-        if let controller = coordinator.controller {
-            VolumeViewportContainer(controller: controller) {
-                OrientationOverlayView()
-                CrosshairOverlayView()
-            }
+        MetalViewportView(surface: viewport.surface)
             .task {
-                // Build a dataset from your own voxel buffer
                 let voxelCount = 256 * 256 * 128
                 let voxels = Data(repeating: 0, count: voxelCount * VolumePixelFormat.int16Signed.bytesPerVoxel)
                 let dataset = VolumeDataset(
                     data: voxels,
                     dimensions: VolumeDimensions(width: 256, height: 256, depth: 128),
-                    spacing: VolumeSpacing(x: 0.001, y: 0.001, z: 0.0015),
+                    spacing: VolumeSpacing(x: 1.0, y: 1.0, z: 1.5),
                     pixelFormat: .int16Signed,
                     intensityRange: (-1024)...3071
                 )
 
-                coordinator.apply(dataset: dataset)
-                coordinator.applyHuWindow(min: -500, max: 1200)
-                await controller.setPreset(.softTissue)
+                await viewport.applyDataset(dataset)
+                await viewport.setWindowLevel(window: 1700, level: 350)
+                try? await viewport.applyClinicalTransferFunctionPreset(.ctSoftTissue)
             }
-        } else {
-            Text("Metal unavailable")
-        }
     }
 }
 ```
 
-Add gesture handling with `volumeGestures(controller:state:configuration:)` and multi-plane layouts with `MPRGridComposer` when you need synchronized axial/coronal/sagittal slices.
+Use `StackViewport` for volume-backed slice scrolling, `VolumeViewport` for MPR/projection, and `VolumeViewport3D` for true 3D volume rendering. Use `ClinicalViewportSession` with `ClinicalViewportGrid(session:)` for the reference axial/coronal/sagittal plus 3D clinical layout.
+
+## Clinical transfer functions
+`TransferFunction` is the public JSON contract for clinical presets and user edits. Version 1 keeps existing `.tf` keys (`name`, `min`, `max`, `colourPoints`, `alphaPoints`, `shift`, `colorSpace`) and adds optional `metadata`, `renderingIntent`, and `gradientOpacity` fields. RGB color is represented by `colourPoints`; opacity is represented by the piecewise `alphaPoints` function. `colourValue.a` remains round-tripped for compatibility but does not replace `alphaPoints`.
+
+```swift
+let preset = try ClinicalTransferFunctionPreset.ctVRBone.loadTransferFunction()
+let data = try JSONEncoder().encode(preset)
+let restored = try JSONDecoder().decode(TransferFunction.self, from: data)
+
+let session = try await ClinicalViewportSession.make(dataset: dataset)
+try await session.applyTransferFunction(restored)
+```
+
+When `gradientOpacity` is present, MTK builds a 2D transfer texture and multiplies scalar opacity by gradient magnitude during DVR. Presets without `gradientOpacity` keep the legacy 1D transfer-texture path.
 
 ## Loading DICOM volumes
-`DicomVolumeLoader` orchestrates ZIP extraction and dataset construction through the pure-Swift `DicomDecoderSeriesLoader`, the canonical `DicomSeriesLoading` implementation for this package and demo. The protocol remains in place so tests and package integrators can inject mock or specialized loaders, but the demo does not use it for runtime backend switching. Progress updates can be mapped to UI with `DicomVolumeLoader.uiUpdate(from:)`.
+`DicomVolumeLoader` lives in `MTKCore` and orchestrates ZIP extraction plus `VolumeDataset` construction through any injected `DicomSeriesLoading` implementation. Use `MTKCore` alone when your app already has a `VolumeDataset` or a custom DICOM pipeline. Import `MTKDicomBridge` when you want the default pure-Swift `DicomDecoderSeriesLoader` backed by the versioned `DICOM-Decoder` dependency:
+
+```swift
+import MTKCore
+import MTKDicomBridge
+
+let loader = DicomVolumeLoader()
+```
+
+Progress updates can be mapped to UI with `DicomVolumeLoader.uiUpdate(from:)`.
 
 ## Expected inputs and outputs
 **Typical inputs**
@@ -196,16 +235,16 @@ MTK does **not** produce segmentation masks, classification labels, radiology re
 - `CommandBufferProfiler` and `VolumeRenderingDebugOptions` help surface GPU runtime behavior during development.
 
 ```swift
-func makeVolumeController() throws -> VolumeViewportController {
+func makeVolumeViewport() throws -> VolumeViewport3D {
     try MetalRuntimeAvailability.ensureAvailability()
     let status = MetalRuntimeAvailability.status()
     print("MPS available: \(status.supportsMetalPerformanceShaders)")
-    return VolumeViewportController()
+    return try VolumeViewport3D()
 }
 
 do {
-    let controller = try makeVolumeController()
-    print(controller)
+    let viewport = try makeVolumeViewport()
+    print(viewport.state.presentation)
 } catch {
     let status = MetalRuntimeAvailability.status()
     print("Metal requirement failed: \(status.missingFeatures)")
@@ -220,11 +259,10 @@ do {
 
 ## Limitations and evaluation caveats
 - The package targets Apple-platform rendering workflows; it is not a cross-platform PACS, archive, or viewer.
-- Clean reproducibility currently depends on a sibling checkout of `DICOM-Decoder` because the dependency is path-based.
 - Public examples and tests mostly exercise synthetic datasets, renderer behaviors, and optional local fixtures rather than a versioned benchmark corpus committed in this repository.
 - Rendering correctness checks and visual-regression tests are useful engineering signals, but they are **not** the same thing as clinical validation or reader-study evidence.
 - DICOM import support depends on the Swift decoder's metadata coverage and input quality. Import failures are explicit:
-  - unsupported transfer syntaxes, compressed pixel encodings, malformed datasets, or missing required tags surface parser-specific errors from `DicomDecoderSeriesLoader`, wrapped as `DicomVolumeLoaderError.bridgeError(_:)` when reported through the bridge;
+  - unsupported transfer syntaxes, compressed pixel encodings, malformed datasets, or missing required tags surface as structured `DicomVolumeLoaderError` values when reported by `MTKDicomBridge`;
   - empty directories or parser runs that produce no voxel data report `DicomVolumeLoaderError.missingResult`;
   - non-16-bit scalar data, 8-bit or 12-bit inputs, and RGB or multi-component volumes report `DicomVolumeLoaderError.unsupportedBitDepth`;
   - ZIP entries with path traversal report `DicomVolumeLoaderError.pathTraversal`.

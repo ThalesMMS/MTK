@@ -8,6 +8,8 @@
 //
 
 import Foundation
+import Metal
+import MTKCore
 import simd
 import DicomCore
 
@@ -44,6 +46,7 @@ import DicomCore
 /// - ``loadSeries(at:progress:)``
 public final class DicomDecoderSeriesLoader: DicomSeriesLoading {
     private let loader = DicomCore.DicomSeriesLoader()
+    private let cacheLock = NSLock()
     private var cachedVolume: BridgedVolume?
 
     /// Initialize a DICOM-Decoder series loader.
@@ -80,14 +83,18 @@ public final class DicomDecoderSeriesLoader: DicomSeriesLoading {
                           userInfo: [NSLocalizedDescriptionKey: "The provided URL is not a local path."])
         }
 
-        cachedVolume = nil
-        let volume = try loader.loadSeries(in: url, progress: { [weak self] fraction, slices, sliceData, seriesVolume in
-            guard let self else { return }
-            let bridged = self.bridge(seriesVolume)
-            progress?(fraction, UInt(slices), sliceData, bridged)
-        })
+        do {
+            resetCachedVolume()
+            let volume = try loader.loadSeries(in: url, progress: { [weak self] fraction, slices, sliceData, seriesVolume in
+                guard let self else { return }
+                let bridged = self.bridge(seriesVolume)
+                progress?(fraction, UInt(slices), sliceData, bridged)
+            })
 
-        return bridge(volume)
+            return bridge(volume)
+        } catch let error as DicomSeriesLoaderError {
+            throw Self.map(error)
+        }
     }
 
     /// Bridge a DicomCore.DicomSeriesVolume into a DICOMSeriesVolumeProtocol-conforming wrapper.
@@ -97,12 +104,43 @@ public final class DicomDecoderSeriesLoader: DicomSeriesLoading {
     /// - Parameter volume: DICOM-Decoder volume to bridge
     /// - Returns: Cached or newly created bridged volume
     private func bridge(_ volume: DicomSeriesVolume) -> BridgedVolume {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
         if let cached = cachedVolume, cached.referencesSameVolume(as: volume) {
             return cached
         }
         let bridged = BridgedVolume(volume: volume)
         cachedVolume = bridged
         return bridged
+    }
+
+    private func resetCachedVolume() {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        cachedVolume = nil
+    }
+
+    private static func map(_ error: DicomSeriesLoaderError) -> DicomVolumeLoaderError {
+        switch error {
+        case .unsupportedBitDepth:
+            return .unsupportedBitDepth
+        case .unsupportedSamplesPerPixel(let samples):
+            return .unsupportedPixelData(reason: "Unsupported samples per pixel: \(samples)")
+        case .inconsistentDimensions:
+            return .invalidGeometry(reason: "Inconsistent slice dimensions")
+        case .inconsistentOrientation:
+            return .invalidGeometry(reason: "Inconsistent slice orientation")
+        case .inconsistentPixelRepresentation:
+            return .unsupportedPixelData(reason: "Inconsistent signed/unsigned pixel representation")
+        case .noDicomFiles:
+            return .missingResult
+        case .failedToDecode(let url):
+            return .bridgeError(NSError(
+                domain: "DicomCore",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Failed to decode DICOM file: \(url.lastPathComponent)"]
+            ))
+        }
     }
 }
 
@@ -120,14 +158,17 @@ private final class BridgedVolume: DICOMSeriesVolumeProtocol {
         self.volume = volume
     }
 
-    /// Check if this bridge wraps the same underlying DicomSeriesVolume instance.
+    /// Check if this bridge matches the current per-load cache key.
     ///
     /// Used for caching optimization to avoid redundant bridging during progress callbacks.
     ///
     /// - Parameter other: DicomSeriesVolume to compare against
-    /// - Returns: True if wrapping the same volume instance (by voxel buffer identity and dimensions)
+    /// - Returns: True for the same per-load progress placeholder or final volume payload shape.
     func referencesSameVolume(as other: DicomSeriesVolume) -> Bool {
-        volume.voxels == other.voxels && volume.width == other.width && volume.height == other.height && volume.depth == other.depth
+        volume.width == other.width &&
+            volume.height == other.height &&
+            volume.depth == other.depth &&
+            volume.voxels.count == other.voxels.count
     }
 
     // MARK: - DICOMSeriesVolumeProtocol Conformance
@@ -192,10 +233,14 @@ private final class BridgedVolume: DICOMSeriesVolumeProtocol {
 
     /// Human-readable series description from DICOM metadata (0008,103E).
     var seriesDescription: String { volume.seriesDescription }
+}
 
-    /// Imaging modality (e.g. "CT", "MR") from DICOM metadata (0008,0060).
-    var modality: String { volume.modality }
-
-    var windowCenter: Double? { volume.windowCenter }
-    var windowWidth: Double? { volume.windowWidth }
+public extension DicomVolumeLoader {
+    /// Convenience initializer using the versioned DICOM-Decoder bridge product.
+    ///
+    /// Import `MTKDicomBridge` when the default Swift DICOM parser is desired. `MTKCore`
+    /// itself only requires an injected ``DicomSeriesLoading`` implementation.
+    convenience init(device: (any MTLDevice)? = nil) {
+        self.init(seriesLoader: DicomDecoderSeriesLoader(), device: device)
+    }
 }

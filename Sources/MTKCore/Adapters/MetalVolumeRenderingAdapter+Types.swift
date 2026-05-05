@@ -194,6 +194,9 @@ extension MetalVolumeRenderingAdapter {
         /// The requested extended adapter operation has not been implemented.
         case notImplemented
 
+        /// Scalar volume transforms are not applied by the v1 fusion path.
+        case unsupportedScalarLayerTransform(String)
+
         public var errorDescription: String? {
             switch self {
             case .invalidHistogramBinCount:
@@ -214,6 +217,8 @@ extension MetalVolumeRenderingAdapter {
                 return "Histogram not available"
             case .notImplemented:
                 return "Operation not implemented"
+            case .unsupportedScalarLayerTransform(let layerID):
+                return "Scalar volume layer \(layerID) uses a transform; v1 multi-volume fusion requires pre-registered volumes in the base texture space."
             }
         }
 
@@ -237,6 +242,8 @@ extension MetalVolumeRenderingAdapter {
                 return "The extended histogram snapshot API does not currently provide histogram data."
             case .notImplemented:
                 return "This extended adapter operation has not been implemented."
+            case .unsupportedScalarLayerTransform:
+                return "Register or resample the scalar layer into the base texture space before using it for v1 fusion."
             }
         }
     }

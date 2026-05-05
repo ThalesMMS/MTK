@@ -127,6 +127,30 @@ final class MPRPlaneGeometryFactoryTests: XCTestCase {
         assertVector(roundTripTexture, directTexture, accuracy: 1e-4)
     }
 
+    func test_dicomGeometryUsesImageDataDirectionAsCanonicalTransformSource() {
+        let dimensions = VolumeDimensions(width: 3, height: 4, depth: 5)
+        let values = [Int16](repeating: 0, count: dimensions.voxelCount)
+        let data = values.withUnsafeBytes { Data($0) }
+        let sliceDirection = simd_normalize(SIMD3<Float>(0, 1, 1))
+        let imageData = ImageData3D(
+            dimensions: dimensions,
+            spacing: VolumeSpacing(x: 1, y: 2, z: 3),
+            origin: SIMD3<Float>(10, 20, 30),
+            direction: simd_float3x3(columns: (
+                SIMD3<Float>(1, 0, 0),
+                SIMD3<Float>(0, 1, 0),
+                sliceDirection
+            )),
+            pixelFormat: .int16Signed
+        )
+        let dataset = VolumeDataset(data: data, imageData: imageData)
+        let geometry = MPRPlaneGeometryFactory.makeGeometry(for: dataset)
+
+        assertVector(geometry.iopNorm, sliceDirection)
+        assertVector(geometry.voxelToWorld.transformPoint(SIMD3<Float>(0, 0, 1)),
+                     imageData.origin + sliceDirection * Float(imageData.spacing.z))
+    }
+
     func test_dicomGeometryUsesFourthColumnForWorldAndTextureTranslations() {
         let dataset = VolumeDatasetTestFactory.makeTestDataset(
             dimensions: VolumeDimensions(width: 6, height: 5, depth: 4),

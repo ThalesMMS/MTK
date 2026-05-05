@@ -108,7 +108,7 @@ public final class VolumeTextureFactory {
         self.init(dataset: try VolumeTextureFactory.dataset(for: preset))
     }
 
-    /// The physical spacing of the volume in meters (x, y, z).
+    /// The physical spacing of the volume in millimeters (x, y, z).
     ///
     /// Derived from `dataset.spacing` as a SIMD3 vector for shader uniform compatibility.
     public var resolution: SIMD3<Float> { dataset.spacing.simd3Value }
@@ -364,7 +364,7 @@ private extension VolumeTextureFactory {
             return try loadZippedResource(
                 named: "head",
                 dimensions: VolumeDimensions(width: 512, height: 512, depth: 511),
-                spacing: VolumeSpacing(x: 0.000449, y: 0.000449, z: 0.000501),
+                spacing: VolumeSpacing(x: 0.449, y: 0.449, z: 0.501),
                 pixelFormat: .int16Signed,
                 intensity: (-1024)...3071
             )
@@ -372,7 +372,7 @@ private extension VolumeTextureFactory {
             return try loadZippedResource(
                 named: "chest",
                 dimensions: VolumeDimensions(width: 512, height: 512, depth: 179),
-                spacing: VolumeSpacing(x: 0.000586, y: 0.000586, z: 0.002),
+                spacing: VolumeSpacing(x: 0.586, y: 0.586, z: 2.0),
                 pixelFormat: .int16Signed,
                 intensity: (-1024)...3071
             )

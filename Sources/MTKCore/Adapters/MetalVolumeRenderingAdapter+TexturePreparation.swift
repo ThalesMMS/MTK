@@ -80,6 +80,7 @@ extension MetalVolumeRenderingAdapter {
         tf.maximumValue = Float(dataset.intensityRange.upperBound)
         tf.shift = 0
         tf.colorSpace = .linear
+        tf.gradientOpacity = transfer.gradientOpacity
         tf.colourPoints = try sanitizeColourPoints(transfer.colourPoints)
         tf.alphaPoints = try sanitizeAlphaPoints(transfer.opacityPoints)
         return tf

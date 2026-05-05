@@ -8,15 +8,17 @@ MTKCore provides the foundational building blocks for GPU-accelerated medical vo
 
 The official clinical rendering path is Metal-native. The target flow is `DICOM / VolumeDataset -> VolumeResourceManager -> GPU textures -> MTKRenderingEngine -> ViewportRenderGraph -> render passes -> PresentationPass -> MTKView/CAMetalLayer drawable`. `MTLTexture` is the official result type for interactive rendering frames. `CGImage` is for export, snapshot, debug, and test readback use cases only; it is not the interactive display path.
 
-The accepted architecture decision is recorded in [Architecture/ClinicalRenderingADR.md](../../../Architecture/ClinicalRenderingADR.md). The framework handles the pipeline from DICOM data loading through GPU texture creation, ray marching computation, and transfer function application. Synchronized viewports should share GPU resources by handle, including volume textures, transfer textures, acceleration textures, and intermediate pass outputs.
+The app-facing API boundary is recorded in [Architecture/PublicAPI.md](../../../Architecture/PublicAPI.md), and the accepted architecture decision is recorded in [Architecture/ClinicalRenderingADR.md](../../../Architecture/ClinicalRenderingADR.md). The framework handles the pipeline from `VolumeDataset` through GPU texture creation, ray marching computation, and transfer function application. DICOM parser integrations feed MTKCore through the `DicomSeriesLoading` protocol, with the default DICOM-Decoder bridge isolated in the optional `MTKDicomBridge` product. Synchronized viewports should share GPU resources by handle, including volume textures, transfer textures, acceleration textures, and intermediate pass outputs.
+
+For application code, the stable data contract is ``VolumeDataset``/``ImageData3D`` plus transfer functions, clipping, layers, and snapshot/export boundaries. Build viewer UI through ``MTKUI/StackViewport``, ``MTKUI/VolumeViewport``, ``MTKUI/VolumeViewport3D``, or ``MTKUI/ClinicalViewportSession`` instead of directly depending on render graph, resource manager, pass node, or output texture pool internals.
 
 > Note: Historical SceneKit integration was removed from the main package. SceneKit examples may be extracted to a separate experimental package in the future.
 
 ### Key Features
 
 - **Metal Rendering**: Metal ray marching with adaptive sampling; MPS-accelerated empty space skipping is an inspectable capability
-- **Medical Imaging**: Hounsfield unit windowing, transfer function presets, and DICOM integration
-- **Data Loading**: Protocol-based DICOM loading with ZIP archive support and progress tracking
+- **Medical Imaging**: Hounsfield unit windowing, transfer function presets, and parser-independent DICOM import contracts
+- **Data Loading**: Protocol-based DICOM loading with ZIP archive support and progress tracking; concrete parser bridges live outside MTKCore
 - **Transfer Functions**: Multi-channel tone curves, opacity mapping, and preset libraries for CT/MR visualization
 - **Runtime Capability Contracts**: Runtime capability detection with explicit error reporting before Metal-only features are initialized
 
@@ -32,13 +34,31 @@ The accepted architecture decision is recorded in [Architecture/ClinicalRenderin
 
 ### Volume Data Management
 
-Volume datasets encapsulate 3D medical imaging data with spatial metadata and pixel format information.
+Volume datasets encapsulate 3D medical imaging data with `ImageData3D` spatial metadata, affine transforms, and pixel format information. MTKCore world/patient coordinates and spacing are expressed in millimeters.
 
 - ``VolumeDataset``
+- ``ImageData3D``
+- ``ClinicalImageMetadata``
 - ``VolumeDimensions``
 - ``VolumeSpacing``
 - ``VolumeOrientation``
 - ``VolumePixelFormat``
+
+### Volume Pipeline
+
+VTK-like source/filter/mapper contracts for deterministic volume data transforms before datasets enter the Metal-native renderer.
+
+- ``VolumePipeline``
+- ``VolumeSource``
+- ``VolumeDatasetFilter``
+- ``VolumeAnalysisFilter``
+- ``VolumeMapper``
+- ``DefaultVolumeMapper``
+- ``VolumeCropFilter``
+- ``VolumeThresholdFilter``
+- ``VolumeResampleFilter``
+- ``VolumeHistogramFilter``
+- ``VolumeGradientHistogramFilter``
 
 ### Rendering Adapters
 
@@ -66,8 +86,7 @@ Protocol-based DICOM series loading with support for sorting, spacing calculatio
 
 - ``DicomVolumeLoader``
 - ``DicomSeriesLoading``
-- ``DicomDecoderSeriesLoader``
-- ``DicomLoadingProgress``
+- ``DicomVolumeProgress``
 
 ### Metal Utilities
 
@@ -92,6 +111,7 @@ Pure Metal compute pipelines for histogram calculation and optional MPS empty sp
 - <doc:MPRGuide>
 - <doc:TransferFunctionsGuide>
 - <doc:DicomLoadingGuide>
+- <doc:VolumePipelineGuide>
 
 ## Quick Start
 
@@ -121,7 +141,7 @@ let voxels = Data(repeating: 0, count: voxelCount * VolumePixelFormat.int16Signe
 let dataset = VolumeDataset(
     data: voxels,
     dimensions: VolumeDimensions(width: 256, height: 256, depth: 128),
-    spacing: VolumeSpacing(x: 0.001, y: 0.001, z: 0.0015),
+    spacing: VolumeSpacing(x: 1.0, y: 1.0, z: 1.5),
     pixelFormat: .int16Signed,
     intensityRange: (-1024)...3071
 )

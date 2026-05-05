@@ -28,6 +28,28 @@ final class MTKRenderingEngineRenderTests: MTKRenderingEngineTestCase {
         XCTAssertEqual(poolInUseCount, 0)
     }
 
+    func test_renderVolume3D_acceptsSurfaceMeshLayers() async throws {
+        let viewportSize = CGSize(width: 40, height: 24)
+        let viewport = try await engine.createViewport(
+            ViewportDescriptor(type: .volume3D,
+                               initialSize: viewportSize)
+        )
+        try await engine.setVolume(testDataset, for: viewport)
+        try await engine.configure(viewport, surfaceMeshLayers: [makeSurfaceMeshLayer()])
+
+        let frame = try await engine.render(viewport)
+
+        XCTAssertEqual(frame.viewportID, viewport)
+        XCTAssertEqual(frame.route.passPipeline.map(\.kind), [.volumeRaycast, .overlay, .presentation])
+        XCTAssertEqual(frame.texture.width, Int(viewportSize.width))
+        XCTAssertEqual(frame.texture.height, Int(viewportSize.height))
+        XCTAssertNotNil(frame.outputTextureLease)
+
+        frame.outputTextureLease?.release()
+        let poolInUseCount = await engine.debugOutputPoolInUseCount
+        XCTAssertEqual(poolInUseCount, 0)
+    }
+
     func test_renderMPR_returnsValidTexture() async throws {
         let viewport = try await engine.createViewport(
             ViewportDescriptor(type: .mpr(axis: .axial),
@@ -42,7 +64,47 @@ final class MTKRenderingEngineRenderTests: MTKRenderingEngineTestCase {
         XCTAssertEqual(frame.texture.width, 32)
         XCTAssertEqual(frame.texture.height, 32)
         XCTAssertNotNil(frame.mprFrame)
+        XCTAssertTrue(frame.labelmapOverlays.isEmpty)
         XCTAssertNil(frame.outputTextureLease)
+    }
+
+    func test_renderMPR_returnsLabelmapOverlayDescriptorsForConfiguredLayer() async throws {
+        let viewport = try await engine.createViewport(
+            ViewportDescriptor(type: .mpr(axis: .axial),
+                               initialSize: CGSize(width: 16, height: 16))
+        )
+        try await engine.setVolume(testDataset, for: viewport)
+        let layer = try makeLabelmapLayer(opacity: 0.6)
+        try await engine.configure(viewport, volumeLayers: [layer])
+
+        let frame = try await engine.render(viewport)
+
+        XCTAssertEqual(frame.labelmapOverlays.count, 1)
+        XCTAssertEqual(try XCTUnwrap(frame.labelmapOverlays.first).opacity, 0.6, accuracy: 1e-5)
+        XCTAssertEqual(frame.labelmapOverlays.first?.labelmapTexture.pixelFormat, .r16Uint)
+        XCTAssertEqual(frame.labelmapOverlays.first?.colorLUTTexture.pixelFormat, .rgba32Float)
+    }
+
+    func test_renderMPR_reusesBaseFrameWhenOnlyLayerOpacityChanges() async throws {
+        let viewport = try await engine.createViewport(
+            ViewportDescriptor(type: .mpr(axis: .axial),
+                               initialSize: CGSize(width: 16, height: 16))
+        )
+        try await engine.setVolume(testDataset, for: viewport)
+        let layer = try makeLabelmapLayer(opacity: 0.25)
+        try await engine.configure(viewport, volumeLayers: [layer])
+
+        let first = try await engine.render(viewport)
+        let firstTextureID = ObjectIdentifier(first.texture as AnyObject)
+
+        var updatedLayer = layer
+        updatedLayer.opacity = 0.75
+        try await engine.configure(viewport, volumeLayers: [updatedLayer])
+        let second = try await engine.render(viewport)
+
+        XCTAssertEqual(ObjectIdentifier(second.texture as AnyObject), firstTextureID)
+        XCTAssertEqual(second.labelmapOverlays.count, 1)
+        XCTAssertEqual(try XCTUnwrap(second.labelmapOverlays.first).opacity, 0.75, accuracy: 1e-5)
     }
 
     func test_renderProjectionModes_returnValidTextureAndExplicitRoute() async throws {
@@ -261,4 +323,45 @@ final class MTKRenderingEngineRenderTests: MTKRenderingEngineTestCase {
             XCTAssertEqual(missingViewport, viewport)
         }
     }
+
+    private func makeLabelmapLayer(opacity: Float) throws -> VolumeLayer {
+        var labels = [UInt16](repeating: 0, count: testDataset.dimensions.voxelCount)
+        if labels.indices.contains(0) {
+            labels[0] = 1
+        }
+        let labelmapDataset = VolumeDataset(
+            data: labels.withUnsafeBytes { Data($0) },
+            dimensions: testDataset.dimensions,
+            spacing: testDataset.spacing,
+            pixelFormat: .int16Unsigned,
+            intensityRange: 0...1,
+            orientation: testDataset.orientation
+        )
+        let labelmap = try LabelmapVolume(
+            dataset: labelmapDataset,
+            segments: [LabelmapSegment(label: 1, color: SIMD4<Float>(1, 0, 0, 1))]
+        )
+        return VolumeLayer(id: "engine-test-labelmap",
+                           labelmap: labelmap,
+                           opacity: opacity)
+    }
+}
+
+private func makeSurfaceMeshLayer() -> SurfaceMeshLayer {
+    let mesh = SurfaceMesh(
+        vertices: [
+            SIMD3<Float>(0.25, 0.25, 0.5),
+            SIMD3<Float>(0.75, 0.25, 0.5),
+            SIMD3<Float>(0.5, 0.75, 0.5)
+        ],
+        normals: [
+            SIMD3<Float>(0, 0, 1),
+            SIMD3<Float>(0, 0, 1),
+            SIMD3<Float>(0, 0, 1)
+        ],
+        indices: [0, 1, 2],
+        coordinateSpace: .textureNormalized
+    )
+    return SurfaceMeshLayer(mesh: mesh,
+                            material: SurfaceMeshMaterial(color: SIMD4<Float>(1, 0, 0, 1)))
 }

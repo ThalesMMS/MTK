@@ -99,6 +99,19 @@ An MPR plane is defined by:
 
 The U and V axes form a right-handed coordinate system spanning the 2D slice rectangle, while the normal vector indicates the "through-plane" direction for slab sampling.
 
+### Clinical Numeric Contract
+
+MPR correctness is defined numerically, not by visual plausibility alone. MTKCore treats ``ImageData3D`` as the source of truth for geometry and intensity:
+
+- Voxel index coordinates are continuous and map to world coordinates through the full affine: direction matrix, spacing, and origin.
+- Axial, coronal, and sagittal planes are derived from the dataset geometry; they must not be reduced to raw buffer axes when orientation or origin is non-identity.
+- Texture coordinates use the `(index + 0.5) / dimensions` voxel-center convention before GPU sampling.
+- Oblique planes must be expressed through world-space geometry and converted with `worldToTexture`, preserving anisotropic spacing and non-zero origins.
+- Signed `Int16` values and negative HU ranges remain raw MPR intensity values until presentation applies window/level.
+- DICOM rescale slope/intercept is applied during import, so MPR consumes modality values rather than unsigned stored pixel values.
+
+The regression suite uses deterministic synthetic phantoms and CPU oracles for identity MPR, oblique affine planes, anisotropic slabs, MIP, MinIP, mean slabs, signed negative HU, and DICOM-imported slope/intercept data. These tests are intended to fail when a change samples the wrong voxel, drops orientation metadata, uses the wrong slab extent, or collapses signed modality values into unsigned storage.
+
 ## Slab Generation
 
 ### Single Slice vs Thick Slab
@@ -126,6 +139,8 @@ MPR supports two slicing modes:
 **Example**: `thickness = 10, steps = 20` generates 20 parallel slices spanning a slab that is resolved against the dataset spacing along the plane normal, blending them according to the specified mode.
 
 ``MetalMPRAdapter/makeTextureFrame(dataset:plane:thickness:steps:blend:)`` remains a convenience that uploads or reuses the volume texture internally when the caller is not managing a shared `MTLTexture`.
+
+Slab samples are distributed evenly along the plane normal. `maximum` selects the largest valid sample, `minimum` selects the smallest valid sample, and `average` computes the mean of valid samples in modality-intensity space. Samples outside the volume bounds are skipped rather than contributing synthetic values to MIP, MinIP, or average projections.
 
 ### Blend Modes
 
@@ -194,6 +209,8 @@ for each pixel (u, v):
 ## Metal Acceleration and Explicit Failures
 
 ``MetalMPRAdapter`` is a Metal-only adapter. It requires a Metal device, command queue, shader library, and compute pipelines before it can generate MPR texture frames. Applications should treat those requirements as the runtime contract for MPR, present an explicit unsupported state when the contract is not satisfied, and propagate compute-path failures to callers.
+
+Interactive MPR frames are GPU-resident ``MPRTextureFrame`` values. CPU readback is not part of presentation or interaction; use explicit snapshot/export code, or test-only readback helpers, only when a numeric oracle or exported artifact requires CPU bytes.
 
 ### Performance
 
@@ -272,6 +289,8 @@ The ``MPRGridComposer`` SwiftUI component provides a synchronized 2×2 grid layo
 ### Basic Usage
 
 ```swift
+import MTKCore
+import MTKDicomBridge
 import MTKUI
 import SwiftUI
 
@@ -289,12 +308,9 @@ struct MPRView: View {
             sagittalController: sagittalController
         )
         .task {
-            // Load DICOM volume
+            // Load DICOM volume. Import MTKDicomBridge when using the default decoder.
             let loader = DicomVolumeLoader()
-            let dataset = try await loader.load(
-                from: dicomDirectory,
-                decoder: DicomDecoderSeriesLoader()
-            )
+            let dataset = try await importDataset(from: dicomDirectory, using: loader)
 
             // Apply dataset to all controllers
             await volumeController.loadDataset(dataset)

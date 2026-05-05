@@ -11,10 +11,10 @@ import Foundation
 ///
 /// This type is intentionally thin and delegates to `ViewportRenderGraph` for the
 /// canonical routing table and validation semantics.
-public struct RenderRouteResolver: Sendable {
-    public init() {}
+package struct RenderRouteResolver: Sendable {
+    package init() {}
 
-    public func resolveNode(viewportID: ViewportID,
+    package func resolveNode(viewportID: ViewportID,
                             viewportType: ViewportType,
                             resourceHandle: VolumeResourceHandle?,
                             using renderGraph: ViewportRenderGraph) throws -> ViewportRenderNode {
@@ -23,7 +23,7 @@ public struct RenderRouteResolver: Sendable {
                                         resourceHandle: resourceHandle)
     }
 
-    public func validateRequirements(for node: ViewportRenderNode,
+    package func validateRequirements(for node: ViewportRenderNode,
                                      datasetAvailable: Bool,
                                      volumeTextureAvailable: Bool,
                                      surfaceAvailable: Bool,

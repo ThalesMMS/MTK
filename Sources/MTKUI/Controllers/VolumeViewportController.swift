@@ -107,6 +107,7 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     public var renderQualityState: RenderQualityState { statePublisher.qualityState }
     @Published public internal(set) var datasetApplied = false
     @Published public internal(set) var datasetIntensityRange: ClosedRange<Int32>?
+    @Published public internal(set) var volumeClipping: VolumeClippingState = .disabled
     public internal(set) var lastRenderError: (any Swift.Error)?
 
     public var transferFunctionDomain: ClosedRange<Float>? {
@@ -120,7 +121,9 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
 
     let volumeRenderer: any VolumeRenderingPortExtended
     let mprRenderer: MetalMPRAdapter
+    var surfaceMeshRenderer: MetalSurfaceMeshRenderer?
     let mprVolumeTextureCache: MPRVolumeTextureCache
+    let volumeLayerResourceCache = VolumeLayerResourceCache()
     let qualityScheduler: RenderQualityScheduler
     var renderTask: Task<Void, Never>?
     var renderGeneration: UInt64 = 0
@@ -131,6 +134,8 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     var geometry: DICOMGeometry?
     var currentDisplay: DisplayConfiguration?
     var transferFunction: TransferFunction?
+    var volumeLayers: [MTKCore.VolumeLayer] = []
+    var surfaceMeshLayers: [SurfaceMeshLayer] = []
     var huWindow: VolumetricHUWindowMapping?
     var mprHuWindow: ClosedRange<Int32>?
     var currentVolumeMethod: VolumetricRenderMethod = .dvr
@@ -222,6 +227,16 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
         qualityStateCancellable?.cancel()
     }
 
+    func surfaceMeshRendererInstance() throws -> MetalSurfaceMeshRenderer {
+        if let surfaceMeshRenderer {
+            return surfaceMeshRenderer
+        }
+        let renderer = try MetalSurfaceMeshRenderer(device: device,
+                                                    commandQueue: commandQueue)
+        surfaceMeshRenderer = renderer
+        return renderer
+    }
+
     /// Apply a volume dataset to the controller and initialize rendering state for the new data.
     /// 
     /// This stores the provided dataset, invalidates MPR caches, establishes geometry and volume bounds,
@@ -233,6 +248,7 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
         self.dataset = dataset
         datasetIntensityRange = dataset.intensityRange
         mprVolumeTextureCache.invalidate()
+        volumeLayerResourceCache.invalidate()
         invalidateMPRCache()
         geometry = makeGeometry(from: dataset)
         datasetApplied = true
@@ -356,7 +372,7 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
         huWindow = window
         mprHuWindow = window.minHU...window.maxHU
         statePublisher.recordWindowLevelState(window)
-        if presentCachedMPRFrameIfPossible() {
+        if volumeLayers.isEmpty, presentCachedMPRFrameIfPossible() {
             return
         }
         scheduleRender()
@@ -469,6 +485,71 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
         scheduleRender()
     }
 
+    public func setVolumeLayers(_ layers: [MTKCore.VolumeLayer]) async {
+        volumeLayers = layers
+        volumeLayerResourceCache.invalidate()
+        scheduleRender()
+    }
+
+    public func setSurfaceMeshLayers(_ layers: [SurfaceMeshLayer]) async {
+        surfaceMeshLayers = layers
+        scheduleRender()
+    }
+
+    /// Sets the public 3D volume crop/clip state and schedules a volume render.
+    ///
+    /// This affects only 3D volume/projection rendering. MPR reslices and crosshair movement
+    /// remain affine-correct and independent of crop/clip.
+    public func setVolumeClipping(_ clipping: VolumeClippingState) async throws {
+        volumeClipping = clipping
+        scheduleRender()
+    }
+
+    public func setVolumeLayerVisibility(id: String, isVisible: Bool) async {
+        guard let index = volumeLayers.firstIndex(where: { $0.id == id }),
+              volumeLayers[index].isVisible != isVisible else {
+            return
+        }
+        volumeLayers[index].isVisible = isVisible
+        scheduleRender()
+    }
+
+    public func setVolumeLayerOpacity(id: String, opacity: Float) async {
+        guard let index = volumeLayers.firstIndex(where: { $0.id == id }),
+              volumeLayers[index].opacity != opacity else {
+            return
+        }
+        volumeLayers[index].opacity = opacity
+        scheduleRender()
+    }
+
+    public func setVolumeLayerBlendMode(id: String, blendMode: MTKCore.VolumeLayerBlendMode) async {
+        guard let index = volumeLayers.firstIndex(where: { $0.id == id }),
+              volumeLayers[index].blendMode != blendMode else {
+            return
+        }
+        volumeLayers[index].blendMode = blendMode
+        scheduleRender()
+    }
+
+    public func setSurfaceMeshLayerVisibility(id: String, isVisible: Bool) async {
+        guard let index = surfaceMeshLayers.firstIndex(where: { $0.id == id }),
+              surfaceMeshLayers[index].isVisible != isVisible else {
+            return
+        }
+        surfaceMeshLayers[index].isVisible = isVisible
+        scheduleRender()
+    }
+
+    public func setSurfaceMeshLayerOpacity(id: String, opacity: Float) async {
+        guard let index = surfaceMeshLayers.firstIndex(where: { $0.id == id }),
+              surfaceMeshLayers[index].opacity != opacity else {
+            return
+        }
+        surfaceMeshLayers[index].opacity = opacity
+        scheduleRender()
+    }
+
     /// Sets the multislice planar reconstruction (MPR) blending mode and updates presentation state.
     /// 
     /// If an MPR axis is currently active, the cached MPR for that axis is invalidated and the active display configuration is updated to reflect the new blend mode (preserving current axis, plane index, and slab). A render is scheduled after the change.
@@ -512,7 +593,7 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     ///   - max: The maximum HU (Hounsfield unit) value for the MPR window.
     public func setMprHuWindow(min: Int32, max: Int32) async {
         mprHuWindow = Swift.min(min, max)...Swift.max(min, max)
-        if presentCachedMPRFrameIfPossible() {
+        if volumeLayers.isEmpty, presentCachedMPRFrameIfPossible() {
             return
         }
         scheduleRender()

@@ -1,27 +1,28 @@
 # DICOM Loading
 
-Guide to loading DICOM volumes with ZIP extraction, progress tracking, and the Swift DICOM decoder.
+Guide to loading DICOM volumes with ZIP extraction, progress tracking, and parser bridge injection.
 
 ## Overview
 
-MTKCore provides a DICOM loading pipeline that handles ZIP archives, sorts slices by spatial position, converts pixel values to Hounsfield Units, and computes recommended window/level settings. The repository ships `DicomDecoderSeriesLoader` as the canonical parser implementation, backed by the pure-Swift DICOM-Decoder package.
+MTKCore provides a DICOM loading pipeline that handles ZIP archives, converts pixel values to Hounsfield Units, and computes recommended window/level settings. The concrete parser is injected through ``DicomSeriesLoading`` so MTKCore can be used as a rendering toolkit without importing a DICOM parser. The optional `MTKDicomBridge` product provides `DicomDecoderSeriesLoader`, backed by the versioned pure-Swift DICOM-Decoder package.
 
 The DICOM loading system consists of three key components:
 
 - **``DicomVolumeLoader``**: Orchestrates ZIP extraction, delegates parsing, performs HU conversion, and constructs ``VolumeDataset``
-- **``DicomSeriesLoading``**: Protocol seam used by the loader for test doubles and package-level integration points
-- **``DicomDecoderSeriesLoader``**: Canonical pure-Swift implementation backed by the DICOM-Decoder package
+- **``DicomSeriesLoading``**: Protocol seam used by the loader for test doubles, app-level loaders, and optional bridge targets
+- **`MTKDicomBridge.DicomDecoderSeriesLoader`**: Optional pure-Swift implementation backed by the DICOM-Decoder package
 
 This separation keeps tests injectable without adding alternate demo backends, and provides incremental progress updates suitable for UI binding.
 
 ## Quick Start
 
-Basic DICOM loading with default configuration:
+Basic DICOM loading with the optional bridge:
 
 ```swift
 import MTKCore
+import MTKDicomBridge
 
-let loader = DicomVolumeLoader() // Uses DicomDecoderSeriesLoader by default
+let loader = DicomVolumeLoader()
 
 loader.loadVolume(from: folderURL, progress: { update in
     switch update {
@@ -112,7 +113,7 @@ Call the ``DicomSeriesLoading`` implementation's `loadSeries(at:progress:)` meth
 - Parses DICOM files in the directory
 - Sorts slices by Image Position Patient (IPP) projected onto slice normal
 - Streams slice data incrementally via progress callbacks
-- Returns a volume conforming to ``DICOMSeriesVolumeProtocol``
+- Returns a volume conforming to ``DICOMSeriesVolumeProtocol`` with geometry in millimeters
 
 ```swift
 let volume = try loader.loadSeries(at: directoryURL, progress: { fraction, slicesLoaded, sliceData, partialVolume in
@@ -176,7 +177,7 @@ if let center = dicomVolume.windowCenter, let width = dicomVolume.windowWidth {
 
 ### 5. Construct VolumeDataset
 
-Create the final ``VolumeDataset`` with spatial metadata from DICOM Image Orientation/Position Patient:
+Create the final ``VolumeDataset`` with ``ImageData3D`` spatial metadata from DICOM Image Orientation/Position Patient. Spacing and origin stay in DICOM patient-space millimeters:
 
 ```swift
 let volumeDimensions = VolumeDimensions(width: width, height: height, depth: depth)
@@ -190,7 +191,8 @@ return VolumeDataset(
     pixelFormat: .int16Signed,
     intensityRange: intensityRange,
     orientation: orientation,
-    recommendedWindow: recommendedWindow
+    recommendedWindow: recommendedWindow,
+    clinicalMetadata: clinicalMetadata
 )
 ```
 
@@ -232,6 +234,10 @@ loader.loadVolume(from: url, progress: { internalProgress in
 Bind progress to `ProgressView`:
 
 ```swift
+import MTKCore
+import MTKDicomBridge
+import SwiftUI
+
 struct DicomImportView: View {
     @State private var isLoading = false
     @State private var loadingFraction = 0.0
@@ -249,6 +255,7 @@ struct DicomImportView: View {
     }
 
     func importDicom() {
+        // Requires `import MTKDicomBridge` for the default decoder-backed initializer.
         let loader = DicomVolumeLoader()
         isLoading = true
 
@@ -288,11 +295,13 @@ Implementations must:
    - `partialVolume`: Partial volume conforming to ``DICOMSeriesVolumeProtocol``
 4. Return final volume object
 
-### Default Implementation: DicomDecoderSeriesLoader
+### Optional Bridge: DicomDecoderSeriesLoader
 
-Pure-Swift implementation backed by DICOM-Decoder package:
+Pure-Swift implementation backed by the `MTKDicomBridge` product and DICOM-Decoder package:
 
 ```swift
+import MTKDicomBridge
+
 let loader = DicomDecoderSeriesLoader()
 let volume = try loader.loadSeries(at: directoryURL, progress: { fraction, slices, sliceData, partialVolume in
     print("Loaded \(slices) slices (\(Int(fraction * 100))% complete)")
@@ -401,6 +410,9 @@ loader.loadVolume(from: url, progress: { _ in }, completion: { result in
 - CT soft tissue preset when WC/WW metadata is missing for other modalities
 
 ```swift
+import MTKCore
+import MTKDicomBridge
+
 let loader = DicomVolumeLoader(seriesLoader: DicomDecoderSeriesLoader())
 
 loader.loadVolume(from: url, progress: { _ in }, completion: { result in
@@ -423,6 +435,9 @@ loader.loadVolume(from: url, progress: { _ in }, completion: { result in
 Reuse the same loader instance when loading multiple series:
 
 ```swift
+import MTKCore
+import MTKDicomBridge
+
 class DicomImporter {
     private let loader: DicomVolumeLoader
 
@@ -480,6 +495,6 @@ loader.loadVolume(from: url, progress: { update in
 
 - ``DicomVolumeLoader`` — Main DICOM loading orchestrator
 - ``DicomSeriesLoading`` — Protocol seam for injected test or integration loaders
-- ``DicomDecoderSeriesLoader`` — Default pure-Swift loader
+- `MTKDicomBridge.DicomDecoderSeriesLoader` — Optional default pure-Swift loader
 - ``VolumeDataset`` — Loaded volume representation
 - ``VolumeHistogramCalculator`` — GPU-accelerated histogram computation

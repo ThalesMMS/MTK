@@ -32,6 +32,7 @@ final class FrameMetadataBuilderTests: MTKRenderingEngineTestCase {
             route: route,
             texture: texture,
             mprFrame: nil,
+            labelmapOverlays: [],
             outputTextureLease: nil,
             renderDuration: 1.0,
             raycastDuration: 2.0,

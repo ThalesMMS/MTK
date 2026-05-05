@@ -179,6 +179,85 @@ final class MakeTransferFunctionTests: XCTestCase {
         XCTAssertEqual(tf.colorSpace, .linear, "colorSpace should always be .linear")
     }
 
+    func testMakeTransferFunctionPreservesGradientOpacity() async throws {
+        let dataset = makeDataset(intensityMin: 0, intensityMax: 4095)
+        let transfer = VolumeTransferFunction(
+            opacityPoints: [
+                .init(intensity: 0, opacity: 0),
+                .init(intensity: 4095, opacity: 1)
+            ],
+            colourPoints: [
+                .init(intensity: 0, colour: SIMD4<Float>(0, 0, 0, 1)),
+                .init(intensity: 4095, colour: SIMD4<Float>(1, 1, 1, 1))
+            ],
+            gradientOpacity: GradientOpacityFunction(
+                minimumGradient: 0,
+                maximumGradient: 500,
+                points: [
+                    .init(gradientMagnitude: 0, opacity: 0.25),
+                    .init(gradientMagnitude: 500, opacity: 1)
+                ],
+                resolution: 64
+            )
+        )
+
+        let tf = try await adapter.makeTransferFunctionForTesting(from: transfer, dataset: dataset)
+
+        XCTAssertEqual(tf.gradientOpacity, transfer.gradientOpacity)
+    }
+
+    func testBuildVolumeUniformsLeavesLegacyTransferFunctionAs1D() async throws {
+        let dataset = makeDataset(intensityMin: 0, intensityMax: 4095)
+        let request = VolumeRenderRequest(
+            dataset: dataset,
+            transferFunction: makeValidTransferFunction(),
+            viewportSize: CGSize(width: 64, height: 64),
+            camera: VolumeRenderRequest.Camera(position: SIMD3<Float>(0, 0, 2),
+                                               target: .zero,
+                                               up: SIMD3<Float>(0, 1, 0),
+                                               fieldOfView: 45),
+            samplingDistance: 1.0 / 64.0,
+            compositing: .frontToBack,
+            quality: .interactive
+        )
+
+        let uniforms = try await adapter.buildVolumeUniforms(for: request)
+
+        XCTAssertEqual(uniforms.use2DTF, 0)
+    }
+
+    func testBuildVolumeUniformsEnables2DTransferFunctionForGradientOpacity() async throws {
+        let dataset = makeDataset(intensityMin: 0, intensityMax: 4095)
+        var transfer = makeValidTransferFunction()
+        transfer.gradientOpacity = GradientOpacityFunction(
+            minimumGradient: 10,
+            maximumGradient: 600,
+            points: [
+                .init(gradientMagnitude: 10, opacity: 0.2),
+                .init(gradientMagnitude: 600, opacity: 1)
+            ],
+            resolution: 128
+        )
+        let request = VolumeRenderRequest(
+            dataset: dataset,
+            transferFunction: transfer,
+            viewportSize: CGSize(width: 64, height: 64),
+            camera: VolumeRenderRequest.Camera(position: SIMD3<Float>(0, 0, 2),
+                                               target: .zero,
+                                               up: SIMD3<Float>(0, 1, 0),
+                                               fieldOfView: 45),
+            samplingDistance: 1.0 / 64.0,
+            compositing: .frontToBack,
+            quality: .interactive
+        )
+
+        let uniforms = try await adapter.buildVolumeUniforms(for: request)
+
+        XCTAssertEqual(uniforms.use2DTF, 1)
+        XCTAssertEqual(uniforms.gradientMin, 10, accuracy: 1e-5)
+        XCTAssertEqual(uniforms.gradientMax, 600, accuracy: 1e-5)
+    }
+
     private func makeDataset(intensityMin: Int32, intensityMax: Int32) -> VolumeDataset {
         let dimensions = VolumeDimensions(width: 4, height: 4, depth: 4)
         let values: [UInt16] = Array(repeating: 1000, count: dimensions.voxelCount)

@@ -7,6 +7,7 @@
 
 import SwiftUI
 import MTKCore
+import MTKDicomBridge
 import MTKUI
 
 /// Example purpose: DICOM loading pipeline stages matching the ADR diagram.
@@ -14,8 +15,8 @@ import MTKUI
 /// ADR concepts demonstrated:
 /// the example uses `DicomVolumeLoader.loadVolume(from:progress:completion:)`
 /// as the canonical import path, then applies the resulting `VolumeDataset`
-/// through `ClinicalViewportGridController.applyDataset(_:)`. That call routes
-/// the dataset into `MTKRenderingEngine`, which acquires a shared
+/// through `ClinicalViewportSession.applyDataset(_:)`. That call routes the
+/// dataset into the clinical grid implementation, which acquires a shared
 /// `VolumeResourceHandle` through `VolumeResourceManager` before binding the
 /// same GPU resource to the clinical viewports. See
 /// `MTK/Architecture/ClinicalRenderingADR.md`.
@@ -24,7 +25,7 @@ import MTKUI
 /// `PresentationPass`. This example does not use SceneKit, and it never uses
 /// `CGImage` as a display surface.
 struct BasicDicomLoaderExample: View {
-    @State private var controller: ClinicalViewportGridController?
+    @State private var session: ClinicalViewportSession?
     @State private var isLoading = false
     @State private var loadingProgress = 0.0
     @State private var totalSlices = 0
@@ -32,8 +33,8 @@ struct BasicDicomLoaderExample: View {
 
     var body: some View {
         Group {
-            if let controller {
-                ClinicalViewportGrid(controller: controller)
+            if let session {
+                ClinicalViewportGrid(session: session)
             } else if isLoading {
                 loadingState
             } else if let errorMessage {
@@ -55,9 +56,9 @@ struct BasicDicomLoaderExample: View {
             // await loadDicomVolume(from: selectedURL)
         }
         .onDisappear {
-            let controller = controller
+            let session = session
             Task {
-                await controller?.shutdown()
+                await session?.shutdown()
             }
         }
     }
@@ -91,20 +92,20 @@ struct BasicDicomLoaderExample: View {
             let importResult = try await importDicomVolume(from: url, using: loader)
             let dataset = importResult.dataset
 
-            let controller = try await resolvedController()
+            let session = try await resolvedSession()
 
             // VolumeDataset -> VolumeResourceManager -> shared GPU texture(s)
-            // for all four clinical viewports via one controller-level dataset load.
-            try await controller.applyDataset(dataset)
+            // for all four clinical viewports via one session-level dataset load.
+            try await session.applyDataset(dataset)
 
             // Use the recommended clinical window when available; otherwise fall
             // back to the dataset intensity range.
             let window = dataset.recommendedWindow ?? dataset.intensityRange
             let windowWidth = max(Double(window.upperBound - window.lowerBound), 1)
             let windowLevel = Double(window.lowerBound + window.upperBound) / 2
-            await controller.setMPRWindowLevel(window: windowWidth, level: windowLevel)
+            await session.setMPRWindowLevel(window: windowWidth, level: windowLevel)
 
-            try await controller.setTransferFunction(
+            try await session.setTransferFunction(
                 VolumeTransferFunctionLibrary.transferFunction(for: .ctSoftTissue)
             )
         } catch {
@@ -113,14 +114,14 @@ struct BasicDicomLoaderExample: View {
     }
 
     @MainActor
-    private func resolvedController() async throws -> ClinicalViewportGridController {
-        if let controller {
-            return controller
+    private func resolvedSession() async throws -> ClinicalViewportSession {
+        if let session {
+            return session
         }
 
-        let controller = try await ClinicalViewportGridController.make()
-        self.controller = controller
-        return controller
+        let session = try await ClinicalViewportSession.make()
+        self.session = session
+        return session
     }
 
     private func importDicomVolume(from url: URL,
@@ -161,6 +162,16 @@ struct BasicDicomLoaderExample: View {
             return "The selected files could not be accessed."
         case .unsupportedBitDepth:
             return "Only 16-bit scalar DICOM series are currently supported."
+        case .unsupportedPixelData(let reason):
+            return "Unsupported pixel data: \(reason)"
+        case .unsupportedTransferSyntax:
+            return "The DICOM transfer syntax is not supported by this loader."
+        case .invalidGeometry(let reason):
+            return "Invalid DICOM geometry: \(reason)"
+        case .variableSliceSpacing:
+            return "The series has variable slice spacing beyond the supported tolerance."
+        case .duplicateSlicePosition:
+            return "The series contains duplicate slice positions."
         case .missingResult:
             return "The DICOM loader did not return a volume dataset."
         case .pathTraversal:
@@ -176,8 +187,8 @@ struct BasicDicomLoaderExample: View {
  and individual DICOM files. After loading:
 
  1. `DicomVolumeLoader` produces a `VolumeDataset`.
- 2. `ClinicalViewportGridController.applyDataset(_:)` forwards that dataset into
-    `MTKRenderingEngine`.
+ 2. `ClinicalViewportSession.applyDataset(_:)` forwards that dataset into the
+    Metal-native clinical grid implementation.
  3. `VolumeResourceManager` acquires one shared GPU volume resource.
  4. `PresentationPass` displays interactive Metal frames through `MTKView`.
 

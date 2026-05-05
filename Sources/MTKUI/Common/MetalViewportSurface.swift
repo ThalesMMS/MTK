@@ -261,7 +261,7 @@ public final class MetalViewportSurface: ViewportPresenting {
     /// `colorPixelFormat`. Use the initializer's `pixelFormat` parameter when a
     /// viewport needs a non-default presentation format.
     @discardableResult
-    public func present(_ frame: RenderFrame,
+    package func present(_ frame: RenderFrame,
                         presentationToken: UInt64? = nil) throws -> CFAbsoluteTime {
         let drawable = try validatedDrawable(for: frame.texture)
         let duration = try presentationPass.present(frame,
@@ -276,8 +276,18 @@ public final class MetalViewportSurface: ViewportPresenting {
     @discardableResult
     public func present(_ texture: any MTLTexture,
                         metadata: PresentationFrameMetadata,
-                        lease: OutputTextureLease? = nil,
                         presentationToken: UInt64? = nil) throws -> CFAbsoluteTime {
+        try present(texture,
+                    metadata: metadata,
+                    lease: nil,
+                    presentationToken: presentationToken)
+    }
+
+    @discardableResult
+    package func present(_ texture: any MTLTexture,
+                         metadata: PresentationFrameMetadata,
+                         lease: OutputTextureLease?,
+                         presentationToken: UInt64? = nil) throws -> CFAbsoluteTime {
         guard Self.sameDevice(texture.device, commandQueue.device) else {
             throw MetalViewportSurfaceError.textureDeviceMismatch
         }
@@ -296,8 +306,17 @@ public final class MetalViewportSurface: ViewportPresenting {
 
     @discardableResult
     public func present(_ texture: any MTLTexture,
-                        lease: OutputTextureLease? = nil,
                         presentationToken: UInt64? = nil) throws -> CFAbsoluteTime {
+        try present(texture,
+                    metadata: .textureOnly(size: CGSize(width: texture.width, height: texture.height)),
+                    lease: nil,
+                    presentationToken: presentationToken)
+    }
+
+    @discardableResult
+    package func present(_ texture: any MTLTexture,
+                         lease: OutputTextureLease?,
+                         presentationToken: UInt64? = nil) throws -> CFAbsoluteTime {
         try present(texture,
                     metadata: .textureOnly(size: CGSize(width: texture.width, height: texture.height)),
                     lease: lease,
@@ -313,6 +332,7 @@ public final class MetalViewportSurface: ViewportPresenting {
                         window: ClosedRange<Int32>,
                         invert: Bool = false,
                         colormap: (any MTLTexture)? = nil,
+                        labelmapOverlays: [MPRLabelmapOverlay] = [],
                         transform: MPRDisplayTransform? = nil,
                         flipHorizontal: Bool = false,
                         flipVertical: Bool = false,
@@ -351,6 +371,7 @@ public final class MetalViewportSurface: ViewportPresenting {
                                                        invert: invert,
                                                        colormap: colormap,
                                                        bitShift: bitShift,
+                                                       labelmapOverlays: labelmapOverlays,
                                                        onCommandBufferFailure: makeMPRPresentationFailureHandler(presentationToken: presentationToken))
         self.mprPresentationPass = mprPresentationPass
         lastPresentationError = nil

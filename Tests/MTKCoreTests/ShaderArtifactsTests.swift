@@ -4,8 +4,9 @@ import XCTest
 final class ShaderArtifactsTests: XCTestCase {
     func testBundleContainsCompiledMetallib() throws {
 #if canImport(Metal)
-        guard let url = Bundle.module.url(forResource: "MTK", withExtension: "metallib") else {
-            XCTFail("Bundle.module is missing required MTK.metallib")
+        let bundle = MTKCoreResourceBundle.bundle
+        guard let url = bundle.url(forResource: "MTK", withExtension: "metallib") else {
+            XCTFail("MTKCore resource bundle is missing required MTK.metallib")
             return
         }
         let size = (try? Data(contentsOf: url).count) ?? 0

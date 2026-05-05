@@ -206,6 +206,59 @@ final class GateUniformTests: XCTestCase {
     }
 }
 
+final class MetalVolumeRenderingAdapterParameterTests: XCTestCase {
+    private var adapter: MetalVolumeRenderingAdapter!
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        adapter = try makeTestAdapter()
+    }
+
+    func testVolumeRenderRequestClippingPopulatesShaderTrimAndPlaneParameters() async throws {
+        let dataset = VolumeDatasetTestFactory.makeTestDataset(
+            dimensions: VolumeDimensions(width: 4, height: 4, depth: 4),
+            pixelFormat: .int16Signed
+        )
+        try await adapter.send(.setWindow(min: dataset.intensityRange.lowerBound,
+                                          max: dataset.intensityRange.upperBound))
+        let crop = try VolumeCropBox(textureMin: SIMD3<Float>(0.1, 0.2, 0.3),
+                                     textureMax: SIMD3<Float>(0.9, 0.8, 0.7))
+        let plane = try VolumeClipPlane(textureCenteredNormal: SIMD3<Float>(0, 0, 1),
+                                        offset: 0.25,
+                                        dataset: dataset)
+        let request = VolumeRenderRequest(
+            dataset: dataset,
+            transferFunction: VolumeTransferFunction.defaultGrayscale(for: dataset),
+            viewportSize: CGSize(width: 16, height: 16),
+            camera: VolumeRenderRequest.Camera(
+                position: SIMD3<Float>(0.5, 0.5, 2),
+                target: SIMD3<Float>(repeating: 0.5),
+                up: SIMD3<Float>(0, 1, 0),
+                fieldOfView: 45
+            ),
+            samplingDistance: 1 / 256,
+            compositing: .frontToBack,
+            quality: .interactive,
+            clipping: try VolumeClippingState(cropBox: crop, clipPlanes: [plane])
+        )
+
+        let params = try await adapter.buildRenderingParameters(for: request)
+
+        XCTAssertEqual(params.trimXMin, 0.1, accuracy: 1e-6)
+        XCTAssertEqual(params.trimXMax, 0.9, accuracy: 1e-6)
+        XCTAssertEqual(params.trimYMin, 0.2, accuracy: 1e-6)
+        XCTAssertEqual(params.trimYMax, 0.8, accuracy: 1e-6)
+        XCTAssertEqual(params.trimZMin, 0.3, accuracy: 1e-6)
+        XCTAssertEqual(params.trimZMax, 0.7, accuracy: 1e-6)
+        XCTAssertEqual(params.clipPlane0.x, 0, accuracy: 1e-6)
+        XCTAssertEqual(params.clipPlane0.y, 0, accuracy: 1e-6)
+        XCTAssertEqual(params.clipPlane0.z, 1, accuracy: 1e-6)
+        XCTAssertEqual(params.clipPlane0.w, -0.25, accuracy: 1e-6)
+        XCTAssertEqual(params.clipPlane1, .zero)
+        XCTAssertEqual(params.clipPlane2, .zero)
+    }
+}
+
 // MARK: - resolveWindow priority (MetalVolumeRenderingAdapter+Dispatch.swift)
 
 final class ResolveWindowTests: XCTestCase {

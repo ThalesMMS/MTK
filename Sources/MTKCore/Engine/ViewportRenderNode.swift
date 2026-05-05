@@ -7,13 +7,13 @@
 
 import Foundation
 
-public struct ViewportRenderNode: Equatable, Hashable, Sendable {
-    public var viewportID: ViewportID
-    public var viewportType: ViewportType
-    public var resolvedRoute: RenderRoute
-    public var resourceHandle: VolumeResourceHandle?
+package struct ViewportRenderNode: Equatable, Hashable, Sendable {
+    package var viewportID: ViewportID
+    package var viewportType: ViewportType
+    package var resolvedRoute: RenderRoute
+    package var resourceHandle: VolumeResourceHandle?
 
-    public init(viewportID: ViewportID,
+    package init(viewportID: ViewportID,
                 resolvedRoute: RenderRoute,
                 resourceHandle: VolumeResourceHandle?) {
         self.viewportID = viewportID

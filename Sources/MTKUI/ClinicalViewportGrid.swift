@@ -29,6 +29,16 @@ public struct ClinicalViewportGrid: View {
     private let style: any VolumetricUIStyle
     private let viewportOverlay: ((ClinicalViewportDebugSnapshot) -> AnyView)?
 
+    /// Creates a clinical 2x2 viewport grid from the public viewport session contract.
+    public init(session: ClinicalViewportSession,
+                viewportOverlay: ((ClinicalViewportDebugSnapshot) -> AnyView)? = nil,
+                style: any VolumetricUIStyle = DefaultVolumetricUIStyle()) {
+        _store = StateObject(wrappedValue: ClinicalViewportGridControllerStore(session: session,
+                                                                               dataset: nil))
+        self.style = style
+        self.viewportOverlay = viewportOverlay
+    }
+
     /// Creates a clinical 2x2 viewport grid.
     ///
     /// Pass a preconfigured controller when ownership lives in a coordinator or view model. When
@@ -75,7 +85,7 @@ public struct ClinicalViewportGrid: View {
 
 @MainActor
 private final class ClinicalViewportGridControllerStore: ObservableObject {
-    @Published var controller: ClinicalViewportGridController?
+    @Published var session: ClinicalViewportSession?
     @Published var initializationError: (any Error)?
 
     private let initialDataset: VolumeDataset?
@@ -83,8 +93,18 @@ private final class ClinicalViewportGridControllerStore: ObservableObject {
     private var preparationTask: Task<Void, Never>?
     private var didApplyInitialDataset = false
 
+    var controller: ClinicalViewportGridController? {
+        session?.controller
+    }
+
+    init(session: ClinicalViewportSession, dataset: VolumeDataset?) {
+        self.session = session
+        self.initialDataset = dataset
+        self.ownsController = false
+    }
+
     init(controller: ClinicalViewportGridController?, dataset: VolumeDataset?) {
-        self.controller = controller
+        self.session = controller.map(ClinicalViewportSession.init(controller:))
         self.initialDataset = dataset
         self.ownsController = controller == nil
     }
@@ -97,16 +117,16 @@ private final class ClinicalViewportGridControllerStore: ObservableObject {
 
         let task = Task { @MainActor in
             do {
-                let resolvedController: ClinicalViewportGridController
-                if let existingController = self.controller {
-                    resolvedController = existingController
+                let resolvedSession: ClinicalViewportSession
+                if let existingSession = self.session {
+                    resolvedSession = existingSession
                 } else {
-                    resolvedController = try await ClinicalViewportGridController.make()
-                    self.controller = resolvedController
+                    resolvedSession = try await ClinicalViewportSession.make()
+                    self.session = resolvedSession
                 }
 
                 if ownsController, let initialDataset, !didApplyInitialDataset {
-                    try await resolvedController.applyDataset(initialDataset)
+                    try await resolvedSession.applyDataset(initialDataset)
                     didApplyInitialDataset = true
                 }
             } catch {
@@ -124,9 +144,9 @@ private final class ClinicalViewportGridControllerStore: ObservableObject {
         task?.cancel()
         await task?.value
         preparationTask = nil
-        guard let controller else { return }
-        await controller.shutdown()
-        self.controller = nil
+        guard let session else { return }
+        await session.shutdown()
+        self.session = nil
         didApplyInitialDataset = false
     }
 }

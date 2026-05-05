@@ -242,4 +242,132 @@ final class MPRPresentationPassTests: XCTestCase {
         XCTAssertEqual(try MPRTestHelpers.readGrayBytes(from: shiftedDrawable.texture), [0, 64, 128, 255], accuracy: 1)
         XCTAssertEqual(try MPRTestHelpers.readInputValues(UInt16.self, from: input), values)
     }
+
+    func test_emptyLabelmapOverlayListMatchesBasePresentation() throws {
+        let values: [UInt16] = [0, 50, 100, 150]
+        let input = try MPRTestHelpers.makeUnsignedTexture(values, width: 2, height: 2, device: device)
+        let frame = MPRTestHelpers.makeFrame(texture: input,
+                              pixelFormat: .int16Unsigned,
+                              intensityRange: 0...150)
+        var pass = try MPRPresentationPass(device: device,
+                                           commandQueue: commandQueue,
+                                           library: library)
+
+        let baseDrawable = try MPRTestMetalDrawable(device: device, width: 2, height: 2)
+        try pass.present(frame: frame, window: 0...150, to: baseDrawable)
+        try MPRTestHelpers.waitForQueue(commandQueue)
+
+        let overlayDrawable = try MPRTestMetalDrawable(device: device, width: 2, height: 2)
+        try pass.present(frame: frame,
+                         window: 0...150,
+                         to: overlayDrawable,
+                         labelmapOverlays: [])
+        try MPRTestHelpers.waitForQueue(commandQueue)
+
+        XCTAssertEqual(try MPRTestHelpers.readBGRAByteArrays(from: overlayDrawable.texture).flatMap { $0 },
+                       try MPRTestHelpers.readBGRAByteArrays(from: baseDrawable.texture).flatMap { $0 })
+    }
+
+    func test_labelmapOverlayCompositesVisibleLabelsWithOpacityAndTransparentBackground() throws {
+        let input = try MPRTestHelpers.makeUnsignedTexture([0, 0, 0, 0], width: 2, height: 2, device: device)
+        let drawable = try MPRTestMetalDrawable(device: device, width: 2, height: 2)
+        let frame = MPRTestHelpers.makeFrame(texture: input,
+                              pixelFormat: .int16Unsigned,
+                              intensityRange: 0...100)
+        let labelmapTexture = try makeLabelmapTexture([0, 1, 2, 0], width: 2, height: 2, depth: 1)
+        let lutTexture = try MPRTestHelpers.makeColormapTexture([
+            SIMD4<Float>(0, 0, 0, 0),
+            SIMD4<Float>(1, 0, 0, 1),
+            SIMD4<Float>(0, 1, 0, 0.5)
+        ], device: device)
+        let overlay = MPRLabelmapOverlay(
+            labelmapTexture: labelmapTexture,
+            colorLUTTexture: lutTexture,
+            opacity: 0.5,
+            originTexture: SIMD3<Float>(0.25, 0.25, 0.5),
+            axisUTexture: SIMD3<Float>(0.5, 0, 0),
+            axisVTexture: SIMD3<Float>(0, 0.5, 0)
+        )
+        var pass = try MPRPresentationPass(device: device,
+                                           commandQueue: commandQueue,
+                                           library: library)
+
+        try pass.present(frame: frame,
+                         window: 0...100,
+                         to: drawable,
+                         labelmapOverlays: [overlay])
+        try MPRTestHelpers.waitForQueue(commandQueue)
+
+        XCTAssertEqual(try MPRTestHelpers.readBGRAByteArrays(from: drawable.texture).flatMap { $0 },
+                       [
+                           0, 0, 0, 255,
+                           0, 0, 128, 255,
+                           0, 64, 0, 255,
+                           0, 0, 0, 255
+                       ],
+                       accuracy: 1)
+    }
+
+    func test_labelmapOverlaySkipsOutOfBoundsSamples() throws {
+        let input = try MPRTestHelpers.makeUnsignedTexture([0, 0, 0, 0], width: 2, height: 2, device: device)
+        let drawable = try MPRTestMetalDrawable(device: device, width: 2, height: 2)
+        let frame = MPRTestHelpers.makeFrame(texture: input,
+                              pixelFormat: .int16Unsigned,
+                              intensityRange: 0...100)
+        let labelmapTexture = try makeLabelmapTexture([1, 1, 1, 1], width: 2, height: 2, depth: 1)
+        let lutTexture = try MPRTestHelpers.makeColormapTexture([
+            SIMD4<Float>(0, 0, 0, 0),
+            SIMD4<Float>(1, 0, 0, 1)
+        ], device: device)
+        let overlay = MPRLabelmapOverlay(
+            labelmapTexture: labelmapTexture,
+            colorLUTTexture: lutTexture,
+            opacity: 1,
+            originTexture: SIMD3<Float>(-0.5, -0.5, 0.5),
+            axisUTexture: SIMD3<Float>(0, 0, 0),
+            axisVTexture: SIMD3<Float>(0, 0, 0)
+        )
+        var pass = try MPRPresentationPass(device: device,
+                                           commandQueue: commandQueue,
+                                           library: library)
+
+        try pass.present(frame: frame,
+                         window: 0...100,
+                         to: drawable,
+                         labelmapOverlays: [overlay])
+        try MPRTestHelpers.waitForQueue(commandQueue)
+
+        XCTAssertEqual(try MPRTestHelpers.readBGRAByteArrays(from: drawable.texture).flatMap { $0 },
+                       [
+                           0, 0, 0, 255,
+                           0, 0, 0, 255,
+                           0, 0, 0, 255,
+                           0, 0, 0, 255
+                       ],
+                       accuracy: 1)
+    }
+
+    private func makeLabelmapTexture(_ values: [UInt16],
+                                     width: Int,
+                                     height: Int,
+                                     depth: Int) throws -> any MTLTexture {
+        let descriptor = MTLTextureDescriptor()
+        descriptor.textureType = .type3D
+        descriptor.pixelFormat = .r16Uint
+        descriptor.width = width
+        descriptor.height = height
+        descriptor.depth = depth
+        descriptor.usage = [.shaderRead]
+        descriptor.storageMode = .shared
+        let texture = try XCTUnwrap(device.makeTexture(descriptor: descriptor))
+        values.withUnsafeBytes { buffer in
+            texture.replace(region: MTLRegionMake3D(0, 0, 0, width, height, depth),
+                            mipmapLevel: 0,
+                            slice: 0,
+                            withBytes: buffer.baseAddress!,
+                            bytesPerRow: width * MemoryLayout<UInt16>.stride,
+                            bytesPerImage: width * height * MemoryLayout<UInt16>.stride)
+        }
+        return texture
+    }
 }

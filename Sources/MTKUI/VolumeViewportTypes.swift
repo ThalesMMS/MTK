@@ -12,6 +12,19 @@ public enum VolumetricRenderMethod: String, CaseIterable, Identifiable, Sendable
 
     public var id: String { rawValue }
 
+    public init(renderMode: ClinicalTransferFunctionRenderMode) {
+        switch renderMode {
+        case .dvr:
+            self = .dvr
+        case .mip:
+            self = .mip
+        case .minip:
+            self = .minip
+        case .aip:
+            self = .avg
+        }
+    }
+
     var compositing: VolumeRenderRequest.Compositing {
         switch self {
         case .dvr:

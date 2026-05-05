@@ -17,19 +17,22 @@ let package = Package(
         .library(
             name: "MTKUI",
             targets: ["MTKUI"]
+        ),
+        .library(
+            name: "MTKDicomBridge",
+            targets: ["MTKDicomBridge"]
         )
     ],
     dependencies: [
         .package(url: "https://github.com/weichsel/ZIPFoundation.git", from: "0.9.19"),
-        .package(path: "../DICOM-decoder"),
+        .package(url: "https://github.com/ThalesMMS/DICOM-Decoder.git", from: "1.0.1"),
         .package(url: "https://github.com/apple/swift-docc-plugin", from: "1.0.0")
     ],
     targets: [
         .target(
             name: "MTKCore",
             dependencies: [
-                .product(name: "ZIPFoundation", package: "ZIPFoundation"),
-                .product(name: "DicomCore", package: "DICOM-decoder")
+                .product(name: "ZIPFoundation", package: "ZIPFoundation")
             ],
             path: "Sources/MTKCore",
             resources: [
@@ -48,12 +51,23 @@ let package = Package(
             ],
             path: "Sources/MTKUI"
         ),
+        .target(
+            name: "MTKDicomBridge",
+            dependencies: [
+                "MTKCore",
+                .product(name: "DicomCore", package: "DICOM-Decoder")
+            ],
+            path: "Sources/MTKDicomBridge"
+        ),
         .testTarget(
             name: "MTKCoreTests",
             dependencies: [
                 "MTKCore"
             ],
-            path: "Tests/MTKCoreTests"
+            path: "Tests/MTKCoreTests",
+            resources: [
+                .process("Fixtures")
+            ]
         ),
         .testTarget(
             name: "MTKUITests",
@@ -61,6 +75,14 @@ let package = Package(
                 "MTKUI"
             ],
             path: "Tests/MTKUITests"
+        ),
+        .testTarget(
+            name: "MTKDicomBridgeTests",
+            dependencies: [
+                "MTKCore",
+                "MTKDicomBridge"
+            ],
+            path: "Tests/MTKDicomBridgeTests"
         ),
         .plugin(
             name: "MTKShaderPlugin",

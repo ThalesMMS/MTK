@@ -2,7 +2,7 @@
 //  MPRViewer.swift
 //  MTK Examples
 //
-//  Clinical 2x2 MPR + volume example using the engine-native grid controller.
+//  Clinical 2x2 MPR + volume example using the public clinical viewport session.
 //
 
 import SwiftUI
@@ -14,7 +14,7 @@ import MTKUI
 /// ADR concepts demonstrated:
 /// `ClinicalViewportGrid` owns the canonical 2x2 layout:
 /// axial, coronal, sagittal, and 3D. The associated
-/// `ClinicalViewportGridController` keeps crosshairs, orientation overlays,
+/// `ClinicalViewportSession` keeps crosshairs, orientation overlays,
 /// window/level, and slab state synchronized while a single shared dataset
 /// upload backs all four panes through internal `VolumeResourceHandle`
 /// management. See `MTK/Architecture/ClinicalRenderingADR.md`.
@@ -23,16 +23,16 @@ import MTKUI
 /// This example does not use SceneKit, and it does not use `CGImage` for
 /// display.
 struct MPRViewerExample: View {
-    @State private var controller: ClinicalViewportGridController?
+    @State private var session: ClinicalViewportSession?
     @State private var didConfigureExample = false
     @State private var errorMessage: String?
 
     var body: some View {
         Group {
-            if let controller {
+            if let session {
                 VStack(spacing: 16) {
-                    ClinicalViewportGrid(controller: controller)
-                    controls(for: controller)
+                    ClinicalViewportGrid(session: session)
+                    controls(for: session)
                 }
             } else if let errorMessage {
                 ContentUnavailableView(
@@ -48,29 +48,29 @@ struct MPRViewerExample: View {
             await configureExampleIfNeeded()
         }
         .onDisappear {
-            let controller = controller
+            let session = session
             Task {
-                await controller?.shutdown()
-                self.controller = nil
+                await session?.shutdown()
+                self.session = nil
                 didConfigureExample = false
             }
         }
     }
 
     @ViewBuilder
-    private func controls(for controller: ClinicalViewportGridController) -> some View {
+    private func controls(for session: ClinicalViewportSession) -> some View {
         HStack(spacing: 12) {
             Button("Scroll Axial") {
-                Task { await controller.scrollSlice(axis: .axial, deltaNormalized: 0.08) }
+                Task { await session.scrollSlice(axis: .axial, deltaNormalized: 0.08) }
             }
 
             Button("Soft Tissue WW/L") {
-                Task { await controller.setMPRWindowLevel(window: 400, level: 40) }
+                Task { await session.setMPRWindowLevel(window: 400, level: 40) }
             }
 
             Button("Center Crosshair") {
                 Task {
-                    await controller.setCrosshair(
+                    await session.setCrosshair(
                         in: .axial,
                         normalizedPoint: CGPoint(x: 0.5, y: 0.5)
                     )
@@ -92,21 +92,21 @@ struct MPRViewerExample: View {
             let transferFunction = VolumeTransferFunctionLibrary.transferFunction(for: .ctSoftTissue)
 
             // This call performs one dataset load for the full clinical layout.
-            // The controller then binds the same shared GPU resource handle to
+            // The session then binds the same shared GPU resource handle to
             // axial, coronal, sagittal, and volume viewports.
-            let controller = try await ClinicalViewportGridController.make(
+            let session = try await ClinicalViewportSession.make(
                 dataset: dataset,
                 transferFunction: transferFunction
             )
 
-            self.controller = controller
+            self.session = session
 
             // `make(dataset:transferFunction:)` already applied the dataset,
             // recommended window, and default slab thickness. Keep one
             // deliberate non-default interaction here to show post-load API use.
-            await controller.scrollSlice(axis: .coronal, deltaNormalized: 0.05)
+            await session.scrollSlice(axis: .coronal, deltaNormalized: 0.05)
         } catch {
-            self.controller = nil
+            self.session = nil
             didConfigureExample = false
             errorMessage = error.localizedDescription
         }
@@ -132,7 +132,7 @@ struct MPRViewerExample: View {
 }
 
 /*
- `ClinicalViewportGridController.make()` creates one engine-backed controller and
+ `ClinicalViewportSession.make()` creates one public clinical session and
  one shared `VolumeResourceHandle` for all four panes. The grid then drives:
 
  - `scrollSlice(axis:deltaNormalized:)` for slice navigation

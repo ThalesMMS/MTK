@@ -183,6 +183,7 @@ public final class VolumeViewportCoordinator: ObservableObject {
     private var pendingDataset: VolumeDataset?
     private var pendingTransferFunction: TransferFunction?
     private var pendingHuWindow: VolumetricHUWindowMapping?
+    private var pendingVolumeClipping: VolumeClippingState = .disabled
     private var volumeConfiguration: VolumeViewportController.VolumeDisplayConfiguration = .method(.dvr)
     private var mprConfigurations: [VolumeViewportController.Axis: MprConfiguration] = [
         .x: MprConfiguration(blend: .single, slab: nil, normalizedPosition: 0.5),
@@ -320,6 +321,7 @@ public final class VolumeViewportCoordinator: ObservableObject {
         pendingDataset = nil
         pendingTransferFunction = nil
         pendingHuWindow = nil
+        pendingVolumeClipping = .disabled
         volumeConfiguration = .method(.dvr)
         mprConfigurations = [
             .x: MprConfiguration(blend: .single, slab: nil, normalizedPosition: 0.5),
@@ -330,6 +332,9 @@ public final class VolumeViewportCoordinator: ObservableObject {
             state.dataset = nil
             state.huWindow = nil
             state.transferFunction = nil
+            state.clipping = .disabled
+            state.clipBounds = nil
+            state.clipPlane = nil
             state.normalizedMprPositions = [
                 .x: 0.5,
                 .y: 0.5,
@@ -354,7 +359,7 @@ public final class VolumeViewportCoordinator: ObservableObject {
     /// let dataset = VolumeDataset(
     ///     data: voxelData,
     ///     dimensions: VolumeDimensions(width: 512, height: 512, depth: 300),
-    ///     spacing: VolumeSpacing(x: 0.001, y: 0.001, z: 0.0015),
+    ///     spacing: VolumeSpacing(x: 1.0, y: 1.0, z: 1.5),
     ///     pixelFormat: .int16Signed,
     ///     intensityRange: (-1024)...3071
     /// )
@@ -367,6 +372,10 @@ public final class VolumeViewportCoordinator: ObservableObject {
     public func apply(dataset: VolumeDataset) {
         guard isMetalAvailable else { return }
         pendingDataset = dataset
+        if rendererState.clipBounds != nil || rendererState.clipPlane != nil {
+            pendingVolumeClipping = (try? makeClippingState(bounds: rendererState.clipBounds,
+                                                            plane: rendererState.clipPlane)) ?? .disabled
+        }
         sharedMPRVolumeTextureCache.invalidate()
         updateRendererState { state in
             state.dataset = VolumetricRendererState.DatasetSummary(
@@ -375,6 +384,7 @@ public final class VolumeViewportCoordinator: ObservableObject {
                 intensityRange: dataset.intensityRange,
                 orientation: dataset.orientation
             )
+            state.clipping = pendingVolumeClipping
         }
         controllers.forEach { surface, controller in
             Task { await propagateState(to: controller, surface: surface) }
@@ -479,6 +489,19 @@ public final class VolumeViewportCoordinator: ObservableObject {
         volumeConfiguration = configuration
         if let controller = controllers[.volume] {
             Task { await propagateState(to: controller, surface: .volume) }
+        }
+    }
+
+    public func updateVolumeClipping(_ clipping: VolumeClippingState) {
+        guard isMetalAvailable else { return }
+        pendingVolumeClipping = clipping
+        updateRendererState {
+            $0.clipping = clipping
+            $0.clipBounds = clipping.cropBox.map(ClipBoundsSnapshot.init(cropBox:))
+            $0.clipPlane = nil
+        }
+        if let controller = controllers[.volume] {
+            Task { try? await controller.setVolumeClipping(clipping) }
         }
     }
 
@@ -643,6 +666,7 @@ public final class VolumeViewportCoordinator: ObservableObject {
         switch surface {
         case .volume:
             await controller.setDisplayConfiguration(volumeConfiguration.displayConfiguration)
+            try? await controller.setVolumeClipping(pendingVolumeClipping)
         case let .mpr(axis):
             let config = mprConfigurations[axis] ?? MprConfiguration(blend: .single, slab: nil, normalizedPosition: 0.5)
             let index = makeMprIndex(axis: axis, normalized: config.normalizedPosition)
@@ -667,6 +691,16 @@ public final class VolumeViewportCoordinator: ObservableObject {
             voxelCount = max(Int(dimensions.depth) - 1, 0)
         }
         return Int(round(normalized * Float(voxelCount)))
+    }
+
+    private func makeClippingState(bounds: ClipBoundsSnapshot?,
+                                   plane: ClipPlaneSnapshot?) throws -> VolumeClippingState {
+        let cropBox = try bounds?.volumeCropBox()
+        let planes = try pendingDataset.flatMap { dataset in
+            try plane?.volumeClipPlane(for: dataset)
+        }.map { [$0] } ?? []
+        return try VolumeClippingState(cropBox: cropBox,
+                                       clipPlanes: planes)
     }
 
     private func attachObservers(to controller: VolumeViewportController,
@@ -795,9 +829,14 @@ public final class VolumeViewportCoordinator: ObservableObject {
     ///
     /// - Note: Both bounds and plane clipping can be active simultaneously (intersection of constraints).
     public func updateClipState(bounds: ClipBoundsSnapshot?, plane: ClipPlaneSnapshot?) {
+        pendingVolumeClipping = (try? makeClippingState(bounds: bounds, plane: plane)) ?? .disabled
         updateRendererState {
             $0.clipBounds = bounds
             $0.clipPlane = plane
+            $0.clipping = pendingVolumeClipping
+        }
+        if let controller = controllers[.volume] {
+            Task { try? await controller.setVolumeClipping(pendingVolumeClipping) }
         }
     }
 

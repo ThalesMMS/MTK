@@ -5,8 +5,9 @@
 //  Example demonstrating custom tone curves and window/level presets
 //  Thales Matheus Mendonça Santos — November 2025
 //
-//  NOTE: This is example/documentation code showing transfer function customization.
-//  For complete UI implementation, see MTK-Demo's DrawOptionModel and MTKUI-backed views.
+//  NOTE: This is advanced example/documentation code showing transfer function
+//  customization through compatibility controller/coordinator APIs. For basic
+//  public 3D viewer setup, prefer VolumeViewport3D.
 //
 
 import SwiftUI

@@ -1,4 +1,5 @@
 import Foundation
+import Metal
 import simd
 import XCTest
 
@@ -70,6 +71,127 @@ final class DicomHUConversionPipelineTests: XCTestCase {
         XCTAssertEqual(loadedRange, -1024...3071)
     }
 
+    func test_loadVolume_populatesImageDataGeometryAndClinicalMetadata_forUnsignedSource() throws {
+        let direction = simd_float3x3(columns: (
+            SIMD3<Float>(0, 1, 0),
+            SIMD3<Float>(0, 0, 1),
+            SIMD3<Float>(1, 0, 0)
+        ))
+        let loader = DicomVolumeLoader(seriesLoader: SyntheticSeriesLoader(
+            slope: 2.0,
+            intercept: -1024.0,
+            isSigned: false,
+            unsignedSlices: [[0, 1, 2, 3]],
+            spacing: SIMD3<Double>(0.7, 0.8, 2.5),
+            orientation: direction,
+            origin: SIMD3<Float>(10, 20, 30),
+            modality: "MR",
+            seriesDescription: "Oblique MR",
+            studyInstanceUID: "1.2.3.4.5",
+            seriesInstanceUID: "1.2.3.4.5.6",
+            frameOfReferenceUID: "1.2.3.4.5.7",
+            windowCenter: 100,
+            windowWidth: 200
+        ))
+
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let expectation = expectation(description: "DICOM load")
+        var outcome: Result<VolumeDataset, Error>?
+
+        loader.loadVolume(from: directory, progress: { _ in }, completion: { result in
+            outcome = result.map(\.dataset)
+            expectation.fulfill()
+        })
+
+        wait(for: [expectation], timeout: 5)
+
+        let dataset = try XCTUnwrap(outcome?.get())
+        XCTAssertEqual(dataset.pixelFormat, .int16Signed)
+        XCTAssertEqual(dataset.imageData.pixelFormat, .int16Signed)
+        XCTAssertEqual(dataset.imageData.spacing.x, 0.7, accuracy: 1e-6)
+        XCTAssertEqual(dataset.imageData.spacing.y, 0.8, accuracy: 1e-6)
+        XCTAssertEqual(dataset.imageData.spacing.z, 2.5, accuracy: 1e-6)
+        XCTAssertEqual(dataset.imageData.origin, SIMD3<Float>(10, 20, 30))
+        XCTAssertEqual(dataset.imageData.rowDirection, SIMD3<Float>(0, 1, 0))
+        XCTAssertEqual(dataset.imageData.columnDirection, SIMD3<Float>(0, 0, 1))
+        XCTAssertEqual(dataset.imageData.sliceDirection, SIMD3<Float>(1, 0, 0))
+
+        let metadata = try XCTUnwrap(dataset.imageData.clinicalMetadata)
+        XCTAssertEqual(metadata.modality, "MR")
+        XCTAssertEqual(metadata.seriesDescription, "Oblique MR")
+        XCTAssertEqual(metadata.studyInstanceUID, "1.2.3.4.5")
+        XCTAssertEqual(metadata.seriesInstanceUID, "1.2.3.4.5.6")
+        XCTAssertEqual(metadata.frameOfReferenceUID, "1.2.3.4.5.7")
+        XCTAssertEqual(metadata.rescaleSlope, 2.0)
+        XCTAssertEqual(metadata.rescaleIntercept, -1024.0)
+        XCTAssertEqual(metadata.sourcePixelFormat, .int16Unsigned)
+        XCTAssertEqual(metadata.windowCenter, 100)
+        XCTAssertEqual(metadata.windowWidth, 200)
+    }
+
+    func test_loadVolumeFeedsSlopeInterceptHUIntoMPR() async throws {
+        let loader = DicomVolumeLoader(seriesLoader: SyntheticSeriesLoader(
+            slope: 2.0,
+            intercept: -1024.0,
+            isSigned: false,
+            unsignedSlices: [
+                [0, 2, 4, 8],
+                [0, 2, 4, 8]
+            ],
+            spacing: SIMD3<Double>(0.8, 1.2, 2.4),
+            orientation: matrix_identity_float3x3,
+            origin: SIMD3<Float>(5, 10, 15),
+            modality: "CT",
+            seriesDescription: "Synthetic CT HU MPR"
+        ))
+
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let dataset = try await loadDataset(using: loader, from: directory)
+        XCTAssertEqual(dataset.pixelFormat, .int16Signed)
+        XCTAssertEqual(dataset.intensityRange, -1024 ... -1008)
+        XCTAssertEqual(dataset.imageData.clinicalMetadata?.sourcePixelFormat, .int16Unsigned)
+        XCTAssertEqual(dataset.imageData.clinicalMetadata?.rescaleSlope, 2.0)
+        XCTAssertEqual(dataset.imageData.clinicalMetadata?.rescaleIntercept, -1024.0)
+
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("Metal device unavailable on this test runner")
+        }
+        guard let commandQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Failed to create Metal command queue")
+        }
+        let adapter = MetalMPRComputeAdapter(
+            device: device,
+            commandQueue: commandQueue,
+            library: try ShaderLibraryLoader.loadLibrary(for: device),
+            featureFlags: FeatureFlags.evaluate(for: device),
+            debugOptions: VolumeRenderingDebugOptions()
+        )
+        let volumeTexture = try await VolumeTextureFactory(dataset: dataset)
+            .generateAsync(device: device, commandQueue: commandQueue)
+        let plane = MPRPlaneGeometryFactory.makePlane(for: dataset,
+                                                      axis: .z,
+                                                      slicePosition: 0)
+
+        let frame = try await adapter.makeSlabTexture(
+            dataset: dataset,
+            volumeTexture: volumeTexture,
+            plane: plane,
+            thickness: 1,
+            steps: 1,
+            blend: .single
+        )
+
+        let actual = try MPRTextureReadbackHelper.readValues(Int16.self,
+                                                             from: frame,
+                                                             device: device,
+                                                             commandQueue: commandQueue)
+        XCTAssertEqual(actual, [-1024, -1020, -1016, -1008])
+    }
+
     // MARK: - Helpers
 
     private func makeTemporaryDirectory() throws -> URL {
@@ -77,6 +199,15 @@ final class DicomHUConversionPipelineTests: XCTestCase {
             .appendingPathComponent("DicomHUConversionPipelineTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
+    }
+
+    private func loadDataset(using loader: DicomVolumeLoader,
+                             from directory: URL) async throws -> VolumeDataset {
+        try await withCheckedThrowingContinuation { continuation in
+            loader.loadVolume(from: directory, progress: { _ in }, completion: { result in
+                continuation.resume(with: result.map(\.dataset))
+            })
+        }
     }
 }
 
@@ -86,24 +217,64 @@ private final class SyntheticSeriesLoader: DicomSeriesLoading {
     init(slope: Double,
          intercept: Double,
          isSigned: Bool,
-         slices: [[Int16]]) {
+         slices: [[Int16]],
+         spacing: SIMD3<Double> = SIMD3<Double>(1, 1, 1),
+         orientation: simd_float3x3 = matrix_identity_float3x3,
+         origin: SIMD3<Float> = .zero,
+         modality: String = "CT",
+         seriesDescription: String = "Synthetic HU Series",
+         studyInstanceUID: String? = nil,
+         seriesInstanceUID: String? = nil,
+         frameOfReferenceUID: String? = nil,
+         windowCenter: Double? = nil,
+         windowWidth: Double? = nil) {
         self.volume = SyntheticVolume(
             slices: slices.map { $0.withUnsafeBytes { Data($0) } },
             isSigned: isSigned,
             slope: slope,
-            intercept: intercept
+            intercept: intercept,
+            spacing: spacing,
+            orientation: orientation,
+            origin: origin,
+            modality: modality,
+            seriesDescription: seriesDescription,
+            studyInstanceUID: studyInstanceUID,
+            seriesInstanceUID: seriesInstanceUID,
+            frameOfReferenceUID: frameOfReferenceUID,
+            windowCenter: windowCenter,
+            windowWidth: windowWidth
         )
     }
 
     init(slope: Double,
          intercept: Double,
          isSigned: Bool,
-         unsignedSlices: [[UInt16]]) {
+         unsignedSlices: [[UInt16]],
+         spacing: SIMD3<Double> = SIMD3<Double>(1, 1, 1),
+         orientation: simd_float3x3 = matrix_identity_float3x3,
+         origin: SIMD3<Float> = .zero,
+         modality: String = "CT",
+         seriesDescription: String = "Synthetic HU Series",
+         studyInstanceUID: String? = nil,
+         seriesInstanceUID: String? = nil,
+         frameOfReferenceUID: String? = nil,
+         windowCenter: Double? = nil,
+         windowWidth: Double? = nil) {
         self.volume = SyntheticVolume(
             slices: unsignedSlices.map { $0.withUnsafeBytes { Data($0) } },
             isSigned: isSigned,
             slope: slope,
-            intercept: intercept
+            intercept: intercept,
+            spacing: spacing,
+            orientation: orientation,
+            origin: origin,
+            modality: modality,
+            seriesDescription: seriesDescription,
+            studyInstanceUID: studyInstanceUID,
+            seriesInstanceUID: seriesInstanceUID,
+            frameOfReferenceUID: frameOfReferenceUID,
+            windowCenter: windowCenter,
+            windowWidth: windowWidth
         )
     }
 
@@ -126,24 +297,54 @@ private struct SyntheticVolume: DICOMSeriesVolumeProtocol {
     let width: Int
     let height: Int
     let depth: Int
-    let spacingX = 1.0
-    let spacingY = 1.0
-    let spacingZ = 1.0
-    let orientation = matrix_identity_float3x3
-    let origin = SIMD3<Float>(repeating: 0)
+    let spacingX: Double
+    let spacingY: Double
+    let spacingZ: Double
+    let orientation: simd_float3x3
+    let origin: SIMD3<Float>
     let rescaleSlope: Double
     let rescaleIntercept: Double
     let isSignedPixel: Bool
-    let seriesDescription = "Synthetic HU Series"
-    let modality = "CT"
+    let seriesDescription: String
+    let modality: String
+    let studyInstanceUID: String?
+    let seriesInstanceUID: String?
+    let frameOfReferenceUID: String?
+    let windowCenter: Double?
+    let windowWidth: Double?
 
     let slices: [Data]
 
-    init(slices: [Data], isSigned: Bool, slope: Double, intercept: Double) {
+    init(slices: [Data],
+         isSigned: Bool,
+         slope: Double,
+         intercept: Double,
+         spacing: SIMD3<Double>,
+         orientation: simd_float3x3,
+         origin: SIMD3<Float>,
+         modality: String,
+         seriesDescription: String,
+         studyInstanceUID: String?,
+         seriesInstanceUID: String?,
+         frameOfReferenceUID: String?,
+         windowCenter: Double?,
+         windowWidth: Double?) {
         self.slices = slices
         self.isSignedPixel = isSigned
         self.rescaleSlope = slope
         self.rescaleIntercept = intercept
+        self.spacingX = spacing.x
+        self.spacingY = spacing.y
+        self.spacingZ = spacing.z
+        self.orientation = orientation
+        self.origin = origin
+        self.modality = modality
+        self.seriesDescription = seriesDescription
+        self.studyInstanceUID = studyInstanceUID
+        self.seriesInstanceUID = seriesInstanceUID
+        self.frameOfReferenceUID = frameOfReferenceUID
+        self.windowCenter = windowCenter
+        self.windowWidth = windowWidth
 
         // Each slice is 2x2.
         self.width = 2

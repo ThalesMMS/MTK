@@ -9,6 +9,7 @@ import CoreGraphics
 import Foundation
 import QuartzCore
 @preconcurrency import Metal
+import simd
 
 public enum MPRPresentationPassError: Error, Equatable, LocalizedError {
     case commandQueueDeviceMismatch
@@ -24,6 +25,10 @@ public enum MPRPresentationPassError: Error, Equatable, LocalizedError {
     case presentationTextureCreationFailed
     case colormapDeviceMismatch
     case fallbackColormapCreationFailed
+    case overlayTextureDeviceMismatch
+    case overlayLabelmapPixelFormatMismatch(MTLPixelFormat)
+    case overlayColorLUTPixelFormatMismatch(MTLPixelFormat)
+    case overlayTextureCreationFailed
 
     public static func == (lhs: MPRPresentationPassError, rhs: MPRPresentationPassError) -> Bool {
         switch (lhs, rhs) {
@@ -33,7 +38,9 @@ public enum MPRPresentationPassError: Error, Equatable, LocalizedError {
              (.encoderCreationFailed, .encoderCreationFailed),
              (.presentationTextureCreationFailed, .presentationTextureCreationFailed),
              (.colormapDeviceMismatch, .colormapDeviceMismatch),
-             (.fallbackColormapCreationFailed, .fallbackColormapCreationFailed):
+             (.fallbackColormapCreationFailed, .fallbackColormapCreationFailed),
+             (.overlayTextureDeviceMismatch, .overlayTextureDeviceMismatch),
+             (.overlayTextureCreationFailed, .overlayTextureCreationFailed):
             return true
         case let (.drawableDeviceMismatch(lhsSource, lhsDrawable), .drawableDeviceMismatch(rhsSource, rhsDrawable)):
             return lhsSource == rhsSource && lhsDrawable == rhsDrawable
@@ -41,6 +48,10 @@ public enum MPRPresentationPassError: Error, Equatable, LocalizedError {
             return lhsFormat == rhsFormat
         case let (.frameTextureFormatMismatch(lhsExpected, lhsActual), .frameTextureFormatMismatch(rhsExpected, rhsActual)):
             return lhsExpected == rhsExpected && lhsActual == rhsActual
+        case let (.overlayLabelmapPixelFormatMismatch(lhsFormat), .overlayLabelmapPixelFormatMismatch(rhsFormat)):
+            return lhsFormat == rhsFormat
+        case let (.overlayColorLUTPixelFormatMismatch(lhsFormat), .overlayColorLUTPixelFormatMismatch(rhsFormat)):
+            return lhsFormat == rhsFormat
         case let (.sizeMismatch(lhsSource, lhsDrawable), .sizeMismatch(rhsSource, rhsDrawable)):
             return lhsSource == rhsSource && lhsDrawable == rhsDrawable
         case let (.pipelineUnavailable(lhsName), .pipelineUnavailable(rhsName)):
@@ -84,6 +95,14 @@ public enum MPRPresentationPassError: Error, Equatable, LocalizedError {
             return "MPR colormap texture belongs to a different Metal device."
         case .fallbackColormapCreationFailed:
             return "Failed to create the fallback MPR colormap texture."
+        case .overlayTextureDeviceMismatch:
+            return "MPR labelmap overlay textures belong to a different Metal device."
+        case let .overlayLabelmapPixelFormatMismatch(pixelFormat):
+            return "MPR labelmap overlay requires r16Uint label textures, got \(pixelFormat)."
+        case let .overlayColorLUTPixelFormatMismatch(pixelFormat):
+            return "MPR labelmap overlay requires rgba32Float LUT textures, got \(pixelFormat)."
+        case .overlayTextureCreationFailed:
+            return "Failed to create the intermediate MPR labelmap overlay texture."
         }
     }
 }
@@ -115,6 +134,7 @@ public struct MPRPresentationPass {
     private let cacheLock = NSLock()
     private var pipelineCache: [String: MTLComputePipelineState] = [:]
     private var cachedPresentationTexture: (any MTLTexture)?
+    private var cachedOverlayTexture: (any MTLTexture)?
     private var fallbackColormapTexture: (any MTLTexture)?
 
     private struct MPRPresentationUniforms {
@@ -127,6 +147,20 @@ public struct MPRPresentationPass {
         var flipVertical: Int32
         var bitShift: Int32
         var _pad0: Int32
+    }
+
+    private struct MPRLabelmapOverlayUniforms {
+        var opacity: Float
+        var _pad0: SIMD3<Float>
+        var originTexture: SIMD3<Float>
+        var _pad1: Float
+        var axisUTexture: SIMD3<Float>
+        var _pad2: Float
+        var axisVTexture: SIMD3<Float>
+        var _pad3: Float
+        var flipHorizontal: Int32
+        var flipVertical: Int32
+        var _pad4: SIMD2<Int32>
     }
 
     public init(device: any MTLDevice,
@@ -160,6 +194,7 @@ public struct MPRPresentationPass {
                                  invert: Bool = false,
                                  colormap: (any MTLTexture)? = nil,
                                  bitShift: Int32 = 0,
+                                 labelmapOverlays: [MPRLabelmapOverlay] = [],
                                  onCommandBufferFailure: ((MPRPresentationCommandBufferError) -> Void)? = nil) throws -> CFAbsoluteTime {
         try presentImpl(frame: frame,
                         window: window,
@@ -169,6 +204,7 @@ public struct MPRPresentationPass {
                         flipHorizontal: transform.presentationFlipHorizontal,
                         flipVertical: transform.presentationFlipVertical,
                         bitShift: bitShift,
+                        labelmapOverlays: labelmapOverlays,
                         onCommandBufferFailure: onCommandBufferFailure)
     }
 
@@ -182,6 +218,7 @@ public struct MPRPresentationPass {
                                  flipHorizontal: Bool = false,
                                  flipVertical: Bool = false,
                                  bitShift: Int32 = 0,
+                                 labelmapOverlays: [MPRLabelmapOverlay] = [],
                                  onCommandBufferFailure: ((MPRPresentationCommandBufferError) -> Void)? = nil) throws -> CFAbsoluteTime {
         try presentImpl(frame: frame,
                         window: window,
@@ -191,6 +228,7 @@ public struct MPRPresentationPass {
                         flipHorizontal: flipHorizontal,
                         flipVertical: flipVertical,
                         bitShift: bitShift,
+                        labelmapOverlays: labelmapOverlays,
                         onCommandBufferFailure: onCommandBufferFailure)
     }
 
@@ -203,13 +241,17 @@ public struct MPRPresentationPass {
                                       flipHorizontal: Bool,
                                       flipVertical: Bool,
                                       bitShift: Int32,
+                                      labelmapOverlays: [MPRLabelmapOverlay],
                                       onCommandBufferFailure: ((MPRPresentationCommandBufferError) -> Void)?) throws -> CFAbsoluteTime {
         assert(
             Thread.isMainThread,
             "MPRPresentationPass.present() uses pipelineCache and cachedPresentationTexture; use it from the MainActor or another single-threaded context."
         )
         let startedAt = CFAbsoluteTimeGetCurrent()
-        try validate(frame: frame, drawableTexture: drawable.texture, colormap: colormap)
+        try validate(frame: frame,
+                     drawableTexture: drawable.texture,
+                     colormap: colormap,
+                     labelmapOverlays: labelmapOverlays)
 
         let presentationTexture = try reusablePresentationTexture(width: frame.texture.width,
                                                                   height: frame.texture.height)
@@ -261,16 +303,24 @@ public struct MPRPresentationPass {
         }
         computeEncoder.endEncoding()
 
+        let finalPresentationTexture = try encodeLabelmapOverlays(labelmapOverlays,
+                                                                  initialTexture: presentationTexture,
+                                                                  commandBuffer: commandBuffer,
+                                                                  width: frame.texture.width,
+                                                                  height: frame.texture.height,
+                                                                  flipHorizontal: flipHorizontal,
+                                                                  flipVertical: flipVertical)
+
         guard let blitEncoder = commandBuffer.makeBlitCommandEncoder() else {
             throw MPRPresentationPassError.encoderCreationFailed
         }
         blitEncoder.label = "mpr_presentation_blit"
-        blitEncoder.copy(from: presentationTexture,
+        blitEncoder.copy(from: finalPresentationTexture,
                          sourceSlice: 0,
                          sourceLevel: 0,
                          sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
-                         sourceSize: MTLSize(width: presentationTexture.width,
-                                             height: presentationTexture.height,
+                         sourceSize: MTLSize(width: finalPresentationTexture.width,
+                                             height: finalPresentationTexture.height,
                                              depth: 1),
                          to: drawable.texture,
                          destinationSlice: 0,
@@ -319,6 +369,7 @@ public struct MPRPresentationPass {
                     "sourcePixelFormat": "\(frame.texture.pixelFormat)",
                     "drawablePixelFormat": "\(drawable.texture.pixelFormat)",
                     "voiLUTApplied": colormap == nil ? "false" : "true",
+                    "labelmapOverlayCount": "\(labelmapOverlays.count)",
                     "monochrome": invert ? "MONOCHROME1" : "MONOCHROME2",
                     "flipHorizontal": flipHorizontal ? "true" : "false",
                     "flipVertical": flipVertical ? "true" : "false"
@@ -338,6 +389,7 @@ public struct MPRPresentationPass {
                                  invert: Bool = false,
                                  colormap: (any MTLTexture)? = nil,
                                  bitShift: Int32 = 0,
+                                 labelmapOverlays: [MPRLabelmapOverlay] = [],
                                  onCommandBufferFailure: ((MPRPresentationCommandBufferError) -> Void)? = nil) throws -> CFAbsoluteTime {
         try presentImpl(frame: frame,
                         window: Self.windowRange(for: preset),
@@ -347,6 +399,7 @@ public struct MPRPresentationPass {
                         flipHorizontal: transform.presentationFlipHorizontal,
                         flipVertical: transform.presentationFlipVertical,
                         bitShift: bitShift,
+                        labelmapOverlays: labelmapOverlays,
                         onCommandBufferFailure: onCommandBufferFailure)
     }
 
@@ -359,6 +412,7 @@ public struct MPRPresentationPass {
                                  flipHorizontal: Bool = false,
                                  flipVertical: Bool = false,
                                  bitShift: Int32 = 0,
+                                 labelmapOverlays: [MPRLabelmapOverlay] = [],
                                  onCommandBufferFailure: ((MPRPresentationCommandBufferError) -> Void)? = nil) throws -> CFAbsoluteTime {
         try presentImpl(frame: frame,
                         window: Self.windowRange(for: preset),
@@ -368,6 +422,7 @@ public struct MPRPresentationPass {
                         flipHorizontal: flipHorizontal,
                         flipVertical: flipVertical,
                         bitShift: bitShift,
+                        labelmapOverlays: labelmapOverlays,
                         onCommandBufferFailure: onCommandBufferFailure)
     }
 
@@ -384,6 +439,14 @@ public struct MPRPresentationPass {
             functionName = "mprPresentationUnsigned"
         }
 
+        return try pipelineState(named: functionName)
+    }
+
+    private mutating func overlayPipelineState() throws -> MTLComputePipelineState {
+        try pipelineState(named: "mprCompositeLabelmapOverlay")
+    }
+
+    private mutating func pipelineState(named functionName: String) throws -> MTLComputePipelineState {
         if let cached = cachedPipelineState(named: functionName) {
             return cached
         }
@@ -401,6 +464,75 @@ public struct MPRPresentationPass {
             throw MPRPresentationPassError.pipelineUnavailableWithError(functionName: functionName,
                                                                         underlyingError: error)
         }
+    }
+
+    private mutating func encodeLabelmapOverlays(_ overlays: [MPRLabelmapOverlay],
+                                                 initialTexture: any MTLTexture,
+                                                 commandBuffer: any MTLCommandBuffer,
+                                                 width: Int,
+                                                 height: Int,
+                                                 flipHorizontal: Bool,
+                                                 flipVertical: Bool) throws -> any MTLTexture {
+        guard overlays.isEmpty == false else { return initialTexture }
+
+        let overlayTexture = try reusableOverlayTexture(width: width,
+                                                        height: height)
+        var sourceTexture: any MTLTexture = initialTexture
+        var destinationTexture: any MTLTexture = overlayTexture
+        let pipeline = try overlayPipelineState()
+
+        for (index, overlay) in overlays.enumerated() {
+            guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+                throw MPRPresentationPassError.encoderCreationFailed
+            }
+            encoder.label = "mpr_labelmap_overlay_\(index)"
+            encoder.setComputePipelineState(pipeline)
+            encoder.setTexture(sourceTexture, index: 0)
+            encoder.setTexture(destinationTexture, index: 1)
+            encoder.setTexture(overlay.labelmapTexture, index: 2)
+            encoder.setTexture(overlay.colorLUTTexture, index: 3)
+
+            var uniforms = MPRLabelmapOverlayUniforms(
+                opacity: max(0, min(overlay.opacity.isFinite ? overlay.opacity : 0, 1)),
+                _pad0: SIMD3<Float>(0, 0, 0),
+                originTexture: overlay.originTexture,
+                _pad1: 0,
+                axisUTexture: overlay.axisUTexture,
+                _pad2: 0,
+                axisVTexture: overlay.axisVTexture,
+                _pad3: 0,
+                flipHorizontal: flipHorizontal ? 1 : 0,
+                flipVertical: flipVertical ? 1 : 0,
+                _pad4: SIMD2<Int32>(0, 0)
+            )
+            encoder.setBytes(&uniforms,
+                             length: MemoryLayout<MPRLabelmapOverlayUniforms>.stride,
+                             index: 0)
+
+            let dispatch = ThreadgroupDispatchConfiguration.default(for: pipeline)
+            let threadsPerGrid = MTLSize(width: width,
+                                         height: height,
+                                         depth: 1)
+            if FeatureFlags.evaluate(for: device).contains(.nonUniformThreadgroups) {
+                encoder.dispatchThreads(threadsPerGrid,
+                                        threadsPerThreadgroup: dispatch.threadsPerThreadgroup)
+            } else {
+                let groups = MTLSize(
+                    width: (threadsPerGrid.width + dispatch.threadsPerThreadgroup.width - 1) / dispatch.threadsPerThreadgroup.width,
+                    height: (threadsPerGrid.height + dispatch.threadsPerThreadgroup.height - 1) / dispatch.threadsPerThreadgroup.height,
+                    depth: 1
+                )
+                encoder.dispatchThreadgroups(groups,
+                                             threadsPerThreadgroup: dispatch.threadsPerThreadgroup)
+            }
+            encoder.endEncoding()
+
+            if index < overlays.count - 1 {
+                swap(&sourceTexture, &destinationTexture)
+            }
+        }
+
+        return destinationTexture
     }
 
     private func cachedPipelineState(named functionName: String) -> MTLComputePipelineState? {
@@ -434,6 +566,21 @@ public struct MPRPresentationPass {
                                                 height: height)
     }
 
+    private mutating func reusableOverlayTexture(width: Int,
+                                                 height: Int) throws -> any MTLTexture {
+        if let cachedOverlayTexture = cachedOverlayTexture(width: width,
+                                                           height: height) {
+            return cachedOverlayTexture
+        }
+
+        let texture = try makePresentationTexture(width: width,
+                                                  height: height)
+        texture.label = "MPR.labelmapOverlayTexture"
+        return storeOverlayTextureIfNeeded(texture,
+                                           width: width,
+                                           height: height)
+    }
+
     private func cachedPresentationTexture(width: Int,
                                            height: Int) -> (any MTLTexture)? {
         cacheLock.lock()
@@ -445,6 +592,19 @@ public struct MPRPresentationPass {
             return nil
         }
         return cachedPresentationTexture
+    }
+
+    private func cachedOverlayTexture(width: Int,
+                                      height: Int) -> (any MTLTexture)? {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        guard let cachedOverlayTexture,
+              isReusablePresentationTexture(cachedOverlayTexture,
+                                            width: width,
+                                            height: height) else {
+            return nil
+        }
+        return cachedOverlayTexture
     }
 
     private mutating func storePresentationTextureIfNeeded(_ texture: any MTLTexture,
@@ -459,6 +619,21 @@ public struct MPRPresentationPass {
             return cachedPresentationTexture
         }
         cachedPresentationTexture = texture
+        return texture
+    }
+
+    private mutating func storeOverlayTextureIfNeeded(_ texture: any MTLTexture,
+                                                      width: Int,
+                                                      height: Int) -> any MTLTexture {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        if let cachedOverlayTexture,
+           isReusablePresentationTexture(cachedOverlayTexture,
+                                         width: width,
+                                         height: height) {
+            return cachedOverlayTexture
+        }
+        cachedOverlayTexture = texture
         return texture
     }
 
@@ -545,7 +720,8 @@ public struct MPRPresentationPass {
 
     private func validate(frame: MPRTextureFrame,
                           drawableTexture: any MTLTexture,
-                          colormap: (any MTLTexture)?) throws {
+                          colormap: (any MTLTexture)?,
+                          labelmapOverlays: [MPRLabelmapOverlay]) throws {
         guard frame.texture.device === device,
               drawableTexture.device === device else {
             throw MPRPresentationPassError.drawableDeviceMismatch(
@@ -557,6 +733,19 @@ public struct MPRPresentationPass {
         if let colormap,
            colormap.device !== device {
             throw MPRPresentationPassError.colormapDeviceMismatch
+        }
+
+        for overlay in labelmapOverlays {
+            guard overlay.labelmapTexture.device === device,
+                  overlay.colorLUTTexture.device === device else {
+                throw MPRPresentationPassError.overlayTextureDeviceMismatch
+            }
+            guard overlay.labelmapTexture.pixelFormat == .r16Uint else {
+                throw MPRPresentationPassError.overlayLabelmapPixelFormatMismatch(overlay.labelmapTexture.pixelFormat)
+            }
+            guard overlay.colorLUTTexture.pixelFormat == .rgba32Float else {
+                throw MPRPresentationPassError.overlayColorLUTPixelFormatMismatch(overlay.colorLUTTexture.pixelFormat)
+            }
         }
 
         guard drawableTexture.pixelFormat == .bgra8Unorm else {

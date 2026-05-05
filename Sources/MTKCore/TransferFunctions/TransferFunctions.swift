@@ -97,7 +97,9 @@ private extension TransferFunctions {
                              device: any MTLDevice,
                              logger: Logger) -> (any MTLTexture)? {
         let width = max(1, options.resolution)
-        let height = max(1, options.gradientResolution)
+        let height = transfer.gradientOpacity.map {
+            max(2, options.gradientResolution, $0.resolution)
+        } ?? max(1, options.gradientResolution)
 
         let colourPoints = prepareColourPoints(for: transfer)
         let alphaPoints = prepareAlphaPoints(for: transfer)
@@ -125,10 +127,17 @@ private extension TransferFunctions {
             let sampleValue = transfer.minimumValue + (transfer.maximumValue - transfer.minimumValue) * t
 
             let colour = interpolateColour(at: sampleValue, points: colourPoints)
-            let alpha = interpolateAlpha(at: sampleValue, points: alphaPoints)
-            let finalColour = SIMD4<Float>(colour.r, colour.g, colour.b, VolumetricMath.clampFloat(alpha, lower: 0, upper: 1))
-
             for y in 0..<height {
+                let gradientOpacity = opacityMultiplier(for: transfer.gradientOpacity,
+                                                        y: y,
+                                                        height: height)
+                let alpha = interpolateAlpha(at: sampleValue, points: alphaPoints) * gradientOpacity
+                let finalColour = SIMD4<Float>(
+                    colour.r,
+                    colour.g,
+                    colour.b,
+                    VolumetricMath.clampFloat(alpha, lower: 0, upper: 1)
+                )
                 table[x + y * width] = finalColour
             }
         }
@@ -205,6 +214,16 @@ private extension TransferFunctions {
         }
 
         return points.last?.alphaValue ?? first.alphaValue
+    }
+
+    static func opacityMultiplier(for gradientOpacity: GradientOpacityFunction?,
+                                  y: Int,
+                                  height: Int) -> Float {
+        guard let gradientOpacity else { return 1 }
+        let gradientT = height > 1 ? Float(y) / Float(height - 1) : 0
+        let gradientValue = gradientOpacity.minimumGradient +
+            (gradientOpacity.maximumGradient - gradientOpacity.minimumGradient) * gradientT
+        return gradientOpacity.opacity(at: gradientValue)
     }
 
     static func linearize(colour: TransferFunction.RGBAColor,
@@ -475,6 +494,20 @@ private extension TransferFunction {
         hasher.combine(maximumValue)
         hasher.combine(shift)
         hasher.combine(colorSpace.rawValue)
+        if let metadata {
+            hasher.combine(metadata.identifier)
+            hasher.combine(metadata.displayName)
+            hasher.combine(metadata.modality.rawValue)
+            hasher.combine(metadata.tissue.rawValue)
+            hasher.combine(metadata.clinicalUse)
+            hasher.combine(metadata.source)
+            hasher.combine(metadata.tags)
+        }
+        if let renderingIntent {
+            hasher.combine(renderingIntent.mode.rawValue)
+            hasher.combine(renderingIntent.lightingEnabled)
+            hasher.combine(renderingIntent.projectionsUseTransferFunction)
+        }
         hasher.combine(colourPoints.count)
         for point in colourPoints {
             hasher.combine(point.dataValue)
@@ -487,6 +520,15 @@ private extension TransferFunction {
         for point in alphaPoints {
             hasher.combine(point.dataValue)
             hasher.combine(point.alphaValue)
+        }
+        if let gradientOpacity {
+            hasher.combine(gradientOpacity.minimumGradient)
+            hasher.combine(gradientOpacity.maximumGradient)
+            hasher.combine(gradientOpacity.resolution)
+            for point in gradientOpacity.points {
+                hasher.combine(point.gradientMagnitude)
+                hasher.combine(point.opacity)
+            }
         }
         return hasher.finalize()
     }

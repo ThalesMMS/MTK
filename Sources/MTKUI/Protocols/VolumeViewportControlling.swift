@@ -93,6 +93,14 @@ public protocol VolumeViewportControlling: AnyObject {
     func setProjectionsUseTransferFunction(_ enabled: Bool) async
     func setProjectionDensityGate(floor: Float, ceil: Float) async
     func setProjectionHuGate(enabled: Bool, min: Int32, max: Int32) async
+    func setVolumeLayers(_ layers: [MTKCore.VolumeLayer]) async
+    func setSurfaceMeshLayers(_ layers: [SurfaceMeshLayer]) async
+    func setVolumeClipping(_ clipping: VolumeClippingState) async throws
+    func setVolumeLayerVisibility(id: String, isVisible: Bool) async
+    func setVolumeLayerOpacity(id: String, opacity: Float) async
+    func setVolumeLayerBlendMode(id: String, blendMode: MTKCore.VolumeLayerBlendMode) async
+    func setSurfaceMeshLayerVisibility(id: String, isVisible: Bool) async
+    func setSurfaceMeshLayerOpacity(id: String, opacity: Float) async
     func setMprBlend(_ mode: VolumetricMPRBlendMode) async
     func setMprSlab(thickness: Int, steps: Int) async
     func setMprHuWindow(min: Int32, max: Int32) async

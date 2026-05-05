@@ -18,15 +18,14 @@ extension MetalVolumeRenderingAdapter {
         params.adaptiveGradientThreshold = extendedState.adaptiveThreshold
         params.jitterAmount = extendedState.jitterAmount
         params.intensityRatio = extendedState.channelIntensities
-        let clip = extendedState.clipBounds
+        let clip = request.clipping.shaderCropBounds()
         params.trimXMin = clip.xMin
         params.trimXMax = clip.xMax
         params.trimYMin = clip.yMin
         params.trimYMax = clip.yMax
         params.trimZMin = clip.zMin
         params.trimZMax = clip.zMax
-        let planes = clipPlanes(preset: extendedState.clipPlanePreset,
-                                offset: extendedState.clipPlaneOffset)
+        let planes = try request.clipping.shaderClipPlanes(for: request.dataset)
         params.clipPlane0 = planes.0
         params.clipPlane1 = planes.1
         params.clipPlane2 = planes.2
@@ -87,6 +86,13 @@ extension MetalVolumeRenderingAdapter {
             // projection and could collapse the presented output to black.
             uniforms.useTFProj = 0
         }
+        if let gradientOpacity = request.transferFunction.gradientOpacity {
+            uniforms.use2DTF = 1
+            uniforms.gradientMin = gradientOpacity.minimumGradient
+            uniforms.gradientMax = gradientOpacity.maximumGradient
+        } else {
+            uniforms.use2DTF = 0
+        }
         uniforms.isBackwardOn = 0
         return uniforms
     }
@@ -103,6 +109,32 @@ extension MetalVolumeRenderingAdapter {
         default:
             return (.zero, .zero, .zero)
         }
+    }
+
+    func legacyClippingState(for dataset: VolumeDataset) throws -> VolumeClippingState {
+        var cropBox: VolumeCropBox?
+        if extendedState.clipBounds != .default {
+            cropBox = try extendedState.clipBounds.volumeCropBox()
+        }
+
+        let planeSnapshot = ClipPlaneSnapshot(preset: extendedState.clipPlanePreset,
+                                              offset: extendedState.clipPlaneOffset)
+        let clipPlanes = try planeSnapshot.volumeClipPlane(for: dataset).map { [$0] } ?? []
+        return try VolumeClippingState(cropBox: cropBox,
+                                       clipPlanes: clipPlanes)
+    }
+
+    func applyCompatibilityClippingIfNeeded(to request: VolumeRenderRequest) throws -> VolumeRenderRequest {
+        guard request.clipping.isDisabled else {
+            return request
+        }
+        let legacy = try legacyClippingState(for: request.dataset)
+        guard !legacy.isDisabled else {
+            return request
+        }
+        var resolved = request
+        resolved.clipping = legacy
+        return resolved
     }
 
     func computeOptionFlags() -> UInt16 {

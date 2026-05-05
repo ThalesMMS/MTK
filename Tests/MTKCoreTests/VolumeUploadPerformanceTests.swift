@@ -17,7 +17,7 @@ final class VolumeUploadPerformanceTests: XCTestCase {
         let dataset = VolumeDataset(
             data: sharedData.data,
             dimensions: dimensions,
-            spacing: VolumeSpacing(x: 0.0005, y: 0.0005, z: 0.001),
+            spacing: VolumeSpacing(x: 0.5, y: 0.5, z: 1.0),
             pixelFormat: .int16Signed
         )
 

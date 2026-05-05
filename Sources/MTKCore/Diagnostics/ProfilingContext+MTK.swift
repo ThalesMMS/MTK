@@ -8,7 +8,7 @@
 import Foundation
 
 extension RenderRoute {
-    public var profilingName: String {
+    package var profilingName: String {
         switch viewportType {
         case .volume3D:
             return "volume3D.\(compositing?.profilingName ?? "frontToBack")"

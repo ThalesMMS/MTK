@@ -9,15 +9,15 @@ import CoreGraphics
 import Foundation
 @preconcurrency import Metal
 
-public struct FrameMetadata: Sendable {
-    public var viewportSize: CGSize
-    public var renderTime: CFAbsoluteTime?
-    public var raycastTime: CFAbsoluteTime?
-    public var uploadTime: CFAbsoluteTime?
-    public var presentTime: CFAbsoluteTime?
-    public var renderGraphRoute: String?
+package struct FrameMetadata: Sendable {
+    package var viewportSize: CGSize
+    package var renderTime: CFAbsoluteTime?
+    package var raycastTime: CFAbsoluteTime?
+    package var uploadTime: CFAbsoluteTime?
+    package var presentTime: CFAbsoluteTime?
+    package var renderGraphRoute: String?
 
-    public init(viewportSize: CGSize,
+    package init(viewportSize: CGSize,
                 renderTime: CFAbsoluteTime? = nil,
                 raycastTime: CFAbsoluteTime? = nil,
                 uploadTime: CFAbsoluteTime? = nil,
@@ -32,29 +32,32 @@ public struct FrameMetadata: Sendable {
     }
 }
 
-public struct RenderFrame {
-    public var texture: any MTLTexture
-    public var viewportID: ViewportID
-    public var route: RenderRoute
-    public var metadata: FrameMetadata
-    public var mprFrame: MPRTextureFrame?
-    public var outputTextureLease: OutputTextureLease?
+package struct RenderFrame {
+    package var texture: any MTLTexture
+    package var viewportID: ViewportID
+    package var route: RenderRoute
+    package var metadata: FrameMetadata
+    package var mprFrame: MPRTextureFrame?
+    package var labelmapOverlays: [MPRLabelmapOverlay]
+    package var outputTextureLease: OutputTextureLease?
 
-    public var hasPooledTexture: Bool {
+    package var hasPooledTexture: Bool {
         outputTextureLease != nil
     }
 
-    public init(texture: any MTLTexture,
+    package init(texture: any MTLTexture,
                 viewportID: ViewportID,
                 route: RenderRoute,
                 metadata: FrameMetadata,
                 mprFrame: MPRTextureFrame? = nil,
+                labelmapOverlays: [MPRLabelmapOverlay] = [],
                 outputTextureLease: OutputTextureLease? = nil) {
         self.texture = texture
         self.viewportID = viewportID
         self.route = route
         self.metadata = metadata
         self.mprFrame = mprFrame
+        self.labelmapOverlays = labelmapOverlays
         self.outputTextureLease = outputTextureLease
     }
 }

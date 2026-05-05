@@ -18,8 +18,8 @@
 //  - ImageOrientationPatient provides two direction vectors in LPS:
 //      iopRow = direction of increasing i (columns)
 //      iopCol = direction of increasing j (rows)
-//  - The slice normal used by MTK is computed as cross(iopRow, iopCol) and normalized.
-//    (Right-handed with respect to DICOM's IOP definition.)
+//  - The legacy row/column initializer computes slice normal as cross(iopRow, iopCol)
+//    and normalizes it. The ImageData3D initializer delegates to ImageData3D.sliceDirection.
 //  - This file does not validate orthogonality; validation is performed in the DICOM parser/loader.
 //
 //  Slice ordering (IPP)
@@ -41,73 +41,62 @@ import simd
 
 /// Essential DICOM geometry utilities for coordinate system transformations
 public struct DICOMGeometry {
-    public let cols: Int32
-    public let rows: Int32
-    public let slices: Int32
-    public let spacingX: Float  // mm
-    public let spacingY: Float  // mm
-    public let spacingZ: Float  // mm
-    public let iopRow: simd_float3    // ImageOrientationPatient (row)
-    public let iopCol: simd_float3    // ImageOrientationPatient (column)
-    public let ipp0: simd_float3      // ImagePositionPatient of first slice
+    private let imageData: ImageData3D
+
+    public var cols: Int32 { Int32(imageData.dimensions.width) }
+    public var rows: Int32 { Int32(imageData.dimensions.height) }
+    public var slices: Int32 { Int32(imageData.dimensions.depth) }
+    public var spacingX: Float { Float(imageData.spacing.x) }  // mm
+    public var spacingY: Float { Float(imageData.spacing.y) }  // mm
+    public var spacingZ: Float { Float(imageData.spacing.z) }  // mm
+    public var iopRow: simd_float3 { imageData.rowDirection }  // ImageOrientationPatient row
+    public var iopCol: simd_float3 { imageData.columnDirection }  // ImageOrientationPatient column
+    public var ipp0: simd_float3 { imageData.origin }  // ImagePositionPatient of first slice
 
     /// Initialize DICOM geometry with volume parameters
     public init(cols: Int32, rows: Int32, slices: Int32,
                 spacingX: Float, spacingY: Float, spacingZ: Float,
                 iopRow: simd_float3, iopCol: simd_float3, ipp0: simd_float3) {
-        self.cols = cols
-        self.rows = rows
-        self.slices = slices
-        self.spacingX = spacingX
-        self.spacingY = spacingY
-        self.spacingZ = spacingZ
-        self.iopRow = iopRow
-        self.iopCol = iopCol
-        self.ipp0 = ipp0
+        let dimensions = VolumeDimensions(width: Int(cols), height: Int(rows), depth: Int(slices))
+        let spacing = VolumeSpacing(x: Double(spacingX), y: Double(spacingY), z: Double(spacingZ))
+        let normal = ImageData3D.normalizedCross(iopRow, iopCol, fallback: SIMD3<Float>(0, 0, 1))
+        self.imageData = ImageData3D(dimensions: dimensions,
+                                     spacing: spacing,
+                                     origin: ipp0,
+                                     direction: simd_float3x3(columns: (iopRow, iopCol, normal)),
+                                     pixelFormat: .int16Signed)
+    }
+
+    /// Initialize geometry from the canonical structured-image contract.
+    public init(imageData: ImageData3D) {
+        self.imageData = imageData
     }
 
     /// Normal vector perpendicular to image plane
     public var iopNorm: simd_float3 {
-        simd_normalize(simd_cross(iopRow, iopCol))
+        imageData.sliceDirection
     }
 
     /// Transformation matrix from voxel coordinates to world coordinates (mm)
     /// Formula: IPP0 + i*Δx*r + j*Δy*c + k*Δz*n
     public var voxelToWorld: simd_float4x4 {
-        let Rx = iopRow * spacingX
-        let Cy = iopCol * spacingY
-        let Nz = iopNorm * spacingZ
-        let t  = ipp0
-        return simd_float4x4(columns: (
-            simd_float4(Rx.x, Rx.y, Rx.z, 0),
-            simd_float4(Cy.x, Cy.y, Cy.z, 0),
-            simd_float4(Nz.x, Nz.y, Nz.z, 0),
-            simd_float4(t.x, t.y, t.z, 1)
-        ))
+        imageData.indexToWorld
     }
 
     /// Transformation matrix from world coordinates to voxel coordinates
     public var worldToVoxel: simd_float4x4 {
-        simd_inverse(voxelToWorld)
+        imageData.worldToIndex
     }
 
     /// Transformation matrix from voxel coordinates to texture coordinates [0,1]^3
     /// Formula: (voxel + 0.5) / dims
     public var voxelToTex: simd_float4x4 {
-        precondition(cols > 0 && rows > 0 && slices > 0,
-                     "DICOMGeometry.voxelToTex requires positive volume dimensions; got cols=\(cols), rows=\(rows), slices=\(slices)")
-        let dx = Float(cols), dy = Float(rows), dz = Float(slices)
-        return simd_float4x4(columns: (
-            simd_float4(1 / dx, 0, 0, 0),
-            simd_float4(0, 1 / dy, 0, 0),
-            simd_float4(0, 0, 1 / dz, 0),
-            simd_float4(0.5 / dx, 0.5 / dy, 0.5 / dz, 1)
-        ))
+        imageData.voxelToTexture
     }
 
     /// Transformation matrix from world coordinates to texture coordinates [0,1]^3
     public var worldToTex: simd_float4x4 {
-        voxelToTex * worldToVoxel
+        imageData.worldToTexture
     }
 
     /// Convert a plane defined in world coordinates (mm) to texture coordinates ([0,1]^3)

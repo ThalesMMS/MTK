@@ -73,6 +73,13 @@ extension VolumeViewportController {
                                                 commandQueue: commandQueue)
     }
 
+    func mprLabelmapOverlays(for frame: MPRTextureFrame) async throws -> [MPRLabelmapOverlay] {
+        try await volumeLayerResourceCache.makeMPRLabelmapOverlays(for: volumeLayers,
+                                                                   baseFrame: frame,
+                                                                   device: device,
+                                                                   commandQueue: commandQueue)
+    }
+
     /// Resolve the HU window range to use for MPR rendering.
     /// - Parameter dataset: The dataset whose intensityRange is used as the final fallback.
     /// - Returns: The selected HU window range: `mprHuWindow` if present; otherwise `huWindow.minHU...huWindow.maxHU` if `huWindow` is present; otherwise `dataset.intensityRange`.
@@ -85,6 +92,7 @@ extension VolumeViewportController {
     /// If the current display is not an MPR configuration, no dataset is applied, or no cached frame matches the computed signature, the method returns `false`. If presenting the cached frame fails, `lastRenderError` is set to the thrown error and the method returns `false`.
     /// - Returns: `true` if a cached MPR frame was presented, `false` otherwise.
     func presentCachedMPRFrameIfPossible() -> Bool {
+        guard volumeLayers.isEmpty else { return false }
         guard let dataset,
               case let .mpr(axis, index, blend, slab) = currentDisplay ?? .volume(method: currentVolumeMethod),
               let signature = currentMPRFrameSignature(axis: axis,
@@ -174,33 +182,12 @@ extension VolumeViewportController {
         guard let transferFunction else {
             return VolumeTransferFunction.defaultGrayscale(for: dataset)
         }
+        let resolved = transferFunction.volumeTransferFunction()
 
-        let colourPoints = transferFunction
-            .sanitizedColourPoints()
-            .map { point in
-                VolumeTransferFunction.ColourControlPoint(
-                    intensity: point.dataValue + transferFunction.shift,
-                    colour: SIMD4<Float>(
-                        point.colourValue.r,
-                        point.colourValue.g,
-                        point.colourValue.b,
-                        point.colourValue.a
-                    )
-                )
-            }
-        let alphaPoints = transferFunction
-            .sanitizedAlphaPoints()
-            .map { point in
-                VolumeTransferFunction.OpacityControlPoint(
-                    intensity: point.dataValue + transferFunction.shift,
-                    opacity: point.alphaValue
-                )
-            }
-
-        if colourPoints.isEmpty || alphaPoints.isEmpty {
+        if resolved.colourPoints.isEmpty || resolved.opacityPoints.isEmpty {
             return VolumeTransferFunction.defaultGrayscale(for: dataset)
         }
-        return VolumeTransferFunction(opacityPoints: alphaPoints, colourPoints: colourPoints)
+        return resolved
     }
 
 }

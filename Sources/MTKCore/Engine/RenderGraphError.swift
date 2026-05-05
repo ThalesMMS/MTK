@@ -7,7 +7,7 @@
 
 import Foundation
 
-public enum RenderGraphError: Error, Equatable, LocalizedError, Sendable {
+package enum RenderGraphError: Error, Equatable, LocalizedError, Sendable {
     case unmappedViewportRoute(ViewportType)
     case missingResourceHandle(ViewportID)
     case missingDataset(ViewportID)
@@ -16,7 +16,7 @@ public enum RenderGraphError: Error, Equatable, LocalizedError, Sendable {
     case passProducedNoFrame(ViewportID, RenderPassKind)
     case invalidViewportConfiguration(ViewportID, reason: String)
 
-    public var errorDescription: String? {
+    package var errorDescription: String? {
         switch self {
         case .unmappedViewportRoute(let viewportType):
             return "Viewport route is not mapped for \(String(describing: viewportType))."
@@ -35,7 +35,7 @@ public enum RenderGraphError: Error, Equatable, LocalizedError, Sendable {
         }
     }
 
-    public var failureReason: String? {
+    package var failureReason: String? {
         switch self {
         case .unmappedViewportRoute:
             return "Add an explicit route to ViewportRenderGraph before rendering this viewport."

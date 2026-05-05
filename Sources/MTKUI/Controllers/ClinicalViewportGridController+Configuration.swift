@@ -160,6 +160,11 @@ extension ClinicalViewportGridController {
                                    quality: parameters.qualityTier)
     }
 
+    /// Applies the public crop/clip state to the 3D volume viewport only.
+    func configureVolumeClipping() async throws {
+        try await engine.configure(volumeViewportID, clipping: volumeClipping)
+    }
+
     /// Applies current render-quality parameters and MPR slab configuration to the engine and schedules rendering for viewports that were successfully configured.
     /// 
     /// If the dataset has not been applied, the method returns immediately. It attempts to configure volume render quality and, on success, schedules a render for the volume viewport; on failure it records the error for the volume viewport and does not schedule volume rendering. It derives an MPR slab configuration from `slabThickness` and `qualityScheduler`, applies that configuration to every MPR viewport, records errors for any viewports that fail, and schedules MPR rendering only if all MPR viewport configurations succeed.

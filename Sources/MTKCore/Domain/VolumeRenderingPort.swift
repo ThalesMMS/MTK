@@ -14,6 +14,8 @@ import simd
 @preconcurrency import Metal
 
 public struct VolumeRenderRequest: Sendable, Equatable {
+    public static let primaryVolumeLayerID = "__mtk_primary_volume__"
+
     public struct Camera: Sendable, Equatable {
         public var position: SIMD3<Float>
         public var target: SIMD3<Float>
@@ -54,6 +56,8 @@ public struct VolumeRenderRequest: Sendable, Equatable {
     public var samplingDistance: Float
     public var compositing: Compositing
     public var quality: Quality
+    public var clipping: VolumeClippingState
+    public var layers: [VolumeLayer]
 
     public init(dataset: VolumeDataset,
                 transferFunction: VolumeTransferFunction,
@@ -61,7 +65,9 @@ public struct VolumeRenderRequest: Sendable, Equatable {
                 camera: Camera,
                 samplingDistance: Float,
                 compositing: Compositing,
-                quality: Quality) {
+                quality: Quality,
+                clipping: VolumeClippingState = .disabled,
+                layers: [VolumeLayer]? = nil) {
         self.dataset = dataset
         self.transferFunction = transferFunction
         self.viewportSize = viewportSize
@@ -69,6 +75,12 @@ public struct VolumeRenderRequest: Sendable, Equatable {
         self.samplingDistance = samplingDistance
         self.compositing = compositing
         self.quality = quality
+        self.clipping = clipping
+        self.layers = layers ?? [
+            VolumeLayer(id: Self.primaryVolumeLayerID,
+                        dataset: dataset,
+                        transferFunction: transferFunction)
+        ]
     }
 }
 
@@ -95,10 +107,14 @@ public struct VolumeTransferFunction: Sendable, Equatable {
 
     public var opacityPoints: [OpacityControlPoint]
     public var colourPoints: [ColourControlPoint]
+    public var gradientOpacity: GradientOpacityFunction?
 
-    public init(opacityPoints: [OpacityControlPoint], colourPoints: [ColourControlPoint]) {
+    public init(opacityPoints: [OpacityControlPoint],
+                colourPoints: [ColourControlPoint],
+                gradientOpacity: GradientOpacityFunction? = nil) {
         self.opacityPoints = opacityPoints
         self.colourPoints = colourPoints
+        self.gradientOpacity = gradientOpacity
     }
 }
 
