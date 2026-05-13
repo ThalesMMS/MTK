@@ -41,13 +41,19 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
     worldNear /= worldNear.w;
     worldFar  /= worldFar.w;
 
+    float4 localNear4 = camera.inverseModelMatrix * worldNear;
     float4 localFar4  = camera.inverseModelMatrix * worldFar;
+    float3 localNear  = (localNear4.xyz / localNear4.w) + float3(0.5f);
     float3 localFar   = (localFar4.xyz / localFar4.w) + float3(0.5f);
 
     float3 cameraLocal01 = camera.cameraPositionLocal + float3(0.5f);
-    float3 rayDir = VolumeCompute::computeRayDirection(cameraLocal01, localFar);
+    float3 rayOrigin = camera.projectionType == 1u ? localNear : cameraLocal01;
+    float3 rayOriginWorld = VolumeCompute::transformPoint(camera.modelMatrix,
+                                                          rayOrigin - float3(0.5f));
+    float3 rayDir = VolumeCompute::computeRayDirection(rayOrigin, localFar);
+    float3 rayDirWorld = normalize(VolumeCompute::transformDirection(camera.modelMatrix, rayDir));
 
-    float2 intersection = VR::intersectAABB(cameraLocal01,
+    float2 intersection = VR::intersectAABB(rayOrigin,
                                             rayDir,
                                             float3(0.0f),
                                             float3(1.0f));
@@ -65,8 +71,8 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
         return;
     }
 
-    float3 startPos = cameraLocal01 + rayDir * tEnter;
-    float3 endPos   = cameraLocal01 + rayDir * tExit;
+    float3 startPos = rayOrigin + rayDir * tEnter;
+    float3 endPos   = rayOrigin + rayDir * tExit;
 
     constant VolumeUniforms& material = args.params.material;
     const float opacityThreshold = clamp(args.params.earlyTerminationThreshold, 0.0f, 0.9999f);
@@ -87,8 +93,8 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
             tEnter = min(tEnter + jitterDistance, tExit);
         }
 
-        startPos = cameraLocal01 + rayDir * tEnter;
-        endPos   = cameraLocal01 + rayDir * tExit;
+        startPos = rayOrigin + rayDir * tEnter;
+        endPos   = rayOrigin + rayDir * tExit;
     }
 
     VR::RayInfo ray;
@@ -283,9 +289,13 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
 
         if (material.isLightingOn != 0) {
             float lengthSq = dot(gradient, gradient);
-            float3 normal = lengthSq > 1.0e-6f ? normalize(gradient) : float3(0.0f);
-            float3 eyeDir = (material.isBackwardOn != 0) ? ray.direction : -ray.direction;
-            float3 lightDir = normalize(cameraLocal01 - samplePos);
+            float3 normal = lengthSq > 1.0e-6f
+                ? VolumeCompute::transformNormal(camera.inverseModelMatrix, gradient)
+                : float3(0.0f);
+            float3 eyeDir = (material.isBackwardOn != 0) ? rayDirWorld : -rayDirWorld;
+            float3 sampleWorld = VolumeCompute::transformPoint(camera.modelMatrix,
+                                                               samplePos - float3(0.5f));
+            float3 lightDir = normalize(rayOriginWorld - sampleWorld);
             sampleColour.rgb = Util::calculateLighting(sampleColour.rgb,
                                                        normal,
                                                        lightDir,
@@ -359,10 +369,13 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
             float3 projectionNormal = VolumeCompute::projectionGradient(projectionState, material.method);
             float lengthSq = dot(projectionNormal, projectionNormal);
             if (lengthSq > 1.0e-6f) {
-                projectionNormal = normalize(projectionNormal);
+                projectionNormal = VolumeCompute::transformNormal(camera.inverseModelMatrix,
+                                                                  projectionNormal);
                 float3 projectionPosition = VolumeCompute::projectionPosition(projectionState, material.method);
-                float3 eyeDir = (material.isBackwardOn != 0) ? ray.direction : -ray.direction;
-                float3 lightDir = normalize(cameraLocal01 - projectionPosition);
+                float3 projectionWorld = VolumeCompute::transformPoint(camera.modelMatrix,
+                                                                       projectionPosition - float3(0.5f));
+                float3 eyeDir = (material.isBackwardOn != 0) ? rayDirWorld : -rayDirWorld;
+                float3 lightDir = normalize(rayOriginWorld - projectionWorld);
                 accumulator.rgb = Util::calculateLighting(accumulator.rgb,
                                                           projectionNormal,
                                                           lightDir,

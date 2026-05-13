@@ -163,6 +163,7 @@ public final class MetalViewportSurface: ViewportPresenting {
     private let presentationPass: PresentationPass
     private var mprPresentationPass: MPRPresentationPass?
     private var contentScale: CGFloat
+    private var maximumContentScale: CGFloat?
     private var layoutObservation: MetalViewportLayoutObservation?
     private var lastDrawablePixelSize = CGSize.zero
     private var lastPresentedTexture: (any MTLTexture)?
@@ -334,6 +335,7 @@ public final class MetalViewportSurface: ViewportPresenting {
                         colormap: (any MTLTexture)? = nil,
                         labelmapOverlays: [MPRLabelmapOverlay] = [],
                         transform: MPRDisplayTransform? = nil,
+                        viewportTransform: MPRViewportTransform = .identity,
                         flipHorizontal: Bool = false,
                         flipVertical: Bool = false,
                         bitShift: Int32 = 0,
@@ -371,6 +373,7 @@ public final class MetalViewportSurface: ViewportPresenting {
                                                        invert: invert,
                                                        colormap: colormap,
                                                        bitShift: bitShift,
+                                                       viewportTransform: viewportTransform,
                                                        labelmapOverlays: labelmapOverlays,
                                                        onCommandBufferFailure: makeMPRPresentationFailureHandler(presentationToken: presentationToken))
         self.mprPresentationPass = mprPresentationPass
@@ -380,9 +383,26 @@ public final class MetalViewportSurface: ViewportPresenting {
     }
 
     public func setContentScale(_ scale: CGFloat) {
-        contentScale = scale.isFinite ? max(scale, 1) : 1
+        contentScale = resolvedContentScale(scale)
         applyContentScaleToView()
         updateDrawableSize()
+    }
+
+    public func setMaximumContentScale(_ scale: CGFloat?) {
+        if let scale, scale.isFinite {
+            maximumContentScale = max(scale, 1)
+        } else {
+            maximumContentScale = nil
+        }
+        setContentScale(contentScale)
+    }
+
+    private func resolvedContentScale(_ scale: CGFloat) -> CGFloat {
+        let resolved = scale.isFinite ? max(scale, 1) : 1
+        if let maximumContentScale {
+            return min(resolved, maximumContentScale)
+        }
+        return resolved
     }
 
     private func applyContentScaleToView() {
@@ -472,6 +492,11 @@ public final class MetalViewportSurface: ViewportPresenting {
     @_spi(Testing)
     public var currentContentScale: CGFloat {
         contentScale
+    }
+
+    @_spi(Testing)
+    public var currentMaximumContentScale: CGFloat? {
+        maximumContentScale
     }
 
     @_spi(Testing)

@@ -92,6 +92,28 @@ public enum ClinicalVolumeViewportMode: String, CaseIterable, Sendable {
     }
 }
 
+public enum ClinicalMPRInteractionTool: String, CaseIterable, Identifiable, Sendable {
+    case crosshair
+    case slice
+    case pan
+    case windowLevel
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .crosshair:
+            return "Crosshair"
+        case .slice:
+            return "Slice"
+        case .pan:
+            return "Pan"
+        case .windowLevel:
+            return "W/L"
+        }
+    }
+}
+
 public struct ClinicalViewportTimingSnapshot: Equatable, Sendable {
     public var renderTime: CFAbsoluteTime?
     public var presentationTime: CFAbsoluteTime?

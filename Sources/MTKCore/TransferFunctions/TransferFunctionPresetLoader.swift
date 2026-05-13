@@ -82,6 +82,10 @@ public enum TransferFunctionPresetLoader {
             return "ct_chest_contrast"
         case .ctSoftTissue:
             return "ct_soft_tissue"
+        case .ctBrain:
+            return "ct_brain"
+        case .ctAbdomen:
+            return "ct_abdomen"
         case .ctPulmonaryArteries:
             return "ct_pulmonary_arteries"
         case .ctFat:

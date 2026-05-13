@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 import Metal
 import XCTest
 
@@ -109,6 +110,37 @@ final class VolumeRaycastPassTests: XCTestCase {
                       "image summary: \(imageSummary), texture summary: \(textureSummary)")
         XCTAssertTrue(try VolumeRenderRegressionFixture.textureContainsVisiblePixels(output.outputTexture),
                       "texture summary: \(textureSummary), image summary: \(imageSummary)")
+    }
+
+    func testAnisotropicDatasetRendersWithPhysicalSideViewBounds() async throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("Metal device unavailable on this test runner")
+        }
+
+        let dimensions = VolumeDimensions(width: 8, height: 8, depth: 8)
+        let dataset = makeSolidSignedDataset(dimensions: dimensions,
+                                             spacing: VolumeSpacing(x: 1, y: 1, z: 3),
+                                             value: 500,
+                                             intensityRange: 0...1000)
+        let camera = VolumeRenderRequest.Camera(position: SIMD3<Float>(5, 0.5, 0.5),
+                                                target: SIMD3<Float>(repeating: 0.5),
+                                                up: SIMD3<Float>(0, 0, 1),
+                                                fieldOfView: 50)
+        let setup = try await makeDirectPassSetup(device: device,
+                                                  compositing: .frontToBack,
+                                                  viewportSize: CGSize(width: 96, height: 96),
+                                                  dataset: dataset,
+                                                  requestCamera: camera)
+
+        let output = try await setup.pass.execute(input: setup.input,
+                                                  commandQueue: setup.commandQueue)
+        let frame = makeTestVolumeRenderFrame(from: output)
+        let image = try await TextureSnapshotExporter().makeCGImage(from: frame)
+        let bounds = try XCTUnwrap(visiblePixelBounds(in: image))
+
+        XCTAssertGreaterThan(bounds.height,
+                             Int(Float(bounds.width) * 1.4),
+                             "side-view visible bounds should reflect z spacing: \(bounds)")
     }
 
     func testDVRCompositingDebugDensityProducesNonZeroOutput() async throws {
@@ -280,7 +312,8 @@ final class VolumeRaycastPassTests: XCTestCase {
                                      compositing: VolumeRenderRequest.Compositing,
                                      viewportSize: CGSize = VolumeRenderRegressionFixture.viewportSize,
                                      camera: CameraUniforms? = nil,
-                                     dataset: VolumeDataset = VolumeRenderRegressionFixture.dataset()) async throws -> DirectPassSetup {
+                                     dataset: VolumeDataset = VolumeRenderRegressionFixture.dataset(),
+                                     requestCamera: VolumeRenderRequest.Camera = VolumeRenderRegressionFixture.camera()) async throws -> DirectPassSetup {
         guard let commandQueue = device.makeCommandQueue() else {
             throw XCTSkip("Metal command queue unavailable on this test runner")
         }
@@ -297,7 +330,7 @@ final class VolumeRaycastPassTests: XCTestCase {
             dataset: dataset,
             transferFunction: VolumeRenderRegressionFixture.volumeTransferFunction(for: dataset),
             viewportSize: viewportSize,
-            camera: VolumeRenderRegressionFixture.camera(),
+            camera: requestCamera,
             samplingDistance: VolumeRenderRegressionFixture.samplingDistance,
             compositing: compositing,
             quality: .interactive
@@ -335,6 +368,57 @@ final class VolumeRaycastPassTests: XCTestCase {
                                commandQueue: commandQueue,
                                input: input,
                                viewportSize: viewportSize)
+    }
+
+    private func makeSolidSignedDataset(dimensions: VolumeDimensions,
+                                        spacing: VolumeSpacing,
+                                        value: Int16,
+                                        intensityRange: ClosedRange<Int32>) -> VolumeDataset {
+        let values = [Int16](repeating: value, count: dimensions.voxelCount)
+        return VolumeDataset(data: values.withUnsafeBytes { Data($0) },
+                             dimensions: dimensions,
+                             spacing: spacing,
+                             pixelFormat: .int16Signed,
+                             intensityRange: intensityRange,
+                             recommendedWindow: intensityRange)
+    }
+
+    private func visiblePixelBounds(in image: CGImage) -> PixelBounds? {
+        let width = image.width
+        let height = image.height
+        let bytesPerRow = width * 4
+        var pixels = [UInt8](repeating: 0, count: bytesPerRow * height)
+        let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue)
+            .union(.byteOrder32Little)
+        guard let context = CGContext(data: &pixels,
+                                      width: width,
+                                      height: height,
+                                      bitsPerComponent: 8,
+                                      bytesPerRow: bytesPerRow,
+                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: bitmapInfo.rawValue) else {
+            return nil
+        }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        var minX = width
+        var minY = height
+        var maxX = -1
+        var maxY = -1
+        for y in 0..<height {
+            for x in 0..<width {
+                let index = y * bytesPerRow + x * 4
+                let visible = pixels[index] > 5 || pixels[index + 1] > 5 || pixels[index + 2] > 5
+                if visible {
+                    minX = min(minX, x)
+                    minY = min(minY, y)
+                    maxX = max(maxX, x)
+                    maxY = max(maxY, y)
+                }
+            }
+        }
+        guard maxX >= minX, maxY >= minY else { return nil }
+        return PixelBounds(minX: minX, minY: minY, maxX: maxX, maxY: maxY)
     }
 
     private static func shaderMethod(for compositing: VolumeRenderRequest.Compositing) -> Int32 {
@@ -375,4 +459,18 @@ private struct DirectPassSetup {
     var commandQueue: any MTLCommandQueue
     var input: VolumeRaycastPassInput
     var viewportSize: CGSize
+}
+
+private struct PixelBounds: CustomStringConvertible {
+    var minX: Int
+    var minY: Int
+    var maxX: Int
+    var maxY: Int
+
+    var width: Int { maxX - minX + 1 }
+    var height: Int { maxY - minY + 1 }
+
+    var description: String {
+        "x:\(minX)...\(maxX) y:\(minY)...\(maxY) width:\(width) height:\(height)"
+    }
 }

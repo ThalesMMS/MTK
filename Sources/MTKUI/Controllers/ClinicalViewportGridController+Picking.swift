@@ -44,6 +44,7 @@ extension ClinicalViewportGridController {
             dataset: dataset,
             plane: plane,
             displayTransform: displayTransform,
+            viewportTransform: viewportTransform(for: axis),
             axis: planeAxis,
             layers: volumeLayers
         )

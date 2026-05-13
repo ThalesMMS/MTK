@@ -30,20 +30,36 @@ extension MetalVolumeRenderingAdapter {
             throw RenderingError.outputTextureUnavailable
         }
 
-        let datasetTexture: any MTLTexture
+        try Task.checkCancellation()
+
+        let datasetPreparation: DatasetTexturePreparationResult
         let preparationStartedAt = CFAbsoluteTimeGetCurrent()
+        let transferCacheHit = state.transferCache?.transfer == request.transferFunction &&
+            state.transferCache?.intensityRange == request.dataset.intensityRange
+        let datasetPreparationStartedAt = CFAbsoluteTimeGetCurrent()
         if let providedDatasetTexture {
-            datasetTexture = prepareDatasetTexture(for: request.dataset,
-                                                   texture: providedDatasetTexture,
-                                                   state: state)
+            datasetPreparation = prepareDatasetTextureResult(for: request.dataset,
+                                                             texture: providedDatasetTexture,
+                                                             state: state)
         } else {
-            datasetTexture = try prepareDatasetTexture(for: request.dataset, state: state)
+            datasetPreparation = try prepareDatasetTextureResult(for: request.dataset, state: state)
         }
+        let datasetTexture = datasetPreparation.texture
+        let datasetCacheHit = datasetPreparation.cacheHit
+        let datasetPreparationMilliseconds = ClinicalProfiler.milliseconds(from: datasetPreparationStartedAt)
+
+        try Task.checkCancellation()
+
+        let transferPreparationStartedAt = CFAbsoluteTimeGetCurrent()
         let transferTexture = try await prepareTransferTexture(for: request.transferFunction,
                                                                dataset: request.dataset,
                                                                state: state)
+        let transferPreparationMilliseconds = ClinicalProfiler.milliseconds(from: transferPreparationStartedAt)
         let preparationMilliseconds = ClinicalProfiler.milliseconds(from: preparationStartedAt)
 
+        try Task.checkCancellation()
+
+        let parameterPreparationStartedAt = CFAbsoluteTimeGetCurrent()
         let parameters = try buildRenderingParameters(for: request)
         let optionValue = computeOptionFlags()
         let targetViewSize = UInt16(clamping: max(viewport.width, viewport.height))
@@ -52,6 +68,10 @@ extension MetalVolumeRenderingAdapter {
         let camera = try makeCameraUniforms(for: request,
                                             viewportSize: viewport,
                                             frameIndex: state.frameIndex)
+        let parameterPreparationMilliseconds = ClinicalProfiler.milliseconds(from: parameterPreparationStartedAt)
+        logger.info(
+            "[MTKPerf] volume.prepare viewport=\(viewport.width)x\(viewport.height) quality=\(request.quality) compositing=\(request.compositing) samplingDistance=\(formatPerf(request.samplingDistance)) datasetMs=\(formatPerf(datasetPreparationMilliseconds)) transferMs=\(formatPerf(transferPreparationMilliseconds)) paramsMs=\(formatPerf(parameterPreparationMilliseconds)) totalPrepareMs=\(formatPerf(preparationMilliseconds)) datasetCacheHit=\(datasetCacheHit) transferCacheHit=\(transferCacheHit) providedDatasetTexture=\(providedDatasetTexture != nil) providedOutputTexture=\(providedOutputTexture != nil) frameIndex=\(state.frameIndex)"
+        )
         let passRenderingParameters = VolumeRaycastPassRenderingParameters(
             quality: request.quality,
             samplingDistance: request.samplingDistance,
@@ -268,6 +288,14 @@ extension VolumeRenderRequest {
         request.layers = [layer]
         return request
     }
+}
+
+private func formatPerf(_ value: Double) -> String {
+    String(format: "%.3f", value)
+}
+
+private func formatPerf(_ value: Float) -> String {
+    String(format: "%.5f", value)
 }
 
 private extension simd_float4x4 {

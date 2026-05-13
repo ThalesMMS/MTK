@@ -67,15 +67,29 @@ public enum ShaderLibraryLoader {
     }
 
     static func loadLibrary(for device: MTLDevice, in bundle: Bundle) throws -> MTLLibrary {
-        guard let url = bundle.url(forResource: "MTK", withExtension: "metallib") else {
-            throw LoaderError.metallibNotBundled
+        for resourceName in resourceNamesForCurrentPlatform {
+            guard let url = bundle.url(forResource: resourceName, withExtension: "metallib") else {
+                continue
+            }
+
+            do {
+                return try device.makeLibrary(URL: url)
+            } catch {
+                throw LoaderError.metallibLoadFailed(underlying: error)
+            }
         }
 
-        do {
-            return try device.makeLibrary(URL: url)
-        } catch {
-            throw LoaderError.metallibLoadFailed(underlying: error)
-        }
+        throw LoaderError.metallibNotBundled
+    }
+
+    private static var resourceNamesForCurrentPlatform: [String] {
+        #if os(iOS) && targetEnvironment(simulator)
+        return ["MTK-iphonesimulator", "MTK"]
+        #elseif os(iOS)
+        return ["MTK-iphoneos", "MTK"]
+        #else
+        return ["MTK"]
+        #endif
     }
 #endif
 }

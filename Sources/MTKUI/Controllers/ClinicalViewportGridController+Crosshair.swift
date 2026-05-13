@@ -37,6 +37,7 @@ extension ClinicalViewportGridController {
                 dataset: dataset,
                 plane: plane,
                 displayTransform: displayTransform,
+                viewportTransform: viewportTransform(for: axis),
                 axis: planeAxis,
                 layers: volumeLayers
             ) {
@@ -48,7 +49,9 @@ extension ClinicalViewportGridController {
 
         let x = clampNormalized(Float(point.x))
         let y = clampNormalized(Float(point.y))
-        let texture = displayTransform(for: axis).textureCoordinates(forScreen: SIMD2<Float>(x, y))
+        let imageScreen = viewportTransform(for: axis)
+            .imageScreenCoordinates(forViewportScreen: SIMD2<Float>(x, y))
+        let texture = displayTransform(for: axis).textureCoordinates(forScreen: imageScreen)
         switch axis {
         case .axial:
             return [(.sagittal, clampNormalized(texture.x)), (.coronal, clampNormalized(texture.y))]
@@ -220,7 +223,8 @@ extension ClinicalViewportGridController {
                          positions: [MTKCore.Axis: Float]) -> CGPoint {
         let size = drawableSize(for: axis)
         let texture = textureCoordinates(for: axis, positions: positions)
-        let screen = displayTransform(for: axis).screenCoordinates(forTexture: texture)
+        let imageScreen = displayTransform(for: axis).screenCoordinates(forTexture: texture)
+        let screen = viewportTransform(for: axis).screenCoordinates(forImageScreen: imageScreen)
         return CGPoint(x: CGFloat(screen.x - 0.5) * size.width,
                        y: CGFloat(screen.y - 0.5) * size.height)
     }

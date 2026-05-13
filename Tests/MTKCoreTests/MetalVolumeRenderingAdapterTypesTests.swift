@@ -253,10 +253,10 @@ final class OverridesDefaultsTests: XCTestCase {
     }
 }
 
-// MARK: - DatasetIdentity content fingerprint
+// MARK: - DatasetIdentity storage identity
 
 final class DatasetIdentityTests: XCTestCase {
-    func testDatasetIdentityChangesWhenSharedDataMutatesInPlace() {
+    func testDatasetIdentityUsesStorageShapeInsteadOfContentFingerprint() {
         let dimensions = VolumeDimensions(width: 2, height: 2, depth: 2)
         let byteCount = dimensions.voxelCount * VolumePixelFormat.int16Unsigned.bytesPerVoxel
         guard let storage = NSMutableData(length: byteCount) else {
@@ -283,7 +283,11 @@ final class DatasetIdentityTests: XCTestCase {
         pointer[0] &+= 1
         let mutatedIdentity = MetalVolumeRenderingAdapter.DatasetIdentity(dataset: dataset)
 
-        XCTAssertNotEqual(initialIdentity, mutatedIdentity)
+        XCTAssertEqual(initialIdentity, mutatedIdentity)
+        XCTAssertEqual(initialIdentity.count, byteCount)
+        XCTAssertEqual(initialIdentity.dimensions, dimensions)
+        XCTAssertEqual(initialIdentity.pixelFormat, .int16Unsigned)
+        XCTAssertNotEqual(initialIdentity.storageAddress, 0)
     }
 }
 

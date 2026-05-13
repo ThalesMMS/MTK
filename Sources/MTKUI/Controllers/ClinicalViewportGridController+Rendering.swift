@@ -86,7 +86,7 @@ extension ClinicalViewportGridController {
             snapshot.lastError = nil
             snapshot.lastRenderRequestTime = now
         }
-        logger.info("Scheduling viewport render viewport=\(viewportName(for: viewport)) generation=\(generation) type=\(viewportTypeName(for: viewport)) mode=\(renderModeName(for: viewport))")
+        logger.info("[MTKMPRInteraction] schedule viewport=\(viewportName(for: viewport)) generation=\(generation) type=\(viewportTypeName(for: viewport)) mode=\(renderModeName(for: viewport)) state=\(qualityScheduler.state) samplingStep=\(qualityScheduler.currentParameters.volumeSamplingStep)")
         let task = Task { [weak self] in
             guard let self else { return }
             await self.render(viewport: viewport, generation: generation)
@@ -113,7 +113,7 @@ extension ClinicalViewportGridController {
             await assertVolumeViewportConfigured()
         }
 #endif
-        logger.debug("Starting viewport render viewport=\(viewportName(for: viewport)) generation=\(generation)")
+        logger.debug("[MTKMPRInteraction] render.start viewport=\(viewportName(for: viewport)) generation=\(generation) state=\(qualityScheduler.state)")
         updateDebugSnapshot(for: viewport) { snapshot in
             snapshot.viewportType = viewportTypeName(for: viewport)
             snapshot.renderMode = renderModeName(for: viewport)
@@ -210,6 +210,7 @@ extension ClinicalViewportGridController {
                                        window: windowLevel.range,
                                        labelmapOverlays: frame.labelmapOverlays,
                                        transform: transform,
+                                       viewportTransform: viewportAxesByID[frame.viewportID].map { viewportTransform(for: $0) } ?? .identity,
                                        presentationToken: generation)
 
         case .none:

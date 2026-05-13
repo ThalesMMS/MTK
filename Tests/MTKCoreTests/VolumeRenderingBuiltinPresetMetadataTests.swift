@@ -24,4 +24,16 @@ final class VolumeRenderingBuiltinPresetMetadataTests: XCTestCase {
     func test_ctLiverVasculature_usesHepaticCategory() {
         XCTAssertEqual(VolumeRenderingBuiltinPreset.ctLiverVasculature.category, .hepatic)
     }
+
+    func test_vtkSwiftStyleAddedPresetsUseExpectedMetadata() {
+        XCTAssertEqual(VolumeRenderingBuiltinPreset.ctBrain.modality, .ct)
+        XCTAssertEqual(VolumeRenderingBuiltinPreset.ctBrain.category, .neurological)
+        XCTAssertEqual(VolumeRenderingBuiltinPreset.ctBrain.filename, "ct_brain")
+        XCTAssertEqual(VolumeRenderingBuiltinPreset.ctBrain.displayName, "CT Brain")
+
+        XCTAssertEqual(VolumeRenderingBuiltinPreset.ctAbdomen.modality, .ct)
+        XCTAssertEqual(VolumeRenderingBuiltinPreset.ctAbdomen.category, .softTissue)
+        XCTAssertEqual(VolumeRenderingBuiltinPreset.ctAbdomen.filename, "ct_abdomen")
+        XCTAssertEqual(VolumeRenderingBuiltinPreset.ctAbdomen.displayName, "CT Abdomen")
+    }
 }

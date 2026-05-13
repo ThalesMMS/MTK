@@ -637,6 +637,21 @@ public final class VolumeViewport3D: ObservableObject, MedicalViewport {
         refreshState()
     }
 
+    public func beginAdaptiveSamplingInteraction() async {
+        await controller.beginAdaptiveSamplingInteraction()
+        refreshState()
+    }
+
+    public func endAdaptiveSamplingInteraction() async {
+        await controller.endAdaptiveSamplingInteraction()
+        refreshState()
+    }
+
+    public func forceFinalRenderQuality() async {
+        await controller.forceFinalRenderQuality()
+        refreshState()
+    }
+
     public func renderSnapshotFrame() async throws -> VolumeRenderFrame {
         try await controller.renderVolumeSnapshotFrame()
     }
@@ -685,6 +700,12 @@ public final class ClinicalViewportSession: ObservableObject {
     public var datasetApplied: Bool { controller.datasetApplied }
     public var volumeViewportMode: ClinicalVolumeViewportMode { controller.volumeViewportMode }
     public var volumeClipping: VolumeClippingState { controller.volumeClipping }
+    public var activeMPRAxis: MTKCore.Axis { controller.activeMPRAxis }
+    public var mprInteractionTool: ClinicalMPRInteractionTool { controller.mprInteractionTool }
+    public var normalizedPositions: [MTKCore.Axis: Float] { controller.normalizedPositions }
+    public var mprViewportTransforms: [MTKCore.Axis: MPRViewportTransform] { controller.mprViewportTransforms }
+    public var windowLevel: WindowLevelShift { controller.windowLevel }
+    public var slabThickness: Double { controller.slabThickness }
     public var volumeLayers: [MTKCore.VolumeLayer] { controller.volumeLayers }
     public var surfaceMeshLayers: [SurfaceMeshLayer] { controller.surfaceMeshLayers }
     public var latestTimingSnapshot: ClinicalViewportTimingSnapshot { controller.latestTimingSnapshot }
@@ -771,12 +792,44 @@ public final class ClinicalViewportSession: ObservableObject {
         await controller.setMPRWindowLevel(window: window, level: level)
     }
 
+    public func setMPRSlabThickness(_ thickness: Double) async {
+        await controller.setMPRSlabThickness(thickness)
+    }
+
+    public func setActiveMPRAxis(_ axis: MTKCore.Axis) {
+        controller.setActiveMPRAxis(axis)
+    }
+
+    public func setMPRInteractionTool(_ tool: ClinicalMPRInteractionTool) {
+        controller.setMPRInteractionTool(tool)
+    }
+
     public func scrollSlice(axis: MTKCore.Axis, deltaNormalized: Float) async {
         await controller.scrollSlice(axis: axis, deltaNormalized: deltaNormalized)
     }
 
+    public func setMPRSlicePosition(axis: MTKCore.Axis, normalizedPosition: Float) async {
+        await controller.setMPRSlicePosition(axis: axis, normalizedPosition: normalizedPosition)
+    }
+
     public func setCrosshair(in axis: MTKCore.Axis, normalizedPoint: CGPoint) async {
         await controller.setCrosshair(in: axis, normalizedPoint: normalizedPoint)
+    }
+
+    public func panMPR(axis: MTKCore.Axis, deltaNormalized: SIMD2<Float>) {
+        controller.panMPR(axis: axis, deltaNormalized: deltaNormalized)
+    }
+
+    public func zoomMPR(axis: MTKCore.Axis, factor: Float, anchor: SIMD2<Float> = SIMD2<Float>(repeating: 0.5)) {
+        controller.zoomMPR(axis: axis, factor: factor, anchor: anchor)
+    }
+
+    public func resetMPRView(axis: MTKCore.Axis) {
+        controller.resetMPRView(axis: axis)
+    }
+
+    public func resetAllMPRViews() {
+        controller.resetAllMPRViews()
     }
 
     public func pick(in viewport: ViewportID,

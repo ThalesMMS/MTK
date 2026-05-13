@@ -25,6 +25,7 @@ public struct MetalViewportContainer<Overlays: View>: View {
             ZStack {
                 MTKViewRepresentable(surface: surface)
                     .accessibilityIdentifier("MetalViewportSurface")
+                    .allowsHitTesting(false)
                 overlays()
             }
             .frame(width: proxy.size.width, height: proxy.size.height)

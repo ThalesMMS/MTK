@@ -127,6 +127,8 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     let qualityScheduler: RenderQualityScheduler
     var renderTask: Task<Void, Never>?
     var renderGeneration: UInt64 = 0
+    var renderPending = false
+    var renderInFlight = false
     var qualityStateCancellable: AnyCancellable?
     let mprFrameCache = MPRFrameCache<MPRPlaneAxis>()
 
@@ -386,6 +388,7 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
         if mode == .active {
             scheduleRender()
         } else {
+            renderPending = false
             renderTask?.cancel()
         }
     }
@@ -401,6 +404,7 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     /// When disabling adaptive sampling this forces the render-quality scheduler to settle immediately; the controller's state is updated and a render is scheduled.
     /// - Parameter enabled: `true` to enable adaptive sampling, `false` to disable it.
     public func setAdaptiveSampling(_ enabled: Bool) async {
+        logger.info("[MTK3DInteraction] adaptive.set enabled=\(enabled) previous=\(adaptiveSamplingEnabled) state=\(qualityScheduler.state)")
         statePublisher.setAdaptiveSamplingFlag(enabled)
         if !enabled {
             qualityScheduler.forceSettled()
@@ -411,8 +415,13 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     /// Begins an interactive adaptive-sampling session and schedules a render when adaptive sampling is enabled.
     /// - Note: No action is taken if adaptive sampling is disabled.
     public func beginAdaptiveSamplingInteraction() async {
-        guard adaptiveSamplingEnabled else { return }
+        guard adaptiveSamplingEnabled else {
+            logger.info("[MTK3DInteraction] adaptive.begin.drop enabled=false")
+            return
+        }
+        logger.info("[MTK3DInteraction] adaptive.begin before=\(qualityScheduler.state)")
         qualityScheduler.beginInteraction()
+        logger.info("[MTK3DInteraction] adaptive.begin after=\(qualityScheduler.state) samplingStep=\(qualityScheduler.currentParameters.volumeSamplingStep) tier=\(qualityScheduler.currentParameters.qualityTier)")
         scheduleRender()
     }
 
@@ -420,15 +429,22 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     /// 
     /// When adaptive sampling is active, signals the render-quality scheduler to end user interaction so the scheduler can transition back toward settled sampling. If adaptive sampling is disabled, this call has no effect.
     public func endAdaptiveSamplingInteraction() async {
-        guard adaptiveSamplingEnabled else { return }
+        guard adaptiveSamplingEnabled else {
+            logger.info("[MTK3DInteraction] adaptive.end.drop enabled=false")
+            return
+        }
+        logger.info("[MTK3DInteraction] adaptive.end before=\(qualityScheduler.state)")
         qualityScheduler.endInteraction()
+        logger.info("[MTK3DInteraction] adaptive.end after=\(qualityScheduler.state) samplingStep=\(qualityScheduler.currentParameters.volumeSamplingStep) tier=\(qualityScheduler.currentParameters.qualityTier)")
     }
 
     /// Forces the render-quality scheduler to move to its settled (final) state.
     /// 
     /// Signals that any in-progress adaptive quality transitions should complete immediately so subsequent renders use the settled final quality.
     public func forceFinalRenderQuality() async {
+        logger.info("[MTK3DInteraction] adaptive.forceFinal before=\(qualityScheduler.state)")
         qualityScheduler.forceSettled()
+        logger.info("[MTK3DInteraction] adaptive.forceFinal after=\(qualityScheduler.state) samplingStep=\(qualityScheduler.currentParameters.volumeSamplingStep) tier=\(qualityScheduler.currentParameters.qualityTier)")
     }
 
     /// Updates the controller's selected volume rendering method.
@@ -681,9 +697,11 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     /// Resets the camera to its initial target, offset, and up vector.
     /// Updates published camera state and schedules a render with the restored camera parameters.
     public func resetCamera() async {
+        logger.info("[MTK3DInteraction] camera.reset before target=\(cameraTarget) offset=\(cameraOffset) up=\(cameraUpVector)")
         cameraTarget = initialCameraTarget
         cameraOffset = initialCameraOffset
         cameraUpVector = initialCameraUp
+        logger.info("[MTK3DInteraction] camera.reset after target=\(cameraTarget) offset=\(cameraOffset) up=\(cameraUpVector)")
         publishCameraState()
         scheduleRender()
     }
@@ -694,8 +712,13 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
         let yaw = screenDelta.x * 0.01
         let pitch = screenDelta.y * 0.01
         let threshold = Float.ulpOfOne
-        guard abs(yaw) > threshold || abs(pitch) > threshold else { return }
+        guard abs(yaw) > threshold || abs(pitch) > threshold else {
+            logger.debug("[MTK3DInteraction] camera.rotate.drop zero delta=\(screenDelta)")
+            return
+        }
 
+        let beforeOffset = cameraOffset
+        let beforeUp = cameraUpVector
         var offset = cameraOffset
         var up = safeNormalize(cameraUpVector, fallback: fallbackWorldUp)
 
@@ -718,6 +741,7 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
 
         cameraOffset = clampCameraOffset(offset)
         cameraUpVector = up
+        logger.info("[MTK3DInteraction] camera.rotate delta=\(screenDelta) yaw=\(yaw) pitch=\(pitch) beforeOffset=\(beforeOffset) afterOffset=\(cameraOffset) beforeUp=\(beforeUp) afterUp=\(cameraUpVector)")
         publishCameraState()
         scheduleRender()
     }
@@ -761,8 +785,12 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     ///   - screenDelta: Screen-space displacement where `x` is the horizontal movement and `y` is the vertical movement; the vector is converted to a world-space translation before applying to the camera target.
     public func panCamera(screenDelta: SIMD2<Float>) async {
         let threshold = Float.ulpOfOne
-        guard abs(screenDelta.x) > threshold || abs(screenDelta.y) > threshold else { return }
+        guard abs(screenDelta.x) > threshold || abs(screenDelta.y) > threshold else {
+            logger.debug("[MTK3DInteraction] camera.pan.drop zero delta=\(screenDelta)")
+            return
+        }
 
+        let beforeTarget = cameraTarget
         var up = safeNormalize(cameraUpVector, fallback: fallbackWorldUp)
         let forward = safeNormalize(-cameraOffset, fallback: SIMD3<Float>(0, 0, -1))
         let right = safeNormalize(simd_cross(forward, up), fallback: safePerpendicular(to: forward))
@@ -773,6 +801,7 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
         let translation = (-screenDelta.x * scales.horizontal) * right + (screenDelta.y * scales.vertical) * up
         cameraTarget = clampCameraTarget(cameraTarget + translation)
         cameraUpVector = up
+        logger.info("[MTK3DInteraction] camera.pan delta=\(screenDelta) translation=\(translation) beforeTarget=\(beforeTarget) afterTarget=\(cameraTarget) scales=(\(scales.horizontal),\(scales.vertical))")
         publishCameraState()
         scheduleRender()
     }
@@ -783,9 +812,14 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     /// - Parameters:
     ///   - delta: Signed distance in world units to translate the camera along its forward vector. The resulting camera offset is clamped to the valid range; the updated camera state is published and a render is scheduled.
     public func dollyCamera(delta: Float) async {
-        guard delta.isFinite, abs(delta) > Float.ulpOfOne else { return }
+        guard delta.isFinite, abs(delta) > Float.ulpOfOne else {
+            logger.debug("[MTK3DInteraction] camera.dolly.drop delta=\(delta)")
+            return
+        }
+        let beforeOffset = cameraOffset
         let forward = safeNormalize(-cameraOffset, fallback: SIMD3<Float>(0, 0, -1))
         cameraOffset = clampCameraOffset(cameraOffset - forward * delta)
+        logger.info("[MTK3DInteraction] camera.dolly delta=\(delta) beforeOffset=\(beforeOffset) afterOffset=\(cameraOffset)")
         publishCameraState()
         scheduleRender()
     }

@@ -44,6 +44,8 @@ public enum TransferFunctions {
              .mrT2Brain,
              .ctChestContrast,
              .ctSoftTissue,
+             .ctBrain,
+             .ctAbdomen,
              .ctPulmonaryArteries,
              .ctFat,
              .mrAngio:

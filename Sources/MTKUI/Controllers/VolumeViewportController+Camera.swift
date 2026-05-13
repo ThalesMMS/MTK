@@ -12,18 +12,12 @@ import simd
 extension VolumeViewportController {
     /// Updates internal volume metrics and camera distance limits using the provided dataset.
     /// 
-    /// Sets the volume world center, computes a normalized per-axis scale from `dataset.scale` (falling back to `(1, 1, 1)` if the maximum axis scale is near zero), and updates the computed bounding radius. If a `geometry` is available, updates `patientLongitudinalAxis` by safely normalizing `geometry.iopNorm` (preserving the existing axis on failure). Recomputes `cameraDistanceLimits` from the resulting bounding radius.
+    /// Sets the volume world center, derives the render bounding radius from the shared physical render geometry, and updates the camera distance limits.
     /// - Parameter dataset: Source volume metadata (dimensions, spacing/orientation) used to derive scale and bounds.
     func updateVolumeBounds(for dataset: VolumeDataset) {
         volumeWorldCenter = SIMD3<Float>(repeating: 0.5)
-        let scale = SIMD3<Float>(
-            Float(dataset.scale.x),
-            Float(dataset.scale.y),
-            Float(dataset.scale.z)
-        )
-        let maxScale = max(scale.x, max(scale.y, scale.z))
-        let normalizedScale = maxScale > Float.ulpOfOne ? scale / maxScale : SIMD3<Float>(repeating: 1)
-        volumeBoundingRadius = max(0.5 * simd_length(normalizedScale), 1e-3)
+        let renderGeometry = VolumeRenderGeometry.make(for: dataset)
+        volumeBoundingRadius = renderGeometry.boundingRadius
         if let geometry {
             patientLongitudinalAxis = safeNormalize(geometry.iopNorm, fallback: patientLongitudinalAxis)
         }

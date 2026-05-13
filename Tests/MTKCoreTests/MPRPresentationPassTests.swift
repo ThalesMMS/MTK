@@ -243,6 +243,84 @@ final class MPRPresentationPassTests: XCTestCase {
         XCTAssertEqual(try MPRTestHelpers.readInputValues(UInt16.self, from: input), values)
     }
 
+    func test_viewportZoomResamplesPresentationWithoutMutatingRawTexture() throws {
+        let values = (0..<16).map(Int16.init)
+        let input = try MPRTestHelpers.makeSignedTexture(values, width: 4, height: 4, device: device)
+        let drawable = try MPRTestMetalDrawable(device: device, width: 4, height: 4)
+        let frame = MPRTestHelpers.makeFrame(texture: input,
+                                             pixelFormat: .int16Signed,
+                                             intensityRange: 0...15)
+        var pass = try MPRPresentationPass(device: device,
+                                           commandQueue: commandQueue,
+                                           library: library)
+
+        try pass.present(frame: frame,
+                         window: 0...15,
+                         to: drawable,
+                         transform: .identity,
+                         viewportTransform: MPRViewportTransform(zoom: 2))
+        try MPRTestHelpers.waitForQueue(commandQueue)
+
+        XCTAssertEqual(try MPRTestHelpers.readGrayBytes(from: drawable.texture),
+                       [
+                           85, 85, 102, 102,
+                           85, 85, 102, 102,
+                           153, 153, 170, 170,
+                           153, 153, 170, 170
+                       ],
+                       accuracy: 1)
+        XCTAssertEqual(try MPRTestHelpers.readInputValues(Int16.self, from: input), values)
+    }
+
+    func test_viewportTransformKeepsLabelmapOverlayAlignedWithVisibleSourcePixels() throws {
+        let input = try MPRTestHelpers.makeUnsignedTexture([UInt16](repeating: 0, count: 16),
+                                                           width: 4,
+                                                           height: 4,
+                                                           device: device)
+        let drawable = try MPRTestMetalDrawable(device: device, width: 4, height: 4)
+        let frame = MPRTestHelpers.makeFrame(texture: input,
+                                             pixelFormat: .int16Unsigned,
+                                             intensityRange: 0...100)
+        let labelmapTexture = try makeLabelmapTexture([UInt16](repeating: 1, count: 16),
+                                                       width: 4,
+                                                       height: 4,
+                                                       depth: 1)
+        let lutTexture = try MPRTestHelpers.makeColormapTexture([
+            SIMD4<Float>(0, 0, 0, 0),
+            SIMD4<Float>(1, 0, 0, 1)
+        ], device: device)
+        let overlay = MPRLabelmapOverlay(
+            labelmapTexture: labelmapTexture,
+            colorLUTTexture: lutTexture,
+            opacity: 1,
+            originTexture: SIMD3<Float>(0, 0, 0.5),
+            axisUTexture: SIMD3<Float>(1, 0, 0),
+            axisVTexture: SIMD3<Float>(0, 1, 0)
+        )
+        var viewport = MPRViewportTransform(zoom: 2)
+        viewport.pan = SIMD2<Float>(1, 0)
+        var pass = try MPRPresentationPass(device: device,
+                                           commandQueue: commandQueue,
+                                           library: library)
+
+        try pass.present(frame: frame,
+                         window: 0...100,
+                         to: drawable,
+                         transform: .identity,
+                         viewportTransform: viewport,
+                         labelmapOverlays: [overlay])
+        try MPRTestHelpers.waitForQueue(commandQueue)
+
+        XCTAssertEqual(try MPRTestHelpers.readBGRAByteArrays(from: drawable.texture).flatMap { $0 },
+                       [
+                           0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 255, 255, 0, 0, 255, 255,
+                           0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 255, 255, 0, 0, 255, 255,
+                           0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 255, 255, 0, 0, 255, 255,
+                           0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 255, 255, 0, 0, 255, 255
+                       ],
+                       accuracy: 1)
+    }
+
     func test_emptyLabelmapOverlayListMatchesBasePresentation() throws {
         let values: [UInt16] = [0, 50, 100, 150]
         let input = try MPRTestHelpers.makeUnsignedTexture(values, width: 2, height: 2, device: device)

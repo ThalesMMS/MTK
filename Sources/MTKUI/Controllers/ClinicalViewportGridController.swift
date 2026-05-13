@@ -32,8 +32,11 @@ public final class ClinicalViewportGridController: ObservableObject {
 
     @Published public internal(set) var windowLevel = WindowLevelShift(window: 400, level: 40)
     @Published public internal(set) var slabThickness: Double = 3
+    @Published public internal(set) var activeMPRAxis: MTKCore.Axis = .axial
+    @Published public internal(set) var mprInteractionTool: ClinicalMPRInteractionTool = .crosshair
     @Published public internal(set) var normalizedPositions: [MTKCore.Axis: Float] = ClinicalViewportGridController.centeredNormalizedPositions
     @Published public internal(set) var crosshairOffsets: [MTKCore.Axis: CGPoint] = ClinicalViewportGridController.centeredCrosshairOffsets
+    @Published public internal(set) var mprViewportTransforms: [MTKCore.Axis: MPRViewportTransform] = ClinicalViewportGridController.defaultMPRViewportTransforms
     @Published public internal(set) var sharedResourceHandle: VolumeResourceHandle?
     @Published public internal(set) var volumeLayers: [MTKCore.VolumeLayer] = []
     @Published public internal(set) var surfaceMeshLayers: [SurfaceMeshLayer] = []
@@ -75,6 +78,12 @@ public final class ClinicalViewportGridController: ObservableObject {
         .axial: .zero,
         .coronal: .zero,
         .sagittal: .zero
+    ]
+
+    static let defaultMPRViewportTransforms: [MTKCore.Axis: MPRViewportTransform] = [
+        .axial: .identity,
+        .coronal: .identity,
+        .sagittal: .identity
     ]
 
     /// Creates four engine-backed viewports and one `MetalViewportSurface` per pane.
@@ -218,6 +227,11 @@ public final class ClinicalViewportGridController: ObservableObject {
         currentDataset = nil
         currentVolumeTransferFunction = nil
         displayTransformsByAxis.removeAll()
+        activeMPRAxis = .axial
+        mprInteractionTool = .crosshair
+        normalizedPositions = Self.centeredNormalizedPositions
+        crosshairOffsets = Self.centeredCrosshairOffsets
+        mprViewportTransforms = Self.defaultMPRViewportTransforms
         datasetApplied = false
         lastRenderErrors.removeAll()
         lastRenderError = nil
@@ -257,6 +271,88 @@ public final class ClinicalViewportGridController: ObservableObject {
         case .sagittal:
             return sagittalSurface
         }
+    }
+
+    public func setActiveMPRAxis(_ axis: MTKCore.Axis) {
+        if activeMPRAxis != axis {
+            logger.info("[MTKMPRInteraction] activeAxis.set \(activeMPRAxis)->\(axis)")
+        }
+        activeMPRAxis = axis
+    }
+
+    public func setMPRInteractionTool(_ tool: ClinicalMPRInteractionTool) {
+        logger.info("[MTKMPRInteraction] tool.set \(mprInteractionTool)->\(tool)")
+        mprInteractionTool = tool
+    }
+
+    public func viewportTransform(for axis: MTKCore.Axis) -> MPRViewportTransform {
+        mprViewportTransforms[axis] ?? .identity
+    }
+
+    public func setMPRViewportTransform(_ transform: MPRViewportTransform,
+                                        for axis: MTKCore.Axis) {
+        guard viewportTransform(for: axis) != transform else { return }
+        mprViewportTransforms[axis] = transform
+        _ = setCrosshairOffset(crosshairOffset(for: axis, positions: normalizedPositions), for: axis)
+        scheduleRender(for: viewportID(for: axis))
+    }
+
+    public func panMPR(axis: MTKCore.Axis,
+                       deltaNormalized: SIMD2<Float>) {
+        guard deltaNormalized.x.isFinite, deltaNormalized.y.isFinite else {
+            logger.info("[MTKMPRInteraction] pan.drop axis=\(axis) delta=\(deltaNormalized)")
+            return
+        }
+        let before = viewportTransform(for: axis)
+        setActiveMPRAxis(axis)
+        setMPRViewportTransform(viewportTransform(for: axis).translated(by: deltaNormalized),
+                                for: axis)
+        logger.info("[MTKMPRInteraction] pan axis=\(axis) delta=\(deltaNormalized) before=\(before) after=\(viewportTransform(for: axis))")
+    }
+
+    public func zoomMPR(axis: MTKCore.Axis,
+                        factor: Float,
+                        anchor: SIMD2<Float> = SIMD2<Float>(repeating: 0.5)) {
+        guard factor.isFinite, factor > 0 else {
+            logger.info("[MTKMPRInteraction] zoom.drop axis=\(axis) factor=\(factor)")
+            return
+        }
+        let before = viewportTransform(for: axis)
+        setActiveMPRAxis(axis)
+        setMPRViewportTransform(viewportTransform(for: axis).zoomed(by: factor, around: anchor),
+                                for: axis)
+        logger.info("[MTKMPRInteraction] zoom axis=\(axis) factor=\(factor) anchor=\(anchor) before=\(before) after=\(viewportTransform(for: axis))")
+    }
+
+    public func resetMPRView(axis: MTKCore.Axis) {
+        logger.info("[MTKMPRInteraction] reset axis=\(axis)")
+        setActiveMPRAxis(axis)
+        setMPRViewportTransform(.identity, for: axis)
+    }
+
+    public func resetAllMPRViews() {
+        logger.info("[MTKMPRInteraction] resetAll")
+        mprViewportTransforms = Self.defaultMPRViewportTransforms
+        rebuildAllCrosshairOffsets()
+        scheduleMPRRenderAll()
+    }
+
+    public func setMPRSlicePosition(axis: MTKCore.Axis,
+                                    normalizedPosition: Float) async {
+        logger.info("[MTKMPRInteraction] sliceSlider axis=\(axis) position=\(normalizedPosition)")
+        setActiveMPRAxis(axis)
+        await setSlicePosition(axis: axis, normalizedPosition: normalizedPosition)
+    }
+
+    public func adjustMPRWindowLevel(screenDelta: CGSize) async {
+        guard screenDelta.width.isFinite, screenDelta.height.isFinite else {
+            logger.info("[MTKMPRInteraction] windowLevel.drop delta=\(screenDelta)")
+            return
+        }
+        let nextWindow = max(windowLevel.window + Double(screenDelta.width) * 2, 1)
+        let nextLevel = windowLevel.level - Double(screenDelta.height) * 2
+        logger.info("[MTKMPRInteraction] windowLevel delta=\(screenDelta) before=(window:\(windowLevel.window),level:\(windowLevel.level)) after=(window:\(nextWindow),level:\(nextLevel))")
+        await setMPRWindowLevel(window: nextWindow, level: nextLevel)
     }
 
     /// Convenience factory for the common "create controller, then apply dataset" path.
@@ -319,6 +415,9 @@ public final class ClinicalViewportGridController: ObservableObject {
 
             let initialWindow = dataset.recommendedWindow ?? dataset.intensityRange
             windowLevel = WindowLevelShift(range: initialWindow)
+            activeMPRAxis = .axial
+            mprInteractionTool = .crosshair
+            mprViewportTransforms = Self.defaultMPRViewportTransforms
             normalizedPositions = Self.centeredNormalizedPositions
             rebuildAllCrosshairOffsets()
             slabThickness = 3
@@ -372,18 +471,24 @@ public final class ClinicalViewportGridController: ObservableObject {
     /// 
     /// This tells the adaptive-quality scheduler that an interaction has begun, then updates render quality and schedules any necessary renders.
     public func beginAdaptiveSamplingInteraction() async {
+        logger.info("[MTKMPRInteraction] adaptive.begin before=\(qualityScheduler.state)")
         qualityScheduler.beginInteraction()
+        logger.info("[MTKMPRInteraction] adaptive.begin after=\(qualityScheduler.state) samplingStep=\(qualityScheduler.currentParameters.volumeSamplingStep) tier=\(qualityScheduler.currentParameters.qualityTier)")
         await applyRenderQualityAndSchedule()
     }
 
     /// Marks the end of an adaptive-sampling interaction so the controller can allow render quality to transition back toward its settled/production state.
     public func endAdaptiveSamplingInteraction() async {
+        logger.info("[MTKMPRInteraction] adaptive.end before=\(qualityScheduler.state)")
         qualityScheduler.endInteraction()
+        logger.info("[MTKMPRInteraction] adaptive.end after=\(qualityScheduler.state) samplingStep=\(qualityScheduler.currentParameters.volumeSamplingStep) tier=\(qualityScheduler.currentParameters.qualityTier)")
     }
 
     /// Forces the render-quality scheduler to transition to its settled (final) state, causing the controller to apply the final render-quality settings.
     public func forceFinalRenderQuality() async {
+        logger.info("[MTKMPRInteraction] adaptive.forceFinal before=\(qualityScheduler.state)")
         qualityScheduler.forceSettled()
+        logger.info("[MTKMPRInteraction] adaptive.forceFinal after=\(qualityScheduler.state) samplingStep=\(qualityScheduler.currentParameters.volumeSamplingStep) tier=\(qualityScheduler.currentParameters.qualityTier)")
     }
 
     /// Applies a transfer function to the volume viewport only.
@@ -660,11 +765,19 @@ public final class ClinicalViewportGridController: ObservableObject {
     /// - Parameters:
     ///   - screenDelta: The pointer/touch movement in screen coordinates whose x component maps to yaw and y component maps to pitch (each scaled by 0.01).
     public func rotateVolumeCamera(screenDelta: CGSize) async {
-        guard screenDelta.width.isFinite, screenDelta.height.isFinite else { return }
+        guard screenDelta.width.isFinite, screenDelta.height.isFinite else {
+            logger.info("[MTKClinicalVolumeInteraction] camera.rotate.drop delta=\(screenDelta)")
+            return
+        }
         let yaw = Float(screenDelta.width) * 0.01
         let pitch = Float(screenDelta.height) * 0.01
-        guard abs(yaw) > Float.ulpOfOne || abs(pitch) > Float.ulpOfOne else { return }
+        guard abs(yaw) > Float.ulpOfOne || abs(pitch) > Float.ulpOfOne else {
+            logger.debug("[MTKClinicalVolumeInteraction] camera.rotate.drop zero delta=\(screenDelta)")
+            return
+        }
 
+        let beforeOffset = volumeCameraOffset
+        let beforeUp = volumeCameraUp
         let yawRotation = simd_quatf(angle: yaw, axis: SIMD3<Float>(0, 1, 0))
         volumeCameraOffset = yawRotation.act(volumeCameraOffset)
         volumeCameraUp = yawRotation.act(volumeCameraUp)
@@ -677,8 +790,10 @@ public final class ClinicalViewportGridController: ObservableObject {
 
         do {
             try await configureVolumeCamera()
+            logger.info("[MTKClinicalVolumeInteraction] camera.rotate delta=\(screenDelta) yaw=\(yaw) pitch=\(pitch) beforeOffset=\(beforeOffset) afterOffset=\(volumeCameraOffset) beforeUp=\(beforeUp) afterUp=\(volumeCameraUp)")
             scheduleRender(for: volumeViewportID)
         } catch {
+            logger.error("[MTKClinicalVolumeInteraction] camera.rotate.error", error: error)
             recordError(error, for: volumeViewportID)
         }
     }
@@ -690,6 +805,7 @@ public final class ClinicalViewportGridController: ObservableObject {
     ///   - axis: The MPR axis whose plane the `normalizedPoint` is expressed in (axial, coronal, or sagittal).
     ///   - normalizedPoint: A point in the axis plane using normalized coordinates (typically in the 0–1 range); non-finite components are ignored and cause no change.
     public func setCrosshair(in axis: MTKCore.Axis, normalizedPoint: CGPoint) async {
+        setActiveMPRAxis(axis)
         await applyCrosshairChange(from: axis, normalizedPoint: normalizedPoint)
     }
 
@@ -746,6 +862,7 @@ public final class ClinicalViewportGridController: ObservableObject {
     ///   - axis: The MPR axis whose slice position will be adjusted.
     ///   - deltaNormalized: The change to apply to the slice position, expressed in normalized coordinates (0.0–1.0).
     public func scrollSlice(axis: MTKCore.Axis, deltaNormalized: Float) async {
+        setActiveMPRAxis(axis)
         await handleSliceScroll(axis: axis, delta: deltaNormalized)
     }
 
@@ -756,6 +873,7 @@ public final class ClinicalViewportGridController: ObservableObject {
     ///   - axis: The MPR axis whose slice position to set.
     ///   - normalizedPosition: The new slice position in normalized coordinates (0...1).
     public func setSlicePosition(axis: MTKCore.Axis, normalizedPosition: Float) async {
+        setActiveMPRAxis(axis)
         guard normalizedPosition.isFinite else { return }
         guard setNormalizedPosition(normalizedPosition, for: axis) else { return }
         let next = normalizedPositions[axis] ?? 0.5

@@ -145,12 +145,13 @@ extension MetalVolumeRenderingAdapter {
                             viewportSize: (width: Int, height: Int),
                             frameIndex: UInt32) throws -> CameraUniforms {
         var camera = CameraUniforms()
-        let centeredCamera = centered(camera: request.camera)
-        camera.modelMatrix = matrix_identity_float4x4
-        camera.inverseModelMatrix = matrix_identity_float4x4
-        camera.inverseViewProjectionMatrix = try makeInverseViewProjectionMatrix(camera: centeredCamera,
+        let geometry = VolumeRenderGeometry.make(for: request.dataset)
+        let renderCamera = geometry.renderCamera(for: request.camera)
+        camera.modelMatrix = geometry.modelMatrix
+        camera.inverseModelMatrix = geometry.inverseModelMatrix
+        camera.inverseViewProjectionMatrix = try makeInverseViewProjectionMatrix(camera: renderCamera,
                                                                                  viewportSize: viewportSize)
-        camera.cameraPositionLocal = centeredCamera.position
+        camera.cameraPositionLocal = geometry.centeredTextureCoordinate(for: request.camera.position)
         camera.frameIndex = frameIndex
         camera.projectionType = request.camera.projectionType.rawValue
         return camera
@@ -225,9 +226,9 @@ private extension simd_float4x4 {
         )
 
         self = simd_float4x4(columns: (
-            SIMD4<Float>(xAxis, 0),
-            SIMD4<Float>(yAxis, 0),
-            SIMD4<Float>(zAxis, 0),
+            SIMD4<Float>(xAxis.x, yAxis.x, zAxis.x, 0),
+            SIMD4<Float>(xAxis.y, yAxis.y, zAxis.y, 0),
+            SIMD4<Float>(xAxis.z, yAxis.z, zAxis.z, 0),
             SIMD4<Float>(translation, 1)
         ))
     }

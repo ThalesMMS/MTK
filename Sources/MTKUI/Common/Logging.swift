@@ -1,4 +1,5 @@
 import Foundation
+import MTKCore
 import os.log
 
 public protocol LoggerProtocol: Sendable {
@@ -10,33 +11,58 @@ public protocol LoggerProtocol: Sendable {
 
 public final class Logger: @unchecked Sendable, LoggerProtocol {
     private let logger: os.Logger
+    private let fileCategory: String
 
     public init(subsystem: String = "com.mtk.ui", category: String) {
         self.logger = os.Logger(subsystem: subsystem, category: category)
+        self.fileCategory = "\(subsystem).\(category)"
     }
 
     public func debug(_ message: String, error: (any Error)? = nil) {
+        let resolvedMessage: String
         if let error {
-            logger.debug("\(message) error=\(String(describing: error))")
+            resolvedMessage = "\(message) error=\(String(describing: error))"
         } else {
-            logger.debug("\(message)")
+            resolvedMessage = message
+        }
+        logger.debug("\(resolvedMessage)")
+        if mirrorsToMTKLog(resolvedMessage) {
+            MTKCore.Logger.debug(resolvedMessage, category: fileCategory)
         }
     }
 
     public func info(_ message: String) {
         logger.info("\(message)")
+        if mirrorsToMTKLog(message) {
+            MTKCore.Logger.info(message, category: fileCategory)
+        }
     }
 
     public func warning(_ message: String) {
         logger.warning("\(message)")
+        if mirrorsToMTKLog(message) {
+            MTKCore.Logger.warning(message, category: fileCategory)
+        }
     }
 
     public func error(_ message: String, error: (any Error)? = nil) {
+        let resolvedMessage: String
         if let error {
-            logger.error("\(message) error=\(String(describing: error))")
+            resolvedMessage = "\(message) error=\(String(describing: error))"
         } else {
-            logger.error("\(message)")
+            resolvedMessage = message
         }
+        logger.error("\(resolvedMessage)")
+        if mirrorsToMTKLog(resolvedMessage) {
+            MTKCore.Logger.error(resolvedMessage, category: fileCategory)
+        }
+    }
+
+    private func mirrorsToMTKLog(_ message: String) -> Bool {
+        message.contains("[MTK3DInteraction]")
+            || message.contains("[MTKMPRInteraction]")
+            || message.contains("[MTKClinicalVolumeInteraction]")
+            || message.contains("[MTKPerf]")
     }
 }
 

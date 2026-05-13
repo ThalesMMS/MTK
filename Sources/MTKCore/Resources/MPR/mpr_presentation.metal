@@ -18,6 +18,10 @@ struct MPRPresentationUniforms {
     int flipVertical;
     int bitShift;
     int _pad0;
+    float viewportZoom;
+    float viewportPanX;
+    float viewportPanY;
+    float _pad1;
 };
 
 struct MPRLabelmapOverlayUniforms {
@@ -31,7 +35,10 @@ struct MPRLabelmapOverlayUniforms {
     float _pad3;
     int flipHorizontal;
     int flipVertical;
-    int2 _pad4;
+    float viewportZoom;
+    float viewportPanX;
+    float viewportPanY;
+    float _pad4;
 };
 
 namespace {
@@ -43,32 +50,64 @@ inline float normalizeWindow(int value, constant MPRPresentationUniforms& unifor
     return uniforms.invert != 0 ? 1.0f - normalized : normalized;
 }
 
-inline uint2 outputCoordinates(uint2 gid,
-                               uint width,
-                               uint height,
-                               constant MPRPresentationUniforms& uniforms) {
-    uint2 outputGid = gid;
-    if (uniforms.flipHorizontal != 0) {
-        outputGid.x = width - 1 - gid.x;
-    }
-    if (uniforms.flipVertical != 0) {
-        outputGid.y = height - 1 - gid.y;
-    }
-    return outputGid;
+inline float2 normalizedCoordinates(uint2 gid, uint width, uint height) {
+    return float2(width > 1 ? float(gid.x) / float(width - 1) : 0.0f,
+                  height > 1 ? float(gid.y) / float(height - 1) : 0.0f);
 }
 
-inline uint2 sourceCoordinates(uint2 outputGid,
-                               uint width,
-                               uint height,
-                               constant MPRLabelmapOverlayUniforms& uniforms) {
-    uint2 sourceGid = outputGid;
-    if (uniforms.flipHorizontal != 0) {
-        sourceGid.x = width - 1 - outputGid.x;
+inline float2 inverseViewportTransform(float2 outputUV, float zoom, float2 pan) {
+    float safeZoom = max(zoom, 1.0f);
+    return float2(0.5f) + (outputUV - float2(0.5f) - pan) / safeZoom;
+}
+
+inline bool isInUnitSquare(float2 position) {
+    return all(position >= 0.0f) && all(position <= 1.0f);
+}
+
+inline float2 sourceCoordinates(float2 outputUV,
+                                int flipHorizontal,
+                                int flipVertical,
+                                float viewportZoom,
+                                float2 viewportPan) {
+    float2 sourceUV = inverseViewportTransform(outputUV, viewportZoom, viewportPan);
+    if (!isInUnitSquare(sourceUV)) {
+        return sourceUV;
     }
-    if (uniforms.flipVertical != 0) {
-        sourceGid.y = height - 1 - outputGid.y;
+    
+    if (flipHorizontal != 0) {
+        sourceUV.x = 1.0f - sourceUV.x;
     }
-    return sourceGid;
+    if (flipVertical != 0) {
+        sourceUV.y = 1.0f - sourceUV.y;
+    }
+    return sourceUV;
+}
+
+inline float2 sourceCoordinates(uint2 outputGid,
+                                uint width,
+                                uint height,
+                                constant MPRPresentationUniforms& uniforms) {
+    return sourceCoordinates(normalizedCoordinates(outputGid, width, height),
+                             uniforms.flipHorizontal,
+                             uniforms.flipVertical,
+                             uniforms.viewportZoom,
+                             float2(uniforms.viewportPanX, uniforms.viewportPanY));
+}
+
+inline float2 sourceCoordinates(uint2 outputGid,
+                                uint width,
+                                uint height,
+                                constant MPRLabelmapOverlayUniforms& uniforms) {
+    return sourceCoordinates(normalizedCoordinates(outputGid, width, height),
+                             uniforms.flipHorizontal,
+                             uniforms.flipVertical,
+                             uniforms.viewportZoom,
+                             float2(uniforms.viewportPanX, uniforms.viewportPanY));
+}
+
+inline uint2 nearestPixel(float2 uv, uint width, uint height) {
+    return uint2(uint(round(clamp(uv.x, 0.0f, 1.0f) * float(max(width, 1u) - 1u))),
+                 uint(round(clamp(uv.y, 0.0f, 1.0f) * float(max(height, 1u) - 1u))));
 }
 
 inline float4 presentationColor(float normalized,
@@ -98,16 +137,22 @@ kernel void mprPresentation(texture2d<short, access::read> inputTexture      [[t
         return;
     }
 
-    int value = int(inputTexture.read(gid).r);
+    float2 sourceUV = sourceCoordinates(gid,
+                                        outputTexture.get_width(),
+                                        outputTexture.get_height(),
+                                        uniforms);
+    if (!isInUnitSquare(sourceUV)) {
+        outputTexture.write(float4(0.0f, 0.0f, 0.0f, 1.0f), gid);
+        return;
+    }
+
+    uint2 sourceGid = nearestPixel(sourceUV, inputTexture.get_width(), inputTexture.get_height());
+    int value = int(inputTexture.read(sourceGid).r);
     if (uniforms.bitShift > 0) {
         value >>= uniforms.bitShift;
     }
     float normalized = normalizeWindow(value, uniforms);
-    uint2 outputGid = outputCoordinates(gid,
-                                        outputTexture.get_width(),
-                                        outputTexture.get_height(),
-                                        uniforms);
-    outputTexture.write(presentationColor(normalized, colormapTexture, uniforms), outputGid);
+    outputTexture.write(presentationColor(normalized, colormapTexture, uniforms), gid);
 }
 
 kernel void mprCompositeLabelmapOverlay(texture2d<float, access::read> inputTexture      [[texture(0)]],
@@ -129,12 +174,15 @@ kernel void mprCompositeLabelmapOverlay(texture2d<float, access::read> inputText
         return;
     }
 
-    uint2 sampleGid = sourceCoordinates(gid, width, height, uniforms);
-    float u = width > 1 ? float(sampleGid.x) / float(width - 1) : 0.0f;
-    float v = height > 1 ? float(sampleGid.y) / float(height - 1) : 0.0f;
+    float2 sampleUV = sourceCoordinates(gid, width, height, uniforms);
+    if (!isInUnitSquare(sampleUV)) {
+        outputTexture.write(base, gid);
+        return;
+    }
+    
     float3 labelmapPosition = uniforms.originTexture
-                            + u * uniforms.axisUTexture
-                            + v * uniforms.axisVTexture;
+                            + sampleUV.x * uniforms.axisUTexture
+                            + sampleUV.y * uniforms.axisVTexture;
 
     if (!isInUnitCube(labelmapPosition)) {
         outputTexture.write(base, gid);
@@ -179,14 +227,20 @@ kernel void mprPresentationUnsigned(texture2d<ushort, access::read> inputTexture
         return;
     }
 
-    int value = int(inputTexture.read(gid).r);
+    float2 sourceUV = sourceCoordinates(gid,
+                                        outputTexture.get_width(),
+                                        outputTexture.get_height(),
+                                        uniforms);
+    if (!isInUnitSquare(sourceUV)) {
+        outputTexture.write(float4(0.0f, 0.0f, 0.0f, 1.0f), gid);
+        return;
+    }
+
+    uint2 sourceGid = nearestPixel(sourceUV, inputTexture.get_width(), inputTexture.get_height());
+    int value = int(inputTexture.read(sourceGid).r);
     if (uniforms.bitShift > 0) {
         value >>= uniforms.bitShift;
     }
     float normalized = normalizeWindow(value, uniforms);
-    uint2 outputGid = outputCoordinates(gid,
-                                        outputTexture.get_width(),
-                                        outputTexture.get_height(),
-                                        uniforms);
-    outputTexture.write(presentationColor(normalized, colormapTexture, uniforms), outputGid);
+    outputTexture.write(presentationColor(normalized, colormapTexture, uniforms), gid);
 }

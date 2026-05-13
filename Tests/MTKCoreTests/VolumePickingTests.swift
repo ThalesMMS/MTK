@@ -103,6 +103,47 @@ final class VolumePickingTests: XCTestCase {
         XCTAssertEqual(pick.voxel.index, SIMD3<Int32>(2, 3, 1))
     }
 
+    func testMPRPickingRoundTripsThroughDisplayAndViewportTransforms() throws {
+        let dataset = makeSignedPhantom(
+            dimensions: VolumeDimensions(width: 5, height: 7, depth: 9)
+        )
+        let target = SIMD3<Int32>(1, 2, 4)
+        let world = VolumePicking.worldPoint(forVoxelIndex: SIMD3<Float>(Float(target.x),
+                                                                         Float(target.y),
+                                                                         Float(target.z)),
+                                             in: dataset)
+        let plane = MPRPlaneGeometryFactory.makePlane(for: dataset,
+                                                      axis: .z,
+                                                      slicePosition: Float(target.z) / 8.0)
+        let display = MPRDisplayTransform(
+            orientation: .rotated90CW,
+            flipHorizontal: true,
+            flipVertical: false,
+            leadingLabel: .right,
+            trailingLabel: .left,
+            topLabel: .anterior,
+            bottomLabel: .posterior
+        )
+        let viewport = MPRViewportTransform(zoom: 1.5, pan: SIMD2<Float>(0.1, -0.05))
+
+        let screen = try VolumePicking.screenPoint(forWorldPoint: world,
+                                                   dataset: dataset,
+                                                   plane: plane,
+                                                   displayTransform: display,
+                                                   viewportTransform: viewport,
+                                                   viewportSize: CGSize(width: 200, height: 200))
+        let pick = try VolumePicking.pickMPR(screenPoint: screen.screenPoint,
+                                             viewportSize: screen.viewportSize,
+                                             dataset: dataset,
+                                             plane: plane,
+                                             displayTransform: display,
+                                             viewportTransform: viewport,
+                                             axis: .z)
+
+        XCTAssertEqual(pick.voxel.index, target)
+        XCTAssertEqual(pick.intensity.storedScalar, 421)
+    }
+
     func testSamplingReturnsExplicitErrorsForOutsideViewportAndVolume() throws {
         let dataset = makeSignedPhantom()
         XCTAssertThrowsError(
@@ -214,6 +255,38 @@ final class VolumePickingTests: XCTestCase {
 
         XCTAssertEqual(pick.hitKind, .volumeVisibleSample)
         XCTAssertEqual(pick.voxel.index, SIMD3<Int32>(2, 2, 3))
+        XCTAssertEqual(pick.intensity.storedScalar, 1000)
+        XCTAssertNotNil(pick.worldRay)
+    }
+
+    func testVolume3DPickUsesPhysicalGeometryForAnisotropicSideView() throws {
+        let dimensions = VolumeDimensions(width: 4, height: 4, depth: 4)
+        let dataset = makeSignedDataset(
+            values: makeInt16Values(dimensions: dimensions) { x, y, z in
+                (x, y, z) == (2, 2, 2) ? 1000 : -1000
+            },
+            dimensions: dimensions,
+            spacing: VolumeSpacing(x: 1, y: 1, z: 3),
+            intensityRange: -1000...1000
+        )
+        let configuration = Volume3DPickConfiguration(
+            camera: VolumeRenderRequest.Camera(position: SIMD3<Float>(5, 0.5, 0.5),
+                                               target: SIMD3<Float>(repeating: 0.5),
+                                               up: SIMD3<Float>(0, 0, 1),
+                                               fieldOfView: 50),
+            viewportSize: CGSize(width: 100, height: 100),
+            transferFunction: visibleTargetTransferFunction(),
+            window: dataset.intensityRange,
+            samplingDistance: 1.0 / 512.0
+        )
+
+        let pick = try VolumePicking.pickVolume3D(
+            screenPoint: CGPoint(x: 50, y: 50),
+            dataset: dataset,
+            configuration: configuration
+        )
+
+        XCTAssertEqual(pick.voxel.index, SIMD3<Int32>(2, 2, 2))
         XCTAssertEqual(pick.intensity.storedScalar, 1000)
         XCTAssertNotNil(pick.worldRay)
     }

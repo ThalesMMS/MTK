@@ -212,6 +212,8 @@ public enum ClinicalTransferFunctionPreset: String, CaseIterable, Identifiable, 
     case ctLung
     case ctBone
     case ctSoftTissue
+    case ctBrain
+    case ctAbdomen
     case ctVascular
     case ctPulmonaryArteries
     case ctAngioMIP
@@ -229,6 +231,10 @@ public enum ClinicalTransferFunctionPreset: String, CaseIterable, Identifiable, 
             return "CT Bone"
         case .ctSoftTissue:
             return "CT Soft Tissue"
+        case .ctBrain:
+            return "CT Brain"
+        case .ctAbdomen:
+            return "CT Abdomen"
         case .ctVascular:
             return "CT Vascular"
         case .ctPulmonaryArteries:
@@ -252,6 +258,10 @@ public enum ClinicalTransferFunctionPreset: String, CaseIterable, Identifiable, 
             return .ctBone
         case .ctSoftTissue:
             return .ctSoftTissue
+        case .ctBrain:
+            return .ctBrain
+        case .ctAbdomen:
+            return .ctAbdomen
         case .ctVascular, .ctAngioMIP:
             return .ctArteries
         case .ctPulmonaryArteries:
@@ -339,8 +349,10 @@ public enum ClinicalTransferFunctionPreset: String, CaseIterable, Identifiable, 
             return .lung
         case .ctBone, .ctVRBone:
             return .bone
-        case .ctSoftTissue:
+        case .ctSoftTissue, .ctAbdomen:
             return .softTissue
+        case .ctBrain:
+            return .neurological
         case .ctVascular, .ctAngioMIP, .ctPulmonaryArteries, .mrAngioMIP:
             return .vascular
         }
@@ -354,6 +366,10 @@ public enum ClinicalTransferFunctionPreset: String, CaseIterable, Identifiable, 
             return "Skeletal structure volume rendering."
         case .ctSoftTissue:
             return "General organ and soft-tissue volume rendering."
+        case .ctBrain:
+            return "Intracranial soft-tissue CT volume rendering."
+        case .ctAbdomen:
+            return "Abdominal organ and soft-tissue CT volume rendering."
         case .ctVascular:
             return "Contrast-enhanced CT vascular rendering."
         case .ctPulmonaryArteries:

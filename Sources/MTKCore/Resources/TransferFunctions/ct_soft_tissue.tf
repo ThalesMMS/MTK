@@ -1,76 +1,21 @@
 {
-   "version": 1,
-   "name": "CT-Soft-Tissue",
-   "min": -2048,
-   "max": 3661,
-   "shift": 0,
-   "colourPoints": [
-      {
-         "dataValue": -2048,
-         "colourValue": {
-            "r": 0.0,
-            "g": 0.0,
-            "b": 0.0,
-            "a": 1.0
-         }
-      },
-      {
-         "dataValue": -167.01,
-         "colourValue": {
-            "r": 0.0,
-            "g": 0.0,
-            "b": 0.0,
-            "a": 1.0
-         }
-      },
-      {
-         "dataValue": -160,
-         "colourValue": {
-            "r": 0.055636,
-            "g": 0.055636,
-            "b": 0.055636,
-            "a": 1.0
-         }
-      },
-      {
-         "dataValue": 240,
-         "colourValue": {
-            "r": 1.0,
-            "g": 1.0,
-            "b": 1.0,
-            "a": 1.0
-         }
-      },
-      {
-         "dataValue": 3661,
-         "colourValue": {
-            "r": 1.0,
-            "g": 1.0,
-            "b": 1.0,
-            "a": 1.0
-         }
-      }
-   ],
-   "alphaPoints": [
-      {
-         "dataValue": -2048,
-         "alphaValue": 0.0
-      },
-      {
-         "dataValue": -167.01,
-         "alphaValue": 0.0
-      },
-      {
-         "dataValue": -160,
-         "alphaValue": 1.0
-      },
-      {
-         "dataValue": 240,
-         "alphaValue": 1.0
-      },
-      {
-         "dataValue": 3661,
-         "alphaValue": 1.0
-      }
-   ]
+  "version": 1,
+  "name": "CT-Soft-Tissue",
+  "min": -1200,
+  "max": 3000,
+  "shift": 0,
+  "colourPoints": [
+    { "dataValue": -1000, "colourValue": { "r": 0, "g": 0, "b": 0, "a": 1 } },
+    { "dataValue": -150, "colourValue": { "r": 0.45, "g": 0.22, "b": 0.16, "a": 1 } },
+    { "dataValue": 40, "colourValue": { "r": 0.85, "g": 0.52, "b": 0.42, "a": 1 } },
+    { "dataValue": 300, "colourValue": { "r": 1.0, "g": 0.82, "b": 0.68, "a": 1 } },
+    { "dataValue": 1200, "colourValue": { "r": 1.0, "g": 0.95, "b": 0.88, "a": 1 } }
+  ],
+  "alphaPoints": [
+    { "dataValue": -1000, "alphaValue": 0 },
+    { "dataValue": -150, "alphaValue": 0.02 },
+    { "dataValue": 40, "alphaValue": 0.18 },
+    { "dataValue": 300, "alphaValue": 0.35 },
+    { "dataValue": 1200, "alphaValue": 0.45 }
+  ]
 }

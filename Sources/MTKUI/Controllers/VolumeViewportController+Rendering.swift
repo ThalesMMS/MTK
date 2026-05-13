@@ -17,32 +17,82 @@ extension VolumeViewportController {
 
     /// Schedules a new render when the controller is active and a dataset is applied.
     /// 
-    /// If scheduled, increments the internal render generation, cancels any currently running render task, and starts a new asynchronous render task tied to the new generation.
+    /// If scheduled, increments the internal render generation and coalesces rapid updates behind a single in-flight render.
     func scheduleRender() {
-        guard renderMode == .active, datasetApplied else { return }
+        guard renderMode == .active, datasetApplied else {
+            logger.debug("[MTK3DInteraction] schedule.drop renderMode=\(String(describing: renderMode)) datasetApplied=\(datasetApplied)")
+            return
+        }
         renderGeneration &+= 1
         let generation = renderGeneration
-        renderTask?.cancel()
+        let display = currentDisplay ?? .volume(method: currentVolumeMethod)
+        let parameters = qualityScheduler.currentParameters
+        logger.debug("[MTK3DInteraction] schedule generation=\(generation) display=\(interactionDisplayName(display)) adaptive=\(adaptiveSamplingEnabled) state=\(effectiveQualityState) samplingStep=\(parameters.volumeSamplingStep) tier=\(parameters.qualityTier)")
+        renderPending = true
+        guard !renderInFlight else {
+            logger.debug("[MTK3DInteraction] schedule.coalesce generation=\(generation) display=\(interactionDisplayName(display)) state=\(effectiveQualityState)")
+            return
+        }
+        startRenderDrain()
+    }
+
+    func startRenderDrain() {
+        guard !renderInFlight else { return }
+        renderInFlight = true
         renderTask = Task { [weak self] in
-            await self?.render(generation: generation)
+            await self?.drainRenderQueue()
+        }
+    }
+
+    func drainRenderQueue() async {
+        defer {
+            renderInFlight = false
+            renderTask = nil
+            if renderPending, renderMode == .active, datasetApplied {
+                startRenderDrain()
+            }
+        }
+
+        while renderPending, !Task.isCancelled {
+            renderPending = false
+            let generation = renderGeneration
+            await render(generation: generation, allowStalePreviewPresentation: true)
         }
     }
 
     /// Performs a render for the provided generation using the controller's current display state and presents the result.
     /// 
-    /// When a volume or MPR display is active, this method emits corresponding telemetry events for scheduled, completed, and failed renders, and presents the produced frame to the viewport surface. The method guards against stale work by verifying the task has not been cancelled and the supplied `generation` matches the controller's current `renderGeneration` before presenting or reporting completion. On error (that is still relevant to the current generation), `lastRenderError` is set and a failure telemetry event is emitted; the error is also logged.
-    /// - Parameter generation: The render generation identifier used to determine whether the produced result is still current; presentation and completion telemetry occur only if this matches the controller's active `renderGeneration` and the task is not cancelled.
-    func render(generation: UInt64) async {
-        guard let dataset, renderMode == .active else { return }
+    /// When a volume or MPR display is active, this method emits corresponding telemetry events for scheduled, completed, and failed renders, and presents the produced frame to the viewport surface. The method guards against stale work by verifying the task has not been cancelled and the supplied `generation` matches the controller's current `renderGeneration`, while allowing preview-quality interactive frames to present when a newer generation is already queued.
+    /// - Parameter generation: The render generation identifier used to determine whether the produced result is current or an acceptable coalesced preview.
+    func render(generation: UInt64, allowStalePreviewPresentation: Bool = false) async {
+        guard let dataset else {
+            logger.debug("[MTK3DInteraction] render.drop generation=\(generation) reason=noDataset")
+            return
+        }
+        guard renderMode == .active else {
+            logger.debug("[MTK3DInteraction] render.drop generation=\(generation) reason=inactive renderMode=\(String(describing: renderMode))")
+            return
+        }
         let display = currentDisplay ?? .volume(method: currentVolumeMethod)
         let started = Date()
+        let perfStartedAt = CFAbsoluteTimeGetCurrent()
         var telemetryQualityState = effectiveQualityState
+        logger.debug("[MTK3DInteraction] render.start generation=\(generation) current=\(renderGeneration) display=\(interactionDisplayName(display)) adaptive=\(adaptiveSamplingEnabled) state=\(telemetryQualityState)")
+        guard !Task.isCancelled, generation == renderGeneration else {
+            logger.debug("[MTK3DInteraction] render.skip generation=\(generation) current=\(renderGeneration) cancelled=\(Task.isCancelled) stage=start")
+            return
+        }
 
         do {
             switch display {
             case let .volume(method):
                 let plan = try await makeVolumeTextureRenderPlan(dataset: dataset, method: method)
                 telemetryQualityState = plan.qualityState
+                logger.info("[MTK3DInteraction] render.volume.plan generation=\(generation) state=\(plan.qualityState) quality=\(plan.request.quality) sampleDistance=\(plan.request.samplingDistance) viewport=\(Int(plan.request.viewportSize.width))x\(Int(plan.request.viewportSize.height)) cameraPosition=\(plan.request.camera.position) cameraTarget=\(plan.request.camera.target) cameraUp=\(plan.request.camera.up)")
+                guard !Task.isCancelled, generation == renderGeneration else {
+                    logger.debug("[MTK3DInteraction] render.skip generation=\(generation) current=\(renderGeneration) cancelled=\(Task.isCancelled) stage=afterPlan")
+                    return
+                }
                 RenderingTelemetry.volumeRenderScheduled(qualityState: plan.qualityState)
                 let frame = try await renderVolumeFrame(using: plan)
                 if !surfaceMeshLayers.isEmpty {
@@ -53,31 +103,62 @@ extension VolumeViewportController {
                                               targetTexture: frame.texture,
                                               clipping: volumeClipping)
                 }
-                guard !Task.isCancelled, generation == renderGeneration else { return }
+                let presentationGeneration = renderGeneration
+                guard canPresentRender(generation: generation,
+                                       currentGeneration: presentationGeneration,
+                                       qualityState: plan.qualityState,
+                                       allowStalePreviewPresentation: allowStalePreviewPresentation) else {
+                    logger.debug("[MTK3DInteraction] render.skip generation=\(generation) current=\(renderGeneration) cancelled=\(Task.isCancelled) stage=afterFrame")
+                    return
+                }
+                let frameReadyMilliseconds = mtkPerfMilliseconds(from: perfStartedAt)
                 lastRenderError = nil
-                try viewportSurface.present(frame: frame)
+                let presentDuration = try viewportSurface.present(frame: frame)
+                let totalMilliseconds = mtkPerfMilliseconds(from: perfStartedAt)
+                logger.info(
+                    "[MTKPerf] controller.volume.complete generation=\(generation) current=\(renderGeneration) stalePresented=\(generation != renderGeneration) totalMs=\(mtkPerfFormat(totalMilliseconds)) frameReadyMs=\(mtkPerfFormat(frameReadyMilliseconds)) presentCallMs=\(mtkPerfFormat(presentDuration * 1000.0)) frameRenderMetadataMs=\(mtkPerfFormat(frame.metadata.renderTime.map { $0 * 1000.0 })) quality=\(plan.request.quality) state=\(plan.qualityState) samplingDistance=\(mtkPerfFormat(Double(plan.request.samplingDistance))) viewport=\(Int(plan.request.viewportSize.width))x\(Int(plan.request.viewportSize.height))"
+                )
                 RenderingTelemetry.volumeRenderCompleted(duration: Date().timeIntervalSince(started),
                                                         qualityState: plan.qualityState)
             case let .mpr(axis, index, blend, slab):
                 RenderingTelemetry.mprRenderScheduled(blend: blend.coreBlend,
                                                      qualityState: telemetryQualityState)
+                guard !Task.isCancelled, generation == renderGeneration else {
+                    logger.debug("[MTK3DInteraction] render.skip generation=\(generation) current=\(renderGeneration) cancelled=\(Task.isCancelled) stage=mprStart")
+                    return
+                }
                 let frame = try await renderMpr(dataset: dataset,
                                                 axis: axis,
                                                 index: index,
                                                 blend: blend,
                                                 slab: slab)
                 let labelmapOverlays = try await mprLabelmapOverlays(for: frame)
-                guard !Task.isCancelled, generation == renderGeneration else { return }
-                try viewportSurface.present(mprFrame: frame,
-                                            window: resolvedMPRWindow(for: dataset),
-                                            labelmapOverlays: labelmapOverlays)
+                let presentationGeneration = renderGeneration
+                guard canPresentRender(generation: generation,
+                                       currentGeneration: presentationGeneration,
+                                       qualityState: telemetryQualityState,
+                                       allowStalePreviewPresentation: allowStalePreviewPresentation) else {
+                    logger.debug("[MTK3DInteraction] render.skip generation=\(generation) current=\(renderGeneration) cancelled=\(Task.isCancelled) stage=mprAfterFrame")
+                    return
+                }
+                let frameReadyMilliseconds = mtkPerfMilliseconds(from: perfStartedAt)
+                let presentDuration = try viewportSurface.present(mprFrame: frame,
+                                                                  window: resolvedMPRWindow(for: dataset),
+                                                                  labelmapOverlays: labelmapOverlays)
+                let totalMilliseconds = mtkPerfMilliseconds(from: perfStartedAt)
                 lastRenderError = nil
+                logger.info(
+                    "[MTKPerf] controller.mpr.complete generation=\(generation) current=\(renderGeneration) stalePresented=\(generation != renderGeneration) axis=\(axis) planeIndex=\(index) blend=\(blend.coreBlend) totalMs=\(mtkPerfFormat(totalMilliseconds)) frameReadyMs=\(mtkPerfFormat(frameReadyMilliseconds)) presentCallMs=\(mtkPerfFormat(presentDuration * 1000.0)) texture=\(frame.texture.width)x\(frame.texture.height) overlays=\(labelmapOverlays.count) state=\(telemetryQualityState)"
+                )
                 RenderingTelemetry.mprRenderCompleted(duration: Date().timeIntervalSince(started),
                                                       blend: blend.coreBlend,
                                                       qualityState: telemetryQualityState)
             }
         } catch {
-            guard !Task.isCancelled, generation == renderGeneration else { return }
+            guard !Task.isCancelled, generation == renderGeneration else {
+                logger.debug("[MTK3DInteraction] render.error.drop generation=\(generation) current=\(renderGeneration) cancelled=\(Task.isCancelled)")
+                return
+            }
             lastRenderError = error
             switch display {
             case .volume:
@@ -93,6 +174,17 @@ extension VolumeViewportController {
             }
             logger.error("Render failed", error: error)
         }
+    }
+
+    func canPresentRender(generation: UInt64,
+                          currentGeneration: UInt64,
+                          qualityState: RenderQualityState,
+                          allowStalePreviewPresentation: Bool) -> Bool {
+        guard !Task.isCancelled else { return false }
+        if generation == currentGeneration {
+            return true
+        }
+        return allowStalePreviewPresentation && qualityState != .settled
     }
 
     struct VolumeTextureRenderPlan {
@@ -225,5 +317,29 @@ extension VolumeViewportController {
         case .interactive, .preview:
             return .interacting
         }
+    }
+}
+
+private func mtkPerfMilliseconds(from start: CFAbsoluteTime,
+                                 to end: CFAbsoluteTime = CFAbsoluteTimeGetCurrent()) -> Double {
+    max(0, (end - start) * 1000.0)
+}
+
+private func mtkPerfFormat(_ value: Double) -> String {
+    String(format: "%.3f", value)
+}
+
+private func mtkPerfFormat(_ value: Double?) -> String {
+    guard let value else { return "unavailable" }
+    return mtkPerfFormat(value)
+}
+
+private func interactionDisplayName(_ display: VolumeViewportController.DisplayConfiguration) -> String {
+    switch display {
+    case let .volume(method):
+        return "volume.\(method)"
+    case let .mpr(axis, index, blend, slab):
+        let slabDescription = slab.map { "thickness=\($0.thickness),steps=\($0.steps)" } ?? "none"
+        return "mpr.axis=\(axis).index=\(index).blend=\(blend).slab=\(slabDescription)"
     }
 }

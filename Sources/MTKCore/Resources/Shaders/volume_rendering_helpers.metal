@@ -21,6 +21,30 @@ constant float kToneLookupScale = 2550.0f;
     return normalize(pixelLocal01 - cameraLocal01);
 }
 
+[[maybe_unused]] static inline float3 transformPoint(float4x4 matrix,
+                                                     float3 point)
+{
+    float4 transformed = matrix * float4(point, 1.0f);
+    return transformed.xyz / transformed.w;
+}
+
+[[maybe_unused]] static inline float3 transformDirection(float4x4 matrix,
+                                                         float3 direction)
+{
+    return (matrix * float4(direction, 0.0f)).xyz;
+}
+
+[[maybe_unused]] static inline float3 transformNormal(float4x4 inverseModelMatrix,
+                                                      float3 normal)
+{
+    float3x3 inverseLinear = float3x3(inverseModelMatrix[0].xyz,
+                                      inverseModelMatrix[1].xyz,
+                                      inverseModelMatrix[2].xyz);
+    float3 transformed = transpose(inverseLinear) * normal;
+    float lengthSq = dot(transformed, transformed);
+    return lengthSq > 1.0e-6f ? normalize(transformed) : float3(0.0f);
+}
+
 static inline float4 sampleTransfer(texture2d<float, access::sample> transfer,
                                     float density,
                                     float gradient,

@@ -77,6 +77,21 @@ final class MedicalViewportContractTests: XCTestCase {
         XCTAssertTrue(viewport.surface is MetalViewportSurface)
     }
 
+    func testVolumeViewport3DForwardsAdaptiveSamplingControls() async throws {
+        try requireMetalDevice()
+        let viewport = try VolumeViewport3D()
+        let dataset = makeDataset(dimensions: VolumeDimensions(width: 4, height: 5, depth: 6))
+
+        await viewport.applyDataset(dataset)
+        await viewport.beginAdaptiveSamplingInteraction()
+        await viewport.endAdaptiveSamplingInteraction()
+        await viewport.forceFinalRenderQuality()
+
+        XCTAssertEqual(viewport.viewportType, .volume3D)
+        XCTAssertEqual(viewport.state.dataset?.dimensions, dataset.dimensions)
+        XCTAssertTrue(viewport.state.presentation.isMetalBacked)
+    }
+
     func testVolumeViewport3DAppliesScalarVolumeLayers() async throws {
         try requireMetalDevice()
         let viewport = try VolumeViewport3D()

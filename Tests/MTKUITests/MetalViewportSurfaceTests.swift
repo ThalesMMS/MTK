@@ -45,6 +45,26 @@ final class MetalViewportSurfaceTests: XCTestCase {
         XCTAssertEqual(reportedSizes.last, CGSize(width: 60, height: 30))
     }
 
+    func testMaximumContentScaleCapsDrawableResolution() throws {
+        let device = try requireMetalDevice()
+        let surface = try MetalViewportSurface(device: device)
+        surface.view.frame = CGRect(x: 0, y: 0, width: 40, height: 30)
+
+        surface.setMaximumContentScale(1)
+        surface.setContentScale(3)
+
+        XCTAssertEqual(surface.currentContentScale, 1)
+        XCTAssertEqual(surface.currentMaximumContentScale, 1)
+        XCTAssertEqual(surface.drawablePixelSize, CGSize(width: 40, height: 30))
+
+        surface.setMaximumContentScale(nil)
+        surface.setContentScale(2)
+
+        XCTAssertEqual(surface.currentContentScale, 2)
+        XCTAssertNil(surface.currentMaximumContentScale)
+        XCTAssertEqual(surface.drawablePixelSize, CGSize(width: 80, height: 60))
+    }
+
     func testMultipleViewportSurfacesKeepIndependentDrawableState() throws {
         let device = try requireMetalDevice()
         let first = try MetalViewportSurface(device: device)

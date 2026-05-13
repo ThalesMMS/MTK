@@ -463,6 +463,61 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         XCTAssertEqual(axialSlice, 0.7, accuracy: 0.0001)
     }
 
+    func testMPRManipulationDefaultsAndTransformsArePresentationOnly() async throws {
+        let controller = try await makeController()
+        try await controller.applyDataset(makeDataset())
+
+        XCTAssertEqual(controller.activeMPRAxis, .axial)
+        XCTAssertEqual(controller.mprInteractionTool, .crosshair)
+        XCTAssertEqual(controller.viewportTransform(for: .axial), .identity)
+
+        controller.setMPRInteractionTool(.pan)
+        controller.setActiveMPRAxis(.sagittal)
+        XCTAssertEqual(controller.mprInteractionTool, .pan)
+        XCTAssertEqual(controller.activeMPRAxis, .sagittal)
+
+        let positionsBefore = controller.normalizedPositions
+        let axialSliceBefore = await controller.engine.debugSlicePosition(for: controller.axialViewportID)
+
+        controller.panMPR(axis: .axial, deltaNormalized: SIMD2<Float>(0.1, -0.05))
+        controller.zoomMPR(axis: .axial, factor: 2, anchor: SIMD2<Float>(0.25, 0.75))
+
+        let axialTransform = controller.viewportTransform(for: .axial)
+        XCTAssertGreaterThan(axialTransform.zoom, 1)
+        XCTAssertNotEqual(axialTransform.pan, .zero)
+        XCTAssertEqual(controller.normalizedPositions, positionsBefore)
+        let axialSliceAfterTransform = await controller.engine.debugSlicePosition(for: controller.axialViewportID)
+        XCTAssertEqual(axialSliceAfterTransform, axialSliceBefore)
+
+        controller.resetMPRView(axis: .axial)
+        XCTAssertEqual(controller.viewportTransform(for: .axial), .identity)
+
+        controller.zoomMPR(axis: .coronal, factor: 2)
+        controller.panMPR(axis: .coronal, deltaNormalized: SIMD2<Float>(0.2, 0.2))
+        XCTAssertNotEqual(controller.viewportTransform(for: .coronal), .identity)
+        controller.resetAllMPRViews()
+        for axis in MTKCore.Axis.allCases {
+            XCTAssertEqual(controller.viewportTransform(for: axis), .identity)
+        }
+    }
+
+    func testMPRSliceSliderAndWindowLevelDragUpdateSharedClinicalState() async throws {
+        let controller = try await makeController()
+        try await controller.applyDataset(makeDataset())
+
+        await controller.setMPRSlicePosition(axis: .coronal, normalizedPosition: 0.75)
+        XCTAssertEqual(controller.activeMPRAxis, .coronal)
+        XCTAssertEqual(try XCTUnwrap(controller.normalizedPositions[.coronal]), 0.75, accuracy: 0.0001)
+        let coronalSliceValue = await controller.engine.debugSlicePosition(for: controller.coronalViewportID)
+        let coronalSlice = try XCTUnwrap(coronalSliceValue)
+        XCTAssertEqual(coronalSlice, 0.75, accuracy: 0.0001)
+
+        let previousWindowLevel = controller.windowLevel
+        await controller.adjustMPRWindowLevel(screenDelta: CGSize(width: 10, height: -5))
+        XCTAssertEqual(controller.windowLevel.window, previousWindowLevel.window + 20, accuracy: 0.0001)
+        XCTAssertEqual(controller.windowLevel.level, previousWindowLevel.level + 10, accuracy: 0.0001)
+    }
+
     func testUnchangedSliceScrollDoesNotScheduleRender() async throws {
         let controller = try await makeController()
         try await controller.applyDataset(makeDataset())

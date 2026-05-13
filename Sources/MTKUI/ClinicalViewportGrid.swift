@@ -7,6 +7,7 @@
 
 #if canImport(SwiftUI) && (os(iOS) || os(macOS))
 import CoreGraphics
+import Foundation
 import MTKCore
 import SwiftUI
 #if canImport(UIKit)
@@ -159,8 +160,15 @@ private struct ClinicalViewportGridContent: View {
     @State private var draftWindowLevel = WindowLevelShift(window: 400, level: 40)
     @State private var draftSlabThickness = 3.0
     @State private var pendingMPRGestureTasks: [MTKCore.Axis: Task<Void, Never>] = [:]
+    @State private var pendingMPRMagnificationTasks: [MTKCore.Axis: Task<Void, Never>] = [:]
     @State private var activeMPRGestures = Set<MTKCore.Axis>()
+    @State private var activeMPRMagnificationGestures = Set<MTKCore.Axis>()
+    @State private var lastMPRDragTranslations: [MTKCore.Axis: CGSize] = [:]
+    @State private var lastMPRDragEventTimes: [MTKCore.Axis: CFAbsoluteTime] = [:]
+    @State private var lastMPRMagnifications: [MTKCore.Axis: CGFloat] = [:]
+    @State private var lastMPRMagnificationEventTimes: [MTKCore.Axis: CFAbsoluteTime] = [:]
     @State private var lastVolumeDragTranslation = CGSize.zero
+    @State private var lastVolumeDragEventAt: CFAbsoluteTime?
     @State private var pendingVolumeGestureTask: Task<Void, Never>?
     @State private var volumeGestureActive = false
 
@@ -259,7 +267,8 @@ private struct ClinicalViewportGridContent: View {
                 }
             }
             .contentShape(Rectangle())
-            .gesture(mprGesture(axis: axis, size: proxy.size))
+            .highPriorityGesture(mprGesture(axis: axis, size: proxy.size))
+            .simultaneousGesture(mprMagnificationGesture(axis: axis))
         }
         .aspectRatio(1, contentMode: .fit)
         .background(paneBackground)
@@ -274,7 +283,7 @@ private struct ClinicalViewportGridContent: View {
             }
         }
         .contentShape(Rectangle())
-        .gesture(volumeGesture())
+        .highPriorityGesture(volumeGesture())
         .aspectRatio(1, contentMode: .fit)
         .background(paneBackground)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -301,28 +310,130 @@ private struct ClinicalViewportGridContent: View {
             .onChanged { value in
                 guard size.width > 0, size.height > 0 else { return }
 
-                // Treat the gesture as a crosshair drag (absolute location). Avoid also using the same
-                // drag to scroll slices; that created conflicting semantics and platform differences.
+                let now = CFAbsoluteTimeGetCurrent()
                 let shouldBeginInteraction = activeMPRGestures.insert(axis).inserted
+                controller.setActiveMPRAxis(axis)
+                let previous = lastMPRDragTranslations[axis] ?? .zero
+                let delta = CGSize(width: value.translation.width - previous.width,
+                                   height: value.translation.height - previous.height)
+                lastMPRDragTranslations[axis] = value.translation
                 let normalized = CGPoint(
                     x: min(max(value.location.x / size.width, 0), 1),
                     y: min(max(value.location.y / size.height, 0), 1)
                 )
 
                 let beginInteractionTask = shouldBeginInteraction
-                    ? Task { @MainActor in await controller.beginAdaptiveSamplingInteraction() }
+                    ? Task { @MainActor in
+                        logMPRInteractionInfo("[MTKMPRInteraction] swiftui.drag.begin axis=\(axis) tool=\(controller.mprInteractionTool)")
+                        await controller.beginAdaptiveSamplingInteraction()
+                    }
                     : nil
+                if abs(delta.width) >= 0.5 || abs(delta.height) >= 0.5 {
+                    let eventDeltaMilliseconds = lastMPRDragEventTimes[axis].map {
+                        max(0, (now - $0) * 1000.0)
+                    } ?? 0
+                    logMPRInteractionDebug(String(format: "[MTKMPRInteraction][MTKPerf] swiftui.drag.delta axis=%@ tool=%@ dx=%.2f dy=%.2f normalized=(%.3f,%.3f) eventDtMs=%.3f",
+                                                 String(describing: axis),
+                                                 String(describing: controller.mprInteractionTool),
+                                                 delta.width,
+                                                 delta.height,
+                                                 normalized.x,
+                                                 normalized.y,
+                                                 eventDeltaMilliseconds))
+                }
+                lastMPRDragEventTimes[axis] = now
                 pendingMPRGestureTasks[axis]?.cancel()
+                let enqueuedAt = CFAbsoluteTimeGetCurrent()
                 pendingMPRGestureTasks[axis] = Task { @MainActor in
                     await beginInteractionTask?.value
                     guard !Task.isCancelled else { return }
-                    await controller.setCrosshair(in: axis, normalizedPoint: normalized)
+                    let latency = max(0, (CFAbsoluteTimeGetCurrent() - enqueuedAt) * 1000.0)
+                    logMPRInteractionDebug(String(format: "[MTKMPRInteraction][MTKPerf] swiftui.drag.apply axis=%@ tool=%@ dx=%.2f dy=%.2f mainActorLatencyMs=%.3f",
+                                                 String(describing: axis),
+                                                 String(describing: controller.mprInteractionTool),
+                                                 delta.width,
+                                                 delta.height,
+                                                 latency))
+                    switch controller.mprInteractionTool {
+                    case .crosshair:
+                        await controller.setCrosshair(in: axis, normalizedPoint: normalized)
+                    case .slice:
+                        let deltaNormalized = Float(delta.height / max(size.height, 1))
+                        await controller.scrollSlice(axis: axis, deltaNormalized: deltaNormalized)
+                    case .pan:
+                        let deltaNormalized = SIMD2<Float>(
+                            Float(delta.width / max(size.width, 1)),
+                            Float(delta.height / max(size.height, 1))
+                        )
+                        controller.panMPR(axis: axis, deltaNormalized: deltaNormalized)
+                    case .windowLevel:
+                        await controller.adjustMPRWindowLevel(screenDelta: delta)
+                    }
                 }
             }
             .onEnded { _ in
+                logMPRInteractionInfo("[MTKMPRInteraction] swiftui.drag.end axis=\(axis)")
+                lastMPRDragTranslations[axis] = nil
+                lastMPRDragEventTimes[axis] = nil
                 pendingMPRGestureTasks[axis]?.cancel()
                 pendingMPRGestureTasks[axis] = nil
                 if activeMPRGestures.remove(axis) != nil {
+                    Task { @MainActor in await controller.endAdaptiveSamplingInteraction() }
+                }
+            }
+    }
+
+    private func mprMagnificationGesture(axis: MTKCore.Axis) -> some Gesture {
+        MagnifyGesture()
+            .onChanged { value in
+                let now = CFAbsoluteTimeGetCurrent()
+                let shouldBeginInteraction = activeMPRMagnificationGestures.insert(axis).inserted
+                controller.setActiveMPRAxis(axis)
+                let previous = lastMPRMagnifications[axis] ?? 1
+                let factor = previous > 0 ? value.magnification / previous : value.magnification
+                lastMPRMagnifications[axis] = value.magnification
+                let anchor = SIMD2<Float>(Float(value.startAnchor.x),
+                                          Float(value.startAnchor.y))
+
+                let beginInteractionTask = shouldBeginInteraction
+                    ? Task { @MainActor in
+                        logMPRInteractionInfo("[MTKMPRInteraction] swiftui.pinch.begin axis=\(axis)")
+                        await controller.beginAdaptiveSamplingInteraction()
+                    }
+                    : nil
+                if abs(factor - 1) >= 0.005 {
+                    let eventDeltaMilliseconds = lastMPRMagnificationEventTimes[axis].map {
+                        max(0, (now - $0) * 1000.0)
+                    } ?? 0
+                    logMPRInteractionDebug(String(format: "[MTKMPRInteraction][MTKPerf] swiftui.pinch.factor axis=%@ factor=%.4f cumulative=%.4f anchor=(%.3f,%.3f) eventDtMs=%.3f",
+                                                 String(describing: axis),
+                                                 Double(factor),
+                                                 Double(value.magnification),
+                                                 anchor.x,
+                                                 anchor.y,
+                                                 eventDeltaMilliseconds))
+                }
+                lastMPRMagnificationEventTimes[axis] = now
+                pendingMPRMagnificationTasks[axis]?.cancel()
+                let enqueuedAt = CFAbsoluteTimeGetCurrent()
+                pendingMPRMagnificationTasks[axis] = Task { @MainActor in
+                    await beginInteractionTask?.value
+                    guard !Task.isCancelled else { return }
+                    let latency = max(0, (CFAbsoluteTimeGetCurrent() - enqueuedAt) * 1000.0)
+                    logMPRInteractionDebug(String(format: "[MTKMPRInteraction][MTKPerf] swiftui.pinch.apply axis=%@ factor=%.4f mainActorLatencyMs=%.3f",
+                                                 String(describing: axis),
+                                                 Double(factor),
+                                                 latency))
+                    controller.zoomMPR(axis: axis, factor: Float(factor), anchor: anchor)
+                }
+            }
+            .onEnded { _ in
+                logMPRInteractionInfo("[MTKMPRInteraction] swiftui.pinch.end axis=\(axis)")
+                lastMPRMagnifications[axis] = nil
+                lastMPRMagnificationEventTimes[axis] = nil
+                pendingMPRMagnificationTasks[axis]?.cancel()
+                pendingMPRMagnificationTasks[axis] = nil
+                if activeMPRMagnificationGestures.remove(axis) != nil {
                     Task { @MainActor in await controller.endAdaptiveSamplingInteraction() }
                 }
             }
@@ -344,6 +455,7 @@ private struct ClinicalViewportGridContent: View {
     private func volumeGesture() -> some Gesture {
         DragGesture(minimumDistance: 2)
             .onChanged { value in
+                let now = CFAbsoluteTimeGetCurrent()
                 let shouldBeginInteraction = !volumeGestureActive
                 if shouldBeginInteraction {
                     volumeGestureActive = true
@@ -354,17 +466,38 @@ private struct ClinicalViewportGridContent: View {
                 lastVolumeDragTranslation = value.translation
 
                 let beginInteractionTask = shouldBeginInteraction
-                    ? Task { @MainActor in await controller.beginAdaptiveSamplingInteraction() }
+                    ? Task { @MainActor in
+                        logMPRInteractionInfo("[MTKClinicalVolumeInteraction] swiftui.drag.begin")
+                        await controller.beginAdaptiveSamplingInteraction()
+                    }
                     : nil
+                if abs(delta.width) >= 0.5 || abs(delta.height) >= 0.5 {
+                    let eventDeltaMilliseconds = lastVolumeDragEventAt.map {
+                        max(0, (now - $0) * 1000.0)
+                    } ?? 0
+                    logMPRInteractionDebug(String(format: "[MTKClinicalVolumeInteraction][MTKPerf] swiftui.drag.delta dx=%.2f dy=%.2f eventDtMs=%.3f",
+                                                 delta.width,
+                                                 delta.height,
+                                                 eventDeltaMilliseconds))
+                }
+                lastVolumeDragEventAt = now
                 pendingVolumeGestureTask?.cancel()
+                let enqueuedAt = CFAbsoluteTimeGetCurrent()
                 pendingVolumeGestureTask = Task { @MainActor in
                     await beginInteractionTask?.value
                     guard !Task.isCancelled else { return }
+                    let latency = max(0, (CFAbsoluteTimeGetCurrent() - enqueuedAt) * 1000.0)
+                    logMPRInteractionDebug(String(format: "[MTKClinicalVolumeInteraction][MTKPerf] swiftui.drag.apply dx=%.2f dy=%.2f mainActorLatencyMs=%.3f",
+                                                 delta.width,
+                                                 delta.height,
+                                                 latency))
                     await controller.rotateVolumeCamera(screenDelta: delta)
                 }
             }
             .onEnded { _ in
+                logMPRInteractionInfo("[MTKClinicalVolumeInteraction] swiftui.drag.end")
                 lastVolumeDragTranslation = .zero
+                lastVolumeDragEventAt = nil
                 pendingVolumeGestureTask?.cancel()
                 pendingVolumeGestureTask = nil
                 if volumeGestureActive {
@@ -380,6 +513,14 @@ private struct ClinicalViewportGridContent: View {
 #elseif os(macOS)
         Color(NSColor.windowBackgroundColor)
 #endif
+    }
+
+    private func logMPRInteractionInfo(_ message: String) {
+        MTKCore.Logger.info(message, category: "com.mtk.ui.ClinicalViewportGrid")
+    }
+
+    private func logMPRInteractionDebug(_ message: String) {
+        MTKCore.Logger.debug(message, category: "com.mtk.ui.ClinicalViewportGrid")
     }
 }
 #endif

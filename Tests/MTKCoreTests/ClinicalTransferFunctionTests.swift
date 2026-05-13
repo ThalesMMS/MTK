@@ -1,4 +1,5 @@
 import Metal
+import simd
 import XCTest
 @testable import MTKCore
 
@@ -41,6 +42,107 @@ final class ClinicalTransferFunctionTests: XCTestCase {
             XCTAssertEqual(decoded.gradientOpacity, preset.gradientOpacity)
             XCTAssertEqual(decoded.colourPoints.count, transferFunction.colourPoints.count)
             XCTAssertEqual(decoded.alphaPoints.count, transferFunction.alphaPoints.count)
+        }
+    }
+
+    func test_vtkSwiftStyleCTPresetsUseExactHounsfieldCurves() throws {
+        try assertVTKSwiftStylePreset(
+            .ctSoftTissue,
+            expectedName: "CT-Soft-Tissue",
+            points: [
+                .init(hu: -1000, color: .init(0, 0, 0), opacity: 0),
+                .init(hu: -150, color: .init(0.45, 0.22, 0.16), opacity: 0.02),
+                .init(hu: 40, color: .init(0.85, 0.52, 0.42), opacity: 0.18),
+                .init(hu: 300, color: .init(1.0, 0.82, 0.68), opacity: 0.35),
+                .init(hu: 1200, color: .init(1.0, 0.95, 0.88), opacity: 0.45)
+            ]
+        )
+        try assertVTKSwiftStylePreset(
+            .ctBone,
+            expectedName: "CT-Bone",
+            points: [
+                .init(hu: -1000, color: .init(0, 0, 0), opacity: 0),
+                .init(hu: 150, color: .init(0.35, 0.18, 0.12), opacity: 0),
+                .init(hu: 300, color: .init(0.72, 0.48, 0.38), opacity: 0.2),
+                .init(hu: 700, color: .init(0.92, 0.82, 0.72), opacity: 0.65),
+                .init(hu: 1800, color: .init(1.0, 0.98, 0.92), opacity: 0.95)
+            ]
+        )
+        try assertVTKSwiftStylePreset(
+            .ctLung,
+            expectedName: "CT-Lung",
+            points: [
+                .init(hu: -1000, color: .init(0, 0, 0), opacity: 0),
+                .init(hu: -850, color: .init(0.55, 0.7, 0.95), opacity: 0.05),
+                .init(hu: -600, color: .init(0.9, 0.55, 0.45), opacity: 0.18),
+                .init(hu: -200, color: .init(0.95, 0.75, 0.62), opacity: 0.08),
+                .init(hu: 350, color: .init(1.0, 0.96, 0.88), opacity: 0.4)
+            ]
+        )
+        try assertVTKSwiftStylePreset(
+            .ctBrain,
+            expectedName: "CT-Brain",
+            points: [
+                .init(hu: -1000, color: .init(0, 0, 0), opacity: 0),
+                .init(hu: 0, color: .init(0.18, 0.12, 0.1), opacity: 0),
+                .init(hu: 25, color: .init(0.7, 0.52, 0.46), opacity: 0.12),
+                .init(hu: 55, color: .init(0.9, 0.72, 0.62), opacity: 0.24),
+                .init(hu: 90, color: .init(1.0, 0.88, 0.78), opacity: 0.28),
+                .init(hu: 600, color: .init(1.0, 0.96, 0.88), opacity: 0.45)
+            ]
+        )
+        try assertVTKSwiftStylePreset(
+            .ctAbdomen,
+            expectedName: "CT-Abdomen",
+            points: [
+                .init(hu: -1000, color: .init(0, 0, 0), opacity: 0),
+                .init(hu: -150, color: .init(0.38, 0.16, 0.12), opacity: 0),
+                .init(hu: 20, color: .init(0.75, 0.42, 0.32), opacity: 0.12),
+                .init(hu: 80, color: .init(0.95, 0.65, 0.5), opacity: 0.22),
+                .init(hu: 250, color: .init(1.0, 0.82, 0.68), opacity: 0.34),
+                .init(hu: 1000, color: .init(1.0, 0.95, 0.88), opacity: 0.5)
+            ]
+        )
+    }
+
+    func test_ctBrainAndAbdomenClinicalMetadataAndIntent() throws {
+        XCTAssertEqual(ClinicalTransferFunctionPreset.ctBrain.metadata.modality, .ct)
+        XCTAssertEqual(ClinicalTransferFunctionPreset.ctBrain.metadata.tissue, .neurological)
+        XCTAssertEqual(ClinicalTransferFunctionPreset.ctBrain.renderingIntent,
+                       TransferFunctionRenderingIntent(mode: .dvr,
+                                                       lightingEnabled: true,
+                                                       projectionsUseTransferFunction: true))
+
+        XCTAssertEqual(ClinicalTransferFunctionPreset.ctAbdomen.metadata.modality, .ct)
+        XCTAssertEqual(ClinicalTransferFunctionPreset.ctAbdomen.metadata.tissue, .softTissue)
+        XCTAssertEqual(ClinicalTransferFunctionPreset.ctAbdomen.renderingIntent,
+                       TransferFunctionRenderingIntent(mode: .dvr,
+                                                       lightingEnabled: true,
+                                                       projectionsUseTransferFunction: true))
+
+        XCTAssertEqual(try ClinicalTransferFunctionPreset.ctBrain.loadTransferFunction().metadata,
+                       ClinicalTransferFunctionPreset.ctBrain.metadata)
+        XCTAssertEqual(try ClinicalTransferFunctionPreset.ctAbdomen.loadTransferFunction().metadata,
+                       ClinicalTransferFunctionPreset.ctAbdomen.metadata)
+    }
+
+    @MainActor
+    func test_vtkSwiftStyleCTPresetTextureCreationUsesClampedAlphaPoints() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("Metal unavailable for transfer texture validation.")
+        }
+
+        for preset in vtkSwiftStyleCTPresets {
+            let transferFunction = try XCTUnwrap(VolumeTransferFunctionLibrary.transferFunction(for: preset))
+            let texture = try XCTUnwrap(TransferFunctions.texture(for: transferFunction, device: device))
+
+            XCTAssertGreaterThan(texture.width, 0, "Expected \(preset.rawValue) to create a non-empty transfer texture")
+            XCTAssertGreaterThan(texture.height, 0, "Expected \(preset.rawValue) to create a non-empty transfer texture")
+            for point in transferFunction.sanitizedAlphaPoints() {
+                XCTAssertTrue(point.alphaValue.isFinite, "Expected finite alpha for \(preset.rawValue)")
+                XCTAssertGreaterThanOrEqual(point.alphaValue, 0, "Expected clamped alpha lower bound for \(preset.rawValue)")
+                XCTAssertLessThanOrEqual(point.alphaValue, 1, "Expected clamped alpha upper bound for \(preset.rawValue)")
+            }
         }
     }
 
@@ -112,5 +214,51 @@ final class ClinicalTransferFunctionTests: XCTestCase {
         let gradientAware = try ClinicalTransferFunctionPreset.ctVRBone.loadTransferFunction()
         let gradientTexture = try XCTUnwrap(TransferFunctions.texture(for: gradientAware, device: device))
         XCTAssertEqual(gradientTexture.height, gradientAware.gradientOpacity?.resolution)
+    }
+}
+
+private extension ClinicalTransferFunctionTests {
+    var vtkSwiftStyleCTPresets: [VolumeRenderingBuiltinPreset] {
+        [.ctSoftTissue, .ctBone, .ctLung, .ctBrain, .ctAbdomen]
+    }
+
+    struct ExpectedTransferPoint {
+        let hu: Float
+        let color: SIMD3<Float>
+        let opacity: Float
+    }
+
+    func assertVTKSwiftStylePreset(_ preset: VolumeRenderingBuiltinPreset,
+                                   expectedName: String,
+                                   points: [ExpectedTransferPoint],
+                                   file: StaticString = #filePath,
+                                   line: UInt = #line) throws {
+        let transferFunction = try XCTUnwrap(
+            VolumeTransferFunctionLibrary.transferFunction(for: preset),
+            "Expected \(preset.rawValue) to load",
+            file: file,
+            line: line
+        )
+
+        XCTAssertEqual(transferFunction.name, expectedName, file: file, line: line)
+        XCTAssertEqual(transferFunction.minimumValue, -1200, accuracy: 0.0001, file: file, line: line)
+        XCTAssertEqual(transferFunction.maximumValue, 3000, accuracy: 0.0001, file: file, line: line)
+        XCTAssertEqual(transferFunction.shift, 0, accuracy: 0.0001, file: file, line: line)
+        XCTAssertEqual(transferFunction.colourPoints.count, points.count, file: file, line: line)
+        XCTAssertEqual(transferFunction.alphaPoints.count, points.count, file: file, line: line)
+
+        for (index, point) in points.enumerated() {
+            let colourPoint = transferFunction.colourPoints[index]
+            let alphaPoint = transferFunction.alphaPoints[index]
+            XCTAssertEqual(colourPoint.dataValue, point.hu, accuracy: 0.0001, file: file, line: line)
+            XCTAssertEqual(colourPoint.colourValue.r, point.color.x, accuracy: 0.0001, file: file, line: line)
+            XCTAssertEqual(colourPoint.colourValue.g, point.color.y, accuracy: 0.0001, file: file, line: line)
+            XCTAssertEqual(colourPoint.colourValue.b, point.color.z, accuracy: 0.0001, file: file, line: line)
+            XCTAssertEqual(colourPoint.colourValue.a, 1, accuracy: 0.0001, file: file, line: line)
+            XCTAssertEqual(alphaPoint.dataValue, point.hu, accuracy: 0.0001, file: file, line: line)
+            XCTAssertEqual(alphaPoint.alphaValue, point.opacity, accuracy: 0.0001, file: file, line: line)
+            XCTAssertGreaterThanOrEqual(alphaPoint.alphaValue, 0, file: file, line: line)
+            XCTAssertLessThanOrEqual(alphaPoint.alphaValue, 1, file: file, line: line)
+        }
     }
 }

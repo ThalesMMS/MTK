@@ -147,6 +147,10 @@ public struct MPRPresentationPass {
         var flipVertical: Int32
         var bitShift: Int32
         var _pad0: Int32
+        var viewportZoom: Float
+        var viewportPanX: Float
+        var viewportPanY: Float
+        var _pad1: Float
     }
 
     private struct MPRLabelmapOverlayUniforms {
@@ -160,7 +164,10 @@ public struct MPRPresentationPass {
         var _pad3: Float
         var flipHorizontal: Int32
         var flipVertical: Int32
-        var _pad4: SIMD2<Int32>
+        var viewportZoom: Float
+        var viewportPanX: Float
+        var viewportPanY: Float
+        var _pad4: Float
     }
 
     public init(device: any MTLDevice,
@@ -194,6 +201,7 @@ public struct MPRPresentationPass {
                                  invert: Bool = false,
                                  colormap: (any MTLTexture)? = nil,
                                  bitShift: Int32 = 0,
+                                 viewportTransform: MPRViewportTransform = .identity,
                                  labelmapOverlays: [MPRLabelmapOverlay] = [],
                                  onCommandBufferFailure: ((MPRPresentationCommandBufferError) -> Void)? = nil) throws -> CFAbsoluteTime {
         try presentImpl(frame: frame,
@@ -204,6 +212,7 @@ public struct MPRPresentationPass {
                         flipHorizontal: transform.presentationFlipHorizontal,
                         flipVertical: transform.presentationFlipVertical,
                         bitShift: bitShift,
+                        viewportTransform: viewportTransform,
                         labelmapOverlays: labelmapOverlays,
                         onCommandBufferFailure: onCommandBufferFailure)
     }
@@ -218,6 +227,7 @@ public struct MPRPresentationPass {
                                  flipHorizontal: Bool = false,
                                  flipVertical: Bool = false,
                                  bitShift: Int32 = 0,
+                                 viewportTransform: MPRViewportTransform = .identity,
                                  labelmapOverlays: [MPRLabelmapOverlay] = [],
                                  onCommandBufferFailure: ((MPRPresentationCommandBufferError) -> Void)? = nil) throws -> CFAbsoluteTime {
         try presentImpl(frame: frame,
@@ -228,6 +238,7 @@ public struct MPRPresentationPass {
                         flipHorizontal: flipHorizontal,
                         flipVertical: flipVertical,
                         bitShift: bitShift,
+                        viewportTransform: viewportTransform,
                         labelmapOverlays: labelmapOverlays,
                         onCommandBufferFailure: onCommandBufferFailure)
     }
@@ -241,6 +252,7 @@ public struct MPRPresentationPass {
                                       flipHorizontal: Bool,
                                       flipVertical: Bool,
                                       bitShift: Int32,
+                                      viewportTransform: MPRViewportTransform,
                                       labelmapOverlays: [MPRLabelmapOverlay],
                                       onCommandBufferFailure: ((MPRPresentationCommandBufferError) -> Void)?) throws -> CFAbsoluteTime {
         assert(
@@ -265,7 +277,11 @@ public struct MPRPresentationPass {
             flipHorizontal: flipHorizontal ? 1 : 0,
             flipVertical: flipVertical ? 1 : 0,
             bitShift: max(0, min(bitShift, 15)),
-            _pad0: 0
+            _pad0: 0,
+            viewportZoom: viewportTransform.zoom,
+            viewportPanX: viewportTransform.pan.x,
+            viewportPanY: viewportTransform.pan.y,
+            _pad1: 0
         )
 
         guard let commandBuffer = commandQueue.makeCommandBuffer() else {
@@ -309,7 +325,8 @@ public struct MPRPresentationPass {
                                                                   width: frame.texture.width,
                                                                   height: frame.texture.height,
                                                                   flipHorizontal: flipHorizontal,
-                                                                  flipVertical: flipVertical)
+                                                                  flipVertical: flipVertical,
+                                                                  viewportTransform: viewportTransform)
 
         guard let blitEncoder = commandBuffer.makeBlitCommandEncoder() else {
             throw MPRPresentationPassError.encoderCreationFailed
@@ -372,7 +389,10 @@ public struct MPRPresentationPass {
                     "labelmapOverlayCount": "\(labelmapOverlays.count)",
                     "monochrome": invert ? "MONOCHROME1" : "MONOCHROME2",
                     "flipHorizontal": flipHorizontal ? "true" : "false",
-                    "flipVertical": flipVertical ? "true" : "false"
+                    "flipVertical": flipVertical ? "true" : "false",
+                    "viewportZoom": String(format: "%.6f", viewportTransform.zoom),
+                    "viewportPanX": String(format: "%.6f", viewportTransform.pan.x),
+                    "viewportPanY": String(format: "%.6f", viewportTransform.pan.y)
                 ],
                 device: profilerDevice
             )
@@ -389,6 +409,7 @@ public struct MPRPresentationPass {
                                  invert: Bool = false,
                                  colormap: (any MTLTexture)? = nil,
                                  bitShift: Int32 = 0,
+                                 viewportTransform: MPRViewportTransform = .identity,
                                  labelmapOverlays: [MPRLabelmapOverlay] = [],
                                  onCommandBufferFailure: ((MPRPresentationCommandBufferError) -> Void)? = nil) throws -> CFAbsoluteTime {
         try presentImpl(frame: frame,
@@ -399,6 +420,7 @@ public struct MPRPresentationPass {
                         flipHorizontal: transform.presentationFlipHorizontal,
                         flipVertical: transform.presentationFlipVertical,
                         bitShift: bitShift,
+                        viewportTransform: viewportTransform,
                         labelmapOverlays: labelmapOverlays,
                         onCommandBufferFailure: onCommandBufferFailure)
     }
@@ -412,6 +434,7 @@ public struct MPRPresentationPass {
                                  flipHorizontal: Bool = false,
                                  flipVertical: Bool = false,
                                  bitShift: Int32 = 0,
+                                 viewportTransform: MPRViewportTransform = .identity,
                                  labelmapOverlays: [MPRLabelmapOverlay] = [],
                                  onCommandBufferFailure: ((MPRPresentationCommandBufferError) -> Void)? = nil) throws -> CFAbsoluteTime {
         try presentImpl(frame: frame,
@@ -422,6 +445,7 @@ public struct MPRPresentationPass {
                         flipHorizontal: flipHorizontal,
                         flipVertical: flipVertical,
                         bitShift: bitShift,
+                        viewportTransform: viewportTransform,
                         labelmapOverlays: labelmapOverlays,
                         onCommandBufferFailure: onCommandBufferFailure)
     }
@@ -472,7 +496,8 @@ public struct MPRPresentationPass {
                                                  width: Int,
                                                  height: Int,
                                                  flipHorizontal: Bool,
-                                                 flipVertical: Bool) throws -> any MTLTexture {
+                                                 flipVertical: Bool,
+                                                 viewportTransform: MPRViewportTransform) throws -> any MTLTexture {
         guard overlays.isEmpty == false else { return initialTexture }
 
         let overlayTexture = try reusableOverlayTexture(width: width,
@@ -503,7 +528,10 @@ public struct MPRPresentationPass {
                 _pad3: 0,
                 flipHorizontal: flipHorizontal ? 1 : 0,
                 flipVertical: flipVertical ? 1 : 0,
-                _pad4: SIMD2<Int32>(0, 0)
+                viewportZoom: viewportTransform.zoom,
+                viewportPanX: viewportTransform.pan.x,
+                viewportPanY: viewportTransform.pan.y,
+                _pad4: 0
             )
             encoder.setBytes(&uniforms,
                              length: MemoryLayout<MPRLabelmapOverlayUniforms>.stride,

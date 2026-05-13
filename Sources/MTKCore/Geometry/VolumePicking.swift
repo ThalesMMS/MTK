@@ -338,11 +338,14 @@ public enum VolumePicking {
                                dataset: VolumeDataset,
                                plane: MPRPlaneGeometry,
                                displayTransform: MPRDisplayTransform,
+                               viewportTransform: MPRViewportTransform = .identity,
                                axis: MPRPlaneAxis,
                                layers: [VolumeLayer] = []) throws -> VolumePickResult {
         let viewport = try ViewportPoint(screenPoint: screenPoint,
                                          viewportSize: viewportSize)
-        let planePoint = displayTransform.textureCoordinates(forScreen: viewport.normalizedPoint)
+        let imageScreenPoint = viewportTransform
+            .imageScreenCoordinates(forViewportScreen: viewport.normalizedPoint)
+        let planePoint = displayTransform.textureCoordinates(forScreen: imageScreenPoint)
         let textureCoordinate = plane.originTexture
             + planePoint.x * plane.axisUTexture
             + planePoint.y * plane.axisVTexture
@@ -369,7 +372,8 @@ public enum VolumePicking {
                                 configuration: Volume3DPickConfiguration) throws -> WorldRay {
         let viewport = try ViewportPoint(screenPoint: screenPoint,
                                          viewportSize: configuration.viewportSize)
-        let camera = centered(camera: configuration.camera)
+        let geometry = VolumeRenderGeometry.make(for: dataset)
+        let camera = geometry.renderCamera(for: configuration.camera)
         let view = try makeLookAt(eye: camera.position,
                                   target: camera.target,
                                   up: camera.up)
@@ -381,22 +385,22 @@ public enum VolumePicking {
                                                          viewport.ndcPoint.y,
                                                          0,
                                                          1),
-                                 inverseViewProjection: inverseViewProjection) + SIMD3<Float>(repeating: 0.5)
+                                 inverseViewProjection: inverseViewProjection)
         let far = try unproject(clipPoint: SIMD4<Float>(viewport.ndcPoint.x,
                                                         viewport.ndcPoint.y,
                                                         1,
                                                         1),
-                                inverseViewProjection: inverseViewProjection) + SIMD3<Float>(repeating: 0.5)
+                                inverseViewProjection: inverseViewProjection)
 
         let originTexture: SIMD3<Float>
         let targetTexture: SIMD3<Float>
         switch configuration.camera.projectionType {
         case .perspective:
             originTexture = configuration.camera.position
-            targetTexture = far
+            targetTexture = geometry.textureCoordinate(forWorldPosition: far)
         case .orthographic:
-            originTexture = near
-            targetTexture = far
+            originTexture = geometry.textureCoordinate(forWorldPosition: near)
+            targetTexture = geometry.textureCoordinate(forWorldPosition: far)
         }
 
         let directionTexture = try normalized(targetTexture - originTexture)
@@ -522,11 +526,13 @@ public enum VolumePicking {
                                    dataset: VolumeDataset,
                                    plane: MPRPlaneGeometry,
                                    displayTransform: MPRDisplayTransform,
+                                   viewportTransform: MPRViewportTransform = .identity,
                                    viewportSize: CGSize) throws -> ViewportPoint {
         let texture = dataset.imageData.worldToTexture.transformPoint(worldPoint)
         let uv = try planeUV(forTextureCoordinate: texture,
                              plane: plane)
-        let normalized = displayTransform.screenCoordinates(forTexture: uv)
+        let imageScreen = displayTransform.screenCoordinates(forTexture: uv)
+        let normalized = viewportTransform.screenCoordinates(forImageScreen: imageScreen)
         return try ViewportPoint(normalizedPoint: normalized,
                                  viewportSize: viewportSize)
     }
@@ -543,14 +549,15 @@ public enum VolumePicking {
         }
 
         let texture = dataset.imageData.worldToTexture.transformPoint(worldPoint)
-        let centeredPoint = texture - SIMD3<Float>(repeating: 0.5)
-        let centeredCamera = centered(camera: camera)
-        let view = try makeLookAt(eye: centeredCamera.position,
-                                  target: centeredCamera.target,
-                                  up: centeredCamera.up)
-        let projection = makeProjection(camera: centeredCamera,
+        let geometry = VolumeRenderGeometry.make(for: dataset)
+        let renderPoint = geometry.worldPosition(forTextureCoordinate: texture)
+        let renderCamera = geometry.renderCamera(for: camera)
+        let view = try makeLookAt(eye: renderCamera.position,
+                                  target: renderCamera.target,
+                                  up: renderCamera.up)
+        let projection = makeProjection(camera: renderCamera,
                                         viewportSize: viewportSize)
-        let clip = projection * view * SIMD4<Float>(centeredPoint, 1)
+        let clip = projection * view * SIMD4<Float>(renderPoint, 1)
         guard abs(clip.w) > Float.ulpOfOne else {
             throw VolumePickError.degenerateGeometry
         }
@@ -763,9 +770,9 @@ private extension VolumePicking {
             -simd_dot(zAxis, eye)
         )
         return simd_float4x4(columns: (
-            SIMD4<Float>(xAxis, 0),
-            SIMD4<Float>(yAxis, 0),
-            SIMD4<Float>(zAxis, 0),
+            SIMD4<Float>(xAxis.x, yAxis.x, zAxis.x, 0),
+            SIMD4<Float>(xAxis.y, yAxis.y, zAxis.y, 0),
+            SIMD4<Float>(xAxis.z, yAxis.z, zAxis.z, 0),
             SIMD4<Float>(translation, 1)
         ))
     }

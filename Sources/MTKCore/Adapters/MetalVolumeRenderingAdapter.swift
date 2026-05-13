@@ -91,19 +91,17 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
         let count: Int
         let dimensions: VolumeDimensions
         let pixelFormat: VolumePixelFormat
-        let contentFingerprint: UInt64
+        let storageAddress: UInt
 
         init(dataset: VolumeDataset) {
+            // Interactive rendering treats VolumeDataset data as immutable after upload.
+            // Hashing the full buffer here makes every cached frame scan the entire volume.
             self.count = dataset.data.count
             self.dimensions = dataset.dimensions
             self.pixelFormat = dataset.pixelFormat
-            self.contentFingerprint = dataset.data.withUnsafeBytes { buffer in
-                var hash: UInt64 = 14_695_981_039_346_656_037
-                for byte in buffer.bindMemory(to: UInt8.self) {
-                    hash ^= UInt64(byte)
-                    hash = hash &* 1_099_511_628_211
-                }
-                return hash
+            self.storageAddress = dataset.data.withUnsafeBytes { buffer in
+                guard let baseAddress = buffer.baseAddress else { return 0 }
+                return UInt(bitPattern: baseAddress)
             }
         }
     }
@@ -293,6 +291,8 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
     /// let texture = frame.texture
     /// ```
     public func renderFrame(using request: VolumeRenderRequest) async throws -> VolumeRenderFrame {
+        try Task.checkCancellation()
+
         if diagnosticLoggingEnabled {
             logger.info("[DIAG] renderFrame called - viewport: \(request.viewportSize.width)x\(request.viewportSize.height), compositing: \(String(describing: request.compositing)), quality: \(String(describing: request.quality))")
         }
@@ -313,6 +313,7 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
         }
 
         effectiveRequest = try applyCompatibilityClippingIfNeeded(to: effectiveRequest)
+        try Task.checkCancellation()
         let window = try resolveWindow(for: effectiveRequest.dataset)
 
         if diagnosticLoggingEnabled {

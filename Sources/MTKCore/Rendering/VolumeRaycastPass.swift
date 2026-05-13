@@ -89,6 +89,11 @@ struct VolumeRaycastPassInput: @unchecked Sendable {
 
 struct VolumeRaycastPassTiming: Sendable {
     var cpuDurationMilliseconds: Double
+    var preCommitMilliseconds: Double
+    var validationMilliseconds: Double
+    var lockWaitMilliseconds: Double
+    var encodeMilliseconds: Double
+    var commandBufferCpuMilliseconds: Double
     var gpuStartTime: CFTimeInterval?
     var gpuEndTime: CFTimeInterval?
     var gpuDurationMilliseconds: Double?
@@ -132,6 +137,8 @@ final class VolumeRaycastPass: @unchecked Sendable {
     private let pipeline: any MTLComputePipelineState
     private let cameraBuffer: any MTLBuffer
     private let inFlightLock = VolumeRaycastPassLock()
+    private let perfLogger = Logger(subsystem: "com.mtk.volumerendering",
+                                    category: "Benchmark.perf")
 
     init(device: any MTLDevice,
          library: any MTLLibrary,
@@ -147,6 +154,9 @@ final class VolumeRaycastPass: @unchecked Sendable {
         do {
             pipeline = try device.makeComputePipelineState(function: function)
         } catch {
+            let nsError = error as NSError
+            Logger(subsystem: "com.mtk.volumerendering", category: "VolumeRaycastPass")
+                .error("Failed to create volume_compute pipeline: \(nsError.domain) \(nsError.code): \(nsError.localizedDescription)")
             throw MetalVolumeRenderingAdapter.InitializationError.pipelineCreationFailed
         }
 
@@ -182,11 +192,18 @@ final class VolumeRaycastPass: @unchecked Sendable {
             throw VolumeRaycastPassError.commandQueueDeviceMismatch
         }
 
+        let validationStartedAt = CFAbsoluteTimeGetCurrent()
         let viewport = try validate(input: input)
+        let validationMilliseconds = Self.milliseconds(from: validationStartedAt)
 
-        await inFlightLock.acquire()
+        try Task.checkCancellation()
+        let lockWaitStartedAt = CFAbsoluteTimeGetCurrent()
+        try await inFlightLock.acquire()
+        let lockWaitMilliseconds = Self.milliseconds(from: lockWaitStartedAt)
 
         do {
+            try Task.checkCancellation()
+            let encodeStartedAt = CFAbsoluteTimeGetCurrent()
             let outputTexture = try input.outputTexture ?? prepareOutputTexture(
                 width: viewport.width,
                 height: viewport.height,
@@ -216,11 +233,19 @@ final class VolumeRaycastPass: @unchecked Sendable {
             encoder.dispatchThreadgroups(groups, threadsPerThreadgroup: threadsPerThreadgroup)
             encoder.endEncoding()
 
+            let encodeMilliseconds = Self.milliseconds(from: encodeStartedAt)
+            let commitStartedAt = CFAbsoluteTimeGetCurrent()
             CommandBufferProfiler.captureTimes(for: commandBuffer,
                                                label: "raycast",
                                                category: input.renderingParameters.quality.profilerCategory)
             let timing = try await complete(commandBuffer: commandBuffer,
-                                            cpuStart: cpuStart)
+                                            totalCpuStart: cpuStart,
+                                            commandBufferCpuStart: commitStartedAt,
+                                            preCommitMilliseconds: Self.milliseconds(from: cpuStart,
+                                                                                    to: commitStartedAt),
+                                            validationMilliseconds: validationMilliseconds,
+                                            lockWaitMilliseconds: lockWaitMilliseconds,
+                                            encodeMilliseconds: encodeMilliseconds)
             ClinicalProfiler.shared.recordSample(
                 stage: .volumeRaycast,
                 cpuTime: timing.cpuDurationMilliseconds,
@@ -238,6 +263,11 @@ final class VolumeRaycastPass: @unchecked Sendable {
                 ],
                 device: device
             )
+            logRaycastPerf(input: input,
+                           viewport: viewport,
+                           timing: timing,
+                           threadgroups: groups,
+                           threadsPerThreadgroup: threadsPerThreadgroup)
             let output = VolumeRaycastPassOutput(outputTexture: outputTexture,
                                                  compositingMode: input.renderingParameters.compositingMode,
                                                  quality: input.renderingParameters.quality,
@@ -353,7 +383,12 @@ final class VolumeRaycastPass: @unchecked Sendable {
     }
 
     private func complete(commandBuffer: any MTLCommandBuffer,
-                          cpuStart: CFAbsoluteTime) async throws -> VolumeRaycastPassTiming {
+                          totalCpuStart: CFAbsoluteTime,
+                          commandBufferCpuStart: CFAbsoluteTime,
+                          preCommitMilliseconds: Double,
+                          validationMilliseconds: Double,
+                          lockWaitMilliseconds: Double,
+                          encodeMilliseconds: Double) async throws -> VolumeRaycastPassTiming {
         return try await withCheckedThrowingContinuation { continuation in
             commandBuffer.addCompletedHandler { buffer in
                 let cpuEnd = CFAbsoluteTimeGetCurrent()
@@ -372,7 +407,14 @@ final class VolumeRaycastPass: @unchecked Sendable {
                 }
 
                 continuation.resume(returning: VolumeRaycastPassTiming(
-                    cpuDurationMilliseconds: max(0, (cpuEnd - cpuStart) * 1000.0),
+                    cpuDurationMilliseconds: Self.milliseconds(from: totalCpuStart,
+                                                               to: cpuEnd),
+                    preCommitMilliseconds: preCommitMilliseconds,
+                    validationMilliseconds: validationMilliseconds,
+                    lockWaitMilliseconds: lockWaitMilliseconds,
+                    encodeMilliseconds: encodeMilliseconds,
+                    commandBufferCpuMilliseconds: Self.milliseconds(from: commandBufferCpuStart,
+                                                                    to: cpuEnd),
                     gpuStartTime: Self.validTimestamp(buffer.gpuStartTime),
                     gpuEndTime: Self.validTimestamp(buffer.gpuEndTime),
                     gpuDurationMilliseconds: Self.interval(buffer.gpuStartTime, buffer.gpuEndTime),
@@ -385,13 +427,47 @@ final class VolumeRaycastPass: @unchecked Sendable {
         }
     }
 
+    private func logRaycastPerf(input: VolumeRaycastPassInput,
+                                viewport: (width: Int, height: Int),
+                                timing: VolumeRaycastPassTiming,
+                                threadgroups: MTLSize,
+                                threadsPerThreadgroup: MTLSize) {
+        let gpuMinusKernel = timing.gpuDurationMilliseconds.flatMap { gpu in
+            timing.kernelDurationMilliseconds.map { max(0, gpu - $0) }
+        }
+        let cpuMinusGpu = timing.gpuDurationMilliseconds.map {
+            max(0, timing.commandBufferCpuMilliseconds - $0)
+        }
+        perfLogger.info(
+            "[MTKPerf] raycast.phase viewport=\(viewport.width)x\(viewport.height) quality=\(input.renderingParameters.quality) compositing=\(input.renderingParameters.compositingMode) samplingDistance=\(format(input.renderingParameters.samplingDistance)) totalCPU=\(format(timing.cpuDurationMilliseconds))ms preCommit=\(format(timing.preCommitMilliseconds))ms validate=\(format(timing.validationMilliseconds))ms lockWait=\(format(timing.lockWaitMilliseconds))ms encode=\(format(timing.encodeMilliseconds))ms commandBufferCPU=\(format(timing.commandBufferCpuMilliseconds))ms gpu=\(format(timing.gpuDurationMilliseconds))ms kernel=\(format(timing.kernelDurationMilliseconds))ms gpuNonKernel=\(format(gpuMinusKernel))ms cpuMinusGPU=\(format(cpuMinusGpu))ms threadgroups=\(threadgroups.width)x\(threadgroups.height)x\(threadgroups.depth) threadsPerGroup=\(threadsPerThreadgroup.width)x\(threadsPerThreadgroup.height)x\(threadsPerThreadgroup.depth)"
+        )
+    }
+
     private static func validTimestamp(_ timestamp: CFTimeInterval) -> CFTimeInterval? {
         timestamp > 0 ? timestamp : nil
+    }
+
+    private static func milliseconds(from start: CFAbsoluteTime,
+                                     to end: CFAbsoluteTime = CFAbsoluteTimeGetCurrent()) -> Double {
+        max(0, (end - start) * 1000.0)
     }
 
     private static func interval(_ start: CFTimeInterval, _ end: CFTimeInterval) -> Double? {
         guard start > 0, end > 0, end >= start else { return nil }
         return (end - start) * 1000.0
+    }
+
+    private func format(_ value: Float) -> String {
+        String(format: "%.5f", value)
+    }
+
+    private func format(_ value: Double) -> String {
+        String(format: "%.3f", value)
+    }
+
+    private func format(_ value: Double?) -> String {
+        guard let value else { return "unavailable" }
+        return String(format: "%.3f", value)
     }
 }
 
@@ -428,18 +504,42 @@ private extension VolumeRenderRequest.Quality {
 }
 
 private actor VolumeRaycastPassLock {
-    private var isLocked = false
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private struct Waiter {
+        let id: UInt64
+        let continuation: CheckedContinuation<Void, any Error>
+    }
 
-    func acquire() async {
+    private var isLocked = false
+    private var waiters: [Waiter] = []
+    private var nextWaiterID: UInt64 = 0
+
+    func acquire() async throws {
+        try Task.checkCancellation()
         if !isLocked {
             isLocked = true
             return
         }
 
-        await withCheckedContinuation { continuation in
-            waiters.append(continuation)
+        let id = nextWaiterID
+        nextWaiterID &+= 1
+
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                waiters.append(Waiter(id: id, continuation: continuation))
+            }
+        } onCancel: {
+            Task {
+                await self.cancelWaiter(id)
+            }
         }
+    }
+
+    private func cancelWaiter(_ id: UInt64) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        let waiter = waiters.remove(at: index)
+        waiter.continuation.resume(throwing: CancellationError())
     }
 
     func release() {
@@ -448,7 +548,7 @@ private actor VolumeRaycastPassLock {
             return
         }
 
-        let continuation = waiters.removeFirst()
-        continuation.resume()
+        let waiter = waiters.removeFirst()
+        waiter.continuation.resume()
     }
 }

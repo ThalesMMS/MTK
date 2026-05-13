@@ -23,7 +23,7 @@ struct MTKShaderPlugin: BuildToolPlugin {
 private extension MTKShaderPlugin {
     static func makeCommands(packageDir: Path, workDir: Path) throws -> [Command] {
         let script = packageDir.appending(["Tooling", "Shaders", "build_metallib.sh"])
-        let shaderDir = packageDir.appending(["Sources", "MTKCore", "Resources", "Shaders"])
+        let shaderDir = packageDir.appending(["Sources", "MTKCore", "Resources"])
         let outputDir = workDir.appending("GeneratedResources")
         let outputFile = outputDir.appending("MTK.metallib")
 
@@ -42,7 +42,10 @@ private extension MTKShaderPlugin {
                 displayName: "Compile MTK.metallib",
                 executable: script,
                 arguments: [shaderDir.string, outputFile.string],
-                environment: ["METALLIB_STRICT": "1"],
+                environment: [
+                    "METALLIB_STRICT": "1",
+                    "MTK_METAL_SDK": "all"
+                ],
                 outputFilesDirectory: outputDir
             )
         ]

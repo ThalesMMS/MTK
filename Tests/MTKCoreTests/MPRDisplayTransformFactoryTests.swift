@@ -126,4 +126,37 @@ final class MPRDisplayTransformFactoryTests: XCTestCase {
         XCTAssertEqual(roundTrip.y, texture.y, accuracy: 1e-5)
     }
 
+    func test_viewportTransformClampsZoomAndPan() {
+        let belowMinimum = MPRViewportTransform(zoom: 0.1, pan: SIMD2<Float>(0.25, -0.25))
+        XCTAssertEqual(belowMinimum.zoom, MPRViewportTransform.minimumZoom)
+        XCTAssertEqual(belowMinimum.pan, .zero)
+
+        let aboveMaximum = MPRViewportTransform(zoom: 12, pan: SIMD2<Float>(10, -10))
+        XCTAssertEqual(aboveMaximum.zoom, MPRViewportTransform.maximumZoom)
+        XCTAssertEqual(aboveMaximum.pan.x, 3.5, accuracy: 1e-5)
+        XCTAssertEqual(aboveMaximum.pan.y, -3.5, accuracy: 1e-5)
+    }
+
+    func test_displayAndViewportTransformsRoundTripWithOrientationAndFlips() {
+        let display = MPRDisplayTransform(
+            orientation: .rotated90CW,
+            flipHorizontal: true,
+            flipVertical: true,
+            leadingLabel: .right,
+            trailingLabel: .left,
+            topLabel: .superior,
+            bottomLabel: .inferior
+        )
+        let viewport = MPRViewportTransform(zoom: 2.5, pan: SIMD2<Float>(0.2, -0.1))
+        let texture = SIMD2<Float>(0.25, 0.4)
+
+        let imageScreen = display.screenCoordinates(forTexture: texture)
+        let viewportScreen = viewport.screenCoordinates(forImageScreen: imageScreen)
+        let roundTripImageScreen = viewport.imageScreenCoordinates(forViewportScreen: viewportScreen)
+        let roundTripTexture = display.textureCoordinates(forScreen: roundTripImageScreen)
+
+        XCTAssertEqual(roundTripTexture.x, texture.x, accuracy: 1e-5)
+        XCTAssertEqual(roundTripTexture.y, texture.y, accuracy: 1e-5)
+    }
+
 }

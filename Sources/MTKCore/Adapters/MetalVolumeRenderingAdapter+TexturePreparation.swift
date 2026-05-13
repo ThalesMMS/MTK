@@ -9,12 +9,18 @@
 import Metal
 
 extension MetalVolumeRenderingAdapter {
-    func prepareDatasetTexture(for dataset: VolumeDataset,
-                               state: MetalState) throws -> any MTLTexture {
+    struct DatasetTexturePreparationResult {
+        let texture: any MTLTexture
+        let cacheHit: Bool
+    }
+
+    func prepareDatasetTextureResult(for dataset: VolumeDataset,
+                                     state: MetalState) throws -> DatasetTexturePreparationResult {
         let identity = DatasetIdentity(dataset: dataset)
         if let existing = state.volumeTexture,
            state.datasetIdentity == identity {
-            return existing
+            return DatasetTexturePreparationResult(texture: existing,
+                                                   cacheHit: true)
         }
 
         let factory = VolumeTextureFactory(dataset: dataset)
@@ -25,26 +31,42 @@ extension MetalVolumeRenderingAdapter {
         state.volumeTexture = texture
         state.datasetIdentity = identity
         state.argumentManager.markAsNeedsUpdate(argumentIndex: .mainTexture)
-        return texture
+        return DatasetTexturePreparationResult(texture: texture,
+                                               cacheHit: false)
     }
 
-    func prepareDatasetTexture(for dataset: VolumeDataset,
-                               texture: any MTLTexture,
-                               state: MetalState) -> any MTLTexture {
+    func prepareDatasetTextureResult(for dataset: VolumeDataset,
+                                     texture: any MTLTexture,
+                                     state: MetalState) -> DatasetTexturePreparationResult {
         let identity = DatasetIdentity(dataset: dataset)
         let sameTexture = state.volumeTexture.map {
             ($0 as AnyObject) === (texture as AnyObject)
         } ?? false
 
         if sameTexture, state.datasetIdentity == identity {
-            return texture
+            return DatasetTexturePreparationResult(texture: texture,
+                                                   cacheHit: true)
         }
 
         texture.label = texture.label ?? "VolumeCompute.Dataset"
         state.volumeTexture = texture
         state.datasetIdentity = identity
         state.argumentManager.markAsNeedsUpdate(argumentIndex: .mainTexture)
-        return texture
+        return DatasetTexturePreparationResult(texture: texture,
+                                               cacheHit: false)
+    }
+
+    func prepareDatasetTexture(for dataset: VolumeDataset,
+                               state: MetalState) throws -> any MTLTexture {
+        try prepareDatasetTextureResult(for: dataset, state: state).texture
+    }
+
+    func prepareDatasetTexture(for dataset: VolumeDataset,
+                               texture: any MTLTexture,
+                               state: MetalState) -> any MTLTexture {
+        prepareDatasetTextureResult(for: dataset,
+                                    texture: texture,
+                                    state: state).texture
     }
 
     func prepareTransferTexture(for transfer: VolumeTransferFunction,

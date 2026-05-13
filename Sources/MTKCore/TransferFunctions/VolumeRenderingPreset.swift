@@ -19,10 +19,11 @@ import Foundation
 /// ## Preset Categories
 ///
 /// ### CT Presets
-/// - General visualization: ``ctEntire``, ``ctSoftTissue``
+/// - General visualization: ``ctEntire``, ``ctSoftTissue``, ``ctAbdomen``
 /// - Vascular imaging: ``ctArteries``, ``ctCardiac``, ``ctLiverVasculature``, ``ctPulmonaryArteries``
 /// - Skeletal imaging: ``ctBone``
 /// - Pulmonary imaging: ``ctLung``, ``ctChestContrast``
+/// - Neurological imaging: ``ctBrain``, ``mrT2Brain``
 /// - Specialized: ``ctFat``
 ///
 /// ### MR Presets
@@ -88,6 +89,16 @@ public enum VolumeRenderingBuiltinPreset: String, CaseIterable, Sendable, Identi
     /// Emphasizes soft tissue contrast for organs, muscles, and subcutaneous structures.
     case ctSoftTissue
 
+    /// CT brain preset.
+    ///
+    /// Emphasizes intracranial soft-tissue contrast using a compact HU curve.
+    case ctBrain
+
+    /// CT abdomen preset.
+    ///
+    /// Emphasizes abdominal soft tissue and contrast-enhanced organ structures.
+    case ctAbdomen
+
     /// CT pulmonary artery preset.
     ///
     /// Optimized for pulmonary embolism detection and pulmonary artery visualization.
@@ -134,7 +145,7 @@ public enum VolumeRenderingBuiltinPreset: String, CaseIterable, Sendable, Identi
     /// Imaging modality that this preset is intended for.
     public var modality: Modality {
         switch self {
-        case .ctArteries, .ctEntire, .ctLung, .ctBone, .ctCardiac, .ctLiverVasculature, .ctChestContrast, .ctSoftTissue, .ctPulmonaryArteries, .ctFat:
+        case .ctArteries, .ctEntire, .ctLung, .ctBone, .ctCardiac, .ctLiverVasculature, .ctChestContrast, .ctSoftTissue, .ctBrain, .ctAbdomen, .ctPulmonaryArteries, .ctFat:
             return .ct
         case .mrT2Brain, .mrAngio:
             return .mr
@@ -146,7 +157,7 @@ public enum VolumeRenderingBuiltinPreset: String, CaseIterable, Sendable, Identi
         switch self {
         case .ctEntire:
             return .general
-        case .ctSoftTissue:
+        case .ctSoftTissue, .ctAbdomen:
             return .softTissue
         case .ctArteries, .ctPulmonaryArteries, .mrAngio:
             return .vascular
@@ -158,7 +169,7 @@ public enum VolumeRenderingBuiltinPreset: String, CaseIterable, Sendable, Identi
             return .pulmonary
         case .ctFat:
             return .fat
-        case .mrT2Brain:
+        case .ctBrain, .mrT2Brain:
             return .neurological
         case .ctCardiac:
             return .cardiac
@@ -223,6 +234,18 @@ public enum VolumeRenderingBuiltinPreset: String, CaseIterable, Sendable, Identi
                 "VolumeRenderingBuiltinPreset.ctSoftTissue.displayName",
                 value: "CT Soft Tissue",
                 comment: "Display name for the CT soft tissue volume rendering preset"
+            )
+        case .ctBrain:
+            return NSLocalizedString(
+                "VolumeRenderingBuiltinPreset.ctBrain.displayName",
+                value: "CT Brain",
+                comment: "Display name for the CT brain volume rendering preset"
+            )
+        case .ctAbdomen:
+            return NSLocalizedString(
+                "VolumeRenderingBuiltinPreset.ctAbdomen.displayName",
+                value: "CT Abdomen",
+                comment: "Display name for the CT abdomen volume rendering preset"
             )
         case .ctPulmonaryArteries:
             return NSLocalizedString(

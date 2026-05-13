@@ -257,6 +257,53 @@ final class MetalVolumeRenderingAdapterParameterTests: XCTestCase {
         XCTAssertEqual(params.clipPlane1, .zero)
         XCTAssertEqual(params.clipPlane2, .zero)
     }
+
+    func testCameraUniformsUsePhysicalVolumeGeometryForAnisotropicDataset() async throws {
+        let dataset = VolumeDatasetTestFactory.makeTestDataset(
+            dimensions: VolumeDimensions(width: 5, height: 5, depth: 5),
+            spacing: VolumeSpacing(x: 1, y: 1, z: 2),
+            pixelFormat: .int16Signed
+        )
+        let request = VolumeRenderRequest(
+            dataset: dataset,
+            transferFunction: VolumeTransferFunction.defaultGrayscale(for: dataset),
+            viewportSize: CGSize(width: 64, height: 64),
+            camera: VolumeRenderRequest.Camera(
+                position: SIMD3<Float>(0.5, 0.5, 2.5),
+                target: SIMD3<Float>(repeating: 0.5),
+                up: SIMD3<Float>(0, 1, 0),
+                fieldOfView: 45
+            ),
+            samplingDistance: 1 / 256,
+            compositing: .frontToBack,
+            quality: .interactive
+        )
+
+        let camera = try await adapter.makeCameraUniforms(for: request,
+                                                          viewportSize: (64, 64),
+                                                          frameIndex: 7)
+
+        XCTAssertEqual(camera.modelMatrix.columns.0.x, 0.5, accuracy: 1e-6)
+        XCTAssertEqual(camera.modelMatrix.columns.1.y, 0.5, accuracy: 1e-6)
+        XCTAssertEqual(camera.modelMatrix.columns.2.z, 1.0, accuracy: 1e-6)
+        XCTAssertEqual(camera.inverseModelMatrix.columns.0.x, 2.0, accuracy: 1e-6)
+        XCTAssertEqual(camera.inverseModelMatrix.columns.1.y, 2.0, accuracy: 1e-6)
+        XCTAssertEqual(camera.inverseModelMatrix.columns.2.z, 1.0, accuracy: 1e-6)
+        XCTAssertEqual(camera.cameraPositionLocal, SIMD3<Float>(0, 0, 2))
+        XCTAssertEqual(camera.frameIndex, 7)
+        XCTAssertTrue(camera.inverseViewProjectionMatrix.allFinite)
+    }
+}
+
+private extension simd_float4x4 {
+    var allFinite: Bool {
+        for column in 0..<4 {
+            for row in 0..<4 where !self[column][row].isFinite {
+                return false
+            }
+        }
+        return true
+    }
 }
 
 // MARK: - resolveWindow priority (MetalVolumeRenderingAdapter+Dispatch.swift)
