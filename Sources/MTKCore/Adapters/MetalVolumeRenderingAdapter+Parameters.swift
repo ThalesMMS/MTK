@@ -14,7 +14,7 @@ extension MetalVolumeRenderingAdapter {
         var params = RenderingParameters()
         params.material = try buildVolumeUniforms(for: request)
         params.renderingStep = request.samplingDistance
-        params.earlyTerminationThreshold = extendedState.earlyTerminationThreshold
+        params.earlyTerminationThreshold = interactiveEarlyTerminationThreshold(for: request)
         params.adaptiveGradientThreshold = extendedState.adaptiveThreshold
         params.jitterAmount = extendedState.jitterAmount
         params.intensityRatio = extendedState.channelIntensities
@@ -31,6 +31,15 @@ extension MetalVolumeRenderingAdapter {
         params.clipPlane2 = planes.2
         params.backgroundColor = SIMD3<Float>(repeating: 0)
         return params
+    }
+
+    private func interactiveEarlyTerminationThreshold(for request: VolumeRenderRequest) -> Float {
+        switch request.quality {
+        case .preview, .interactive:
+            return min(extendedState.earlyTerminationThreshold, 0.85)
+        case .production:
+            return extendedState.earlyTerminationThreshold
+        }
     }
 
     func buildVolumeUniforms(for request: VolumeRenderRequest) throws -> VolumeUniforms {
@@ -149,12 +158,94 @@ extension MetalVolumeRenderingAdapter {
         let renderCamera = geometry.renderCamera(for: request.camera)
         camera.modelMatrix = geometry.modelMatrix
         camera.inverseModelMatrix = geometry.inverseModelMatrix
-        camera.inverseViewProjectionMatrix = try makeInverseViewProjectionMatrix(camera: renderCamera,
-                                                                                 viewportSize: viewportSize)
+        let inverseViewProjectionMatrix = try makeInverseViewProjectionMatrix(camera: renderCamera,
+                                                                              viewportSize: viewportSize)
+        camera.inverseViewProjectionMatrix = inverseViewProjectionMatrix
         camera.cameraPositionLocal = geometry.centeredTextureCoordinate(for: request.camera.position)
         camera.frameIndex = frameIndex
         camera.projectionType = request.camera.projectionType.rawValue
+        camera.cameraPositionWorld = SIMD4<Float>(renderCamera.position.x,
+                                                  renderCamera.position.y,
+                                                  renderCamera.position.z,
+                                                  1)
+        if let rayBasis = makeLocalRayBasis(inverseViewProjectionMatrix: inverseViewProjectionMatrix,
+                                            inverseModelMatrix: geometry.inverseModelMatrix) {
+            camera.localNearOrigin = SIMD4<Float>(rayBasis.nearOrigin, 0)
+            camera.localNearDeltaX = SIMD4<Float>(rayBasis.nearDeltaX, 0)
+            camera.localNearDeltaY = SIMD4<Float>(rayBasis.nearDeltaY, 0)
+            camera.localFarOrigin = SIMD4<Float>(rayBasis.farOrigin, 0)
+            camera.localFarDeltaX = SIMD4<Float>(rayBasis.farDeltaX, 0)
+            camera.localFarDeltaY = SIMD4<Float>(rayBasis.farDeltaY, 0)
+            camera.rayBasisValid = 1
+        }
         return camera
+    }
+
+    func makeLocalRayBasis(inverseViewProjectionMatrix: simd_float4x4,
+                           inverseModelMatrix: simd_float4x4)
+        -> (nearOrigin: SIMD3<Float>,
+            nearDeltaX: SIMD3<Float>,
+            nearDeltaY: SIMD3<Float>,
+            farOrigin: SIMD3<Float>,
+            farDeltaX: SIMD3<Float>,
+            farDeltaY: SIMD3<Float>)? {
+        guard let near00 = makeLocalRayPoint(uv: SIMD2<Float>(0, 0),
+                                             clipZ: 0,
+                                             inverseViewProjectionMatrix: inverseViewProjectionMatrix,
+                                             inverseModelMatrix: inverseModelMatrix),
+              let near10 = makeLocalRayPoint(uv: SIMD2<Float>(1, 0),
+                                             clipZ: 0,
+                                             inverseViewProjectionMatrix: inverseViewProjectionMatrix,
+                                             inverseModelMatrix: inverseModelMatrix),
+              let near01 = makeLocalRayPoint(uv: SIMD2<Float>(0, 1),
+                                             clipZ: 0,
+                                             inverseViewProjectionMatrix: inverseViewProjectionMatrix,
+                                             inverseModelMatrix: inverseModelMatrix),
+              let far00 = makeLocalRayPoint(uv: SIMD2<Float>(0, 0),
+                                            clipZ: 1,
+                                            inverseViewProjectionMatrix: inverseViewProjectionMatrix,
+                                            inverseModelMatrix: inverseModelMatrix),
+              let far10 = makeLocalRayPoint(uv: SIMD2<Float>(1, 0),
+                                            clipZ: 1,
+                                            inverseViewProjectionMatrix: inverseViewProjectionMatrix,
+                                            inverseModelMatrix: inverseModelMatrix),
+              let far01 = makeLocalRayPoint(uv: SIMD2<Float>(0, 1),
+                                            clipZ: 1,
+                                            inverseViewProjectionMatrix: inverseViewProjectionMatrix,
+                                            inverseModelMatrix: inverseModelMatrix) else {
+            return nil
+        }
+
+        return (near00,
+                near10 - near00,
+                near01 - near00,
+                far00,
+                far10 - far00,
+                far01 - far00)
+    }
+
+    private func makeLocalRayPoint(uv: SIMD2<Float>,
+                                   clipZ: Float,
+                                   inverseViewProjectionMatrix: simd_float4x4,
+                                   inverseModelMatrix: simd_float4x4) -> SIMD3<Float>? {
+        let clip = SIMD4<Float>(uv.x * 2 - 1, uv.y * 2 - 1, clipZ, 1)
+        let worldHomogeneous = inverseViewProjectionMatrix * clip
+        guard abs(worldHomogeneous.w) > Float.ulpOfOne else {
+            return nil
+        }
+        let world = SIMD4<Float>(worldHomogeneous.x / worldHomogeneous.w,
+                                 worldHomogeneous.y / worldHomogeneous.w,
+                                 worldHomogeneous.z / worldHomogeneous.w,
+                                 1)
+        let localHomogeneous = inverseModelMatrix * world
+        guard abs(localHomogeneous.w) > Float.ulpOfOne else {
+            return nil
+        }
+        let local = SIMD3<Float>(localHomogeneous.x / localHomogeneous.w,
+                                 localHomogeneous.y / localHomogeneous.w,
+                                 localHomogeneous.z / localHomogeneous.w)
+            + SIMD3<Float>(repeating: 0.5)
+        return local.allFinite ? local : nil
     }
 
     func makeInverseViewProjectionMatrix(camera: VolumeRenderRequest.Camera,

@@ -16,6 +16,12 @@ public final class ClinicalProfiler: @unchecked Sendable {
 
     private init() {}
 
+    public var isRecordingEnabled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return activeSession != nil || Logger.performanceLoggingEnabled
+    }
+
     @discardableResult
     public func startSession(device: any MTLDevice) -> UUID {
         startSession(environment: ProfilingEnvironment.current(device: device))

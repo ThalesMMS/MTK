@@ -37,15 +37,29 @@ extension ClinicalViewportGridController {
                     }
                 }
             }
+            surface.onPresentationSurfaceReady = { [weak self] size in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    do {
+                        try await self.engine.resize(viewportID, to: size)
+                        self.rebuildAllCrosshairOffsets()
+                        self.logClinicalInteractionInfo("[MTKMPRInteraction] surface.ready viewport=\(self.viewportName(for: viewportID)) drawable=\(Int(size.width))x\(Int(size.height)) datasetApplied=\(self.datasetApplied)")
+                        self.scheduleRender(for: viewportID)
+                    } catch {
+                        self.recordError(error, for: viewportID)
+                    }
+                }
+            }
             surface.onPresentationFailure = { [weak self] error, presentationToken in
                 guard let self else { return false }
-                if let presentationToken,
-                   self.renderGenerations[viewportID] != presentationToken {
-                    self.logger.debug("Ignoring stale presentation failure viewport=\(self.viewportName(for: viewportID)) token=\(presentationToken)")
-                    return false
-                }
-                self.handlePresentationFailure(error, for: viewportID)
-                return true
+                return self.handleSurfacePresentationFailure(error,
+                                                             presentationToken: presentationToken,
+                                                             for: viewportID)
+            }
+            surface.onPresentationCompleted = { [weak self] presentationToken in
+                guard let self else { return }
+                self.handleSurfacePresentationCompleted(presentationToken,
+                                                        for: viewportID)
             }
         }
     }
@@ -125,6 +139,13 @@ extension ClinicalViewportGridController {
         volumeCameraTarget = SIMD3<Float>(repeating: 0.5)
         volumeCameraOffset = SIMD3<Float>(0, 0, 2)
         volumeCameraUp = SIMD3<Float>(0, 1, 0)
+        volumeCameraYaw = 0
+        volumeCameraPitch = 0
+        volumeCameraInteractionGeneration = 0
+        _ = volumeOrbitState.reset(target: volumeCameraTarget,
+                                   offset: volumeCameraOffset,
+                                   up: volumeCameraUp,
+                                   distanceLimits: 0.1...16)
     }
 
     /// Configures the engine camera for the volume viewport using the controller's current camera state.

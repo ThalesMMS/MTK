@@ -96,6 +96,70 @@ final class MetalVolumeRenderingAdapterSPIPropertiesTests: XCTestCase {
         XCTAssertTrue(VolumeRenderRegressionFixture.imageContainsVisiblePixels(image))
     }
 
+    func testRenderInteractiveTextureReusesOutputForSameViewport() async throws {
+        let firstTexture = try await adapter.renderInteractiveTexture(using: makeRenderRequest())
+        let secondTexture = try await adapter.renderInteractiveTexture(using: makeRenderRequest())
+
+        XCTAssertEqual(ObjectIdentifier(firstTexture as AnyObject),
+                       ObjectIdentifier(secondTexture as AnyObject))
+    }
+
+    func testEnqueueInteractiveTextureProducesReadableOutput() async throws {
+        let request = makeRenderRequest()
+        let texture = try await adapter.enqueueInteractiveTexture(using: request)
+
+        // A following completed render proves the queued interactive command has
+        // drained through the adapter's in-flight lock before readback.
+        _ = try await adapter.renderFrame(using: makeTransparentRenderRequest())
+
+        let frame = VolumeRenderFrame(
+            texture: texture,
+            metadata: VolumeRenderFrame.Metadata(request: request, texture: texture)
+        )
+        let image = try await TextureSnapshotExporter().makeCGImage(from: frame)
+
+        XCTAssertTrue(VolumeRenderRegressionFixture.imageContainsVisiblePixels(image))
+    }
+
+    func testEnqueueInteractiveFrameReportsDebugFrameIndex() async throws {
+        let firstFrame = try await adapter.enqueueInteractiveFrame(using: makeRenderRequest())
+        defer { firstFrame.outputTextureLease?.release() }
+        let secondFrame = try await adapter.enqueueInteractiveFrame(using: makeRenderRequest())
+        defer { secondFrame.outputTextureLease?.release() }
+
+        XCTAssertEqual(firstFrame.metadata.debugFrameIndex, 0)
+        XCTAssertEqual(secondFrame.metadata.debugFrameIndex, 1)
+    }
+
+    func testEnqueueInteractiveFramesUseDistinctOutputTexturesWhileLeasesArePending() async throws {
+        let firstFrame = try await adapter.enqueueInteractiveFrame(using: makeRenderRequest())
+        let secondFrame = try await adapter.enqueueInteractiveFrame(using: makeRenderRequest())
+        let thirdFrame = try await adapter.enqueueInteractiveFrame(using: makeRenderRequest())
+        let frames = [firstFrame, secondFrame, thirdFrame]
+        defer {
+            frames.forEach { $0.outputTextureLease?.release() }
+        }
+
+        XCTAssertEqual(frames.compactMap(\.outputTextureLease).count, 3)
+        XCTAssertTrue(frames.allSatisfy { $0.outputTextureLease?.isReleased == false })
+
+        let textureIDs = Set(frames.map { ObjectIdentifier($0.texture as AnyObject) })
+        XCTAssertEqual(textureIDs.count, 3)
+    }
+
+    func testEnqueueInteractiveFrameDoesNotReuseTextureWhileLeaseIsPending() async throws {
+        let firstFrame = try await adapter.enqueueInteractiveFrame(using: makeRenderRequest())
+        defer { firstFrame.outputTextureLease?.release() }
+        let firstTextureID = ObjectIdentifier(firstFrame.texture as AnyObject)
+
+        let secondFrame = try await adapter.enqueueInteractiveFrame(using: makeRenderRequest())
+        defer { secondFrame.outputTextureLease?.release() }
+        let secondTextureID = ObjectIdentifier(secondFrame.texture as AnyObject)
+
+        XCTAssertNotEqual(firstTextureID, secondTextureID)
+        XCTAssertFalse(firstFrame.outputTextureLease?.isReleased ?? true)
+    }
+
     func testProjectionCompositingDisablesTransferFunctionProjectionPath() async throws {
         let baseRequest = makeRenderRequest()
         let expectations: [(VolumeRenderRequest.Compositing, Int32)] = [

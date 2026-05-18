@@ -106,7 +106,8 @@ extension VolumeViewportController {
 
         do {
             try viewportSurface.present(mprFrame: frame,
-                                        window: resolvedMPRWindow(for: dataset))
+                                        window: resolvedMPRWindow(for: dataset),
+                                        presentationToken: renderGeneration)
             return true
         } catch {
             lastRenderError = error
@@ -353,6 +354,10 @@ extension VolumeViewportController {
         initialCameraTarget = cameraTarget
         initialCameraOffset = cameraOffset
         initialCameraUp = up
+        _ = volumeOrbitState.reset(target: cameraTarget,
+                                   offset: cameraOffset,
+                                   up: cameraUpVector,
+                                   distanceLimits: cameraDistanceLimits)
         publishCameraState()
     }
 }

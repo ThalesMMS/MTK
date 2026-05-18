@@ -2,7 +2,7 @@
 //  VolumePipeline.swift
 //  MTKCore
 //
-//  Public VTK-like volume pipeline contracts for source/filter/mapper flows.
+//  Public volume pipeline contracts for source/filter/mapper flows.
 //
 
 import Foundation

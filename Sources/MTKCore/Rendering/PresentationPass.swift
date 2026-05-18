@@ -16,17 +16,26 @@ public struct PresentationFrameMetadata: Sendable {
     public var quality: String
     public var renderMode: String
     public var renderGraphRoute: String?
+    public var debugSource: String?
+    public var debugPresentationToken: String?
+    public var debugFrameIndex: UInt64?
 
     public init(requestedDrawableSize: CGSize,
                 viewportType: String,
                 quality: String,
                 renderMode: String,
-                renderGraphRoute: String? = nil) {
+                renderGraphRoute: String? = nil,
+                debugSource: String? = nil,
+                debugPresentationToken: String? = nil,
+                debugFrameIndex: UInt64? = nil) {
         self.requestedDrawableSize = requestedDrawableSize
         self.viewportType = viewportType
         self.quality = quality
         self.renderMode = renderMode
         self.renderGraphRoute = renderGraphRoute
+        self.debugSource = debugSource
+        self.debugPresentationToken = debugPresentationToken
+        self.debugFrameIndex = debugFrameIndex
     }
 
     package init(frame: RenderFrame) {
@@ -44,7 +53,8 @@ public struct PresentationFrameMetadata: Sendable {
             requestedDrawableSize: frame.metadata.viewportSize,
             viewportType: "volume3D",
             quality: String(describing: frame.metadata.quality),
-            renderMode: String(describing: frame.metadata.compositing)
+            renderMode: String(describing: frame.metadata.compositing),
+            debugFrameIndex: frame.metadata.debugFrameIndex
         )
     }
 
@@ -117,25 +127,29 @@ public struct PresentationPass: Sendable {
     package func present(_ frame: RenderFrame,
                         to drawable: (any CAMetalDrawable)?,
                         commandQueue: any MTLCommandQueue,
-                        onCommandBufferFailure: ((PresentationPassCommandBufferError) -> Void)? = nil) throws -> CFAbsoluteTime {
+                        onCommandBufferFailure: ((PresentationPassCommandBufferError) -> Void)? = nil,
+                        onCommandBufferCompleted: (() -> Void)? = nil) throws -> CFAbsoluteTime {
         try present(frame.texture,
                     metadata: PresentationFrameMetadata(frame: frame),
                     to: drawable,
                     commandQueue: commandQueue,
                     lease: frame.outputTextureLease,
-                    onCommandBufferFailure: onCommandBufferFailure)
+                    onCommandBufferFailure: onCommandBufferFailure,
+                    onCommandBufferCompleted: onCommandBufferCompleted)
     }
 
     @discardableResult
     public func present(_ frame: VolumeRenderFrame,
                         to drawable: (any CAMetalDrawable)?,
                         commandQueue: any MTLCommandQueue,
-                        onCommandBufferFailure: ((PresentationPassCommandBufferError) -> Void)? = nil) throws -> CFAbsoluteTime {
+                        onCommandBufferFailure: ((PresentationPassCommandBufferError) -> Void)? = nil,
+                        onCommandBufferCompleted: (() -> Void)? = nil) throws -> CFAbsoluteTime {
         try present(frame,
                     to: drawable,
                     commandQueue: commandQueue,
-                    lease: nil,
-                    onCommandBufferFailure: onCommandBufferFailure)
+                    lease: frame.outputTextureLease,
+                    onCommandBufferFailure: onCommandBufferFailure,
+                    onCommandBufferCompleted: onCommandBufferCompleted)
     }
 
     @discardableResult
@@ -143,13 +157,15 @@ public struct PresentationPass: Sendable {
                          to drawable: (any CAMetalDrawable)?,
                          commandQueue: any MTLCommandQueue,
                          lease: OutputTextureLease?,
-                         onCommandBufferFailure: ((PresentationPassCommandBufferError) -> Void)? = nil) throws -> CFAbsoluteTime {
+                         onCommandBufferFailure: ((PresentationPassCommandBufferError) -> Void)? = nil,
+                         onCommandBufferCompleted: (() -> Void)? = nil) throws -> CFAbsoluteTime {
         try present(frame.texture,
                     metadata: PresentationFrameMetadata(frame: frame),
                     to: drawable,
                     commandQueue: commandQueue,
                     lease: lease,
-                    onCommandBufferFailure: onCommandBufferFailure)
+                    onCommandBufferFailure: onCommandBufferFailure,
+                    onCommandBufferCompleted: onCommandBufferCompleted)
     }
 
     /// Presents `sourceTexture` fullscreen into `drawable`.
@@ -162,13 +178,15 @@ public struct PresentationPass: Sendable {
                         metadata: PresentationFrameMetadata,
                         to drawable: (any CAMetalDrawable)?,
                         commandQueue: any MTLCommandQueue,
-                        onCommandBufferFailure: ((PresentationPassCommandBufferError) -> Void)? = nil) throws -> CFAbsoluteTime {
+                        onCommandBufferFailure: ((PresentationPassCommandBufferError) -> Void)? = nil,
+                        onCommandBufferCompleted: (() -> Void)? = nil) throws -> CFAbsoluteTime {
         try present(sourceTexture,
                     metadata: metadata,
                     to: drawable,
                     commandQueue: commandQueue,
                     lease: nil,
-                    onCommandBufferFailure: onCommandBufferFailure)
+                    onCommandBufferFailure: onCommandBufferFailure,
+                    onCommandBufferCompleted: onCommandBufferCompleted)
     }
 
     @discardableResult
@@ -177,11 +195,16 @@ public struct PresentationPass: Sendable {
                          to drawable: (any CAMetalDrawable)?,
                          commandQueue: any MTLCommandQueue,
                          lease: OutputTextureLease?,
-                         onCommandBufferFailure: ((PresentationPassCommandBufferError) -> Void)? = nil) throws -> CFAbsoluteTime {
+                         onCommandBufferFailure: ((PresentationPassCommandBufferError) -> Void)? = nil,
+                         onCommandBufferCompleted: (() -> Void)? = nil) throws -> CFAbsoluteTime {
         let startedAt = CFAbsoluteTimeGetCurrent()
-        Self.lifecycleLogger.info(
-            "Presentation request sourceLabel=\(sourceTexture.label ?? "nil") sourceSize=\(sourceTexture.width)x\(sourceTexture.height) sourcePixelFormat=\(sourceTexture.pixelFormat) drawableRequestedSize=\(Int(metadata.requestedDrawableSize.width))x\(Int(metadata.requestedDrawableSize.height)) viewportType=\(metadata.viewportType) renderMode=\(metadata.renderMode)"
-        )
+        lease?.updateDebugContext(frameIndex: metadata.debugFrameIndex,
+                                  presentationToken: metadata.debugPresentationToken ?? "nil")
+        if Logger.performanceLoggingEnabled {
+            Self.lifecycleLogger.info(
+                "Presentation request sourceLabel=\(sourceTexture.label ?? "nil") sourceSize=\(sourceTexture.width)x\(sourceTexture.height) sourcePixelFormat=\(sourceTexture.pixelFormat) drawableRequestedSize=\(Int(metadata.requestedDrawableSize.width))x\(Int(metadata.requestedDrawableSize.height)) viewportType=\(metadata.viewportType) renderMode=\(metadata.renderMode)"
+            )
+        }
         guard let drawable else {
             lease?.release()
             Self.lifecycleLogger.error(
@@ -217,6 +240,13 @@ public struct PresentationPass: Sendable {
             throw PresentationPassError.blitEncoderCreationFailed
         }
 
+        let commandBufferID = Self.objectIdentifier(commandBuffer)
+        let commandQueueID = Self.objectIdentifier(commandQueue)
+        let sourceTextureID = Self.objectIdentifier(sourceTexture)
+        let drawableTextureID = Self.objectIdentifier(drawable.texture)
+        Self.logInteractionInfo(
+            "[MTK3DInteraction] presentation.copy.commit source=\(metadata.debugSource ?? "unknown") token=\(metadata.debugPresentationToken ?? "nil") frameIndex=\(Self.describe(metadata.debugFrameIndex)) slotID=\(Self.describe(lease?.debugSlotID)) leaseID=\(lease?.leaseIdentifier.uuidString ?? "nil") commandBufferID=\(commandBufferID) commandQueueID=\(commandQueueID) sourceTextureID=\(sourceTextureID) drawableTextureID=\(drawableTextureID) sourceLabel=\(sourceTexture.label ?? "nil") source=\(sourceTexture.width)x\(sourceTexture.height) drawable=\(drawable.texture.width)x\(drawable.texture.height) quality=\(metadata.quality) renderMode=\(metadata.renderMode)"
+        )
         encoder.copy(from: sourceTexture,
                      sourceSlice: 0,
                      sourceLevel: 0,
@@ -230,9 +260,11 @@ public struct PresentationPass: Sendable {
                      destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
         encoder.endEncoding()
         commandBuffer.present(drawable)
-        CommandBufferProfiler.captureTimes(for: commandBuffer,
-                                           label: "present",
-                                           category: "Benchmark")
+        if Logger.performanceLoggingEnabled {
+            CommandBufferProfiler.captureTimes(for: commandBuffer,
+                                               label: "present",
+                                               category: "Benchmark")
+        }
         let drawableWidth = drawable.texture.width
         let drawableHeight = drawable.texture.height
         let drawablePixelFormat = drawable.texture.pixelFormat
@@ -256,33 +288,41 @@ public struct PresentationPass: Sendable {
             }
 
             lease?.markPresented()
-            let timing = buffer.timings(cpuStart: startedAt,
-                                        cpuEnd: CFAbsoluteTimeGetCurrent())
-            let profilerMetadata = profilerMetadata(
-                presentation: metadata,
-                sourceTexture: sourceTexture,
-                drawableTextureSize: (drawableWidth, drawableHeight),
-                drawablePixelFormat: drawablePixelFormat,
-                timing: timing
+            if ClinicalProfiler.shared.isRecordingEnabled {
+                let timing = buffer.timings(cpuStart: startedAt,
+                                            cpuEnd: CFAbsoluteTimeGetCurrent())
+                let profilerMetadata = profilerMetadata(
+                    presentation: metadata,
+                    sourceTexture: sourceTexture,
+                    drawableTextureSize: (drawableWidth, drawableHeight),
+                    drawablePixelFormat: drawablePixelFormat,
+                    timing: timing
+                )
+                ClinicalProfiler.shared.recordSample(
+                    stage: .presentationPass,
+                    cpuTime: timing.cpuTime,
+                    gpuTime: timing.gpuTime > 0 ? timing.gpuTime : nil,
+                    memory: nil,
+                    viewport: ProfilingViewportContext(
+                        resolutionWidth: drawableWidth,
+                        resolutionHeight: drawableHeight,
+                        viewportType: metadata.viewportType,
+                        quality: metadata.quality,
+                        renderMode: metadata.renderMode
+                    ),
+                    metadata: profilerMetadata,
+                    device: sourceTexture.device
+                )
+            }
+            if Logger.performanceLoggingEnabled {
+                Self.lifecycleLogger.debug(
+                    "Presented output texture sourceLabel=\(sourceTexture.label ?? "nil") sourceSize=\(sourceTexture.width)x\(sourceTexture.height) drawableSize=\(drawableWidth)x\(drawableHeight) pixelFormat=\(sourceTexture.pixelFormat) status=\(buffer.status.rawValue)"
+                )
+            }
+            Self.logInteractionInfo(
+                "[MTK3DInteraction] presentation.copy.complete source=\(metadata.debugSource ?? "unknown") token=\(metadata.debugPresentationToken ?? "nil") frameIndex=\(Self.describe(metadata.debugFrameIndex)) slotID=\(Self.describe(lease?.debugSlotID)) leaseID=\(lease?.leaseIdentifier.uuidString ?? "nil") commandBufferID=\(commandBufferID) commandQueueID=\(commandQueueID) sourceTextureID=\(sourceTextureID) drawableTextureID=\(drawableTextureID) status=completed sourceLabel=\(sourceTexture.label ?? "nil") drawable=\(drawableWidth)x\(drawableHeight) pixelFormat=\(sourceTexture.pixelFormat)"
             )
-            ClinicalProfiler.shared.recordSample(
-                stage: .presentationPass,
-                cpuTime: timing.cpuTime,
-                gpuTime: timing.gpuTime > 0 ? timing.gpuTime : nil,
-                memory: nil,
-                viewport: ProfilingViewportContext(
-                    resolutionWidth: drawableWidth,
-                    resolutionHeight: drawableHeight,
-                    viewportType: metadata.viewportType,
-                    quality: metadata.quality,
-                    renderMode: metadata.renderMode
-                ),
-                metadata: profilerMetadata,
-                device: sourceTexture.device
-            )
-            Self.lifecycleLogger.debug(
-                "Presented output texture sourceLabel=\(sourceTexture.label ?? "nil") sourceSize=\(sourceTexture.width)x\(sourceTexture.height) drawableSize=\(drawableWidth)x\(drawableHeight) pixelFormat=\(sourceTexture.pixelFormat) status=\(buffer.status.rawValue)"
-            )
+            onCommandBufferCompleted?()
         }
         commandBuffer.commit()
         return CFAbsoluteTimeGetCurrent() - startedAt
@@ -292,12 +332,14 @@ public struct PresentationPass: Sendable {
     public func present(_ sourceTexture: any MTLTexture,
                         to drawable: (any CAMetalDrawable)?,
                         commandQueue: any MTLCommandQueue,
-                        onCommandBufferFailure: ((PresentationPassCommandBufferError) -> Void)? = nil) throws -> CFAbsoluteTime {
+                        onCommandBufferFailure: ((PresentationPassCommandBufferError) -> Void)? = nil,
+                        onCommandBufferCompleted: (() -> Void)? = nil) throws -> CFAbsoluteTime {
         try present(sourceTexture,
                     to: drawable,
                     commandQueue: commandQueue,
                     lease: nil,
-                    onCommandBufferFailure: onCommandBufferFailure)
+                    onCommandBufferFailure: onCommandBufferFailure,
+                    onCommandBufferCompleted: onCommandBufferCompleted)
     }
 
     @discardableResult
@@ -305,14 +347,16 @@ public struct PresentationPass: Sendable {
                          to drawable: (any CAMetalDrawable)?,
                          commandQueue: any MTLCommandQueue,
                          lease: OutputTextureLease?,
-                         onCommandBufferFailure: ((PresentationPassCommandBufferError) -> Void)? = nil) throws -> CFAbsoluteTime {
+                         onCommandBufferFailure: ((PresentationPassCommandBufferError) -> Void)? = nil,
+                         onCommandBufferCompleted: (() -> Void)? = nil) throws -> CFAbsoluteTime {
         try present(
             sourceTexture,
             metadata: .textureOnly(size: CGSize(width: sourceTexture.width, height: sourceTexture.height)),
             to: drawable,
             commandQueue: commandQueue,
             lease: lease,
-            onCommandBufferFailure: onCommandBufferFailure
+            onCommandBufferFailure: onCommandBufferFailure,
+            onCommandBufferCompleted: onCommandBufferCompleted
         )
     }
 
@@ -349,6 +393,23 @@ public struct PresentationPass: Sendable {
 
     private func sameDevice(_ lhs: any MTLDevice, _ rhs: any MTLDevice) -> Bool {
         ObjectIdentifier(lhs as AnyObject) == ObjectIdentifier(rhs as AnyObject)
+    }
+
+    private static func logInteractionInfo(_ message: @autoclosure () -> String) {
+        guard Logger.performanceLoggingEnabled else { return }
+        lifecycleLogger.info(message())
+    }
+
+    private static func objectIdentifier(_ object: AnyObject) -> String {
+        String(describing: ObjectIdentifier(object))
+    }
+
+    private static func describe(_ value: UInt64?) -> String {
+        value.map(String.init) ?? "nil"
+    }
+
+    private static func describe(_ value: Int?) -> String {
+        value.map(String.init) ?? "nil"
     }
 
     private func profilerMetadata(presentation: PresentationFrameMetadata,

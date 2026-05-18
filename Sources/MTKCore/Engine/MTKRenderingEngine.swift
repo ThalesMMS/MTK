@@ -927,16 +927,15 @@ extension MTKRenderingEngine {
         viewports.count
     }
 
+    #if DEBUG
     package var debugResourceTextureCount: Int {
         resourceManager.debugTextureCount
     }
 
-    #if DEBUG
     package var debugVolumeUploadCounts: (textureCreates: Int, cacheHits: Int) {
         (resourceManager.debugCounters.volumeTextureCreates,
          resourceManager.debugCounters.volumeCacheHits)
     }
-    #endif
 
     package var debugResourceReferenceCount: Int {
         resourceManager.debugTotalReferenceCount
@@ -969,6 +968,7 @@ extension MTKRenderingEngine {
     package var debugOutputTextureLeasePendingCount: Int {
         resourceManager.debugOutputTextureLeasePendingCount
     }
+    #endif
 
     package func debugAcquireOutputTextureIdentifier(width: Int,
                                                     height: Int,
@@ -996,10 +996,12 @@ extension MTKRenderingEngine {
         viewports[viewport]?.currentSize
     }
 
+    #if DEBUG
     package func debugTextureObjectIdentifier(for viewport: ViewportID) -> ObjectIdentifier? {
         guard let handle = viewports[viewport]?.resourceHandle else { return nil }
         return resourceManager.debugTextureObjectIdentifier(for: handle)
     }
+    #endif
 
     package func debugMPRFrameTextureObjectIdentifier(for viewport: ViewportID) async -> ObjectIdentifier? {
         guard let texture = await mprFrameCache.storedFrame(for: viewport)?.texture else { return nil }

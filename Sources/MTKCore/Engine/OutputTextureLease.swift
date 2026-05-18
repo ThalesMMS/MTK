@@ -16,25 +16,30 @@ package final class OutputTextureLease: @unchecked Sendable {
 
     package let texture: any MTLTexture
 
-    let ownerPoolIdentifier: UUID
-    let textureIdentifier: ObjectIdentifier
-    let leaseIdentifier: UUID
+    package let ownerPoolIdentifier: UUID
+    package let textureIdentifier: ObjectIdentifier
+    package let leaseIdentifier: UUID
 
     private let lock = NSLock()
     private let onPresented: @Sendable (OutputTextureLease) -> Void
     private let onRelease: @Sendable (OutputTextureLease) -> Void
+    package let debugSlotID: Int?
+    private var debugFrameIndexStorage: UInt64?
+    private var debugPresentationTokenStorage: String?
     private var presented = false
     private var released = false
 
     init(texture: any MTLTexture,
          ownerPoolIdentifier: UUID,
          leaseIdentifier: UUID = UUID(),
+         debugSlotID: Int? = nil,
          onPresented: @escaping @Sendable (OutputTextureLease) -> Void = { _ in },
          onRelease: @escaping @Sendable (OutputTextureLease) -> Void) {
         self.texture = texture
         self.ownerPoolIdentifier = ownerPoolIdentifier
         self.textureIdentifier = ObjectIdentifier(texture as AnyObject)
         self.leaseIdentifier = leaseIdentifier
+        self.debugSlotID = debugSlotID
         self.onPresented = onPresented
         self.onRelease = onRelease
     }
@@ -49,6 +54,30 @@ package final class OutputTextureLease: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return presented
+    }
+
+    package var debugFrameIndex: UInt64? {
+        lock.lock()
+        defer { lock.unlock() }
+        return debugFrameIndexStorage
+    }
+
+    package var debugPresentationToken: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return debugPresentationTokenStorage
+    }
+
+    package func updateDebugContext(frameIndex: UInt64? = nil,
+                                    presentationToken: String? = nil) {
+        lock.lock()
+        if let frameIndex {
+            debugFrameIndexStorage = frameIndex
+        }
+        if let presentationToken {
+            debugPresentationTokenStorage = presentationToken
+        }
+        lock.unlock()
     }
 
     package func markPresented() {

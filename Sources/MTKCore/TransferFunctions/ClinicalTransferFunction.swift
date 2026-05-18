@@ -306,18 +306,8 @@ public enum ClinicalTransferFunctionPreset: String, CaseIterable, Identifiable, 
 
     public var gradientOpacity: GradientOpacityFunction? {
         switch self {
-        case .ctVRBone:
-            return GradientOpacityFunction(
-                minimumGradient: 0,
-                maximumGradient: 1000,
-                points: [
-                    .init(gradientMagnitude: 0, opacity: 0.35),
-                    .init(gradientMagnitude: 120, opacity: 0.65),
-                    .init(gradientMagnitude: 450, opacity: 1.0),
-                    .init(gradientMagnitude: 1000, opacity: 1.0)
-                ],
-                resolution: 256
-            )
+        case .ctBone, .ctSoftTissue, .ctBrain, .ctVRBone:
+            return Self.ctSurfaceGradientOpacity
         default:
             return nil
         }
@@ -332,6 +322,19 @@ public enum ClinicalTransferFunctionPreset: String, CaseIterable, Identifiable, 
         transferFunction.renderingIntent = renderingIntent
         transferFunction.gradientOpacity = gradientOpacity
         return transferFunction
+    }
+
+    private static var ctSurfaceGradientOpacity: GradientOpacityFunction {
+        GradientOpacityFunction(
+            minimumGradient: 0,
+            maximumGradient: 100,
+            points: [
+                .init(gradientMagnitude: 0, opacity: 0.0),
+                .init(gradientMagnitude: 20, opacity: 0.2),
+                .init(gradientMagnitude: 100, opacity: 1.0)
+            ],
+            resolution: 256
+        )
     }
 
     private var modality: ClinicalTransferFunctionModality {

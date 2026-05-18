@@ -12,6 +12,8 @@ public protocol LoggerProtocol: Sendable {
 public final class Logger: @unchecked Sendable, LoggerProtocol {
     private let logger: os.Logger
     private let fileCategory: String
+    static let interactionLoggingEnabled =
+        ProcessInfo.processInfo.environment["MTK_INTERACTION_LOGGING"] == "1"
 
     public init(subsystem: String = "com.mtk.ui", category: String) {
         self.logger = os.Logger(subsystem: subsystem, category: category)
@@ -59,7 +61,7 @@ public final class Logger: @unchecked Sendable, LoggerProtocol {
     }
 
     private func mirrorsToMTKLog(_ message: String) -> Bool {
-        message.contains("[MTK3DInteraction]")
+        return message.contains("[MTK3DInteraction]")
             || message.contains("[MTKMPRInteraction]")
             || message.contains("[MTKClinicalVolumeInteraction]")
             || message.contains("[MTKPerf]")

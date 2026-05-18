@@ -45,19 +45,20 @@ final class ClinicalTransferFunctionTests: XCTestCase {
         }
     }
 
-    func test_vtkSwiftStyleCTPresetsUseExactHounsfieldCurves() throws {
-        try assertVTKSwiftStylePreset(
+    func testClinicalCTPresetsUseExactHounsfieldCurves() throws {
+        try assertClinicalCTPreset(
             .ctSoftTissue,
             expectedName: "CT-Soft-Tissue",
             points: [
                 .init(hu: -1000, color: .init(0, 0, 0), opacity: 0),
+                .init(hu: -300, color: .init(0.45, 0.22, 0.16), opacity: 0),
                 .init(hu: -150, color: .init(0.45, 0.22, 0.16), opacity: 0.02),
                 .init(hu: 40, color: .init(0.85, 0.52, 0.42), opacity: 0.18),
                 .init(hu: 300, color: .init(1.0, 0.82, 0.68), opacity: 0.35),
                 .init(hu: 1200, color: .init(1.0, 0.95, 0.88), opacity: 0.45)
             ]
         )
-        try assertVTKSwiftStylePreset(
+        try assertClinicalCTPreset(
             .ctBone,
             expectedName: "CT-Bone",
             points: [
@@ -68,7 +69,7 @@ final class ClinicalTransferFunctionTests: XCTestCase {
                 .init(hu: 1800, color: .init(1.0, 0.98, 0.92), opacity: 0.95)
             ]
         )
-        try assertVTKSwiftStylePreset(
+        try assertClinicalCTPreset(
             .ctLung,
             expectedName: "CT-Lung",
             points: [
@@ -79,7 +80,7 @@ final class ClinicalTransferFunctionTests: XCTestCase {
                 .init(hu: 350, color: .init(1.0, 0.96, 0.88), opacity: 0.4)
             ]
         )
-        try assertVTKSwiftStylePreset(
+        try assertClinicalCTPreset(
             .ctBrain,
             expectedName: "CT-Brain",
             points: [
@@ -91,7 +92,7 @@ final class ClinicalTransferFunctionTests: XCTestCase {
                 .init(hu: 600, color: .init(1.0, 0.96, 0.88), opacity: 0.45)
             ]
         )
-        try assertVTKSwiftStylePreset(
+        try assertClinicalCTPreset(
             .ctAbdomen,
             expectedName: "CT-Abdomen",
             points: [
@@ -126,13 +127,27 @@ final class ClinicalTransferFunctionTests: XCTestCase {
                        ClinicalTransferFunctionPreset.ctAbdomen.metadata)
     }
 
+    func test_falconParityCTPresetsUseGradientOpacity() throws {
+        let expected = try XCTUnwrap(ClinicalTransferFunctionPreset.ctVRBone.gradientOpacity)
+
+        XCTAssertEqual(expected.maximumGradient, 100)
+        XCTAssertEqual(try XCTUnwrap(expected.opacity(at: 0)), 0.0, accuracy: 1e-5)
+        XCTAssertEqual(try XCTUnwrap(expected.opacity(at: 20)), 0.2, accuracy: 1e-5)
+        XCTAssertEqual(try XCTUnwrap(expected.opacity(at: 100)), 1.0, accuracy: 1e-5)
+
+        for preset in [ClinicalTransferFunctionPreset.ctBrain, .ctBone, .ctSoftTissue] {
+            XCTAssertEqual(preset.gradientOpacity, expected, "Expected \(preset) to reuse the CT surface gradient opacity curve")
+            XCTAssertEqual(try preset.loadTransferFunction().gradientOpacity, expected)
+        }
+    }
+
     @MainActor
-    func test_vtkSwiftStyleCTPresetTextureCreationUsesClampedAlphaPoints() throws {
+    func testClinicalCTPresetTextureCreationUsesClampedAlphaPoints() throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw XCTSkip("Metal unavailable for transfer texture validation.")
         }
 
-        for preset in vtkSwiftStyleCTPresets {
+        for preset in clinicalCTPresets {
             let transferFunction = try XCTUnwrap(VolumeTransferFunctionLibrary.transferFunction(for: preset))
             let texture = try XCTUnwrap(TransferFunctions.texture(for: transferFunction, device: device))
 
@@ -218,7 +233,7 @@ final class ClinicalTransferFunctionTests: XCTestCase {
 }
 
 private extension ClinicalTransferFunctionTests {
-    var vtkSwiftStyleCTPresets: [VolumeRenderingBuiltinPreset] {
+    var clinicalCTPresets: [VolumeRenderingBuiltinPreset] {
         [.ctSoftTissue, .ctBone, .ctLung, .ctBrain, .ctAbdomen]
     }
 
@@ -228,11 +243,11 @@ private extension ClinicalTransferFunctionTests {
         let opacity: Float
     }
 
-    func assertVTKSwiftStylePreset(_ preset: VolumeRenderingBuiltinPreset,
-                                   expectedName: String,
-                                   points: [ExpectedTransferPoint],
-                                   file: StaticString = #filePath,
-                                   line: UInt = #line) throws {
+    func assertClinicalCTPreset(_ preset: VolumeRenderingBuiltinPreset,
+                                expectedName: String,
+                                points: [ExpectedTransferPoint],
+                                file: StaticString = #filePath,
+                                line: UInt = #line) throws {
         let transferFunction = try XCTUnwrap(
             VolumeTransferFunctionLibrary.transferFunction(for: preset),
             "Expected \(preset.rawValue) to load",

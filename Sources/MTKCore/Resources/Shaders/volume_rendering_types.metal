@@ -89,6 +89,15 @@ struct CameraUniforms {
     uint     frameIndex;
     uint     projectionType;
     uint     padding;
+    float4   localNearOrigin;
+    float4   localNearDeltaX;
+    float4   localNearDeltaY;
+    float4   localFarOrigin;
+    float4   localFarDeltaX;
+    float4   localFarDeltaY;
+    float4   cameraPositionWorld;
+    uint     rayBasisValid;
+    uint3    rayBasisPadding;
 };
 
 struct RenderingArguments {

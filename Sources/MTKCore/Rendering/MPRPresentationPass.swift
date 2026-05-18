@@ -203,7 +203,8 @@ public struct MPRPresentationPass {
                                  bitShift: Int32 = 0,
                                  viewportTransform: MPRViewportTransform = .identity,
                                  labelmapOverlays: [MPRLabelmapOverlay] = [],
-                                 onCommandBufferFailure: ((MPRPresentationCommandBufferError) -> Void)? = nil) throws -> CFAbsoluteTime {
+                                 onCommandBufferFailure: ((MPRPresentationCommandBufferError) -> Void)? = nil,
+                                 onCommandBufferCompleted: (() -> Void)? = nil) throws -> CFAbsoluteTime {
         try presentImpl(frame: frame,
                         window: window,
                         to: drawable,
@@ -214,7 +215,8 @@ public struct MPRPresentationPass {
                         bitShift: bitShift,
                         viewportTransform: viewportTransform,
                         labelmapOverlays: labelmapOverlays,
-                        onCommandBufferFailure: onCommandBufferFailure)
+                        onCommandBufferFailure: onCommandBufferFailure,
+                        onCommandBufferCompleted: onCommandBufferCompleted)
     }
 
     @available(*, deprecated, message: "Use present(frame:window:to:transform:...) instead.")
@@ -229,7 +231,8 @@ public struct MPRPresentationPass {
                                  bitShift: Int32 = 0,
                                  viewportTransform: MPRViewportTransform = .identity,
                                  labelmapOverlays: [MPRLabelmapOverlay] = [],
-                                 onCommandBufferFailure: ((MPRPresentationCommandBufferError) -> Void)? = nil) throws -> CFAbsoluteTime {
+                                 onCommandBufferFailure: ((MPRPresentationCommandBufferError) -> Void)? = nil,
+                                 onCommandBufferCompleted: (() -> Void)? = nil) throws -> CFAbsoluteTime {
         try presentImpl(frame: frame,
                         window: window,
                         to: drawable,
@@ -240,7 +243,8 @@ public struct MPRPresentationPass {
                         bitShift: bitShift,
                         viewportTransform: viewportTransform,
                         labelmapOverlays: labelmapOverlays,
-                        onCommandBufferFailure: onCommandBufferFailure)
+                        onCommandBufferFailure: onCommandBufferFailure,
+                        onCommandBufferCompleted: onCommandBufferCompleted)
     }
 
     @discardableResult
@@ -254,7 +258,8 @@ public struct MPRPresentationPass {
                                       bitShift: Int32,
                                       viewportTransform: MPRViewportTransform,
                                       labelmapOverlays: [MPRLabelmapOverlay],
-                                      onCommandBufferFailure: ((MPRPresentationCommandBufferError) -> Void)?) throws -> CFAbsoluteTime {
+                                      onCommandBufferFailure: ((MPRPresentationCommandBufferError) -> Void)?,
+                                      onCommandBufferCompleted: (() -> Void)?) throws -> CFAbsoluteTime {
         assert(
             Thread.isMainThread,
             "MPRPresentationPass.present() uses pipelineCache and cachedPresentationTexture; use it from the MainActor or another single-threaded context."
@@ -346,11 +351,16 @@ public struct MPRPresentationPass {
         blitEncoder.endEncoding()
 
         commandBuffer.present(drawable)
-        CommandBufferProfiler.captureTimes(for: commandBuffer,
-                                           label: "mpr_present",
-                                           category: "Benchmark")
+        if Logger.performanceLoggingEnabled {
+            CommandBufferProfiler.captureTimes(for: commandBuffer,
+                                               label: "mpr_present",
+                                               category: "Benchmark")
+        }
         let profilerDevice = device
         let presentationMemoryEstimate = ResourceMemoryEstimator.estimate(for: presentationTexture)
+        let drawableWidth = drawable.texture.width
+        let drawableHeight = drawable.texture.height
+        let drawablePixelFormat = drawable.texture.pixelFormat
         commandBuffer.addCompletedHandler { buffer in
             guard buffer.error == nil, buffer.status == .completed else {
                 onCommandBufferFailure?(
@@ -361,41 +371,44 @@ public struct MPRPresentationPass {
                 )
                 return
             }
-            let timing = buffer.timings(cpuStart: startedAt,
-                                        cpuEnd: CFAbsoluteTimeGetCurrent())
-            ClinicalProfiler.shared.recordSample(
-                stage: .presentationPass,
-                cpuTime: timing.cpuTime,
-                gpuTime: timing.gpuTime > 0 ? timing.gpuTime : nil,
-                memory: presentationMemoryEstimate,
-                viewport: ProfilingViewportContext(
-                    resolutionWidth: drawable.texture.width,
-                    resolutionHeight: drawable.texture.height,
-                    viewportType: "mpr",
-                    quality: "unknown",
-                    renderMode: "mprPresentation"
-                ),
-                metadata: [
-                    "cpuPresentTimeMilliseconds": String(format: "%.6f", timing.cpuTime),
-                    "gpuPresentTimeMilliseconds": timing.gpuTime > 0 ? String(format: "%.6f", timing.gpuTime) : "unavailable",
-                    "kernelTimeMilliseconds": String(format: "%.6f", timing.kernelTime),
-                    "sourceTextureSize": "\(frame.texture.width)x\(frame.texture.height)",
-                    "drawableWidth": "\(drawable.texture.width)",
-                    "drawableHeight": "\(drawable.texture.height)",
-                    "drawableSize": "\(drawable.texture.width)x\(drawable.texture.height)",
-                    "sourcePixelFormat": "\(frame.texture.pixelFormat)",
-                    "drawablePixelFormat": "\(drawable.texture.pixelFormat)",
-                    "voiLUTApplied": colormap == nil ? "false" : "true",
-                    "labelmapOverlayCount": "\(labelmapOverlays.count)",
-                    "monochrome": invert ? "MONOCHROME1" : "MONOCHROME2",
-                    "flipHorizontal": flipHorizontal ? "true" : "false",
-                    "flipVertical": flipVertical ? "true" : "false",
-                    "viewportZoom": String(format: "%.6f", viewportTransform.zoom),
-                    "viewportPanX": String(format: "%.6f", viewportTransform.pan.x),
-                    "viewportPanY": String(format: "%.6f", viewportTransform.pan.y)
-                ],
-                device: profilerDevice
-            )
+            if ClinicalProfiler.shared.isRecordingEnabled {
+                let timing = buffer.timings(cpuStart: startedAt,
+                                            cpuEnd: CFAbsoluteTimeGetCurrent())
+                ClinicalProfiler.shared.recordSample(
+                    stage: .presentationPass,
+                    cpuTime: timing.cpuTime,
+                    gpuTime: timing.gpuTime > 0 ? timing.gpuTime : nil,
+                    memory: presentationMemoryEstimate,
+                    viewport: ProfilingViewportContext(
+                        resolutionWidth: drawableWidth,
+                        resolutionHeight: drawableHeight,
+                        viewportType: "mpr",
+                        quality: "unknown",
+                        renderMode: "mprPresentation"
+                    ),
+                    metadata: [
+                        "cpuPresentTimeMilliseconds": String(format: "%.6f", timing.cpuTime),
+                        "gpuPresentTimeMilliseconds": timing.gpuTime > 0 ? String(format: "%.6f", timing.gpuTime) : "unavailable",
+                        "kernelTimeMilliseconds": String(format: "%.6f", timing.kernelTime),
+                        "sourceTextureSize": "\(frame.texture.width)x\(frame.texture.height)",
+                        "drawableWidth": "\(drawableWidth)",
+                        "drawableHeight": "\(drawableHeight)",
+                        "drawableSize": "\(drawableWidth)x\(drawableHeight)",
+                        "sourcePixelFormat": "\(frame.texture.pixelFormat)",
+                        "drawablePixelFormat": "\(drawablePixelFormat)",
+                        "voiLUTApplied": colormap == nil ? "false" : "true",
+                        "labelmapOverlayCount": "\(labelmapOverlays.count)",
+                        "monochrome": invert ? "MONOCHROME1" : "MONOCHROME2",
+                        "flipHorizontal": flipHorizontal ? "true" : "false",
+                        "flipVertical": flipVertical ? "true" : "false",
+                        "viewportZoom": String(format: "%.6f", viewportTransform.zoom),
+                        "viewportPanX": String(format: "%.6f", viewportTransform.pan.x),
+                        "viewportPanY": String(format: "%.6f", viewportTransform.pan.y)
+                    ],
+                    device: profilerDevice
+                )
+            }
+            onCommandBufferCompleted?()
         }
         commandBuffer.commit()
         return CFAbsoluteTimeGetCurrent() - startedAt
@@ -411,7 +424,8 @@ public struct MPRPresentationPass {
                                  bitShift: Int32 = 0,
                                  viewportTransform: MPRViewportTransform = .identity,
                                  labelmapOverlays: [MPRLabelmapOverlay] = [],
-                                 onCommandBufferFailure: ((MPRPresentationCommandBufferError) -> Void)? = nil) throws -> CFAbsoluteTime {
+                                 onCommandBufferFailure: ((MPRPresentationCommandBufferError) -> Void)? = nil,
+                                 onCommandBufferCompleted: (() -> Void)? = nil) throws -> CFAbsoluteTime {
         try presentImpl(frame: frame,
                         window: Self.windowRange(for: preset),
                         to: drawable,
@@ -422,7 +436,8 @@ public struct MPRPresentationPass {
                         bitShift: bitShift,
                         viewportTransform: viewportTransform,
                         labelmapOverlays: labelmapOverlays,
-                        onCommandBufferFailure: onCommandBufferFailure)
+                        onCommandBufferFailure: onCommandBufferFailure,
+                        onCommandBufferCompleted: onCommandBufferCompleted)
     }
 
     @discardableResult
@@ -436,7 +451,8 @@ public struct MPRPresentationPass {
                                  bitShift: Int32 = 0,
                                  viewportTransform: MPRViewportTransform = .identity,
                                  labelmapOverlays: [MPRLabelmapOverlay] = [],
-                                 onCommandBufferFailure: ((MPRPresentationCommandBufferError) -> Void)? = nil) throws -> CFAbsoluteTime {
+                                 onCommandBufferFailure: ((MPRPresentationCommandBufferError) -> Void)? = nil,
+                                 onCommandBufferCompleted: (() -> Void)? = nil) throws -> CFAbsoluteTime {
         try presentImpl(frame: frame,
                         window: Self.windowRange(for: preset),
                         to: drawable,
@@ -447,7 +463,8 @@ public struct MPRPresentationPass {
                         bitShift: bitShift,
                         viewportTransform: viewportTransform,
                         labelmapOverlays: labelmapOverlays,
-                        onCommandBufferFailure: onCommandBufferFailure)
+                        onCommandBufferFailure: onCommandBufferFailure,
+                        onCommandBufferCompleted: onCommandBufferCompleted)
     }
 
     public static func windowRange(for preset: WindowLevelPreset) -> ClosedRange<Int32> {

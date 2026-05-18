@@ -4,7 +4,7 @@ Build deterministic volume data pipelines before handing datasets to MTK's Metal
 
 ## Overview
 
-MTKCore's volume pipeline provides a small VTK-like source, filter, and mapper contract for scalar medical volumes. It is intentionally narrower than VTK: the v1 pipeline transforms `VolumeDataset` values and metadata, then maps the result back into the existing `VolumeLayer`, `VolumeTransferFunction`, and MTKUI viewport path.
+MTKCore's volume pipeline provides a small source, filter, and mapper contract for scalar medical volumes. The v1 pipeline transforms `VolumeDataset` values and metadata, then maps the result back into the existing `VolumeLayer`, `VolumeTransferFunction`, and MTKUI viewport path.
 
 The clinical rendering contract does not change. Interactive rendering still flows through `VolumeDataset -> VolumeResourceManager -> GPU textures -> MTKRenderingEngine -> ViewportRenderGraph -> PresentationPass -> MTKView/CAMetalLayer`.
 

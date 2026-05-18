@@ -46,7 +46,7 @@ Volume datasets encapsulate 3D medical imaging data with `ImageData3D` spatial m
 
 ### Volume Pipeline
 
-VTK-like source/filter/mapper contracts for deterministic volume data transforms before datasets enter the Metal-native renderer.
+Source/filter/mapper contracts for deterministic volume data transforms before datasets enter the Metal-native renderer.
 
 - ``VolumePipeline``
 - ``VolumeSource``

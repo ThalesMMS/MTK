@@ -87,6 +87,18 @@ extension ClinicalViewportGridController {
         return clampNormalized(component / Float(count - 1))
     }
 
+    func sliceCount(for axis: MTKCore.Axis) -> Int? {
+        guard let dimensions = currentDataset?.dimensions else { return nil }
+        switch axis {
+        case .axial:
+            return dimensions.depth
+        case .coronal:
+            return dimensions.height
+        case .sagittal:
+            return dimensions.width
+        }
+    }
+
     /// Update the stored normalized position for the given axis if the clamped value differs from the current value.
     /// - Parameters:
     ///   - position: The desired normalized position; it is clamped to the inclusive range 0...1 before use.

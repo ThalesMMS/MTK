@@ -85,13 +85,14 @@ public final class DicomDecoderSeriesLoader: DicomSeriesLoading {
 
         do {
             resetCachedVolume()
+            let metadata = Self.readMetadata(from: url)
             let volume = try loader.loadSeries(in: url, progress: { [weak self] fraction, slices, sliceData, seriesVolume in
                 guard let self else { return }
-                let bridged = self.bridge(seriesVolume)
+                let bridged = self.bridge(seriesVolume, metadata: metadata)
                 progress?(fraction, UInt(slices), sliceData, bridged)
             })
 
-            return bridge(volume)
+            return bridge(volume, metadata: metadata)
         } catch let error as DicomSeriesLoaderError {
             throw Self.map(error)
         }
@@ -103,13 +104,13 @@ public final class DicomDecoderSeriesLoader: DicomSeriesLoading {
     ///
     /// - Parameter volume: DICOM-Decoder volume to bridge
     /// - Returns: Cached or newly created bridged volume
-    private func bridge(_ volume: DicomSeriesVolume) -> BridgedVolume {
+    private func bridge(_ volume: DicomSeriesVolume, metadata: BridgedVolumeMetadata) -> BridgedVolume {
         cacheLock.lock()
         defer { cacheLock.unlock() }
         if let cached = cachedVolume, cached.referencesSameVolume(as: volume) {
             return cached
         }
-        let bridged = BridgedVolume(volume: volume)
+        let bridged = BridgedVolume(volume: volume, metadata: metadata)
         cachedVolume = bridged
         return bridged
     }
@@ -118,6 +119,265 @@ public final class DicomDecoderSeriesLoader: DicomSeriesLoading {
         cacheLock.lock()
         defer { cacheLock.unlock() }
         cachedVolume = nil
+    }
+
+    static func readMetadata(from directory: URL) -> BridgedVolumeMetadata {
+        guard let enumerator = FileManager.default.enumerator(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return .empty
+        }
+
+        let fileURLs = enumerator.compactMap { $0 as? URL }.sorted { $0.path < $1.path }
+        var seriesMetadata = BridgedVolumeMetadata.empty
+        var sliceMetadata: [DICOMSliceMetadata] = []
+
+        for fileURL in fileURLs {
+            let resourceValues = try? fileURL.resourceValues(forKeys: [.isRegularFileKey])
+            guard resourceValues?.isRegularFile == true else { continue }
+            guard let data = try? Data(contentsOf: fileURL, options: .mappedIfSafe) else { continue }
+
+            guard let metadata = readSliceMetadata(fromDICOMData: data) else { continue }
+            seriesMetadata = seriesMetadata.merging(metadata.seriesMetadata)
+            sliceMetadata.append(metadata)
+        }
+
+        if let spacingZ = computeSliceSpacing(from: sliceMetadata) {
+            seriesMetadata = seriesMetadata.withSpacingZ(spacingZ)
+        }
+
+        return seriesMetadata
+    }
+
+    private static func readSliceMetadata(fromDICOMData data: Data) -> DICOMSliceMetadata? {
+        let startOffset = hasDICMPreamble(data) ? 132 : 0
+        if let metadata = parseMetadata(from: data, startOffset: startOffset, explicitVR: true) {
+            return metadata
+        }
+        if let metadata = parseMetadata(from: data, startOffset: startOffset, explicitVR: false) {
+            return metadata
+        }
+        return nil
+    }
+
+    private static func computeSliceSpacing(from metadata: [DICOMSliceMetadata]) -> Double? {
+        let positionedSlices = metadata.compactMap { slice -> SIMD3<Double>? in
+            slice.imagePositionPatient
+        }
+        guard positionedSlices.count >= 2 else { return nil }
+
+        let normal = metadata.lazy.compactMap(\.imageOrientationPatient).first.flatMap(sliceNormal(from:))
+            ?? SIMD3<Double>(0, 0, 1)
+        let projections = positionedSlices
+            .map { simd_dot($0, normal) }
+            .filter(\.isFinite)
+            .sorted()
+        guard projections.count >= 2 else { return nil }
+
+        let deltas = zip(projections.dropFirst(), projections)
+            .map { abs($0 - $1) }
+            .filter { $0.isFinite && $0 > 0.0001 }
+            .sorted()
+        guard !deltas.isEmpty else { return nil }
+
+        let middle = deltas.count / 2
+        if deltas.count.isMultiple(of: 2) {
+            return (deltas[middle - 1] + deltas[middle]) / 2
+        }
+        return deltas[middle]
+    }
+
+    private static func sliceNormal(from orientation: [Double]) -> SIMD3<Double>? {
+        guard orientation.count >= 6 else { return nil }
+        let row = SIMD3<Double>(orientation[0], orientation[1], orientation[2])
+        let column = SIMD3<Double>(orientation[3], orientation[4], orientation[5])
+        let normal = simd_cross(row, column)
+        let length = simd_length(normal)
+        guard length.isFinite, length > 0.0001 else {
+            return nil
+        }
+        return normal / length
+    }
+
+    private static func hasDICMPreamble(_ data: Data) -> Bool {
+        guard data.count >= 132 else { return false }
+        return data[128] == 0x44 && data[129] == 0x49 && data[130] == 0x43 && data[131] == 0x4D
+    }
+
+    private static func parseMetadata(from data: Data,
+                                      startOffset: Int,
+                                      explicitVR: Bool) -> DICOMSliceMetadata? {
+        var offset = startOffset
+        var modality = ""
+        var windowCenter: Double?
+        var windowWidth: Double?
+        var imageOrientationPatient: [Double]?
+        var imagePositionPatient: SIMD3<Double>?
+        var instanceNumber: Int?
+        var foundMetadata = false
+
+        while offset + 8 <= data.count {
+            let group = readUInt16LE(from: data, at: offset)
+            let element = readUInt16LE(from: data, at: offset + 2)
+            let tag = (UInt32(group) << 16) | UInt32(element)
+            if tag == 0x7FE0_0010 {
+                break
+            }
+
+            let valueOffset: Int
+            let valueLength: UInt32
+            if explicitVR {
+                guard let vr = valueRepresentation(from: data, at: offset + 4) else {
+                    return foundMetadata
+                        ? DICOMSliceMetadata(
+                            modality: modality,
+                            windowCenter: windowCenter,
+                            windowWidth: windowWidth,
+                            imageOrientationPatient: imageOrientationPatient,
+                            imagePositionPatient: imagePositionPatient,
+                            instanceNumber: instanceNumber
+                        )
+                        : nil
+                }
+                if usesLongExplicitLength(vr) {
+                    guard offset + 12 <= data.count else { break }
+                    valueLength = readUInt32LE(from: data, at: offset + 8)
+                    valueOffset = offset + 12
+                } else {
+                    valueLength = UInt32(readUInt16LE(from: data, at: offset + 6))
+                    valueOffset = offset + 8
+                }
+            } else {
+                valueLength = readUInt32LE(from: data, at: offset + 4)
+                valueOffset = offset + 8
+            }
+
+            if valueLength == UInt32.max {
+                guard let nextOffset = offsetAfterUndefinedLengthValue(in: data, from: valueOffset),
+                      nextOffset > offset else {
+                    break
+                }
+                offset = nextOffset
+                continue
+            }
+
+            if valueOffset > data.count {
+                break
+            }
+
+            let length = Int(valueLength)
+            guard length >= 0, valueOffset + length <= data.count else {
+                break
+            }
+
+            if tag == 0x0008_0060 {
+                modality = dicomString(from: data, offset: valueOffset, length: length)
+                foundMetadata = foundMetadata || !modality.isEmpty
+            } else if tag == 0x0028_1050 {
+                windowCenter = firstDouble(in: dicomString(from: data, offset: valueOffset, length: length))
+                foundMetadata = foundMetadata || windowCenter != nil
+            } else if tag == 0x0028_1051 {
+                windowWidth = firstDouble(in: dicomString(from: data, offset: valueOffset, length: length))
+                foundMetadata = foundMetadata || windowWidth != nil
+            } else if tag == 0x0020_0037 {
+                let values = doubles(in: dicomString(from: data, offset: valueOffset, length: length))
+                if values.count >= 6 {
+                    imageOrientationPatient = Array(values.prefix(6))
+                    foundMetadata = true
+                }
+            } else if tag == 0x0020_0032 {
+                let values = doubles(in: dicomString(from: data, offset: valueOffset, length: length))
+                if values.count >= 3 {
+                    imagePositionPatient = SIMD3<Double>(values[0], values[1], values[2])
+                    foundMetadata = true
+                }
+            } else if tag == 0x0020_0013 {
+                if let value = firstDouble(in: dicomString(from: data, offset: valueOffset, length: length)),
+                   value.isFinite {
+                    instanceNumber = Int(value)
+                }
+                foundMetadata = foundMetadata || instanceNumber != nil
+            }
+
+            let nextOffset = valueOffset + length
+            guard nextOffset > offset else { break }
+            offset = nextOffset
+        }
+
+        guard foundMetadata else { return nil }
+        return DICOMSliceMetadata(
+            modality: modality,
+            windowCenter: windowCenter,
+            windowWidth: windowWidth,
+            imageOrientationPatient: imageOrientationPatient,
+            imagePositionPatient: imagePositionPatient,
+            instanceNumber: instanceNumber
+        )
+    }
+
+    private static func offsetAfterUndefinedLengthValue(in data: Data, from valueOffset: Int) -> Int? {
+        guard valueOffset + 8 <= data.count else { return nil }
+        var offset = valueOffset
+        while offset + 8 <= data.count {
+            let group = readUInt16LE(from: data, at: offset)
+            let element = readUInt16LE(from: data, at: offset + 2)
+            if group == 0xFFFE, element == 0xE0DD {
+                return offset + 8
+            }
+            offset += 1
+        }
+        return nil
+    }
+
+    private static func valueRepresentation(from data: Data, at offset: Int) -> String? {
+        guard offset + 2 <= data.count else { return nil }
+        let bytes = [data[offset], data[offset + 1]]
+        guard bytes.allSatisfy({ ($0 >= 0x41 && $0 <= 0x5A) || ($0 >= 0x30 && $0 <= 0x39) }) else {
+            return nil
+        }
+        return String(bytes: bytes, encoding: .ascii)
+    }
+
+    private static func usesLongExplicitLength(_ vr: String) -> Bool {
+        switch vr {
+        case "OB", "OD", "OF", "OL", "OW", "SQ", "UC", "UR", "UT", "UN":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func dicomString(from data: Data, offset: Int, length: Int) -> String {
+        let bytes = data[offset..<(offset + length)].filter { $0 != 0 }
+        return String(bytes: bytes, encoding: .utf8)?
+            .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines) ?? ""
+    }
+
+    private static func readUInt16LE(from data: Data, at offset: Int) -> UInt16 {
+        UInt16(data[offset]) | (UInt16(data[offset + 1]) << 8)
+    }
+
+    private static func readUInt32LE(from data: Data, at offset: Int) -> UInt32 {
+        UInt32(data[offset]) |
+            (UInt32(data[offset + 1]) << 8) |
+            (UInt32(data[offset + 2]) << 16) |
+            (UInt32(data[offset + 3]) << 24)
+    }
+
+    private static func firstDouble(in dicomValue: String) -> Double? {
+        let value = dicomValue
+            .split(whereSeparator: { $0 == "\\" || $0.isWhitespace })
+            .first
+            .map(String.init)
+        return value.flatMap(Double.init)
+    }
+
+    private static func doubles(in dicomValue: String) -> [Double] {
+        dicomValue
+            .split(whereSeparator: { $0 == "\\" || $0.isWhitespace })
+            .compactMap { Double($0) }
     }
 
     private static func map(_ error: DicomSeriesLoaderError) -> DicomVolumeLoaderError {
@@ -144,18 +404,65 @@ public final class DicomDecoderSeriesLoader: DicomSeriesLoading {
     }
 }
 
+struct BridgedVolumeMetadata: Equatable {
+    static let empty = BridgedVolumeMetadata(modality: "", windowCenter: nil, windowWidth: nil, spacingZ: nil)
+
+    let modality: String
+    let windowCenter: Double?
+    let windowWidth: Double?
+    let spacingZ: Double?
+
+    func merging(_ other: BridgedVolumeMetadata) -> BridgedVolumeMetadata {
+        BridgedVolumeMetadata(
+            modality: modality.isEmpty ? other.modality : modality,
+            windowCenter: windowCenter ?? other.windowCenter,
+            windowWidth: windowWidth ?? other.windowWidth,
+            spacingZ: spacingZ ?? other.spacingZ
+        )
+    }
+
+    func withSpacingZ(_ spacingZ: Double) -> BridgedVolumeMetadata {
+        BridgedVolumeMetadata(
+            modality: modality,
+            windowCenter: windowCenter,
+            windowWidth: windowWidth,
+            spacingZ: spacingZ
+        )
+    }
+}
+
+private struct DICOMSliceMetadata: Equatable {
+    let modality: String
+    let windowCenter: Double?
+    let windowWidth: Double?
+    let imageOrientationPatient: [Double]?
+    let imagePositionPatient: SIMD3<Double>?
+    let instanceNumber: Int?
+
+    var seriesMetadata: BridgedVolumeMetadata {
+        BridgedVolumeMetadata(
+            modality: modality,
+            windowCenter: windowCenter,
+            windowWidth: windowWidth,
+            spacingZ: nil
+        )
+    }
+}
+
 /// Bridge adapter conforming DicomCore.DicomSeriesVolume to DICOMSeriesVolumeProtocol.
 ///
 /// Wraps the DICOM-Decoder package's volume representation, translating property names and
 /// converting coordinate system matrices from Double to Float precision for Metal compatibility.
 private final class BridgedVolume: DICOMSeriesVolumeProtocol {
     private let volume: DicomSeriesVolume
+    private let metadata: BridgedVolumeMetadata
 
     /// Create a bridge wrapper around a DicomSeriesVolume.
     ///
     /// - Parameter volume: DICOM-Decoder volume to wrap
-    init(volume: DicomSeriesVolume) {
+    init(volume: DicomSeriesVolume, metadata: BridgedVolumeMetadata) {
         self.volume = volume
+        self.metadata = metadata
     }
 
     /// Check if this bridge matches the current per-load cache key.
@@ -192,7 +499,7 @@ private final class BridgedVolume: DICOMSeriesVolumeProtocol {
     var spacingY: Double { volume.spacing.y }
 
     /// Physical spacing between slice centers (millimeters).
-    var spacingZ: Double { volume.spacing.z }
+    var spacingZ: Double { metadata.spacingZ ?? volume.spacing.z }
 
     /// 3×3 orientation matrix mapping voxel indices to patient coordinate system.
     ///
@@ -233,6 +540,15 @@ private final class BridgedVolume: DICOMSeriesVolumeProtocol {
 
     /// Human-readable series description from DICOM metadata (0008,103E).
     var seriesDescription: String { volume.seriesDescription }
+
+    /// Imaging modality from DICOM metadata (0008,0060).
+    var modality: String { metadata.modality }
+
+    /// Window center from DICOM metadata (0028,1050), when present.
+    var windowCenter: Double? { metadata.windowCenter }
+
+    /// Window width from DICOM metadata (0028,1051), when present.
+    var windowWidth: Double? { metadata.windowWidth }
 }
 
 public extension DicomVolumeLoader {

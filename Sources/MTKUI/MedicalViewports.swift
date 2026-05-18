@@ -482,6 +482,7 @@ public final class VolumeViewport3D: ObservableObject, MedicalViewport {
     public var surface: any ViewportPresenting { metalSurface }
     public var viewportType: MedicalViewportType { .volume3D }
     public var renderMode: MedicalViewportRenderMode { .volume3D(method: method) }
+    public var adaptiveSamplingEnabled: Bool { controller.adaptiveSamplingEnabled }
 
     private let controller: VolumeViewportController
     private var dataset: VolumeDataset?
@@ -632,6 +633,11 @@ public final class VolumeViewport3D: ObservableObject, MedicalViewport {
         refreshState()
     }
 
+    public func zoomCamera(scale: Float) async {
+        await controller.zoomCamera(scale: scale)
+        refreshState()
+    }
+
     public func tiltCamera(roll: Float, pitch: Float) async {
         await controller.tiltCamera(roll: roll, pitch: pitch)
         refreshState()
@@ -642,8 +648,18 @@ public final class VolumeViewport3D: ObservableObject, MedicalViewport {
         refreshState()
     }
 
+    func beginNativeCameraInteraction() {
+        controller.beginAdaptiveSamplingInteractionSynchronously()
+        refreshState()
+    }
+
     public func endAdaptiveSamplingInteraction() async {
         await controller.endAdaptiveSamplingInteraction()
+        refreshState()
+    }
+
+    func endNativeCameraInteraction() {
+        controller.endAdaptiveSamplingInteractionSynchronously()
         refreshState()
     }
 
@@ -652,8 +668,64 @@ public final class VolumeViewport3D: ObservableObject, MedicalViewport {
         refreshState()
     }
 
+    public func setAdaptiveSampling(_ enabled: Bool) async {
+        await controller.setAdaptiveSampling(enabled)
+        refreshState()
+    }
+
+    public func setSamplingStep(_ step: Float) async {
+        await controller.setSamplingStep(step)
+        refreshState()
+    }
+
     public func renderSnapshotFrame() async throws -> VolumeRenderFrame {
         try await controller.renderVolumeSnapshotFrame()
+    }
+
+    @discardableResult
+    func applyNativeOrbitDelta(_ delta: CGSize) -> Bool {
+        let changed = controller.rotateCameraInteractively(
+            screenDelta: SIMD2<Float>(Float(delta.width), Float(delta.height))
+        )
+        if changed { refreshState() }
+        return changed
+    }
+
+    @discardableResult
+    func applyNativePanDelta(_ delta: CGSize) -> Bool {
+        let changed = controller.panCameraInteractively(
+            screenDelta: SIMD2<Float>(Float(delta.width), Float(delta.height))
+        )
+        if changed { refreshState() }
+        return changed
+    }
+
+    @discardableResult
+    func applyNativeZoomScale(_ scale: Float) -> Bool {
+        let changed = controller.zoomCameraInteractively(scale: scale)
+        if changed { refreshState() }
+        return changed
+    }
+
+    @discardableResult
+    func applyNativeRollRadians(_ radians: Float) -> Bool {
+        let changed = controller.tiltCameraInteractively(roll: radians, pitch: 0)
+        if changed { refreshState() }
+        return changed
+    }
+
+    func flushNativeCameraInteractionRender() {
+        controller.scheduleInteractiveCameraRender()
+        refreshState()
+    }
+
+    func nativeCameraInteractionDiagnostics() -> String {
+        controller.nativeCameraInteractionDiagnostics()
+    }
+
+    @_spi(Testing)
+    public var debugSamplingStep: Float {
+        controller.debugSamplingStep
     }
 
     private func refreshState() {

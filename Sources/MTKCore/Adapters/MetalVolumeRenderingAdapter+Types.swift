@@ -74,7 +74,7 @@ public struct ExtendedRenderingState: Sendable {
     var earlyTerminationThreshold: Float = 0.95
 
     /// Per-channel intensity multipliers (RGBA).
-    var channelIntensities: SIMD4<Float> = SIMD4<Float>(repeating: 1)
+    var channelIntensities: SIMD4<Float> = SIMD4<Float>(1, 0, 0, 0)
 
     /// Per-channel tone curve control points (channel index -> array of (input, output) pairs).
     var toneCurvePoints: [Int: [SIMD2<Float>]] = [:]

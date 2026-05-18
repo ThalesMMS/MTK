@@ -2,6 +2,7 @@ import CoreGraphics
 import Metal
 import MetalKit
 import ObjectiveC.runtime
+import QuartzCore
 import XCTest
 @_spi(Testing) import MTKCore
 #if os(macOS)
@@ -23,9 +24,13 @@ final class MetalViewportSurfaceTests: XCTestCase {
         surface.setContentScale(2)
 
         XCTAssertTrue(surface.metalView.isPaused)
-        XCTAssertFalse(surface.metalView.enableSetNeedsDisplay)
+        XCTAssertTrue(surface.metalView.enableSetNeedsDisplay)
         XCTAssertFalse(surface.metalView.framebufferOnly)
         XCTAssertFalse(surface.metalView.autoResizeDrawable)
+        if let metalLayer = surface.metalView.layer as? CAMetalLayer {
+            XCTAssertFalse(metalLayer.presentsWithTransaction)
+            XCTAssertTrue(metalLayer.isOpaque)
+        }
         XCTAssertEqual(surface.drawablePixelSize.width, 64)
         XCTAssertEqual(surface.drawablePixelSize.height, 48)
         XCTAssertEqual(surface.metalView.drawableSize.width, 64)
@@ -44,6 +49,54 @@ final class MetalViewportSurfaceTests: XCTestCase {
         XCTAssertEqual(surface.drawablePixelSize, CGSize(width: 60, height: 30))
         XCTAssertEqual(reportedSizes.last, CGSize(width: 60, height: 30))
     }
+
+#if os(iOS)
+    func testPresentationSurfaceReadyFiresWhenViewMovesToWindowWithoutSizeChange() throws {
+        let device = try requireMetalDevice()
+        let surface = try MetalViewportSurface(device: device)
+        surface.view.frame = CGRect(x: 0, y: 0, width: 64, height: 48)
+        surface.setContentScale(1)
+        XCTAssertFalse(surface.isPresentationSurfaceReady)
+
+        var readySizes: [CGSize] = []
+        surface.onPresentationSurfaceReady = { readySizes.append($0) }
+        XCTAssertTrue(readySizes.isEmpty)
+
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 64, height: 48))
+        window.addSubview(surface.view)
+        window.makeKeyAndVisible()
+        window.layoutIfNeeded()
+        surface.view.layoutIfNeeded()
+
+        XCTAssertTrue(surface.isPresentationSurfaceReady)
+        XCTAssertEqual(readySizes.last, CGSize(width: 64, height: 48))
+        XCTAssertGreaterThan(surface.presentationSurfaceReadyCountForTesting, 0)
+        XCTAssertNotNil(surface.lastPresentationSurfaceReadyAtForTesting)
+    }
+
+    func testVolumeViewportRendersAfterSurfaceAttachmentWhenDatasetWasAppliedBeforeViewWasReady() async throws {
+        let device = try requireMetalDevice()
+        let viewport = try VolumeViewport3D(device: device)
+        viewport.metalSurface.view.frame = CGRect(x: 0, y: 0, width: 64, height: 64)
+        viewport.metalSurface.setContentScale(1)
+
+        await viewport.applyDataset(makeDataset())
+        let completedBeforeAttachment = viewport.metalSurface.completedPresentationCountForTesting
+
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 64, height: 64))
+        let container = MTKViewRepresentable.ContainerView()
+        container.frame = window.bounds
+        container.host(viewport.metalSurface.view)
+        window.addSubview(container)
+        window.makeKeyAndVisible()
+        window.layoutIfNeeded()
+        container.layoutIfNeeded()
+        viewport.metalSurface.view.layoutIfNeeded()
+
+        _ = try await waitForCompletedPresentation(viewport.metalSurface,
+                                                   after: completedBeforeAttachment)
+    }
+#endif
 
     func testMaximumContentScaleCapsDrawableResolution() throws {
         let device = try requireMetalDevice()
@@ -106,6 +159,8 @@ final class MetalViewportSurfaceTests: XCTestCase {
         second.view.frame = CGRect(x: 0, y: 0, width: 4, height: 4)
         first.setContentScale(1)
         second.setContentScale(1)
+        let firstWindow = attachSurfaceToPresentationWindowIfNeeded(first, width: 4, height: 4)
+        let secondWindow = attachSurfaceToPresentationWindowIfNeeded(second, width: 4, height: 4)
 
         let firstTexture = try makeTexture(device: device,
                                            width: 4,
@@ -122,6 +177,8 @@ final class MetalViewportSurfaceTests: XCTestCase {
         XCTAssertTrue(first.presentedTexture === firstTexture)
         XCTAssertTrue(second.presentedTexture === secondTexture)
         XCTAssertFalse(first.presentedTexture === second.presentedTexture)
+        withExtendedLifetime(firstWindow) {}
+        withExtendedLifetime(secondWindow) {}
     }
 
     func testOutputTextureDescriptorMatchesDrawableSize() throws {
@@ -145,6 +202,7 @@ final class MetalViewportSurfaceTests: XCTestCase {
         let surface = try MetalViewportSurface(device: device)
         surface.view.frame = CGRect(x: 0, y: 0, width: 4, height: 4)
         surface.setContentScale(1)
+        let window = attachSurfaceToPresentationWindowIfNeeded(surface, width: 4, height: 4)
         let texture = try makeTexture(device: device,
                                       width: 4,
                                       height: 4,
@@ -162,6 +220,31 @@ final class MetalViewportSurfaceTests: XCTestCase {
 
         XCTAssertNoThrow(try surface.present(frame: frame))
         XCTAssertTrue(surface.presentedTexture === texture)
+        withExtendedLifetime(window) {}
+    }
+
+    func testPresentFrameTracksDrawableCommandBufferCompletion() async throws {
+        let device = try requireMetalDevice()
+        let surface = try MetalViewportSurface(device: device)
+        surface.view.frame = CGRect(x: 0, y: 0, width: 4, height: 4)
+        surface.setContentScale(1)
+        let window = attachSurfaceToPresentationWindowIfNeeded(surface, width: 4, height: 4)
+        let texture = try makeTexture(device: device,
+                                      width: 4,
+                                      height: 4,
+                                      pixelFormat: .bgra8Unorm)
+        let submittedBefore = surface.submittedPresentationCountForTesting
+        let completedBefore = surface.completedPresentationCountForTesting
+
+        try surface.present(texture, presentationToken: 42)
+        XCTAssertEqual(surface.submittedPresentationCountForTesting, submittedBefore + 1)
+
+        let completed = try await waitForCompletedPresentation(surface, after: completedBefore)
+        XCTAssertEqual(completed, completedBefore + 1)
+        XCTAssertEqual(surface.lastCompletedPresentationTokenForTesting, 42)
+        XCTAssertNotNil(surface.lastPresentationCompletedAtForTesting)
+        XCTAssertEqual(surface.inFlightPresentationCountForTesting, 0)
+        withExtendedLifetime(window) {}
     }
 
     func testPresentRejectsTexturePixelFormatMismatch() throws {
@@ -181,6 +264,9 @@ final class MetalViewportSurfaceTests: XCTestCase {
             )
         }
         XCTAssertNil(surface.presentedTexture)
+        XCTAssertEqual(surface.submittedPresentationCountForTesting, 0)
+        XCTAssertEqual(surface.failedPresentationCountForTesting, 0)
+        XCTAssertEqual(surface.inFlightPresentationCountForTesting, 0)
     }
 
 #if os(macOS)
@@ -231,6 +317,7 @@ final class MetalViewportSurfaceTests: XCTestCase {
         let surface = try MetalViewportSurface(device: device)
         surface.view.frame = CGRect(x: 0, y: 0, width: 8, height: 8)
         surface.setContentScale(1)
+        let window = attachSurfaceToPresentationWindowIfNeeded(surface, width: 8, height: 8)
 
         for _ in 0..<3 {
             let frame = try await engine.render(viewport)
@@ -251,6 +338,7 @@ final class MetalViewportSurfaceTests: XCTestCase {
         XCTAssertEqual(leaseAcquiredCount, 3)
         XCTAssertEqual(leasePresentedCount, 3)
         XCTAssertEqual(leaseReleasedCount, 3)
+        withExtendedLifetime(window) {}
     }
 #endif
 
@@ -259,6 +347,7 @@ final class MetalViewportSurfaceTests: XCTestCase {
         let surface = try MetalViewportSurface(device: device)
         surface.view.frame = CGRect(x: 0, y: 0, width: 4, height: 4)
         surface.setContentScale(1)
+        let window = attachSurfaceToPresentationWindowIfNeeded(surface, width: 4, height: 4)
         let texture = try makeTexture(device: device,
                                       width: 4,
                                       height: 4,
@@ -278,6 +367,7 @@ final class MetalViewportSurfaceTests: XCTestCase {
         XCTAssertEqual(sample.metadata?["drawablePixelFormat"], "\(MTLPixelFormat.bgra8Unorm)")
         XCTAssertNotNil(sample.metadata?["cpuPresentTimeMilliseconds"])
         XCTAssertNotNil(sample.metadata?["gpuPresentTimeMilliseconds"])
+        withExtendedLifetime(window) {}
     }
 
     /// Enforces the ADR contract that onscreen presentation never performs CPU readback.
@@ -286,6 +376,7 @@ final class MetalViewportSurfaceTests: XCTestCase {
         let surface = try MetalViewportSurface(device: device)
         surface.view.frame = CGRect(x: 0, y: 0, width: 4, height: 4)
         surface.setContentScale(1)
+        let window = attachSurfaceToPresentationWindowIfNeeded(surface, width: 4, height: 4)
         let texture = try makeTexture(device: device,
                                       width: 4,
                                       height: 4,
@@ -294,6 +385,7 @@ final class MetalViewportSurfaceTests: XCTestCase {
         try TextureReadbackSpy.assertNoReadback(on: texture) {
             try surface.present(texture)
         }
+        withExtendedLifetime(window) {}
     }
 
 #if canImport(SwiftUI)
@@ -328,6 +420,211 @@ final class MetalViewportSurfaceTests: XCTestCase {
             Color.clear
         }
     }
+
+#if os(iOS)
+    func testMetalViewportContainerCanBeConstructedWithNative3DInteraction() throws {
+        let device = try requireMetalDevice()
+        let viewport = try VolumeViewport3D(device: device)
+
+        _ = MetalViewportContainer(
+            surface: viewport.metalSurface,
+            native3DInteraction: NativeVolume3DInteraction(viewport: viewport)
+        )
+    }
+
+    func testNative3DInteractionInstallerAttachesRecognizersToViewportContainer() {
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 240, height: 180))
+        let container = MTKViewRepresentable.ContainerView()
+        container.frame = window.bounds
+        window.addSubview(container)
+        let windowRecognizerCountBefore = window.gestureRecognizers?.count ?? 0
+
+        let installer = NativeVolume3DInteractionInstaller()
+        let interaction = NativeVolume3DInteraction(
+            preferredFramesPerSecond: 30,
+            pan: { _ in true },
+            pinch: { _ in true }
+        )
+
+        installer.installForTesting(on: container, interaction: interaction)
+
+        let recognizers = container.gestureRecognizers ?? []
+        let panRecognizers = recognizers.compactMap { $0 as? UIPanGestureRecognizer }
+        XCTAssertTrue(installer.installedViewForTesting === container)
+        XCTAssertEqual(panRecognizers.count, 2)
+        XCTAssertTrue(panRecognizers.contains {
+            $0.minimumNumberOfTouches == 1 && $0.maximumNumberOfTouches == 1
+        })
+        XCTAssertTrue(panRecognizers.contains {
+            $0.minimumNumberOfTouches == 2 && $0.maximumNumberOfTouches == 2
+        })
+        XCTAssertTrue(recognizers.contains { $0 is UIPinchGestureRecognizer })
+        XCTAssertTrue(recognizers.contains { $0 is UIRotationGestureRecognizer })
+        XCTAssertEqual(window.gestureRecognizers?.count ?? 0, windowRecognizerCountBefore)
+    }
+
+    func testNative3DInteractionPanDeltaFlushesFrameImmediately() {
+        let installer = NativeVolume3DInteractionInstaller()
+        let container = MTKViewRepresentable.ContainerView()
+        var panDeltas: [CGSize] = []
+        var frameCount = 0
+        let interaction = NativeVolume3DInteraction(
+            preferredFramesPerSecond: 30,
+            pan: { delta in
+                panDeltas.append(delta)
+                return true
+            },
+            frame: {
+                frameCount += 1
+            }
+        )
+
+        installer.installForTesting(on: container, interaction: interaction)
+        installer.applyPanDeltaForTesting(CGSize(width: 12, height: -8))
+
+        XCTAssertEqual(panDeltas, [CGSize(width: 12, height: -8)])
+        XCTAssertEqual(frameCount, 1)
+        XCTAssertFalse(installer.needsFrameForTesting)
+    }
+
+    func testNative3DInteractionPacesSubsequentGestureFramesToDisplayLink() {
+        let installer = NativeVolume3DInteractionInstaller()
+        let container = MTKViewRepresentable.ContainerView()
+        var frameCount = 0
+        let interaction = NativeVolume3DInteraction(
+            preferredFramesPerSecond: 30,
+            pan: { _ in true },
+            frame: {
+                frameCount += 1
+            }
+        )
+
+        installer.installForTesting(on: container, interaction: interaction)
+        installer.beginGestureForTesting()
+        installer.applyPanDeltaForTesting(CGSize(width: 12, height: -8))
+        installer.applyPanDeltaForTesting(CGSize(width: 8, height: -4))
+
+        XCTAssertEqual(frameCount, 1)
+        XCTAssertTrue(installer.needsFrameForTesting)
+        XCTAssertEqual(installer.frameFlushCountForTesting, 1)
+
+        installer.flushFrameForTesting()
+
+        XCTAssertEqual(frameCount, 2)
+        XCTAssertFalse(installer.needsFrameForTesting)
+        installer.endGestureForTesting()
+    }
+
+    func testNative3DInteractionTwoFingerPanDeltaFlushesFrameImmediately() {
+        let installer = NativeVolume3DInteractionInstaller()
+        let container = MTKViewRepresentable.ContainerView()
+        var panDeltas: [CGSize] = []
+        var frameCount = 0
+        let interaction = NativeVolume3DInteraction(
+            preferredFramesPerSecond: 30,
+            twoFingerPan: { delta in
+                panDeltas.append(delta)
+                return true
+            },
+            frame: {
+                frameCount += 1
+            }
+        )
+
+        installer.installForTesting(on: container, interaction: interaction)
+        installer.applyTwoFingerPanDeltaForTesting(CGSize(width: -6, height: 10))
+
+        XCTAssertEqual(panDeltas, [CGSize(width: -6, height: 10)])
+        XCTAssertEqual(frameCount, 1)
+        XCTAssertFalse(installer.needsFrameForTesting)
+    }
+
+    func testNative3DInteractionRotationInvertsDirectionAndFlushesFrameImmediately() {
+        let installer = NativeVolume3DInteractionInstaller()
+        let container = MTKViewRepresentable.ContainerView()
+        var rotations: [CGFloat] = []
+        var frameCount = 0
+        let interaction = NativeVolume3DInteraction(
+            preferredFramesPerSecond: 30,
+            rotation: { radians in
+                rotations.append(radians)
+                return true
+            },
+            frame: {
+                frameCount += 1
+            }
+        )
+
+        installer.installForTesting(on: container, interaction: interaction)
+        installer.applyRotationRadiansForTesting(0.25)
+
+        XCTAssertEqual(rotations, [-0.25])
+        XCTAssertEqual(frameCount, 1)
+        XCTAssertFalse(installer.needsFrameForTesting)
+    }
+
+    func testNativeViewportHostFlushesFrameWhenAttachedToWindow() throws {
+        let device = try requireMetalDevice()
+        let surface = try MetalViewportSurface(device: device)
+        let installer = NativeVolume3DInteractionInstaller()
+        var frameCount = 0
+        let interaction = NativeVolume3DInteraction(
+            preferredFramesPerSecond: 30,
+            frame: {
+                frameCount += 1
+            }
+        )
+        let container = MTKViewRepresentable.ContainerView()
+        container.frame = CGRect(x: 0, y: 0, width: 96, height: 64)
+        container.configure(surface: surface,
+                            installer: installer,
+                            interaction: interaction)
+
+        XCTAssertEqual(frameCount, 0)
+        XCTAssertFalse(surface.view.isUserInteractionEnabled)
+
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 96, height: 64))
+        window.addSubview(container)
+        window.makeKeyAndVisible()
+        window.layoutIfNeeded()
+        container.layoutIfNeeded()
+
+        XCTAssertGreaterThan(frameCount, 0)
+        XCTAssertTrue(installer.installedViewForTesting === container)
+    }
+
+    func testNativeVolumeViewportFlushCompletesDrawablePresentationWithoutToolbarInteraction() async throws {
+        let device = try requireMetalDevice()
+        let viewport = try VolumeViewport3D(device: device)
+        viewport.metalSurface.view.frame = CGRect(x: 0, y: 0, width: 64, height: 64)
+        viewport.metalSurface.setContentScale(1)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 64, height: 64))
+        let surfaceContainer = MTKViewRepresentable.ContainerView()
+        surfaceContainer.frame = window.bounds
+        surfaceContainer.host(viewport.metalSurface.view)
+        window.addSubview(surfaceContainer)
+        window.makeKeyAndVisible()
+        window.layoutIfNeeded()
+        surfaceContainer.layoutIfNeeded()
+        viewport.metalSurface.view.layoutIfNeeded()
+
+        await viewport.applyDataset(makeDataset())
+        _ = try await waitForPresentedTexture(viewport.metalSurface)
+        _ = try await waitForCompletedPresentation(viewport.metalSurface, after: 0)
+
+        let completedBeforeInteraction = viewport.metalSurface.completedPresentationCountForTesting
+        let installer = NativeVolume3DInteractionInstaller()
+        let interaction = NativeVolume3DInteraction(viewport: viewport)
+        installer.installForTesting(on: MTKViewRepresentable.ContainerView(),
+                                    interaction: interaction)
+
+        installer.applyPanDeltaForTesting(CGSize(width: 18, height: -12))
+
+        _ = try await waitForCompletedPresentation(viewport.metalSurface,
+                                                   after: completedBeforeInteraction)
+        withExtendedLifetime(window) {}
+    }
+#endif
 #endif
 
     private func requireMetalDevice() throws -> any MTLDevice {
@@ -347,6 +644,41 @@ final class MetalViewportSurfaceTests: XCTestCase {
             intensityRange: (-1024)...3071,
             recommendedWindow: (-100)...300
         )
+    }
+
+    private func waitForPresentedTexture(_ surface: MetalViewportSurface,
+                                         file: StaticString = #filePath,
+                                         line: UInt = #line) async throws -> any MTLTexture {
+        for _ in 0..<80 {
+            if let texture = surface.presentedTexture {
+                return texture
+            }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        return try XCTUnwrap(surface.presentedTexture,
+                             "Timed out waiting for viewport presentation",
+                             file: file,
+                             line: line)
+    }
+
+    private func waitForCompletedPresentation(_ surface: MetalViewportSurface,
+                                              after completedCount: UInt64,
+                                              file: StaticString = #filePath,
+                                              line: UInt = #line) async throws -> UInt64 {
+        for _ in 0..<80 {
+            let current = surface.completedPresentationCountForTesting
+            if current > completedCount {
+                return current
+            }
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        let current = surface.completedPresentationCountForTesting
+        XCTAssertGreaterThan(current,
+                             completedCount,
+                             "Timed out waiting for drawable presentation completion",
+                             file: file,
+                             line: line)
+        return current
     }
 
     private func waitUntilReleased(_ lease: OutputTextureLease,
@@ -372,6 +704,22 @@ final class MetalViewportSurfaceTests: XCTestCase {
         }
         XCTFail("Timed out waiting for presentation sample")
         throw TestTimeoutError.presentationSample
+    }
+
+    private func attachSurfaceToPresentationWindowIfNeeded(_ surface: MetalViewportSurface,
+                                                           width: CGFloat,
+                                                           height: CGFloat) -> AnyObject? {
+#if os(iOS)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: width, height: height))
+        surface.view.frame = window.bounds
+        window.addSubview(surface.view)
+        window.makeKeyAndVisible()
+        window.layoutIfNeeded()
+        surface.view.layoutIfNeeded()
+        return window
+#else
+        return nil
+#endif
     }
 
     private func makeTexture(device: any MTLDevice,

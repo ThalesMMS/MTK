@@ -126,9 +126,19 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     let volumeLayerResourceCache = VolumeLayerResourceCache()
     let qualityScheduler: RenderQualityScheduler
     var renderTask: Task<Void, Never>?
+    var interactiveRenderWatchdogTask: Task<Void, Never>?
+    var surfaceRenderDebounceTask: Task<Void, Never>?
+    var interactiveOutputPrewarmTask: Task<Void, Never>?
+    var pendingInteractiveOutputPrewarmSize: CGSize?
+    var lastStableSurfaceRenderSize: CGSize?
+    var surfaceRenderDebounceNanoseconds: UInt64 = 80_000_000
+    var stableSurfaceRenderScheduleCount = 0
     var renderGeneration: UInt64 = 0
     var renderPending = false
     var renderInFlight = false
+    var presentationInFlightToken: UInt64?
+    var presentationFailureCount: UInt64 = 0
+    var cameraInteractionGeneration: UInt64 = 0
     var qualityStateCancellable: AnyCancellable?
     let mprFrameCache = MPRFrameCache<MPRPlaneAxis>()
 
@@ -157,14 +167,17 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     var defaultTransferShift: Float = 0
 
     var cameraTarget = SIMD3<Float>(repeating: 0.5)
-    var cameraOffset = SIMD3<Float>(0, 0, 2)
-    var cameraUpVector = SIMD3<Float>(0, 1, 0)
-    var fallbackWorldUp = SIMD3<Float>(0, 1, 0)
+    var cameraOffset = SIMD3<Float>(0, -2, 0)
+    var cameraUpVector = SIMD3<Float>(0, 0, 1)
+    var cameraYawRadians: Float = 0
+    var cameraPitchRadians: Float = 0
+    var fallbackWorldUp = SIMD3<Float>(0, 0, 1)
     var fallbackCameraTarget = SIMD3<Float>(repeating: 0.5)
     var initialCameraTarget = SIMD3<Float>(repeating: 0.5)
-    var initialCameraOffset = SIMD3<Float>(0, 0, 2)
-    var initialCameraUp = SIMD3<Float>(0, 1, 0)
+    var initialCameraOffset = SIMD3<Float>(0, -2, 0)
+    var initialCameraUp = SIMD3<Float>(0, 0, 1)
     var cameraDistanceLimits: ClosedRange<Float> = 0.1...16
+    var volumeOrbitState = Volume3DOrbitState()
     var volumeWorldCenter = SIMD3<Float>(repeating: 0.5)
     var volumeBoundingRadius: Float = 0.8660254
     var patientLongitudinalAxis = SIMD3<Float>(0, 0, 1)
@@ -202,10 +215,30 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
                                                               commandQueue: queue)
         self.mprRenderer = try MetalMPRAdapter(device: resolvedDevice,
                                                commandQueue: queue)
+        logInteractionDebug("[MTK3DInteraction] controller.init queue controllerQueueID=\(objectIdentifier(queue as AnyObject)) surfaceQueueID=\(objectIdentifier(viewportSurface.commandQueue as AnyObject)) sameSurfaceQueue=\(ObjectIdentifier(queue as AnyObject) == ObjectIdentifier(viewportSurface.commandQueue as AnyObject)) device=\(resolvedDevice.name)")
 
-        viewportSurface.onDrawableSizeChange = { [weak self] _ in
-            self?.invalidateMPRCache()
-            self?.scheduleRender()
+        viewportSurface.onDrawableSizeChange = { [weak self] size in
+            guard let self else { return }
+            self.logInteractionDebug("[MTK3DInteraction] surface.drawableSize.change drawable=\(Int(size.width))x\(Int(size.height)) datasetApplied=\(self.datasetApplied) pending=\(self.renderPending) inFlight=\(self.renderInFlight) generation=\(self.renderGeneration)")
+            self.invalidateMPRCache()
+            self.scheduleRenderAfterSurfaceSettles(size: size,
+                                                   reason: "drawableSize")
+        }
+        viewportSurface.onPresentationSurfaceReady = { [weak self] size in
+            guard let self else { return }
+            let progress = self.viewportSurface.presentationProgressSnapshot()
+            self.logInteractionDebug("[MTK3DInteraction] surface.ready drawable=\(Int(size.width))x\(Int(size.height)) datasetApplied=\(self.datasetApplied) pending=\(self.renderPending) inFlight=\(self.renderInFlight) generation=\(self.renderGeneration) submitted=\(progress.submitted) completed=\(progress.completed) failed=\(progress.failed) terminal=\(progress.terminal) presentInFlight=\(progress.inFlight)")
+            self.invalidateMPRCache()
+            self.scheduleRenderAfterSurfaceSettles(size: size,
+                                                   reason: "surfaceReady")
+        }
+        viewportSurface.onPresentationFailure = { [weak self] error, presentationToken in
+            guard let self else { return false }
+            return self.handlePresentationFailure(error, presentationToken: presentationToken)
+        }
+        viewportSurface.onPresentationCompleted = { [weak self] presentationToken in
+            guard let self else { return }
+            self.handlePresentationCompleted(presentationToken)
         }
 
         qualityStateCancellable = qualityScheduler.$state
@@ -220,12 +253,15 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
             }
 
         resetCameraState(radius: volumeBoundingRadius,
-                         normal: SIMD3<Float>(0, 0, 1),
-                         up: SIMD3<Float>(0, 1, 0))
+                         normal: SIMD3<Float>(0, -1, 0),
+                         up: SIMD3<Float>(0, 0, 1))
     }
 
     deinit {
         renderTask?.cancel()
+        interactiveRenderWatchdogTask?.cancel()
+        surfaceRenderDebounceTask?.cancel()
+        interactiveOutputPrewarmTask?.cancel()
         qualityStateCancellable?.cancel()
     }
 
@@ -266,17 +302,23 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
         statePublisher.recordWindowLevelState(resolvedWindow)
 
         updateVolumeBounds(for: dataset)
-        if let geometry {
+        if geometry != nil {
+            let cameraAxes = makeFrontalCameraAxes(for: dataset)
             resetCameraState(radius: volumeBoundingRadius,
-                             normal: safeNormalize(geometry.iopNorm, fallback: SIMD3<Float>(0, 0, 1)),
-                             up: safeNormalize(geometry.iopCol, fallback: SIMD3<Float>(0, 1, 0)))
+                             normal: cameraAxes.normal,
+                             up: cameraAxes.up)
         } else {
             resetCameraState(radius: volumeBoundingRadius,
-                             normal: SIMD3<Float>(0, 0, 1),
-                             up: SIMD3<Float>(0, 1, 0))
+                             normal: SIMD3<Float>(0, -1, 0),
+                             up: SIMD3<Float>(0, 0, 1))
         }
         currentDisplay = currentDisplay ?? .volume(method: currentVolumeMethod)
-        scheduleRender()
+        if viewportSurface.isPresentationSurfaceReady {
+            scheduleRenderAfterSurfaceSettles(size: viewportSurface.drawablePixelSize,
+                                              reason: "dataset")
+        } else {
+            scheduleRender()
+        }
     }
 
     /// Updates the controller's active display configuration (volume or MPR) and applies the corresponding controller state changes.
@@ -390,6 +432,7 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
         } else {
             renderPending = false
             renderTask?.cancel()
+            interactiveRenderWatchdogTask?.cancel()
         }
     }
 
@@ -404,7 +447,7 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     /// When disabling adaptive sampling this forces the render-quality scheduler to settle immediately; the controller's state is updated and a render is scheduled.
     /// - Parameter enabled: `true` to enable adaptive sampling, `false` to disable it.
     public func setAdaptiveSampling(_ enabled: Bool) async {
-        logger.info("[MTK3DInteraction] adaptive.set enabled=\(enabled) previous=\(adaptiveSamplingEnabled) state=\(qualityScheduler.state)")
+        logInteractionDebug("[MTK3DInteraction] adaptive.set enabled=\(enabled) previous=\(adaptiveSamplingEnabled) state=\(qualityScheduler.state)")
         statePublisher.setAdaptiveSamplingFlag(enabled)
         if !enabled {
             qualityScheduler.forceSettled()
@@ -415,13 +458,17 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     /// Begins an interactive adaptive-sampling session and schedules a render when adaptive sampling is enabled.
     /// - Note: No action is taken if adaptive sampling is disabled.
     public func beginAdaptiveSamplingInteraction() async {
+        beginAdaptiveSamplingInteractionSynchronously()
+    }
+
+    func beginAdaptiveSamplingInteractionSynchronously() {
         guard adaptiveSamplingEnabled else {
-            logger.info("[MTK3DInteraction] adaptive.begin.drop enabled=false")
+            logInteractionDebug("[MTK3DInteraction] adaptive.begin.drop enabled=false")
             return
         }
-        logger.info("[MTK3DInteraction] adaptive.begin before=\(qualityScheduler.state)")
+        logInteractionDebug("[MTK3DInteraction] adaptive.begin before=\(qualityScheduler.state) \(nativeCameraInteractionDiagnostics())")
         qualityScheduler.beginInteraction()
-        logger.info("[MTK3DInteraction] adaptive.begin after=\(qualityScheduler.state) samplingStep=\(qualityScheduler.currentParameters.volumeSamplingStep) tier=\(qualityScheduler.currentParameters.qualityTier)")
+        logInteractionDebug("[MTK3DInteraction] adaptive.begin after=\(qualityScheduler.state) samplingStep=\(qualityScheduler.currentParameters.volumeSamplingStep) tier=\(qualityScheduler.currentParameters.qualityTier) \(nativeCameraInteractionDiagnostics())")
         scheduleRender()
     }
 
@@ -429,22 +476,27 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     /// 
     /// When adaptive sampling is active, signals the render-quality scheduler to end user interaction so the scheduler can transition back toward settled sampling. If adaptive sampling is disabled, this call has no effect.
     public func endAdaptiveSamplingInteraction() async {
+        endAdaptiveSamplingInteractionSynchronously()
+    }
+
+    func endAdaptiveSamplingInteractionSynchronously() {
         guard adaptiveSamplingEnabled else {
-            logger.info("[MTK3DInteraction] adaptive.end.drop enabled=false")
+            logInteractionDebug("[MTK3DInteraction] adaptive.end.drop enabled=false")
             return
         }
-        logger.info("[MTK3DInteraction] adaptive.end before=\(qualityScheduler.state)")
+        logInteractionDebug("[MTK3DInteraction] adaptive.end before=\(qualityScheduler.state) \(nativeCameraInteractionDiagnostics())")
         qualityScheduler.endInteraction()
-        logger.info("[MTK3DInteraction] adaptive.end after=\(qualityScheduler.state) samplingStep=\(qualityScheduler.currentParameters.volumeSamplingStep) tier=\(qualityScheduler.currentParameters.qualityTier)")
+        logInteractionDebug("[MTK3DInteraction] adaptive.end after=\(qualityScheduler.state) samplingStep=\(qualityScheduler.currentParameters.volumeSamplingStep) tier=\(qualityScheduler.currentParameters.qualityTier) \(nativeCameraInteractionDiagnostics())")
+        scheduleRender()
     }
 
     /// Forces the render-quality scheduler to move to its settled (final) state.
     /// 
     /// Signals that any in-progress adaptive quality transitions should complete immediately so subsequent renders use the settled final quality.
     public func forceFinalRenderQuality() async {
-        logger.info("[MTK3DInteraction] adaptive.forceFinal before=\(qualityScheduler.state)")
+        logInteractionDebug("[MTK3DInteraction] adaptive.forceFinal before=\(qualityScheduler.state)")
         qualityScheduler.forceSettled()
-        logger.info("[MTK3DInteraction] adaptive.forceFinal after=\(qualityScheduler.state) samplingStep=\(qualityScheduler.currentParameters.volumeSamplingStep) tier=\(qualityScheduler.currentParameters.qualityTier)")
+        logInteractionDebug("[MTK3DInteraction] adaptive.forceFinal after=\(qualityScheduler.state) samplingStep=\(qualityScheduler.currentParameters.volumeSamplingStep) tier=\(qualityScheduler.currentParameters.qualityTier)")
     }
 
     /// Updates the controller's selected volume rendering method.
@@ -697,11 +749,18 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     /// Resets the camera to its initial target, offset, and up vector.
     /// Updates published camera state and schedules a render with the restored camera parameters.
     public func resetCamera() async {
-        logger.info("[MTK3DInteraction] camera.reset before target=\(cameraTarget) offset=\(cameraOffset) up=\(cameraUpVector)")
+        logInteractionDebug("[MTK3DInteraction] camera.reset before target=\(cameraTarget) offset=\(cameraOffset) up=\(cameraUpVector)")
         cameraTarget = initialCameraTarget
         cameraOffset = initialCameraOffset
         cameraUpVector = initialCameraUp
-        logger.info("[MTK3DInteraction] camera.reset after target=\(cameraTarget) offset=\(cameraOffset) up=\(cameraUpVector)")
+        cameraYawRadians = 0
+        cameraPitchRadians = 0
+        _ = volumeOrbitState.reset(target: cameraTarget,
+                                   offset: cameraOffset,
+                                   up: cameraUpVector,
+                                   distanceLimits: cameraDistanceLimits)
+        cameraInteractionGeneration = 0
+        logInteractionDebug("[MTK3DInteraction] camera.reset after target=\(cameraTarget) offset=\(cameraOffset) up=\(cameraUpVector)")
         publishCameraState()
         scheduleRender()
     }
@@ -709,40 +768,7 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     /// Rotates the camera according to a screen-space drag and updates the published camera state.
     /// - Parameter screenDelta: Screen-space displacement where `x` controls yaw (horizontal rotation) and `y` controls pitch (vertical rotation); the values are interpreted as motion and converted internally into small rotation angles.
     public func rotateCamera(screenDelta: SIMD2<Float>) async {
-        let yaw = screenDelta.x * 0.01
-        let pitch = screenDelta.y * 0.01
-        let threshold = Float.ulpOfOne
-        guard abs(yaw) > threshold || abs(pitch) > threshold else {
-            logger.debug("[MTK3DInteraction] camera.rotate.drop zero delta=\(screenDelta)")
-            return
-        }
-
-        let beforeOffset = cameraOffset
-        let beforeUp = cameraUpVector
-        var offset = cameraOffset
-        var up = safeNormalize(cameraUpVector, fallback: fallbackWorldUp)
-
-        if abs(yaw) > threshold {
-            let yawAxis = safeNormalize(patientLongitudinalAxis, fallback: fallbackWorldUp)
-            let yawRotation = simd_quatf(angle: yaw, axis: yawAxis)
-            offset = yawRotation.act(offset)
-            up = yawRotation.act(up)
-        }
-
-        var forward = safeNormalize(-offset, fallback: SIMD3<Float>(0, 0, -1))
-        let right = safeNormalize(simd_cross(forward, up), fallback: safePerpendicular(to: forward))
-
-        if abs(pitch) > threshold {
-            let pitchRotation = simd_quatf(angle: pitch, axis: right)
-            offset = pitchRotation.act(offset)
-            up = pitchRotation.act(up)
-            forward = safeNormalize(-offset, fallback: forward)
-        }
-
-        cameraOffset = clampCameraOffset(offset)
-        cameraUpVector = up
-        logger.info("[MTK3DInteraction] camera.rotate delta=\(screenDelta) yaw=\(yaw) pitch=\(pitch) beforeOffset=\(beforeOffset) afterOffset=\(cameraOffset) beforeUp=\(beforeUp) afterUp=\(cameraUpVector)")
-        publishCameraState()
+        guard rotateCameraInteractively(screenDelta: screenDelta) else { return }
         scheduleRender()
     }
 
@@ -752,29 +778,7 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     ///   - pitch: Rotation in radians about the camera's right axis (positive pitches the camera upward). Small values near zero are ignored.
     /// - Note: Updates the controller's camera offset and up vector, clamps the offset to valid bounds, publishes the new camera state, and schedules a render.
     public func tiltCamera(roll: Float, pitch: Float) async {
-        let threshold = Float.ulpOfOne
-        guard abs(roll) > threshold || abs(pitch) > threshold else { return }
-
-        var offset = cameraOffset
-        var up = cameraUpVector
-        let forward = safeNormalize(-offset, fallback: SIMD3<Float>(0, 0, -1))
-        var right = safeNormalize(simd_cross(forward, up), fallback: safePerpendicular(to: forward))
-
-        if abs(roll) > threshold {
-            let rollRotation = simd_quatf(angle: roll, axis: forward)
-            up = rollRotation.act(up)
-            right = rollRotation.act(right)
-        }
-
-        if abs(pitch) > threshold {
-            let pitchRotation = simd_quatf(angle: pitch, axis: right)
-            offset = pitchRotation.act(offset)
-            up = pitchRotation.act(up)
-        }
-
-        cameraOffset = clampCameraOffset(offset)
-        cameraUpVector = safeNormalize(up, fallback: fallbackWorldUp)
-        publishCameraState()
+        guard tiltCameraInteractively(roll: roll, pitch: pitch) else { return }
         scheduleRender()
     }
 
@@ -784,13 +788,19 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     /// - Parameters:
     ///   - screenDelta: Screen-space displacement where `x` is the horizontal movement and `y` is the vertical movement; the vector is converted to a world-space translation before applying to the camera target.
     public func panCamera(screenDelta: SIMD2<Float>) async {
+        guard panCameraInteractively(screenDelta: screenDelta) else { return }
+        scheduleRender()
+    }
+
+    @discardableResult
+    func panCameraInteractively(screenDelta: SIMD2<Float>) -> Bool {
         let threshold = Float.ulpOfOne
         guard abs(screenDelta.x) > threshold || abs(screenDelta.y) > threshold else {
-            logger.debug("[MTK3DInteraction] camera.pan.drop zero delta=\(screenDelta)")
-            return
+            logInteractionDebug("[MTK3DInteraction] camera.pan.drop zero delta=\(screenDelta)")
+            return false
         }
 
-        let beforeTarget = cameraTarget
+        let beforeTarget = Logger.interactionLoggingEnabled ? cameraTarget : .zero
         var up = safeNormalize(cameraUpVector, fallback: fallbackWorldUp)
         let forward = safeNormalize(-cameraOffset, fallback: SIMD3<Float>(0, 0, -1))
         let right = safeNormalize(simd_cross(forward, up), fallback: safePerpendicular(to: forward))
@@ -801,8 +811,20 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
         let translation = (-screenDelta.x * scales.horizontal) * right + (screenDelta.y * scales.vertical) * up
         cameraTarget = clampCameraTarget(cameraTarget + translation)
         cameraUpVector = up
-        logger.info("[MTK3DInteraction] camera.pan delta=\(screenDelta) translation=\(translation) beforeTarget=\(beforeTarget) afterTarget=\(cameraTarget) scales=(\(scales.horizontal),\(scales.vertical))")
+        volumeOrbitState.syncTarget(cameraTarget)
+        cameraInteractionGeneration &+= 1
+        logInteractionDebug("[MTK3DInteraction] camera.pan delta=\(screenDelta) translation=\(translation) beforeTarget=\(beforeTarget) afterTarget=\(cameraTarget) scales=(\(scales.horizontal),\(scales.vertical))")
         publishCameraState()
+        return true
+    }
+
+    /// Zooms the camera using a relative pinch scale.
+    ///
+    /// Values greater than one zoom in; values between zero and one zoom out.
+    /// The resulting camera distance is clamped to the controller's current
+    /// camera distance limits.
+    public func zoomCamera(scale: Float) async {
+        guard zoomCameraInteractively(scale: scale) else { return }
         scheduleRender()
     }
 
@@ -813,13 +835,14 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     ///   - delta: Signed distance in world units to translate the camera along its forward vector. The resulting camera offset is clamped to the valid range; the updated camera state is published and a render is scheduled.
     public func dollyCamera(delta: Float) async {
         guard delta.isFinite, abs(delta) > Float.ulpOfOne else {
-            logger.debug("[MTK3DInteraction] camera.dolly.drop delta=\(delta)")
+            logInteractionDebug("[MTK3DInteraction] camera.dolly.drop delta=\(delta)")
             return
         }
-        let beforeOffset = cameraOffset
+        let beforeOffset = Logger.interactionLoggingEnabled ? cameraOffset : .zero
         let forward = safeNormalize(-cameraOffset, fallback: SIMD3<Float>(0, 0, -1))
         cameraOffset = clampCameraOffset(cameraOffset - forward * delta)
-        logger.info("[MTK3DInteraction] camera.dolly delta=\(delta) beforeOffset=\(beforeOffset) afterOffset=\(cameraOffset)")
+        volumeOrbitState.syncDistance(from: cameraOffset)
+        logInteractionDebug("[MTK3DInteraction] camera.dolly delta=\(delta) beforeOffset=\(beforeOffset) afterOffset=\(cameraOffset)")
         publishCameraState()
         scheduleRender()
     }
@@ -925,5 +948,37 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     @_spi(Testing)
     public var debugHuWindow: VolumetricHUWindowMapping? {
         huWindow
+    }
+
+    @_spi(Testing)
+    public var debugStableSurfaceRenderScheduleCount: Int {
+        stableSurfaceRenderScheduleCount
+    }
+
+    @_spi(Testing)
+    public var debugLastStableSurfaceRenderSize: CGSize? {
+        lastStableSurfaceRenderSize
+    }
+
+    @_spi(Testing)
+    public var debugRenderGeneration: UInt64 {
+        renderGeneration
+    }
+
+    @_spi(Testing)
+    public var debugPendingInteractiveOutputPrewarmSize: CGSize? {
+        pendingInteractiveOutputPrewarmSize
+    }
+
+    @_spi(Testing)
+    public func debugSetSurfaceRenderDebounceDelayNanoseconds(_ delay: UInt64) {
+        surfaceRenderDebounceNanoseconds = delay
+    }
+
+    @_spi(Testing)
+    public func debugScheduleRenderAfterSurfaceSettles(size: CGSize,
+                                                       reason: String = "test") {
+        scheduleRenderAfterSurfaceSettles(size: size,
+                                          reason: reason)
     }
 }

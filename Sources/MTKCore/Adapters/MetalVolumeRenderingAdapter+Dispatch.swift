@@ -24,7 +24,8 @@ extension MetalVolumeRenderingAdapter {
     func renderWithMetal(state: MetalState,
                          request: VolumeRenderRequest,
                          datasetTexture providedDatasetTexture: (any MTLTexture)? = nil,
-                         outputTexture providedOutputTexture: (any MTLTexture)? = nil) async throws -> VolumeRenderFrame {
+                         outputTexture providedOutputTexture: (any MTLTexture)? = nil,
+                         waitsForCompletion: Bool = true) async throws -> VolumeRenderFrame {
         let viewport = VolumetricMath.clampViewportSize(request.viewportSize)
         guard viewport.width > 0, viewport.height > 0 else {
             throw RenderingError.outputTextureUnavailable
@@ -42,7 +43,7 @@ extension MetalVolumeRenderingAdapter {
                                                              texture: providedDatasetTexture,
                                                              state: state)
         } else {
-            datasetPreparation = try prepareDatasetTextureResult(for: request.dataset, state: state)
+            datasetPreparation = try await prepareDatasetTextureResult(for: request.dataset, state: state)
         }
         let datasetTexture = datasetPreparation.texture
         let datasetCacheHit = datasetPreparation.cacheHit
@@ -69,9 +70,12 @@ extension MetalVolumeRenderingAdapter {
                                             viewportSize: viewport,
                                             frameIndex: state.frameIndex)
         let parameterPreparationMilliseconds = ClinicalProfiler.milliseconds(from: parameterPreparationStartedAt)
-        logger.info(
-            "[MTKPerf] volume.prepare viewport=\(viewport.width)x\(viewport.height) quality=\(request.quality) compositing=\(request.compositing) samplingDistance=\(formatPerf(request.samplingDistance)) datasetMs=\(formatPerf(datasetPreparationMilliseconds)) transferMs=\(formatPerf(transferPreparationMilliseconds)) paramsMs=\(formatPerf(parameterPreparationMilliseconds)) totalPrepareMs=\(formatPerf(preparationMilliseconds)) datasetCacheHit=\(datasetCacheHit) transferCacheHit=\(transferCacheHit) providedDatasetTexture=\(providedDatasetTexture != nil) providedOutputTexture=\(providedOutputTexture != nil) frameIndex=\(state.frameIndex)"
-        )
+        let debugFrameIndex = UInt64(state.frameIndex)
+        if Logger.performanceLoggingEnabled {
+            logger.info(
+                "[MTKPerf] volume.prepare viewport=\(viewport.width)x\(viewport.height) quality=\(request.quality) compositing=\(request.compositing) samplingDistance=\(formatPerf(request.samplingDistance)) datasetMs=\(formatPerf(datasetPreparationMilliseconds)) transferMs=\(formatPerf(transferPreparationMilliseconds)) paramsMs=\(formatPerf(parameterPreparationMilliseconds)) totalPrepareMs=\(formatPerf(preparationMilliseconds)) datasetCacheHit=\(datasetCacheHit) transferCacheHit=\(transferCacheHit) providedDatasetTexture=\(providedDatasetTexture != nil) providedOutputTexture=\(providedOutputTexture != nil) frameIndex=\(state.frameIndex)"
+            )
+        }
         let passRenderingParameters = VolumeRaycastPassRenderingParameters(
             quality: request.quality,
             samplingDistance: request.samplingDistance,
@@ -89,30 +93,45 @@ extension MetalVolumeRenderingAdapter {
             quaternion: quaternion,
             outputTexture: try providedOutputTexture ?? makeStandaloneOutputTexture(width: viewport.width,
                                                                                    height: viewport.height,
-                                                                                   device: state.device)
+                                                                                   device: state.device),
+            debugFrameIndex: debugFrameIndex
         )
-        let passOutput = try await state.raycastPass.execute(input: passInput,
+        logInteractionInfo(
+            "[MTK3DInteraction] adapter.raycast.dispatch frameIndex=\(debugFrameIndex) waitsForCompletion=\(waitsForCompletion) adapterQueueID=\(objectIdentifier(state.commandQueue as AnyObject)) outputTextureID=\(objectIdentifier(passInput.outputTexture.map { $0 as AnyObject })) outputLabel=\(passInput.outputTexture?.label ?? "nil") outputStorage=\(String(describing: passInput.outputTexture?.storageMode)) quality=\(request.quality) compositing=\(request.compositing) cameraPosition=\(request.camera.position) cameraUp=\(request.camera.up)"
+        )
+        let passOutput: VolumeRaycastPassOutput
+        if waitsForCompletion {
+            passOutput = try await state.raycastPass.execute(input: passInput,
                                                              commandQueue: state.commandQueue)
+        } else {
+            passOutput = try await state.raycastPass.enqueue(input: passInput,
+                                                             commandQueue: state.commandQueue)
+        }
         let outputTexture = passOutput.outputTexture
         state.frameIndex &+= 1
-
-        ClinicalProfiler.shared.recordSample(
-            stage: .texturePreparation,
-            cpuTime: preparationMilliseconds,
-            memory: ResourceMemoryEstimator.estimate(for: datasetTexture) + ResourceMemoryEstimator.estimate(for: transferTexture),
-            viewport: ProfilingViewportContext(
-                width: viewport.width,
-                height: viewport.height,
-                viewportType: "volume3D",
-                quality: request.quality,
-                renderMode: request.compositing
-            ),
-            metadata: [
-                "datasetTexture": datasetTexture.label ?? "",
-                "transferTexture": transferTexture.label ?? ""
-            ],
-            device: state.device
+        logInteractionInfo(
+            "[MTK3DInteraction] adapter.raycast.return frameIndex=\(debugFrameIndex) nextFrameIndex=\(state.frameIndex) waitsForCompletion=\(waitsForCompletion) outputTextureID=\(objectIdentifier(outputTexture as AnyObject)) outputLabel=\(outputTexture.label ?? "nil") outputStorage=\(outputTexture.storageMode) timingCpuMs=\(formatPerf(passOutput.timing.cpuDurationMilliseconds)) timingGpuMs=\(formatPerf(passOutput.timing.gpuDurationMilliseconds))"
         )
+
+        if ClinicalProfiler.shared.isRecordingEnabled {
+            ClinicalProfiler.shared.recordSample(
+                stage: .texturePreparation,
+                cpuTime: preparationMilliseconds,
+                memory: ResourceMemoryEstimator.estimate(for: datasetTexture) + ResourceMemoryEstimator.estimate(for: transferTexture),
+                viewport: ProfilingViewportContext(
+                    width: viewport.width,
+                    height: viewport.height,
+                    viewportType: "volume3D",
+                    quality: request.quality,
+                    renderMode: request.compositing
+                ),
+                metadata: [
+                    "datasetTexture": datasetTexture.label ?? "",
+                    "transferTexture": transferTexture.label ?? ""
+                ],
+                device: state.device
+            )
+        }
 
         let metadata = VolumeRenderFrame.Metadata(
             viewportSize: CGSize(width: CGFloat(viewport.width),
@@ -120,7 +139,8 @@ extension MetalVolumeRenderingAdapter {
             samplingDistance: request.samplingDistance,
             compositing: request.compositing,
             quality: request.quality,
-            pixelFormat: outputTexture.pixelFormat
+            pixelFormat: outputTexture.pixelFormat,
+            debugFrameIndex: debugFrameIndex
         )
         return VolumeRenderFrame(texture: outputTexture,
                                  metadata: metadata)
@@ -182,26 +202,28 @@ extension MetalVolumeRenderingAdapter {
             )
         }
 
-        ClinicalProfiler.shared.recordSample(
-            stage: .volumeRaycast,
-            cpuTime: 0,
-            memory: layers.reduce(0) { total, layer in
-                total + ResourceMemoryEstimator.estimate(for: layer.scalarVolume?.dataset ?? request.dataset)
-            },
-            viewport: ProfilingViewportContext(
-                width: viewport.width,
-                height: viewport.height,
-                viewportType: "volume3D",
-                quality: request.quality,
-                renderMode: request.compositing
-            ),
-            metadata: [
-                "path": "MetalVolumeRenderingAdapter.renderLayerStackWithMetal",
-                "layerCount": String(layers.count),
-                "layerIDs": layers.map(\.id).joined(separator: ",")
-            ],
-            device: state.device
-        )
+        if ClinicalProfiler.shared.isRecordingEnabled {
+            ClinicalProfiler.shared.recordSample(
+                stage: .volumeRaycast,
+                cpuTime: 0,
+                memory: layers.reduce(0) { total, layer in
+                    total + ResourceMemoryEstimator.estimate(for: layer.scalarVolume?.dataset ?? request.dataset)
+                },
+                viewport: ProfilingViewportContext(
+                    width: viewport.width,
+                    height: viewport.height,
+                    viewportType: "volume3D",
+                    quality: request.quality,
+                    renderMode: request.compositing
+                ),
+                metadata: [
+                    "path": "MetalVolumeRenderingAdapter.renderLayerStackWithMetal",
+                    "layerCount": String(layers.count),
+                    "layerIDs": layers.map(\.id).joined(separator: ",")
+                ],
+                device: state.device
+            )
+        }
 
         return currentFrame
     }
@@ -224,6 +246,29 @@ extension MetalVolumeRenderingAdapter {
             throw RenderingError.outputTextureUnavailable
         }
         texture.label = "VolumeCompute.Output"
+        return texture
+    }
+
+    func reusableInteractiveOutputTexture(width: Int,
+                                          height: Int,
+                                          state: MetalState) throws -> any MTLTexture {
+        guard width > 0, height > 0 else {
+            throw RenderingError.outputTextureUnavailable
+        }
+
+        if let texture = state.interactiveOutputTexture,
+           texture.width == width,
+           texture.height == height,
+           texture.pixelFormat == .bgra8Unorm,
+           texture.storageMode == .private {
+            return texture
+        }
+
+        let texture = try makeStandaloneOutputTexture(width: width,
+                                                      height: height,
+                                                      device: state.device)
+        texture.label = "VolumeCompute.InteractiveOutput"
+        state.interactiveOutputTexture = texture
         return texture
     }
 
@@ -252,6 +297,11 @@ extension MetalVolumeRenderingAdapter {
                                       metadata: frame.metadata,
                                       window: window)
         return frame
+    }
+
+    func logInteractionInfo(_ message: @autoclosure () -> String) {
+        guard Logger.performanceLoggingEnabled else { return }
+        logger.info(message())
     }
 
 }
@@ -294,8 +344,17 @@ private func formatPerf(_ value: Double) -> String {
     String(format: "%.3f", value)
 }
 
+private func formatPerf(_ value: Double?) -> String {
+    value.map(formatPerf) ?? "nil"
+}
+
 private func formatPerf(_ value: Float) -> String {
     String(format: "%.5f", value)
+}
+
+private func objectIdentifier(_ object: AnyObject?) -> String {
+    guard let object else { return "nil" }
+    return String(describing: ObjectIdentifier(object))
 }
 
 private extension simd_float4x4 {

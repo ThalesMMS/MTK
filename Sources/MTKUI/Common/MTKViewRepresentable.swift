@@ -13,45 +13,141 @@ import UIKit
 public struct MTKViewRepresentable: UIViewRepresentable {
     public final class ContainerView: UIView {
         private weak var hostedView: UIView?
+        private weak var surface: MetalViewportSurface?
+        private weak var installer: NativeVolume3DInteractionInstaller?
+        private var interaction: NativeVolume3DInteraction?
+        private var lastLifecycleRenderKey: LifecycleRenderKey?
+        private let logger = Logger(category: "MTKViewRepresentable")
+
+        private struct LifecycleRenderKey: Equatable {
+            var windowReady: Bool
+            var bounds: CGSize
+            var scale: CGFloat
+        }
 
         public func host(_ view: UIView) {
             guard hostedView !== view || view.superview !== self else {
+                layoutHostedView()
                 return
             }
 
             hostedView?.removeFromSuperview()
             hostedView = view
 
-            view.translatesAutoresizingMaskIntoConstraints = false
+            view.translatesAutoresizingMaskIntoConstraints = true
+            view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            view.isUserInteractionEnabled = false
+            view.frame = bounds
             addSubview(view)
+        }
 
-            NSLayoutConstraint.activate([
-                view.leadingAnchor.constraint(equalTo: leadingAnchor),
-                view.trailingAnchor.constraint(equalTo: trailingAnchor),
-                view.topAnchor.constraint(equalTo: topAnchor),
-                view.bottomAnchor.constraint(equalTo: bottomAnchor)
-            ])
+        func configure(surface: MetalViewportSurface,
+                       installer: NativeVolume3DInteractionInstaller,
+                       interaction: NativeVolume3DInteraction?) {
+            self.surface = surface
+            self.installer = installer
+            self.interaction = interaction
+            host(surface.view)
+            logInteraction("[MTK3DInteraction] host.configure container=\(ObjectIdentifier(self)) surfaceView=\(ObjectIdentifier(surface.view)) windowReady=\(window != nil) bounds=\(Self.describe(bounds))")
+            applyViewportLifecycle(reason: "configure")
+        }
+
+        public override func layoutSubviews() {
+            super.layoutSubviews()
+            layoutHostedView()
+            logInteraction("[MTK3DInteraction] host.layout container=\(ObjectIdentifier(self)) windowReady=\(window != nil) bounds=\(Self.describe(bounds)) hostedBounds=\(Self.describe(hostedView?.bounds ?? .zero))")
+            applyViewportLifecycle(reason: "layout")
+        }
+
+        public override func didMoveToWindow() {
+            super.didMoveToWindow()
+            logInteraction("[MTK3DInteraction] host.window container=\(ObjectIdentifier(self)) windowReady=\(window != nil) bounds=\(Self.describe(bounds))")
+            applyViewportLifecycle(reason: "window")
+        }
+
+        private func layoutHostedView() {
+            hostedView?.frame = bounds
+        }
+
+        private func applyViewportLifecycle(reason: String) {
+            guard let surface else { return }
+            let scale = MTKViewRepresentable.contentScale(for: self, hostedView: surface.view)
+            surface.setContentScale(scale)
+            layoutHostedView()
+            installer?.install(on: self, interaction: interaction)
+
+            let key = LifecycleRenderKey(windowReady: window != nil,
+                                         bounds: bounds.size,
+                                         scale: scale)
+            guard key != lastLifecycleRenderKey else {
+                logInteraction("[MTK3DInteraction] host.lifecycle.skip reason=\(reason) duplicate=true windowReady=\(key.windowReady) bounds=\(Self.describe(bounds)) scale=\(scale)")
+                return
+            }
+            lastLifecycleRenderKey = key
+            guard key.windowReady, key.bounds.width > 0, key.bounds.height > 0 else {
+                logInteraction("[MTK3DInteraction] host.lifecycle.skip reason=\(reason) ready=false windowReady=\(key.windowReady) bounds=\(Self.describe(bounds)) scale=\(scale)")
+                return
+            }
+            logInteraction("[MTK3DInteraction] host.lifecycle.render reason=\(reason) windowReady=\(key.windowReady) bounds=\(Self.describe(bounds)) scale=\(scale)")
+            installer?.renderAfterViewportLifecycleEvent(reason)
+        }
+
+        private func logInteraction(_ message: @autoclosure () -> String) {
+            guard Logger.interactionLoggingEnabled else { return }
+            logger.debug(message())
+        }
+
+        private static func describe(_ rect: CGRect) -> String {
+            String(format: "{{%.1f,%.1f},{%.1f,%.1f}}",
+                   rect.origin.x,
+                   rect.origin.y,
+                   rect.size.width,
+                   rect.size.height)
         }
     }
 
     public let surface: MetalViewportSurface
+    private let native3DInteraction: NativeVolume3DInteraction?
 
-    public init(surface: MetalViewportSurface) {
+    public init(surface: MetalViewportSurface,
+                native3DInteraction: NativeVolume3DInteraction? = nil) {
         self.surface = surface
+        self.native3DInteraction = native3DInteraction
+    }
+
+    public func makeCoordinator() -> NativeVolume3DInteractionInstaller {
+        NativeVolume3DInteractionInstaller()
     }
 
     public func makeUIView(context: Context) -> ContainerView {
         let container = ContainerView()
-        container.host(surface.view)
-        surface.setContentScale(Self.contentScale(for: container, hostedView: surface.view))
+        container.configure(surface: surface,
+                            installer: context.coordinator,
+                            interaction: native3DInteraction)
+        Self.scheduleDeferredInstall(on: container,
+                                     coordinator: context.coordinator,
+                                     interaction: native3DInteraction)
         return container
     }
 
     public func updateUIView(_ uiView: ContainerView, context: Context) {
-        uiView.host(surface.view)
-        surface.setContentScale(Self.contentScale(for: uiView, hostedView: surface.view))
+        uiView.configure(surface: surface,
+                         installer: context.coordinator,
+                         interaction: native3DInteraction)
+        Self.scheduleDeferredInstall(on: uiView,
+                                     coordinator: context.coordinator,
+                                     interaction: native3DInteraction)
         uiView.setNeedsLayout()
         uiView.layoutIfNeeded()
+    }
+
+    private static func scheduleDeferredInstall(on container: ContainerView,
+                                                coordinator: NativeVolume3DInteractionInstaller,
+                                                interaction: NativeVolume3DInteraction?) {
+        DispatchQueue.main.async { [weak container, weak coordinator] in
+            guard let container, let coordinator else { return }
+            coordinator.install(on: container, interaction: interaction)
+        }
     }
 
     private static func contentScale(for container: UIView, hostedView: UIView) -> CGFloat {

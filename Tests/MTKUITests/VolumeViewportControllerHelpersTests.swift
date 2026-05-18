@@ -151,7 +151,7 @@ final class VolumeViewportControllerErrorTests: XCTestCase {
 // MARK: - VolumeViewportController Camera Helpers
 
 @MainActor
-final class VolumeViewportControllerCameraTests: XCTestCase {
+final class VolumeViewportControllerHelpersTests: XCTestCase {
 
     func testSafeNormalizeNonZeroVector() throws {
         let controller = try makeController()
@@ -224,10 +224,10 @@ final class VolumeViewportControllerCameraTests: XCTestCase {
     func testClampCameraOffsetHandlesZeroVector() throws {
         let controller = try makeController()
         let clamped = controller.clampCameraOffset(.zero)
-        // Should return a default offset along +Z
+        // Should return the frontal default offset.
         XCTAssertEqual(clamped.x, 0.0, accuracy: 0.000_01)
-        XCTAssertEqual(clamped.y, 0.0, accuracy: 0.000_01)
-        XCTAssertGreaterThan(clamped.z, 0)
+        XCTAssertLessThan(clamped.y, 0)
+        XCTAssertEqual(clamped.z, 0.0, accuracy: 0.000_01)
     }
 
     func testClampCameraTargetAllowsTargetNearCenter() throws {
@@ -245,6 +245,192 @@ final class VolumeViewportControllerCameraTests: XCTestCase {
         let distanceFromCenter = simd_length(clamped - controller.volumeWorldCenter)
         let limit = max(controller.volumeBoundingRadius * controller.maximumPanDistanceMultiplier, 1)
         XCTAssertLessThanOrEqual(distanceFromCenter, limit + 0.001)
+    }
+
+    @MainActor
+    func testApplyDatasetUsesFrontalInitialCameraForAxialCT() async throws {
+        let controller = try makeController()
+        let dataset = makeDataset(width: 32, height: 32, depth: 16)
+
+        await controller.applyDataset(dataset)
+
+        let direction = simd_normalize(controller.cameraOffset)
+        XCTAssertEqual(direction.x, 0, accuracy: 0.000_1)
+        XCTAssertLessThan(direction.y, -0.999)
+        XCTAssertEqual(direction.z, 0, accuracy: 0.000_1)
+        XCTAssertEqual(controller.cameraUpVector.x, 0, accuracy: 0.000_1)
+        XCTAssertEqual(controller.cameraUpVector.y, 0, accuracy: 0.000_1)
+        XCTAssertEqual(controller.cameraUpVector.z, 1, accuracy: 0.000_1)
+    }
+
+    @MainActor
+    func testRotateCameraLeftwardDragRotatesObjectLeftFromFrontalView() async throws {
+        let controller = try makeController()
+        let before = controller.cameraOffset
+
+        await controller.rotateCamera(screenDelta: SIMD2<Float>(-40, 0))
+
+        XCTAssertGreaterThan(controller.cameraOffset.x, before.x)
+        XCTAssertLessThan(abs(controller.cameraOffset.z - before.z), 0.001)
+        XCTAssertEqual(controller.cameraYawRadians, 40 * 0.008, accuracy: 0.000_1)
+        XCTAssertEqual(simd_length(controller.cameraOffset),
+                       simd_length(before),
+                       accuracy: 0.000_1)
+    }
+
+    @MainActor
+    func testRotateCameraUpwardDragPitchesObjectNoseUpFromFrontalView() async throws {
+        let controller = try makeController()
+        let before = controller.cameraOffset
+
+        await controller.rotateCamera(screenDelta: SIMD2<Float>(0, -40))
+
+        XCTAssertLessThan(abs(controller.cameraOffset.x - before.x), 0.001)
+        XCTAssertLessThan(controller.cameraOffset.z, before.z)
+        XCTAssertEqual(controller.cameraPitchRadians, 40 * 0.008, accuracy: 0.000_1)
+        XCTAssertEqual(simd_length(controller.cameraOffset),
+                       simd_length(before),
+                       accuracy: 0.000_1)
+    }
+
+    @MainActor
+    func testRotateCameraClampsAccumulatedPitch() async throws {
+        let controller = try makeController()
+
+        await controller.rotateCamera(screenDelta: SIMD2<Float>(0, 1_000))
+
+        XCTAssertEqual(controller.cameraPitchRadians, -1.35, accuracy: 0.000_1)
+    }
+
+    @MainActor
+    func testTiltCameraRollRotatesUpVectorWithoutChangingOffset() async throws {
+        let controller = try makeController()
+        let beforeOffset = controller.cameraOffset
+
+        await controller.tiltCamera(roll: Float.pi / 6, pitch: 0)
+
+        XCTAssertEqual(controller.cameraOffset.x, beforeOffset.x, accuracy: 0.000_1)
+        XCTAssertEqual(controller.cameraOffset.y, beforeOffset.y, accuracy: 0.000_1)
+        XCTAssertEqual(controller.cameraOffset.z, beforeOffset.z, accuracy: 0.000_1)
+        XCTAssertGreaterThan(abs(controller.cameraUpVector.x), 0.001)
+        XCTAssertEqual(simd_length(controller.cameraUpVector), 1, accuracy: 0.000_1)
+    }
+
+    @MainActor
+    func testTiltCameraRollPersistsAcrossOrbitRotation() async throws {
+        let controller = try makeController()
+
+        await controller.tiltCamera(roll: Float.pi / 6, pitch: 0)
+        await controller.rotateCamera(screenDelta: SIMD2<Float>(-40, 0))
+
+        XCTAssertGreaterThan(abs(controller.cameraUpVector.x), 0.001)
+        XCTAssertEqual(simd_length(controller.cameraUpVector), 1, accuracy: 0.000_1)
+    }
+
+    @MainActor
+    func testZoomCameraUsesPinchScaleAndClampsDistance() async throws {
+        let controller = try makeController()
+        let initialDistance = simd_length(controller.cameraOffset)
+
+        await controller.zoomCamera(scale: 2)
+
+        XCTAssertEqual(simd_length(controller.cameraOffset),
+                       max(controller.cameraDistanceLimits.lowerBound, initialDistance / 2),
+                       accuracy: 0.000_1)
+
+        await controller.zoomCamera(scale: 0.001)
+
+        XCTAssertEqual(simd_length(controller.cameraOffset),
+                       controller.cameraDistanceLimits.upperBound,
+                       accuracy: 0.000_1)
+    }
+
+    @MainActor
+    func testResetCameraRestoresOrbitStateDefaults() async throws {
+        let controller = try makeController()
+        let initialOffset = controller.initialCameraOffset
+        let initialUp = controller.initialCameraUp
+
+        await controller.rotateCamera(screenDelta: SIMD2<Float>(40, 20))
+        await controller.zoomCamera(scale: 2)
+        await controller.resetCamera()
+
+        XCTAssertEqual(controller.cameraYawRadians, 0, accuracy: 0.000_1)
+        XCTAssertEqual(controller.cameraPitchRadians, 0, accuracy: 0.000_1)
+        XCTAssertEqual(controller.cameraOffset.x, initialOffset.x, accuracy: 0.000_1)
+        XCTAssertEqual(controller.cameraOffset.y, initialOffset.y, accuracy: 0.000_1)
+        XCTAssertEqual(controller.cameraOffset.z, initialOffset.z, accuracy: 0.000_1)
+        XCTAssertEqual(controller.cameraUpVector.x, initialUp.x, accuracy: 0.000_1)
+        XCTAssertEqual(controller.cameraUpVector.y, initialUp.y, accuracy: 0.000_1)
+        XCTAssertEqual(controller.cameraUpVector.z, initialUp.z, accuracy: 0.000_1)
+    }
+
+    func testInteractivePreviewDoesNotPresentOlderGestureGeneration() throws {
+        let controller = try makeController()
+
+        XCTAssertFalse(controller.canPresentRender(generation: 1,
+                                                   currentGeneration: 2,
+                                                   qualityState: .interacting,
+                                                   allowStalePreviewPresentation: true))
+        XCTAssertFalse(controller.canPresentRender(generation: 1,
+                                                   currentGeneration: 2,
+                                                   qualityState: .settled,
+                                                   allowStalePreviewPresentation: true))
+    }
+
+    func testScheduleRenderDefersWhilePresentationIsInFlight() throws {
+        let controller = try makeController()
+        controller.datasetApplied = true
+        controller.presentationInFlightToken = 7
+
+        controller.scheduleRender()
+        controller.scheduleRender()
+
+        XCTAssertEqual(controller.renderGeneration, 2)
+        XCTAssertTrue(controller.renderPending)
+        XCTAssertFalse(controller.renderInFlight)
+        XCTAssertNil(controller.renderTask)
+    }
+
+    func testPresentationCompletionOpensGateAndStartsPendingRender() async throws {
+        let controller = try makeController()
+        controller.datasetApplied = true
+        controller.renderGeneration = 2
+        controller.renderPending = true
+        controller.presentationInFlightToken = 1
+
+        controller.handlePresentationCompleted(1)
+
+        XCTAssertNil(controller.presentationInFlightToken)
+        XCTAssertTrue(controller.renderInFlight)
+        XCTAssertNotNil(controller.renderTask)
+
+        controller.renderTask?.cancel()
+        await controller.renderTask?.value
+    }
+
+    func testStalePresentationFailureOpensGateWithoutAcceptingError() async throws {
+        let controller = try makeController()
+        controller.datasetApplied = true
+        controller.renderGeneration = 2
+        controller.renderPending = true
+        controller.presentationInFlightToken = 1
+        let error = PresentationPassCommandBufferError.commandBufferFailed(
+            status: 5,
+            description: "Caused GPU Timeout Error"
+        )
+
+        let accepted = controller.handlePresentationFailure(error,
+                                                            presentationToken: 1)
+
+        XCTAssertFalse(accepted)
+        XCTAssertNil(controller.presentationInFlightToken)
+        XCTAssertNil(controller.lastRenderError)
+        XCTAssertEqual(controller.presentationFailureCount, 1)
+        XCTAssertTrue(controller.renderInFlight)
+
+        controller.renderTask?.cancel()
+        await controller.renderTask?.value
     }
 }
 

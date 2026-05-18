@@ -97,4 +97,13 @@ struct CameraUniforms: Sizeable {
     var frameIndex: UInt32 = 0
     var projectionType: UInt32 = 0
     var padding: UInt32 = 0
+    var localNearOrigin: SIMD4<Float> = .zero
+    var localNearDeltaX: SIMD4<Float> = .zero
+    var localNearDeltaY: SIMD4<Float> = .zero
+    var localFarOrigin: SIMD4<Float> = .zero
+    var localFarDeltaX: SIMD4<Float> = .zero
+    var localFarDeltaY: SIMD4<Float> = .zero
+    var cameraPositionWorld: SIMD4<Float> = .zero
+    var rayBasisValid: UInt32 = 0
+    var rayBasisPadding: SIMD3<UInt32> = .zero
 }

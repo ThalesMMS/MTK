@@ -13,7 +13,7 @@ import Foundation
 /// GPU-native output from an interactive volume render.
 ///
 /// `VolumeRenderFrame` is the public frame contract for clinical rendering.
-/// The frame owns a completed Metal texture and lightweight metadata needed for
+/// The frame owns a Metal texture and lightweight metadata needed for
 /// presentation, profiling, and debugging without forcing CPU readback.
 /// Present ``texture`` through `MTKView`, `CAMetalLayer`, or another
 /// Metal-native surface. Use ``SnapshotExporting`` only for explicit snapshot,
@@ -48,6 +48,9 @@ public struct VolumeRenderFrame {
         /// GPU end timestamp when the dispatch layer exposes it.
         public let gpuEndTime: CFAbsoluteTime?
 
+        /// Optional renderer-local frame index for debugging queued GPU work.
+        public let debugFrameIndex: UInt64?
+
         public init(viewportSize: CGSize,
                     viewportID: ViewportID? = nil,
                     samplingDistance: Float,
@@ -56,7 +59,8 @@ public struct VolumeRenderFrame {
                     pixelFormat: MTLPixelFormat,
                     renderTime: CFAbsoluteTime? = nil,
                     gpuStartTime: CFAbsoluteTime? = nil,
-                    gpuEndTime: CFAbsoluteTime? = nil) {
+                    gpuEndTime: CFAbsoluteTime? = nil,
+                    debugFrameIndex: UInt64? = nil) {
             self.viewportSize = viewportSize
             self.viewportID = viewportID
             self.samplingDistance = samplingDistance
@@ -66,6 +70,7 @@ public struct VolumeRenderFrame {
             self.renderTime = renderTime
             self.gpuStartTime = gpuStartTime
             self.gpuEndTime = gpuEndTime
+            self.debugFrameIndex = debugFrameIndex
         }
 
         public init(request: VolumeRenderRequest,
@@ -73,7 +78,8 @@ public struct VolumeRenderFrame {
                     viewportID: ViewportID? = nil,
                     renderTime: CFAbsoluteTime? = nil,
                     gpuStartTime: CFAbsoluteTime? = nil,
-                    gpuEndTime: CFAbsoluteTime? = nil) {
+                    gpuEndTime: CFAbsoluteTime? = nil,
+                    debugFrameIndex: UInt64? = nil) {
             self.init(viewportSize: CGSize(width: CGFloat(texture.width),
                                            height: CGFloat(texture.height)),
                       viewportID: viewportID,
@@ -83,19 +89,32 @@ public struct VolumeRenderFrame {
                       pixelFormat: texture.pixelFormat,
                       renderTime: renderTime,
                       gpuStartTime: gpuStartTime,
-                      gpuEndTime: gpuEndTime)
+                      gpuEndTime: gpuEndTime,
+                      debugFrameIndex: debugFrameIndex)
         }
     }
 
-    /// Completed GPU output for interactive presentation.
+    /// GPU output for interactive presentation.
     public let texture: any MTLTexture
 
     /// Frame metadata for presentation, profiling, and debugging.
     public let metadata: Metadata
 
+    /// Package-private lease for pooled interactive output textures.
+    package let outputTextureLease: OutputTextureLease?
+
     public init(texture: any MTLTexture, metadata: Metadata) {
         self.texture = texture
         self.metadata = metadata
+        self.outputTextureLease = nil
+    }
+
+    package init(texture: any MTLTexture,
+                 metadata: Metadata,
+                 outputTextureLease: OutputTextureLease?) {
+        self.texture = texture
+        self.metadata = metadata
+        self.outputTextureLease = outputTextureLease
     }
 }
 

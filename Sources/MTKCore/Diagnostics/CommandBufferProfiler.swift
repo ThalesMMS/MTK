@@ -36,6 +36,8 @@ public enum CommandBufferProfiler {
     public static func captureTimes(for commandBuffer: any MTLCommandBuffer,
                                     label: String,
                                     category: String = "Benchmark") {
+        guard Logger.performanceLoggingEnabled else { return }
+
         let cpuStart = DispatchTime.now().uptimeNanoseconds
 
         commandBuffer.addCompletedHandler { buffer in

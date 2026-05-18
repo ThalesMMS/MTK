@@ -10,6 +10,10 @@ let package = Package(
         .macOS(.v14)
     ],
     products: [
+        .executable(
+            name: "VolumeRendererComparison",
+            targets: ["VolumeRendererComparison"]
+        ),
         .library(
             name: "MTKCore",
             targets: ["MTKCore"]
@@ -83,6 +87,17 @@ let package = Package(
                 "MTKDicomBridge"
             ],
             path: "Tests/MTKDicomBridgeTests"
+        ),
+        .executableTarget(
+            name: "VolumeRendererComparison",
+            dependencies: [
+                "MTKCore",
+                "MTKDicomBridge"
+            ],
+            path: "Benchmarks/VolumeRendererComparison",
+            resources: [
+                .copy("ReferenceVolumeRayMarching.metal")
+            ]
         ),
         .plugin(
             name: "MTKShaderPlugin",

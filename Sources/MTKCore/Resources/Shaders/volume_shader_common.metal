@@ -53,13 +53,22 @@ public:
                                     float3 eyeDir,
                                     float specularIntensity)
     {
-        float ndotl = max(lerp(0.0, 1.5, dot(normal, lightDir)), 0.5);
-        float3 diffuse = ndotl * col;
-        float3 viewDirection = eyeDir;
-        float3 reflected = ::normalize(reflect(-lightDir, normal));
-        float rdotv = max(dot(reflected, viewDirection), 0.0);
-        float3 specular = pow(rdotv, 32) * float3(1) * specularIntensity;
-        return diffuse + specular;
+        constexpr float ambient = 0.2f;
+        constexpr float diffuseWeight = 0.7f;
+        constexpr float specularPower = 20.0f;
+
+        float lengthSq = dot(normal, normal);
+        if (lengthSq <= 1.0e-6f) {
+            return ambient * col;
+        }
+
+        float3 n = ::normalize(normal);
+        float3 l = ::normalize(lightDir);
+        float3 v = ::normalize(eyeDir);
+        float diffuse = max(dot(n, l), 0.0f);
+        float3 halfVector = ::normalize(l + v);
+        float specular = pow(max(dot(n, halfVector), 0.0f), specularPower);
+        return col * (ambient + diffuseWeight * diffuse) + float3(specularIntensity * specular);
     }
 };
 
@@ -90,6 +99,35 @@ public:
         return short(clamp(sampleValue, -32768.0f, 32767.0f));
     }
 
+    static float sampleTrilinearDensity(texture3d<short, access::sample> volume,
+                                        float3 coord)
+    {
+        uint3 maxIndex = uint3(max(volume.get_width(), 1u) - 1u,
+                               max(volume.get_height(), 1u) - 1u,
+                               max(volume.get_depth(), 1u) - 1u);
+        float3 voxelCoord = clamp(coord, 0.0f, 1.0f) * float3(maxIndex);
+        uint3 baseIndex = uint3(floor(voxelCoord));
+        uint3 nextIndex = min(baseIndex + uint3(1u), maxIndex);
+        float3 weight = voxelCoord - float3(baseIndex);
+
+        float c000 = decodeInt16Sample(float(volume.read(uint3(baseIndex.x, baseIndex.y, baseIndex.z)).r));
+        float c100 = decodeInt16Sample(float(volume.read(uint3(nextIndex.x, baseIndex.y, baseIndex.z)).r));
+        float c010 = decodeInt16Sample(float(volume.read(uint3(baseIndex.x, nextIndex.y, baseIndex.z)).r));
+        float c110 = decodeInt16Sample(float(volume.read(uint3(nextIndex.x, nextIndex.y, baseIndex.z)).r));
+        float c001 = decodeInt16Sample(float(volume.read(uint3(baseIndex.x, baseIndex.y, nextIndex.z)).r));
+        float c101 = decodeInt16Sample(float(volume.read(uint3(nextIndex.x, baseIndex.y, nextIndex.z)).r));
+        float c011 = decodeInt16Sample(float(volume.read(uint3(baseIndex.x, nextIndex.y, nextIndex.z)).r));
+        float c111 = decodeInt16Sample(float(volume.read(uint3(nextIndex.x, nextIndex.y, nextIndex.z)).r));
+
+        float c00 = mix(c000, c100, weight.x);
+        float c10 = mix(c010, c110, weight.x);
+        float c01 = mix(c001, c101, weight.x);
+        float c11 = mix(c011, c111, weight.x);
+        float c0 = mix(c00, c10, weight.y);
+        float c1 = mix(c01, c11, weight.y);
+        return mix(c0, c1, weight.z);
+    }
+
     static float3 calGradient(texture3d<short, access::sample> volume,
                               float3 coord,
                               float3 dimension)
@@ -103,12 +141,23 @@ public:
         invDim.y = dimension.y > 1.0f ? 1.0f / (dimension.y - 1.0f) : 0.0f;
         invDim.z = dimension.z > 1.0f ? 1.0f / (dimension.z - 1.0f) : 0.0f;
 
-        float sxPlus = decodeInt16Sample(volume.sample(sampler3d, float3(min(coord.x + invDim.x, 1.0f), coord.y, coord.z)).r);
-        float sxMinus = decodeInt16Sample(volume.sample(sampler3d, float3(max(coord.x - invDim.x, 0.0f), coord.y, coord.z)).r);
-        float syPlus = decodeInt16Sample(volume.sample(sampler3d, float3(coord.x, min(coord.y + invDim.y, 1.0f), coord.z)).r);
-        float syMinus = decodeInt16Sample(volume.sample(sampler3d, float3(coord.x, max(coord.y - invDim.y, 0.0f), coord.z)).r);
-        float szPlus = decodeInt16Sample(volume.sample(sampler3d, float3(coord.x, coord.y, min(coord.z + invDim.z, 1.0f))).r);
-        float szMinus = decodeInt16Sample(volume.sample(sampler3d, float3(coord.x, coord.y, max(coord.z - invDim.z, 0.0f))).r);
+        return calGradientWithStep(volume, coord, invDim);
+    }
+
+    static float3 calGradientWithStep(texture3d<short, access::sample> volume,
+                                      float3 coord,
+                                      float3 invDim)
+    {
+        if (any(invDim <= float3(0.0f))) {
+            return float3(0.0f);
+        }
+
+        float sxPlus = sampleTrilinearDensity(volume, float3(min(coord.x + invDim.x, 1.0f), coord.y, coord.z));
+        float sxMinus = sampleTrilinearDensity(volume, float3(max(coord.x - invDim.x, 0.0f), coord.y, coord.z));
+        float syPlus = sampleTrilinearDensity(volume, float3(coord.x, min(coord.y + invDim.y, 1.0f), coord.z));
+        float syMinus = sampleTrilinearDensity(volume, float3(coord.x, max(coord.y - invDim.y, 0.0f), coord.z));
+        float szPlus = sampleTrilinearDensity(volume, float3(coord.x, coord.y, min(coord.z + invDim.z, 1.0f)));
+        float szMinus = sampleTrilinearDensity(volume, float3(coord.x, coord.y, max(coord.z - invDim.z, 0.0f)));
 
         return float3(sxMinus - sxPlus, syMinus - syPlus, szMinus - szPlus);
     }
@@ -139,6 +188,11 @@ public:
     static short getDensity(texture3d<short, access::sample> volume, float3 coord)
     {
         return decodeInt16SampleToShort(volume.sample(sampler3d, coord).r);
+    }
+
+    static float getDensityTrilinear(texture3d<short, access::sample> volume, float3 coord)
+    {
+        return sampleTrilinearDensity(volume, coord);
     }
 
     static float3 getGradient(texture3d<float, access::sample> gradient, float3 coord)

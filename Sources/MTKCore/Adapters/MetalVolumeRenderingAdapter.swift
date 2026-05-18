@@ -120,6 +120,8 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
         var datasetIdentity: DatasetIdentity?
         var volumeTexture: (any MTLTexture)?
         var transferCache: TransferCache?
+        var interactiveOutputTexture: (any MTLTexture)?
+        let interactiveOutputPool: MetalInteractiveOutputTexturePool
         var frameIndex: UInt32 = 0
 
         init(device: any MTLDevice,
@@ -130,6 +132,7 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
             self.commandQueue = commandQueue
             self.raycastPass = raycastPass
             self.dispatchOptimizer = dispatchOptimizer
+            self.interactiveOutputPool = MetalInteractiveOutputTexturePool(capacity: 3)
         }
 
         var argumentManager: ArgumentEncoderManager {
@@ -353,11 +356,94 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
     /// Renders a GPU-native texture for interactive presentation.
     ///
     /// This convenience method intentionally returns only the Metal texture needed by
-    /// onscreen presentation surfaces. Snapshot/export code should request a frame and
-    /// pass it to ``TextureSnapshotExporter`` only when CPU image data is required.
+    /// onscreen presentation surfaces. The returned texture may be reused by later
+    /// interactive renders from this adapter. Snapshot/export code should request a
+    /// frame and pass it to ``TextureSnapshotExporter`` only when CPU image data is
+    /// required.
     public func renderInteractiveTexture(using request: VolumeRenderRequest) async throws -> any MTLTexture {
-        let frame = try await renderFrame(using: request)
-        return frame.texture
+        try await renderInteractiveFrame(using: request, waitsForCompletion: true).texture
+    }
+
+    /// Renders an interactive texture without handing out a pooled async lease.
+    ///
+    /// Callers that need same-queue async presentation should use
+    /// ``enqueueInteractiveFrame(using:)`` so the returned frame keeps the output
+    /// texture leased until presentation completion.
+    package func enqueueInteractiveTexture(using request: VolumeRenderRequest) async throws -> any MTLTexture {
+        try await renderInteractiveFrame(using: request, waitsForCompletion: true).texture
+    }
+
+    package func enqueueInteractiveFrame(using request: VolumeRenderRequest) async throws -> VolumeRenderFrame {
+        try await renderInteractiveFrame(using: request, waitsForCompletion: false)
+    }
+
+    package func prewarmInteractiveOutputTextures(width: Int,
+                                                  height: Int,
+                                                  count: Int = 3) async throws -> Bool {
+        try await metalState.interactiveOutputPool.prewarm(width: width,
+                                                           height: height,
+                                                           device: metalState.device,
+                                                           count: count)
+    }
+
+    private func renderInteractiveFrame(using request: VolumeRenderRequest,
+                                        waitsForCompletion: Bool) async throws -> VolumeRenderFrame {
+        try Task.checkCancellation()
+
+        var effectiveRequest = request
+
+        if let compositing = overrides.compositing {
+            effectiveRequest.compositing = compositing
+        }
+        if let samplingDistance = overrides.samplingDistance {
+            effectiveRequest.samplingDistance = samplingDistance
+        }
+
+        effectiveRequest = try applyCompatibilityClippingIfNeeded(to: effectiveRequest)
+        let window = try resolveWindow(for: effectiveRequest.dataset)
+
+        // Multi-layer rendering needs extra intermediate textures and a stable final
+        // frame for composition. Keep that path on renderFrame until it has a lease
+        // backed pool like MTKRenderingEngine.
+        if try effectiveRequest.visibleScalarLayersForRendering().count > 1 {
+            let frame = try await renderFrame(using: request)
+            return frame
+        }
+
+        let viewport = VolumetricMath.clampViewportSize(effectiveRequest.viewportSize)
+        let frame: VolumeRenderFrame
+        if waitsForCompletion {
+            let outputTexture = try reusableInteractiveOutputTexture(width: viewport.width,
+                                                                     height: viewport.height,
+                                                                     state: metalState)
+            frame = try await renderWithMetal(state: metalState,
+                                              request: effectiveRequest,
+                                              outputTexture: outputTexture,
+                                              waitsForCompletion: true)
+        } else {
+            let frameIndex = UInt64(metalState.frameIndex)
+            let lease = try await metalState.interactiveOutputPool.acquire(width: viewport.width,
+                                                                           height: viewport.height,
+                                                                           device: metalState.device,
+                                                                           frameIndex: frameIndex)
+            do {
+                let renderedFrame = try await renderWithMetal(state: metalState,
+                                                              request: effectiveRequest,
+                                                              outputTexture: lease.texture,
+                                                              waitsForCompletion: false)
+                lease.updateDebugContext(frameIndex: renderedFrame.metadata.debugFrameIndex)
+                frame = VolumeRenderFrame(texture: renderedFrame.texture,
+                                          metadata: renderedFrame.metadata,
+                                          outputTextureLease: lease)
+            } catch {
+                lease.release()
+                throw error
+            }
+        }
+        lastSnapshot = RenderSnapshot(dataset: request.dataset,
+                                      metadata: frame.metadata,
+                                      window: window)
+        return frame
     }
 
     func renderWithSharedVolumeTexture(using request: VolumeRenderRequest,

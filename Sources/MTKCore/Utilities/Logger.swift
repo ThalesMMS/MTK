@@ -86,6 +86,11 @@ public final class Logger {
     /// Shared logger instance configured with default settings
     public static let shared = Logger()
 
+    /// Enables high-frequency render profiling logs only when explicitly requested.
+    public static let performanceLoggingEnabled =
+        ProcessInfo.processInfo.environment["MTK_PERF_LOGGING"] == "1"
+        || ProcessInfo.processInfo.environment["MTK_INTERACTION_LOGGING"] == "1"
+
     private static let backend = Backend(configuration: .default)
 
     private let contextualCategory: String?

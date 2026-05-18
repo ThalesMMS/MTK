@@ -54,6 +54,7 @@ struct VolumeRaycastPassInput: @unchecked Sendable {
     var targetViewSize: UInt16
     var quaternion: SIMD4<Float>
     var outputTexture: (any MTLTexture)?
+    var debugFrameIndex: UInt64?
 
     init(volumeTexture: any MTLTexture,
          transferFunctionTexture: any MTLTexture,
@@ -67,7 +68,8 @@ struct VolumeRaycastPassInput: @unchecked Sendable {
          optionValue: UInt16 = 0,
          targetViewSize: UInt16? = nil,
          quaternion: SIMD4<Float> = SIMD4<Float>(0, 0, 0, 1),
-         outputTexture: (any MTLTexture)? = nil) {
+         outputTexture: (any MTLTexture)? = nil,
+         debugFrameIndex: UInt64? = nil) {
         self.volumeTexture = volumeTexture
         self.transferFunctionTexture = transferFunctionTexture
         self.accelerationTexture = accelerationTexture
@@ -84,6 +86,7 @@ struct VolumeRaycastPassInput: @unchecked Sendable {
                                                                      Int(viewportSize.height)))
         self.quaternion = quaternion
         self.outputTexture = outputTexture
+        self.debugFrameIndex = debugFrameIndex
     }
 }
 
@@ -226,7 +229,7 @@ final class VolumeRaycastPass: @unchecked Sendable {
             encoder.setBuffer(cameraBuffer, offset: 0, index: 1)
             argumentManager.registerResources(on: encoder)
 
-            let threadsPerThreadgroup = MTLSize(width: 16, height: 16, depth: 1)
+            let threadsPerThreadgroup = MTLSize(width: 8, height: 8, depth: 1)
             let groups = MTLSize(width: (viewport.width + threadsPerThreadgroup.width - 1) / threadsPerThreadgroup.width,
                                  height: (viewport.height + threadsPerThreadgroup.height - 1) / threadsPerThreadgroup.height,
                                  depth: 1)
@@ -235,9 +238,17 @@ final class VolumeRaycastPass: @unchecked Sendable {
 
             let encodeMilliseconds = Self.milliseconds(from: encodeStartedAt)
             let commitStartedAt = CFAbsoluteTimeGetCurrent()
-            CommandBufferProfiler.captureTimes(for: commandBuffer,
-                                               label: "raycast",
-                                               category: input.renderingParameters.quality.profilerCategory)
+            if Logger.performanceLoggingEnabled {
+                CommandBufferProfiler.captureTimes(for: commandBuffer,
+                                                   label: "raycast",
+                                                   category: input.renderingParameters.quality.profilerCategory)
+            }
+            let commandBufferID = Self.objectIdentifier(commandBuffer)
+            let commandQueueID = Self.objectIdentifier(commandQueue)
+            let outputTextureID = Self.objectIdentifier(outputTexture)
+            logInteractionInfo(
+                "[MTK3DInteraction] raycast.execute.commit frameIndex=\(Self.describe(input.debugFrameIndex)) commandBufferID=\(commandBufferID) commandQueueID=\(commandQueueID) outputTextureID=\(outputTextureID) output=\(outputTexture.width)x\(outputTexture.height) quality=\(input.renderingParameters.quality) preCommitMs=\(Self.formatMilliseconds(Self.milliseconds(from: cpuStart, to: commitStartedAt))) encodeMs=\(Self.formatMilliseconds(encodeMilliseconds))"
+            )
             let timing = try await complete(commandBuffer: commandBuffer,
                                             totalCpuStart: cpuStart,
                                             commandBufferCpuStart: commitStartedAt,
@@ -246,28 +257,35 @@ final class VolumeRaycastPass: @unchecked Sendable {
                                             validationMilliseconds: validationMilliseconds,
                                             lockWaitMilliseconds: lockWaitMilliseconds,
                                             encodeMilliseconds: encodeMilliseconds)
-            ClinicalProfiler.shared.recordSample(
-                stage: .volumeRaycast,
-                cpuTime: timing.cpuDurationMilliseconds,
-                gpuTime: timing.gpuDurationMilliseconds,
-                viewport: ProfilingViewportContext(
-                    width: viewport.width,
-                    height: viewport.height,
-                    viewportType: "volume3D",
-                    quality: input.renderingParameters.quality,
-                    renderMode: input.renderingParameters.compositingMode
-                ),
-                metadata: [
-                    "kernelTimeMilliseconds": timing.kernelDurationMilliseconds.map { String(format: "%.6f", $0) } ?? "",
-                    "samplingDistance": String(input.renderingParameters.samplingDistance)
-                ],
-                device: device
+            if ClinicalProfiler.shared.isRecordingEnabled {
+                ClinicalProfiler.shared.recordSample(
+                    stage: .volumeRaycast,
+                    cpuTime: timing.cpuDurationMilliseconds,
+                    gpuTime: timing.gpuDurationMilliseconds,
+                    viewport: ProfilingViewportContext(
+                        width: viewport.width,
+                        height: viewport.height,
+                        viewportType: "volume3D",
+                        quality: input.renderingParameters.quality,
+                        renderMode: input.renderingParameters.compositingMode
+                    ),
+                    metadata: [
+                        "kernelTimeMilliseconds": timing.kernelDurationMilliseconds.map { String(format: "%.6f", $0) } ?? "",
+                        "samplingDistance": String(input.renderingParameters.samplingDistance)
+                    ],
+                    device: device
+                )
+            }
+            if Logger.performanceLoggingEnabled {
+                logRaycastPerf(input: input,
+                               viewport: viewport,
+                               timing: timing,
+                               threadgroups: groups,
+                               threadsPerThreadgroup: threadsPerThreadgroup)
+            }
+            logInteractionInfo(
+                "[MTK3DInteraction] raycast.execute.complete frameIndex=\(Self.describe(input.debugFrameIndex)) commandBufferID=\(commandBufferID) commandQueueID=\(commandQueueID) outputTextureID=\(outputTextureID) status=completed cpuMs=\(Self.formatMilliseconds(timing.cpuDurationMilliseconds)) gpuMs=\(Self.describeMilliseconds(timing.gpuDurationMilliseconds)) kernelMs=\(Self.describeMilliseconds(timing.kernelDurationMilliseconds))"
             )
-            logRaycastPerf(input: input,
-                           viewport: viewport,
-                           timing: timing,
-                           threadgroups: groups,
-                           threadsPerThreadgroup: threadsPerThreadgroup)
             let output = VolumeRaycastPassOutput(outputTexture: outputTexture,
                                                  compositingMode: input.renderingParameters.compositingMode,
                                                  quality: input.renderingParameters.quality,
@@ -275,6 +293,163 @@ final class VolumeRaycastPass: @unchecked Sendable {
                                                  timing: timing)
             await inFlightLock.release()
             return output
+        } catch {
+            await inFlightLock.release()
+            throw error
+        }
+    }
+
+    func enqueue(input: VolumeRaycastPassInput,
+                 commandQueue: any MTLCommandQueue) async throws -> VolumeRaycastPassOutput {
+        let cpuStart = CFAbsoluteTimeGetCurrent()
+
+        guard commandQueue.device === device else {
+            throw VolumeRaycastPassError.commandQueueDeviceMismatch
+        }
+
+        let validationStartedAt = CFAbsoluteTimeGetCurrent()
+        let viewport = try validate(input: input)
+        let validationMilliseconds = Self.milliseconds(from: validationStartedAt)
+
+        try Task.checkCancellation()
+        let lockWaitStartedAt = CFAbsoluteTimeGetCurrent()
+        try await inFlightLock.acquire()
+        let lockWaitMilliseconds = Self.milliseconds(from: lockWaitStartedAt)
+
+        do {
+            try Task.checkCancellation()
+            let encodeStartedAt = CFAbsoluteTimeGetCurrent()
+            let outputTexture = try input.outputTexture ?? prepareOutputTexture(
+                width: viewport.width,
+                height: viewport.height,
+                device: device
+            )
+
+            encode(input: input, outputTexture: outputTexture)
+
+            guard let commandBuffer = commandQueue.makeCommandBuffer() else {
+                throw VolumeRaycastPassError.commandBufferCreationFailed
+            }
+            guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+                throw VolumeRaycastPassError.commandEncodingFailed
+            }
+
+            commandBuffer.label = "VolumeRaycastPass.Raycast"
+            encoder.label = "VolumeRaycastPass.CommandEncoder"
+            encoder.setComputePipelineState(pipeline)
+            encoder.setBuffer(argumentManager.argumentBuffer, offset: 0, index: 0)
+            encoder.setBuffer(cameraBuffer, offset: 0, index: 1)
+            argumentManager.registerResources(on: encoder)
+
+            let threadsPerThreadgroup = MTLSize(width: 8, height: 8, depth: 1)
+            let groups = MTLSize(width: (viewport.width + threadsPerThreadgroup.width - 1) / threadsPerThreadgroup.width,
+                                 height: (viewport.height + threadsPerThreadgroup.height - 1) / threadsPerThreadgroup.height,
+                                 depth: 1)
+            encoder.dispatchThreadgroups(groups, threadsPerThreadgroup: threadsPerThreadgroup)
+            encoder.endEncoding()
+
+            let encodeMilliseconds = Self.milliseconds(from: encodeStartedAt)
+            let commitStartedAt = CFAbsoluteTimeGetCurrent()
+            let preCommitMilliseconds = Self.milliseconds(from: cpuStart, to: commitStartedAt)
+            let initialTiming = VolumeRaycastPassTiming(
+                cpuDurationMilliseconds: preCommitMilliseconds,
+                preCommitMilliseconds: preCommitMilliseconds,
+                validationMilliseconds: validationMilliseconds,
+                lockWaitMilliseconds: lockWaitMilliseconds,
+                encodeMilliseconds: encodeMilliseconds,
+                commandBufferCpuMilliseconds: 0,
+                gpuStartTime: nil,
+                gpuEndTime: nil,
+                gpuDurationMilliseconds: nil,
+                kernelStartTime: nil,
+                kernelEndTime: nil,
+                kernelDurationMilliseconds: nil
+            )
+
+            let commandBufferID = Self.objectIdentifier(commandBuffer)
+            let commandQueueID = Self.objectIdentifier(commandQueue)
+            let outputTextureID = Self.objectIdentifier(outputTexture)
+            logInteractionInfo(
+                "[MTK3DInteraction] raycast.enqueue.commit frameIndex=\(Self.describe(input.debugFrameIndex)) commandBufferID=\(commandBufferID) commandQueueID=\(commandQueueID) outputTextureID=\(outputTextureID) output=\(outputTexture.width)x\(outputTexture.height) quality=\(input.renderingParameters.quality) preCommitMs=\(Self.formatMilliseconds(preCommitMilliseconds)) encodeMs=\(Self.formatMilliseconds(encodeMilliseconds))"
+            )
+            commandBuffer.addCompletedHandler { [self, inFlightLock] buffer in
+                let cpuEnd = CFAbsoluteTimeGetCurrent()
+                defer {
+                    Task {
+                        await inFlightLock.release()
+                    }
+                }
+
+                if let error = buffer.error {
+                    Logger.error("CommandBuffer [raycast] failed: \(String(describing: buffer.status)) \(error.localizedDescription)",
+                                 category: "com.mtk.volumerendering.Benchmark.perf")
+                    Logger.info(
+                        "[MTK3DInteraction] raycast.enqueue.complete frameIndex=\(Self.describe(input.debugFrameIndex)) commandBufferID=\(commandBufferID) commandQueueID=\(commandQueueID) outputTextureID=\(outputTextureID) status=\(buffer.status.rawValue) error=\(error.localizedDescription)",
+                        category: "com.mtk.volumerendering.VolumeRaycastPass"
+                    )
+                    return
+                } else if buffer.status == .error {
+                    Logger.error("CommandBuffer [raycast] failed with error status and no error object.",
+                                 category: "com.mtk.volumerendering.Benchmark.perf")
+                    Logger.info(
+                        "[MTK3DInteraction] raycast.enqueue.complete frameIndex=\(Self.describe(input.debugFrameIndex)) commandBufferID=\(commandBufferID) commandQueueID=\(commandQueueID) outputTextureID=\(outputTextureID) status=\(buffer.status.rawValue) error=nil",
+                        category: "com.mtk.volumerendering.VolumeRaycastPass"
+                    )
+                    return
+                }
+
+                let timing = VolumeRaycastPassTiming(
+                    cpuDurationMilliseconds: Self.milliseconds(from: cpuStart, to: cpuEnd),
+                    preCommitMilliseconds: preCommitMilliseconds,
+                    validationMilliseconds: validationMilliseconds,
+                    lockWaitMilliseconds: lockWaitMilliseconds,
+                    encodeMilliseconds: encodeMilliseconds,
+                    commandBufferCpuMilliseconds: Self.milliseconds(from: commitStartedAt, to: cpuEnd),
+                    gpuStartTime: Self.validTimestamp(buffer.gpuStartTime),
+                    gpuEndTime: Self.validTimestamp(buffer.gpuEndTime),
+                    gpuDurationMilliseconds: Self.interval(buffer.gpuStartTime, buffer.gpuEndTime),
+                    kernelStartTime: Self.validTimestamp(buffer.kernelStartTime),
+                    kernelEndTime: Self.validTimestamp(buffer.kernelEndTime),
+                    kernelDurationMilliseconds: Self.interval(buffer.kernelStartTime, buffer.kernelEndTime)
+                )
+                if ClinicalProfiler.shared.isRecordingEnabled {
+                    ClinicalProfiler.shared.recordSample(
+                        stage: .volumeRaycast,
+                        cpuTime: timing.cpuDurationMilliseconds,
+                        gpuTime: timing.gpuDurationMilliseconds,
+                        viewport: ProfilingViewportContext(
+                            width: viewport.width,
+                            height: viewport.height,
+                            viewportType: "volume3D",
+                            quality: input.renderingParameters.quality,
+                            renderMode: input.renderingParameters.compositingMode
+                        ),
+                        metadata: [
+                            "kernelTimeMilliseconds": timing.kernelDurationMilliseconds.map { String(format: "%.6f", $0) } ?? "",
+                            "samplingDistance": String(input.renderingParameters.samplingDistance)
+                        ],
+                        device: self.device
+                    )
+                }
+                if Logger.performanceLoggingEnabled {
+                    self.logRaycastPerf(input: input,
+                                        viewport: viewport,
+                                        timing: timing,
+                                        threadgroups: groups,
+                                        threadsPerThreadgroup: threadsPerThreadgroup)
+                    Logger.info(
+                        "[MTK3DInteraction] raycast.enqueue.complete frameIndex=\(Self.describe(input.debugFrameIndex)) commandBufferID=\(commandBufferID) commandQueueID=\(commandQueueID) outputTextureID=\(outputTextureID) status=completed cpuMs=\(Self.formatMilliseconds(timing.cpuDurationMilliseconds)) gpuMs=\(Self.describeMilliseconds(timing.gpuDurationMilliseconds)) kernelMs=\(Self.describeMilliseconds(timing.kernelDurationMilliseconds))",
+                        category: "com.mtk.volumerendering.VolumeRaycastPass"
+                    )
+                }
+            }
+            commandBuffer.commit()
+
+            return VolumeRaycastPassOutput(outputTexture: outputTexture,
+                                           compositingMode: input.renderingParameters.compositingMode,
+                                           quality: input.renderingParameters.quality,
+                                           viewportSize: input.viewportSize,
+                                           timing: initialTiming)
         } catch {
             await inFlightLock.release()
             throw error
@@ -443,6 +618,11 @@ final class VolumeRaycastPass: @unchecked Sendable {
         )
     }
 
+    private func logInteractionInfo(_ message: @autoclosure () -> String) {
+        guard Logger.performanceLoggingEnabled else { return }
+        Logger.info(message(), category: "com.mtk.volumerendering.VolumeRaycastPass")
+    }
+
     private static func validTimestamp(_ timestamp: CFTimeInterval) -> CFTimeInterval? {
         timestamp > 0 ? timestamp : nil
     }
@@ -450,6 +630,22 @@ final class VolumeRaycastPass: @unchecked Sendable {
     private static func milliseconds(from start: CFAbsoluteTime,
                                      to end: CFAbsoluteTime = CFAbsoluteTimeGetCurrent()) -> Double {
         max(0, (end - start) * 1000.0)
+    }
+
+    private static func objectIdentifier(_ object: AnyObject) -> String {
+        String(describing: ObjectIdentifier(object))
+    }
+
+    private static func describe(_ value: UInt64?) -> String {
+        value.map(String.init) ?? "nil"
+    }
+
+    private static func describeMilliseconds(_ value: Double?) -> String {
+        value.map(formatMilliseconds) ?? "nil"
+    }
+
+    private static func formatMilliseconds(_ value: Double) -> String {
+        String(format: "%.3f", value)
     }
 
     private static func interval(_ start: CFTimeInterval, _ end: CFTimeInterval) -> Double? {

@@ -169,7 +169,6 @@ private struct ClinicalViewportGridContent: View {
     @State private var lastMPRMagnificationEventTimes: [MTKCore.Axis: CFAbsoluteTime] = [:]
     @State private var lastVolumeDragTranslation = CGSize.zero
     @State private var lastVolumeDragEventAt: CFAbsoluteTime?
-    @State private var pendingVolumeGestureTask: Task<Void, Never>?
     @State private var volumeGestureActive = false
 
     init(controller: ClinicalViewportGridController,
@@ -269,24 +268,59 @@ private struct ClinicalViewportGridContent: View {
             .contentShape(Rectangle())
             .highPriorityGesture(mprGesture(axis: axis, size: proxy.size))
             .simultaneousGesture(mprMagnificationGesture(axis: axis))
+            .onAppear {
+                attachMPRScrollWheel(axis: axis, surface: surface)
+            }
+            .onDisappear {
+                surface.onScrollWheel = nil
+            }
         }
         .aspectRatio(1, contentMode: .fit)
         .background(paneBackground)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .modifier(MPRComputerTestActionsModifier(enabled: computerTestActionsEnabled,
+                                                 axis: axis,
+                                                 controller: controller))
     }
 
     private func volumePane(surface: MetalViewportSurface) -> some View {
-        MetalViewportContainer(surface: surface) {
+#if os(iOS)
+        let pane = MetalViewportContainer(
+            surface: surface,
+            native3DInteraction: NativeVolume3DInteraction(controller: controller)
+        ) {
+            ZStack {
+                paneBadge(controller.volumeViewportMode.displayName)
+                viewportOverlay?(controller.debugSnapshot(for: controller.volumeViewportID))
+            }
+            .allowsHitTesting(false)
+        }
+#else
+        let pane = MetalViewportContainer(surface: surface) {
             ZStack {
                 paneBadge(controller.volumeViewportMode.displayName)
                 viewportOverlay?(controller.debugSnapshot(for: controller.volumeViewportID))
             }
         }
-        .contentShape(Rectangle())
-        .highPriorityGesture(volumeGesture())
-        .aspectRatio(1, contentMode: .fit)
-        .background(paneBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+#endif
+#if os(iOS)
+        return pane
+            .contentShape(Rectangle())
+            .aspectRatio(1, contentMode: .fit)
+            .background(paneBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .modifier(VolumeComputerTestActionsModifier(enabled: computerTestActionsEnabled,
+                                                        controller: controller))
+#else
+        return pane
+            .contentShape(Rectangle())
+            .highPriorityGesture(volumeGesture())
+            .aspectRatio(1, contentMode: .fit)
+            .background(paneBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .modifier(VolumeComputerTestActionsModifier(enabled: computerTestActionsEnabled,
+                                                        controller: controller))
+#endif
     }
 
     private func paneBadge(_ title: String) -> some View {
@@ -481,9 +515,8 @@ private struct ClinicalViewportGridContent: View {
                                                  eventDeltaMilliseconds))
                 }
                 lastVolumeDragEventAt = now
-                pendingVolumeGestureTask?.cancel()
                 let enqueuedAt = CFAbsoluteTimeGetCurrent()
-                pendingVolumeGestureTask = Task { @MainActor in
+                Task { @MainActor in
                     await beginInteractionTask?.value
                     guard !Task.isCancelled else { return }
                     let latency = max(0, (CFAbsoluteTimeGetCurrent() - enqueuedAt) * 1000.0)
@@ -498,13 +531,35 @@ private struct ClinicalViewportGridContent: View {
                 logMPRInteractionInfo("[MTKClinicalVolumeInteraction] swiftui.drag.end")
                 lastVolumeDragTranslation = .zero
                 lastVolumeDragEventAt = nil
-                pendingVolumeGestureTask?.cancel()
-                pendingVolumeGestureTask = nil
                 if volumeGestureActive {
                     volumeGestureActive = false
                     Task { @MainActor in await controller.endAdaptiveSamplingInteraction() }
                 }
             }
+    }
+
+    private func attachMPRScrollWheel(axis: MTKCore.Axis, surface: MetalViewportSurface) {
+        surface.onScrollWheel = { [weak controller] deltaY, hasPreciseScrollingDeltas in
+            guard let controller else { return }
+            let steps = MPRScrollStepMapper.steps(deltaY: deltaY,
+                                                  hasPreciseScrollingDeltas: hasPreciseScrollingDeltas)
+            guard steps != 0 else { return }
+            Task { @MainActor in
+                logMPRInteractionInfo("[MTKMPRInteraction] scrollWheel axis=\(axis) steps=\(steps)")
+                await controller.scrollSlice(axis: axis, steps: steps)
+            }
+        }
+    }
+
+    private var computerTestActionsEnabled: Bool {
+        if ProcessInfo.processInfo.environment["MTK_COMPUTER_TEST_ACTIONS"] == "1" {
+            return true
+        }
+#if DEBUG
+        return true
+#else
+        return false
+#endif
     }
 
     private var paneBackground: Color {
@@ -515,12 +570,101 @@ private struct ClinicalViewportGridContent: View {
 #endif
     }
 
-    private func logMPRInteractionInfo(_ message: String) {
-        MTKCore.Logger.info(message, category: "com.mtk.ui.ClinicalViewportGrid")
+    private func logMPRInteractionInfo(_ message: @autoclosure () -> String) {
+        guard Logger.interactionLoggingEnabled else { return }
+        MTKCore.Logger.info(message(), category: "com.mtk.ui.ClinicalViewportGrid")
     }
 
-    private func logMPRInteractionDebug(_ message: String) {
-        MTKCore.Logger.debug(message, category: "com.mtk.ui.ClinicalViewportGrid")
+    private func logMPRInteractionDebug(_ message: @autoclosure () -> String) {
+        guard Logger.interactionLoggingEnabled else { return }
+        MTKCore.Logger.debug(message(), category: "com.mtk.ui.ClinicalViewportGrid")
+    }
+}
+
+@MainActor
+private struct MPRComputerTestActionsModifier: ViewModifier {
+    let enabled: Bool
+    let axis: MTKCore.Axis
+    let controller: ClinicalViewportGridController
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if enabled {
+            content
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(Text("\(axisDisplayName) MPR pane"))
+                .accessibilityIdentifier("MTKClinicalMPRPane.\(axisIdentifier)")
+                .accessibilityAction(named: Text("Scroll slice forward")) {
+                    Task { @MainActor in
+                        await controller.scrollSlice(axis: axis, steps: 1)
+                    }
+                }
+                .accessibilityAction(named: Text("Scroll slice backward")) {
+                    Task { @MainActor in
+                        await controller.scrollSlice(axis: axis, steps: -1)
+                    }
+                }
+        } else {
+            content
+        }
+    }
+
+    private var axisDisplayName: String {
+        switch axis {
+        case .axial:
+            return "Axial"
+        case .coronal:
+            return "Coronal"
+        case .sagittal:
+            return "Sagittal"
+        }
+    }
+
+    private var axisIdentifier: String {
+        switch axis {
+        case .axial:
+            return "axial"
+        case .coronal:
+            return "coronal"
+        case .sagittal:
+            return "sagittal"
+        }
+    }
+}
+
+@MainActor
+private struct VolumeComputerTestActionsModifier: ViewModifier {
+    let enabled: Bool
+    let controller: ClinicalViewportGridController
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if enabled {
+            content
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(Text("Volume 3D pane"))
+                .accessibilityIdentifier("MTKClinicalVolumePane")
+                .accessibilityAction(named: Text("Rotate volume right")) {
+                    rotate(width: 40, height: 0)
+                }
+                .accessibilityAction(named: Text("Rotate volume left")) {
+                    rotate(width: -40, height: 0)
+                }
+                .accessibilityAction(named: Text("Rotate volume up")) {
+                    rotate(width: 0, height: -40)
+                }
+                .accessibilityAction(named: Text("Rotate volume down")) {
+                    rotate(width: 0, height: 40)
+                }
+        } else {
+            content
+        }
+    }
+
+    private func rotate(width: CGFloat, height: CGFloat) {
+        Task { @MainActor in
+            await controller.rotateVolumeCamera(screenDelta: CGSize(width: width, height: height))
+        }
     }
 }
 #endif

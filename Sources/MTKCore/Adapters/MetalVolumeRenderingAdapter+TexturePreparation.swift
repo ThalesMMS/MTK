@@ -15,7 +15,7 @@ extension MetalVolumeRenderingAdapter {
     }
 
     func prepareDatasetTextureResult(for dataset: VolumeDataset,
-                                     state: MetalState) throws -> DatasetTexturePreparationResult {
+                                     state: MetalState) async throws -> DatasetTexturePreparationResult {
         let identity = DatasetIdentity(dataset: dataset)
         if let existing = state.volumeTexture,
            state.datasetIdentity == identity {
@@ -24,9 +24,8 @@ extension MetalVolumeRenderingAdapter {
         }
 
         let factory = VolumeTextureFactory(dataset: dataset)
-        guard let texture = factory.generate(device: state.device) else {
-            throw RenderingError.datasetTextureUnavailable
-        }
+        let texture = try await factory.generateAsync(device: state.device,
+                                                      commandQueue: state.commandQueue)
         texture.label = "VolumeCompute.Dataset"
         state.volumeTexture = texture
         state.datasetIdentity = identity
@@ -57,8 +56,8 @@ extension MetalVolumeRenderingAdapter {
     }
 
     func prepareDatasetTexture(for dataset: VolumeDataset,
-                               state: MetalState) throws -> any MTLTexture {
-        try prepareDatasetTextureResult(for: dataset, state: state).texture
+                               state: MetalState) async throws -> any MTLTexture {
+        try await prepareDatasetTextureResult(for: dataset, state: state).texture
     }
 
     func prepareDatasetTexture(for dataset: VolumeDataset,

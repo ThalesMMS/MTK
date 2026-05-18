@@ -24,6 +24,9 @@ struct VolumeGesturesModifier: ViewModifier {
     @State private var translationInteractionActive = false
     @State private var magnificationInteractionActive = false
     @State private var rotationInteractionActive = false
+    @State private var lastTranslation = CGSize.zero
+    @State private var lastMagnification: CGFloat = 1
+    @State private var lastRotationRadians: CGFloat = 0
     @State private var translationResetTask: Task<Void, Never>?
     @State private var magnificationResetTask: Task<Void, Never>?
     @State private var rotationResetTask: Task<Void, Never>?
@@ -87,12 +90,17 @@ struct VolumeGesturesModifier: ViewModifier {
                     Task { await controller.beginAdaptiveSamplingInteraction() }
                 }
                 scheduleTranslationReset()
-                context.onTranslate(axis, CGSize(width: value.translation.width * sensitivity,
-                                                height: value.translation.height * sensitivity))
+                let current = CGSize(width: value.translation.width * sensitivity,
+                                     height: value.translation.height * sensitivity)
+                let delta = CGSize(width: current.width - lastTranslation.width,
+                                   height: current.height - lastTranslation.height)
+                lastTranslation = current
+                context.onTranslate(axis, delta)
             }
             .onEnded { _ in
                 translationResetTask?.cancel()
                 translationResetTask = nil
+                lastTranslation = .zero
                 if translationInteractionActive {
                     translationInteractionActive = false
                     Task { await controller.endAdaptiveSamplingInteraction() }
@@ -119,11 +127,14 @@ struct VolumeGesturesModifier: ViewModifier {
                 }
                 scheduleMagnificationReset()
                 let adjusted = 1.0 + (value - 1.0) * sensitivity
-                context.onZoom(adjusted)
+                let relative = lastMagnification > 0 ? adjusted / lastMagnification : adjusted
+                lastMagnification = adjusted
+                context.onZoom(relative)
             }
             .onEnded { _ in
                 magnificationResetTask?.cancel()
                 magnificationResetTask = nil
+                lastMagnification = 1
                 if magnificationInteractionActive {
                     magnificationInteractionActive = false
                     Task { await controller.endAdaptiveSamplingInteraction() }
@@ -148,11 +159,15 @@ struct VolumeGesturesModifier: ViewModifier {
                     Task { await controller.beginAdaptiveSamplingInteraction() }
                 }
                 scheduleRotationReset()
-                context.onRotate(.volume, CGFloat(radians.radians) * sensitivity)
+                let current = CGFloat(radians.radians) * sensitivity
+                let delta = current - lastRotationRadians
+                lastRotationRadians = current
+                context.onRotate(.volume, delta)
             }
             .onEnded { _ in
                 rotationResetTask?.cancel()
                 rotationResetTask = nil
+                lastRotationRadians = 0
                 if rotationInteractionActive {
                     rotationInteractionActive = false
                     Task { await controller.endAdaptiveSamplingInteraction() }
@@ -206,6 +221,9 @@ struct VolumeGesturesModifier: ViewModifier {
         translationResetTask = nil
         magnificationResetTask = nil
         rotationResetTask = nil
+        lastTranslation = .zero
+        lastMagnification = 1
+        lastRotationRadians = 0
 
         let activeCount = [translationInteractionActive,
                            magnificationInteractionActive,

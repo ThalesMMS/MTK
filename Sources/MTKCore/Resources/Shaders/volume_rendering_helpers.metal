@@ -37,10 +37,9 @@ constant float kToneLookupScale = 2550.0f;
 [[maybe_unused]] static inline float3 transformNormal(float4x4 inverseModelMatrix,
                                                       float3 normal)
 {
-    float3x3 inverseLinear = float3x3(inverseModelMatrix[0].xyz,
-                                      inverseModelMatrix[1].xyz,
-                                      inverseModelMatrix[2].xyz);
-    float3 transformed = transpose(inverseLinear) * normal;
+    float3 transformed = float3(dot(inverseModelMatrix[0].xyz, normal),
+                                dot(inverseModelMatrix[1].xyz, normal),
+                                dot(inverseModelMatrix[2].xyz, normal));
     float lengthSq = dot(transformed, transformed);
     return lengthSq > 1.0e-6f ? normalize(transformed) : float3(0.0f);
 }
@@ -106,6 +105,23 @@ static inline float4 sampleChannel(texture2d<float, access::sample> transfer,
                                                         bool useTransfer)
 {
     const float4 weights = params.intensityRatio;
+
+    if (weights.y <= 0.0001f &&
+        weights.z <= 0.0001f &&
+        weights.w <= 0.0001f) {
+        if (weights.x >= 0.9999f && args.toneBufferCh1 == nullptr) {
+            return sampleTransfer(args.transferTextureCh1,
+                                  density,
+                                  gradient,
+                                  useTransfer);
+        }
+        return sampleChannel(args.transferTextureCh1,
+                             args.toneBufferCh1,
+                             density,
+                             gradient,
+                             useTransfer,
+                             weights.x);
+    }
 
     float4 channels[4];
     channels[0] = sampleChannel(args.transferTextureCh1, args.toneBufferCh1, density, gradient, useTransfer, weights.x);

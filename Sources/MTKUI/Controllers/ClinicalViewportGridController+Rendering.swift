@@ -11,6 +11,16 @@ import Foundation
 import MTKCore
 
 extension ClinicalViewportGridController {
+    func logClinicalInteractionInfo(_ message: @autoclosure () -> String) {
+        guard Logger.interactionLoggingEnabled else { return }
+        logger.info(message())
+    }
+
+    func logClinicalInteractionDebug(_ message: @autoclosure () -> String) {
+        guard Logger.interactionLoggingEnabled else { return }
+        logger.debug(message())
+    }
+
     /// Creates a private GPU texture and copies the full 2D contents of `source` into it.
     /// - Parameter source: The source 2D texture to copy; must be created on the same Metal device used by this controller's `volumeSurface` command queue.
     /// - Returns: A newly allocated private `MTLTexture` containing a full copy of `source` (slice 0, level 0), suitable for shader read/write and pixel-format views.
@@ -63,10 +73,12 @@ extension ClinicalViewportGridController {
 
     /// Schedules a render task for the given viewport, increments its render generation, and updates debug state.
     /// 
-    /// This cancels any existing scheduled task for the same viewport, increments the per-viewport render generation, and updates the viewport's debug snapshot to reflect a scheduled render.
+    /// This coalesces rapid updates behind a single in-flight render drain for the viewport. New requests mark the
+    /// viewport pending and bump its generation; stale frames are dropped before presentation and the drain renders
+    /// the latest pending generation. This keeps continuous 3D drags visible without presenting older camera states.
     /// - Parameters:
     ///   - viewport: The identifier of the viewport to schedule rendering for.
-    /// - Returns: A `Task<Void, Never>` that will perform the render, or `nil` if scheduling was skipped (e.g., because the dataset is not applied).
+    /// - Returns: A `Task<Void, Never>` that drains rendering for the viewport, or `nil` if scheduling was skipped.
     @discardableResult
     func scheduleRender(for viewport: ViewportID) -> Task<Void, Never>? {
         guard datasetApplied else {
@@ -75,7 +87,7 @@ extension ClinicalViewportGridController {
         }
         let generation = (renderGenerations[viewport] ?? 0) &+ 1
         renderGenerations[viewport] = generation
-        renderTasks[viewport]?.cancel()
+        renderPendingViewports.insert(viewport)
         let now = CFAbsoluteTimeGetCurrent()
         updateDebugSnapshot(for: viewport) { snapshot in
             snapshot.viewportType = viewportTypeName(for: viewport)
@@ -86,13 +98,60 @@ extension ClinicalViewportGridController {
             snapshot.lastError = nil
             snapshot.lastRenderRequestTime = now
         }
-        logger.info("[MTKMPRInteraction] schedule viewport=\(viewportName(for: viewport)) generation=\(generation) type=\(viewportTypeName(for: viewport)) mode=\(renderModeName(for: viewport)) state=\(qualityScheduler.state) samplingStep=\(qualityScheduler.currentParameters.volumeSamplingStep)")
+        let surfaceProgress = surface(for: viewport)?.presentationProgressSnapshot()
+        logClinicalInteractionInfo("[MTKMPRInteraction] schedule viewport=\(viewportName(for: viewport)) generation=\(generation) type=\(viewportTypeName(for: viewport)) mode=\(renderModeName(for: viewport)) state=\(qualityScheduler.state) samplingStep=\(qualityScheduler.currentParameters.volumeSamplingStep) presentationInFlightToken=\(presentationInFlightTokens[viewport].map(String.init) ?? "nil") submitted=\(surfaceProgress?.submitted ?? 0) completed=\(surfaceProgress?.completed ?? 0) failed=\(surfaceProgress?.failed ?? 0) terminal=\(surfaceProgress?.terminal ?? 0) presentInFlight=\(surfaceProgress?.inFlight ?? 0)")
+        if renderInFlightViewports.contains(viewport) {
+            logClinicalInteractionDebug("[MTKMPRInteraction] schedule.coalesce viewport=\(viewportName(for: viewport)) generation=\(generation)")
+            return renderTasks[viewport]
+        }
+        if let presentationInFlightToken = presentationInFlightTokens[viewport] {
+            logClinicalInteractionInfo("[MTKMPRInteraction] schedule.deferPresentation viewport=\(viewportName(for: viewport)) generation=\(generation) pending=true inFlight=false inFlightToken=\(presentationInFlightToken) submitted=\(surfaceProgress?.submitted ?? 0) completed=\(surfaceProgress?.completed ?? 0) failed=\(surfaceProgress?.failed ?? 0) terminal=\(surfaceProgress?.terminal ?? 0) presentInFlight=\(surfaceProgress?.inFlight ?? 0)")
+            return nil
+        }
+        return startRenderDrain(for: viewport)
+    }
+
+    @discardableResult
+    func startRenderDrain(for viewport: ViewportID) -> Task<Void, Never>? {
+        guard !renderInFlightViewports.contains(viewport) else {
+            logClinicalInteractionDebug("[MTKMPRInteraction] drain.start.drop viewport=\(viewportName(for: viewport)) reason=inFlight generation=\(renderGenerations[viewport] ?? 0)")
+            return renderTasks[viewport]
+        }
+        if let presentationInFlightToken = presentationInFlightTokens[viewport] {
+            let progress = surface(for: viewport)?.presentationProgressSnapshot()
+            logClinicalInteractionInfo("[MTKMPRInteraction] drain.start.drop viewport=\(viewportName(for: viewport)) reason=presentationInFlight generation=\(renderGenerations[viewport] ?? 0) pending=\(renderPendingViewports.contains(viewport)) inFlightToken=\(presentationInFlightToken) submitted=\(progress?.submitted ?? 0) completed=\(progress?.completed ?? 0) failed=\(progress?.failed ?? 0) terminal=\(progress?.terminal ?? 0) presentInFlight=\(progress?.inFlight ?? 0)")
+            return nil
+        }
+        renderInFlightViewports.insert(viewport)
         let task = Task { [weak self] in
             guard let self else { return }
-            await self.render(viewport: viewport, generation: generation)
+            await self.drainRenderQueue(for: viewport)
         }
         renderTasks[viewport] = task
         return task
+    }
+
+    func drainRenderQueue(for viewport: ViewportID) async {
+        defer {
+            if Task.isCancelled {
+                renderPendingViewports.remove(viewport)
+            }
+            renderInFlightViewports.remove(viewport)
+            renderTasks[viewport] = nil
+        }
+
+        while renderPendingViewports.contains(viewport), !Task.isCancelled {
+            if let presentationInFlightToken = presentationInFlightTokens[viewport] {
+                let progress = surface(for: viewport)?.presentationProgressSnapshot()
+                logClinicalInteractionInfo("[MTKMPRInteraction] drain.deferPresentation viewport=\(viewportName(for: viewport)) generation=\(renderGenerations[viewport] ?? 0) pending=true inFlightToken=\(presentationInFlightToken) submitted=\(progress?.submitted ?? 0) completed=\(progress?.completed ?? 0) failed=\(progress?.failed ?? 0) terminal=\(progress?.terminal ?? 0) presentInFlight=\(progress?.inFlight ?? 0)")
+                break
+            }
+            renderPendingViewports.remove(viewport)
+            let generation = renderGenerations[viewport] ?? 0
+            await render(viewport: viewport,
+                         generation: generation,
+                         allowStalePreviewPresentation: true)
+        }
     }
 
     /// Render a single frame for the given viewport, present it, and update debug, timing, and error state.
@@ -107,13 +166,15 @@ extension ClinicalViewportGridController {
     ///   - viewport: The identifier of the viewport to render.
     ///   - generation: A per-viewport generation token used to detect stale renders and abort processing when a
     ///     newer generation is scheduled.
-    func render(viewport: ViewportID, generation: UInt64) async {
+    func render(viewport: ViewportID,
+                generation: UInt64,
+                allowStalePreviewPresentation: Bool = false) async {
 #if DEBUG
         if viewport == volumeViewportID {
             await assertVolumeViewportConfigured()
         }
 #endif
-        logger.debug("[MTKMPRInteraction] render.start viewport=\(viewportName(for: viewport)) generation=\(generation) state=\(qualityScheduler.state)")
+        logClinicalInteractionDebug("[MTKMPRInteraction] render.start viewport=\(viewportName(for: viewport)) generation=\(generation) state=\(qualityScheduler.state)")
         updateDebugSnapshot(for: viewport) { snapshot in
             snapshot.viewportType = viewportTypeName(for: viewport)
             snapshot.renderMode = renderModeName(for: viewport)
@@ -131,7 +192,12 @@ extension ClinicalViewportGridController {
                 }
             }
             try renderGraph.validateFrame(frame)
-            guard !Task.isCancelled, renderGenerations[viewport] == generation else {
+            let currentGeneration = renderGenerations[viewport] ?? generation
+            guard canPresentRender(viewport: viewport,
+                                   generation: generation,
+                                   currentGeneration: currentGeneration,
+                                   allowStalePreviewPresentation: allowStalePreviewPresentation) else {
+                logClinicalInteractionInfo("[MTKMPRInteraction] render.dropStale viewport=\(viewportName(for: viewport)) generation=\(generation) current=\(currentGeneration) slotID=\(frame.outputTextureLease?.debugSlotID.map(String.init) ?? "nil") leaseID=\(frame.outputTextureLease?.leaseIdentifier.uuidString ?? "nil") state=\(qualityScheduler.state)")
                 return
             }
             let renderCompletedAt = CFAbsoluteTimeGetCurrent()
@@ -145,7 +211,7 @@ extension ClinicalViewportGridController {
                 snapshot.lastError = nil
                 snapshot.lastRenderCompletionTime = renderCompletedAt
             }
-            logger.info("Rendered viewport frame viewport=\(viewportName(for: viewport)) generation=\(generation) route=\(frame.route.profilingName) pass=\(frame.route.primaryPass?.profilingName ?? "unknown") texture=\(frame.texture.label ?? "nil") size=\(frame.texture.width)x\(frame.texture.height) pixelFormat=\(frame.texture.pixelFormat)")
+            logClinicalInteractionInfo("Rendered viewport frame viewport=\(viewportName(for: viewport)) generation=\(generation) route=\(frame.route.profilingName) pass=\(frame.route.primaryPass?.profilingName ?? "unknown") texture=\(frame.texture.label ?? "nil") size=\(frame.texture.width)x\(frame.texture.height) pixelFormat=\(frame.texture.pixelFormat)")
             let presentationTime = try present(frame, generation: generation)
             shouldReleaseLease = false
             recordTiming(frame.metadata,
@@ -175,6 +241,20 @@ extension ClinicalViewportGridController {
         }
     }
 
+    func canPresentRender(viewport: ViewportID,
+                          generation: UInt64,
+                          currentGeneration: UInt64,
+                          allowStalePreviewPresentation: Bool) -> Bool {
+        guard !Task.isCancelled else { return false }
+        if generation == currentGeneration {
+            return true
+        }
+        if allowStalePreviewPresentation && qualityScheduler.state != .settled {
+            logClinicalInteractionDebug("[MTKMPRInteraction] render.dropStalePreview viewport=\(viewportName(for: viewport)) generation=\(generation) current=\(currentGeneration) state=\(qualityScheduler.state)")
+        }
+        return false
+    }
+
     /// Present a rendered frame to its corresponding viewport surface.
     /// - Parameters:
     ///   - frame: The rendered frame to present; its `route` determines the expected presentation pass and target viewport.
@@ -188,7 +268,7 @@ extension ClinicalViewportGridController {
     @discardableResult
     func present(_ frame: RenderFrame, generation: UInt64? = nil) throws -> CFAbsoluteTime {
         let presentationPass = frame.route.presentationPass
-        logger.debug("Presenting viewport frame viewport=\(viewportName(for: frame.viewportID)) route=\(frame.route.profilingName) pass=\(presentationPass?.profilingName ?? "unknown") texture=\(frame.texture.label ?? "nil") size=\(frame.texture.width)x\(frame.texture.height) pixelFormat=\(frame.texture.pixelFormat)")
+        logClinicalInteractionDebug("Presenting viewport frame viewport=\(viewportName(for: frame.viewportID)) route=\(frame.route.profilingName) pass=\(presentationPass?.profilingName ?? "unknown") texture=\(frame.texture.label ?? "nil") size=\(frame.texture.width)x\(frame.texture.height) pixelFormat=\(frame.texture.pixelFormat)")
         let surface = surface(for: frame.viewportID)
         try renderGraph.validatePresentationSurface(for: frame, surfaceExists: surface != nil)
         guard let surface else {
@@ -197,21 +277,35 @@ extension ClinicalViewportGridController {
 
         switch presentationPass?.kind {
         case .presentation:
-            return try surface.present(frame,
-                                       presentationToken: generation)
+            let duration = try surface.present(frame,
+                                               presentationToken: generation)
+            if let generation {
+                closePresentationGate(for: frame.viewportID,
+                                      token: generation,
+                                      frameIndex: nil,
+                                      slotID: frame.outputTextureLease?.debugSlotID)
+            }
+            return duration
 
         case .mprPresentation:
             guard let mprFrame = frame.mprFrame else {
                 throw RenderGraphError.passProducedNoFrame(frame.viewportID, .mprReslice)
             }
             let transform = presentationTransform(for: frame.viewportID, frame: mprFrame)
-            logger.debug("Using MPR presentation transform viewport=\(viewportName(for: frame.viewportID)) orientation=\(transform?.orientation.rawValue ?? 0) flipHorizontal=\(transform?.flipHorizontal == true) flipVertical=\(transform?.flipVertical == true)")
-            return try surface.present(mprFrame: mprFrame,
-                                       window: windowLevel.range,
-                                       labelmapOverlays: frame.labelmapOverlays,
-                                       transform: transform,
-                                       viewportTransform: viewportAxesByID[frame.viewportID].map { viewportTransform(for: $0) } ?? .identity,
-                                       presentationToken: generation)
+            logClinicalInteractionDebug("Using MPR presentation transform viewport=\(viewportName(for: frame.viewportID)) orientation=\(transform?.orientation.rawValue ?? 0) flipHorizontal=\(transform?.flipHorizontal == true) flipVertical=\(transform?.flipVertical == true)")
+            let duration = try surface.present(mprFrame: mprFrame,
+                                               window: windowLevel.range,
+                                               labelmapOverlays: frame.labelmapOverlays,
+                                               transform: transform,
+                                               viewportTransform: viewportAxesByID[frame.viewportID].map { viewportTransform(for: $0) } ?? .identity,
+                                               presentationToken: generation)
+            if let generation {
+                closePresentationGate(for: frame.viewportID,
+                                      token: generation,
+                                      frameIndex: nil,
+                                      slotID: frame.outputTextureLease?.debugSlotID)
+            }
+            return duration
 
         case .none:
             throw RenderGraphError.unmappedViewportRoute(frame.route.viewportType)
@@ -222,6 +316,96 @@ extension ClinicalViewportGridController {
                 reason: "Presentation pass cannot be \(presentationPass?.kind.profilingName ?? "unknown")."
             )
         }
+    }
+
+    func closePresentationGate(for viewport: ViewportID,
+                               token: UInt64,
+                               frameIndex: UInt64?,
+                               slotID: Int?) {
+        let progress = surface(for: viewport)?.presentationProgressSnapshot()
+        presentationInFlightTokens[viewport] = token
+        logClinicalInteractionInfo("[MTKMPRInteraction] presentation.gate.close viewport=\(viewportName(for: viewport)) token=\(token) frameIndex=\(frameIndex.map(String.init) ?? "nil") slotID=\(slotID.map(String.init) ?? "nil") submitted=\(progress?.submitted ?? 0) completed=\(progress?.completed ?? 0) failed=\(progress?.failed ?? 0) terminal=\(progress?.terminal ?? 0) presentInFlight=\(progress?.inFlight ?? 0) pending=\(renderPendingViewports.contains(viewport)) inFlight=\(renderInFlightViewports.contains(viewport))")
+    }
+
+    @discardableResult
+    func openPresentationGate(for viewport: ViewportID,
+                              presentationToken: UInt64?,
+                              reason: String) -> Bool {
+        let inFlightBefore = presentationInFlightTokens[viewport]
+        let shouldRelease: Bool
+        if let inFlightBefore {
+            shouldRelease = presentationToken == nil || presentationToken == inFlightBefore
+        } else {
+            shouldRelease = false
+        }
+        if shouldRelease {
+            presentationInFlightTokens.removeValue(forKey: viewport)
+        }
+        let progress = surface(for: viewport)?.presentationProgressSnapshot()
+        logClinicalInteractionInfo("[MTKMPRInteraction] presentation.gate.open viewport=\(viewportName(for: viewport)) reason=\(reason) token=\(presentationToken.map(String.init) ?? "nil") inFlightBefore=\(inFlightBefore.map(String.init) ?? "nil") released=\(shouldRelease) current=\(renderGenerations[viewport] ?? 0) pending=\(renderPendingViewports.contains(viewport)) inFlight=\(renderInFlightViewports.contains(viewport)) submitted=\(progress?.submitted ?? 0) completed=\(progress?.completed ?? 0) failed=\(progress?.failed ?? 0) terminal=\(progress?.terminal ?? 0) presentInFlight=\(progress?.inFlight ?? 0)")
+        if shouldRelease,
+           renderPendingViewports.contains(viewport),
+           !renderInFlightViewports.contains(viewport),
+           datasetApplied {
+            startRenderDrain(for: viewport)
+        }
+        return shouldRelease
+    }
+
+    func handleSurfacePresentationCompleted(_ presentationToken: UInt64?,
+                                            for viewport: ViewportID) {
+        let released = openPresentationGate(for: viewport,
+                                            presentationToken: presentationToken,
+                                            reason: "complete")
+        if let presentationToken,
+           renderGenerations[viewport] != presentationToken {
+            logClinicalInteractionInfo("[MTKMPRInteraction] presentation.complete.stale viewport=\(viewportName(for: viewport)) token=\(presentationToken) current=\(renderGenerations[viewport] ?? 0) gateReleased=\(released)")
+            return
+        }
+        let completedAt = CFAbsoluteTimeGetCurrent()
+        updateDebugSnapshot(for: viewport) { snapshot in
+            snapshot.presentationStatus = "presented"
+            snapshot.lastPresentationTime = completedAt
+        }
+        logClinicalInteractionInfo("[MTKMPRInteraction] presentation.complete viewport=\(viewportName(for: viewport)) token=\(presentationToken.map(String.init) ?? "nil") gateReleased=\(released)")
+    }
+
+    @discardableResult
+    func handleSurfacePresentationFailure(_ error: any Swift.Error,
+                                          presentationToken: UInt64?,
+                                          for viewport: ViewportID) -> Bool {
+        presentationFailureCounts[viewport, default: 0] &+= 1
+        let accepted = presentationToken == nil || renderGenerations[viewport] == presentationToken
+        let released = openPresentationGate(for: viewport,
+                                            presentationToken: presentationToken,
+                                            reason: "failure")
+        if accepted {
+            handlePresentationFailure(error, for: viewport)
+        }
+        let progress = surface(for: viewport)?.presentationProgressSnapshot()
+        logClinicalInteractionInfo("[MTKMPRInteraction] presentation.failure viewport=\(viewportName(for: viewport)) token=\(presentationToken.map(String.init) ?? "nil") current=\(renderGenerations[viewport] ?? 0) accepted=\(accepted) gateReleased=\(released) status=\(presentationFailureStatusDescription(error)) submitted=\(progress?.submitted ?? 0) completed=\(progress?.completed ?? 0) failed=\(progress?.failed ?? 0) terminal=\(progress?.terminal ?? 0) presentInFlight=\(progress?.inFlight ?? 0) failures=\(presentationFailureCounts[viewport] ?? 0) error=\(error.localizedDescription)")
+        return accepted
+    }
+
+    func nativeVolumeCameraInteractionDiagnostics() -> String {
+        let progress = volumeSurface.presentationProgressSnapshot()
+        return "cameraGeneration=\(volumeCameraInteractionGeneration) generation=\(renderGenerations[volumeViewportID] ?? 0) pending=\(renderPendingViewports.contains(volumeViewportID)) inFlight=\(renderInFlightViewports.contains(volumeViewportID)) inFlightToken=\(presentationInFlightTokens[volumeViewportID].map(String.init) ?? "nil") submitted=\(progress.submitted) completed=\(progress.completed) failed=\(progress.failed) terminal=\(progress.terminal) presentInFlight=\(progress.inFlight) failures=\(presentationFailureCounts[volumeViewportID] ?? 0)"
+    }
+
+    private func presentationFailureStatusDescription(_ error: any Swift.Error) -> String {
+        if let error = error as? PresentationPassCommandBufferError {
+            switch error {
+            case let .commandBufferFailed(status, _):
+                return String(status)
+            }
+        }
+        if let error = error as? MPRPresentationCommandBufferError {
+            switch error {
+            case let .commandBufferFailed(status, _):
+                return String(status)
+            }
+        }
+        return "unknown"
     }
 
     /// Record timing metadata for a specific viewport and update the aggregated timing snapshot.

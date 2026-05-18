@@ -217,8 +217,8 @@ final class ExtendedRenderingStateDefaultsTests: XCTestCase {
         XCTAssertEqual(state.jitterAmount, 0, "jitterAmount should default to 0")
         XCTAssertEqual(state.earlyTerminationThreshold, 0.95, accuracy: 1e-6,
                        "earlyTerminationThreshold should default to 0.95")
-        XCTAssertEqual(state.channelIntensities, SIMD4<Float>(repeating: 1),
-                       "channelIntensities should default to (1, 1, 1, 1)")
+        XCTAssertEqual(state.channelIntensities, SIMD4<Float>(1, 0, 0, 0),
+                       "channelIntensities should default to the first scalar channel only")
         XCTAssertTrue(state.toneCurvePoints.isEmpty, "toneCurvePoints should default to empty")
         XCTAssertTrue(state.toneCurvePresetKeys.isEmpty, "toneCurvePresetKeys should default to empty")
         XCTAssertTrue(state.toneCurveGains.isEmpty, "toneCurveGains should default to empty")

@@ -1,5 +1,6 @@
 import CoreGraphics
 import Metal
+import simd
 import XCTest
 import SwiftUI
 @_spi(Testing) import MTKCore
@@ -463,6 +464,37 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         XCTAssertEqual(axialSlice, 0.7, accuracy: 0.0001)
     }
 
+    func testStepSliceScrollMovesByWholeSlices() async throws {
+        let controller = try await makeController()
+        try await controller.applyDataset(makeDataset())
+
+        await controller.scrollSlice(axis: .axial, steps: 1)
+
+        var axialSliceValue = await controller.engine.debugSlicePosition(for: controller.axialViewportID)
+        var axialSlice = try XCTUnwrap(axialSliceValue)
+        var normalizedAxial = try XCTUnwrap(controller.normalizedPositions[.axial])
+        XCTAssertEqual(normalizedAxial, 2.0 / 3.0, accuracy: 0.0001)
+        XCTAssertEqual(axialSlice, 2.0 / 3.0, accuracy: 0.0001)
+
+        await controller.scrollSlice(axis: .axial, steps: -1)
+
+        axialSliceValue = await controller.engine.debugSlicePosition(for: controller.axialViewportID)
+        axialSlice = try XCTUnwrap(axialSliceValue)
+        normalizedAxial = try XCTUnwrap(controller.normalizedPositions[.axial])
+        XCTAssertEqual(normalizedAxial, 1.0 / 3.0, accuracy: 0.0001)
+        XCTAssertEqual(axialSlice, 1.0 / 3.0, accuracy: 0.0001)
+    }
+
+    func testMPRScrollStepMapperMatchesClinicalThresholds() {
+        XCTAssertEqual(MPRScrollStepMapper.steps(deltaY: 6, hasPreciseScrollingDeltas: true), 1)
+        XCTAssertEqual(MPRScrollStepMapper.steps(deltaY: -6, hasPreciseScrollingDeltas: true), -1)
+        XCTAssertEqual(MPRScrollStepMapper.steps(deltaY: 5, hasPreciseScrollingDeltas: true), 0)
+        XCTAssertEqual(MPRScrollStepMapper.steps(deltaY: 0.6, hasPreciseScrollingDeltas: false), 1)
+        XCTAssertEqual(MPRScrollStepMapper.steps(deltaY: -0.6, hasPreciseScrollingDeltas: false), -1)
+        XCTAssertEqual(MPRScrollStepMapper.steps(deltaY: 0.5, hasPreciseScrollingDeltas: false), 0)
+        XCTAssertEqual(MPRScrollStepMapper.steps(deltaY: -0.5, hasPreciseScrollingDeltas: false), 0)
+    }
+
     func testMPRManipulationDefaultsAndTransformsArePresentationOnly() async throws {
         let controller = try await makeController()
         try await controller.applyDataset(makeDataset())
@@ -597,6 +629,102 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         let updatedAxialCamera = await controller.engine.debugCamera(for: controller.axialViewportID)
         XCTAssertNotEqual(updatedVolumeCamera?.position, initialVolumeCamera?.position)
         XCTAssertEqual(updatedAxialCamera, initialAxialCamera)
+    }
+
+    func testVolumeCameraPitchIsClampedDuringDragRotation() async throws {
+        let controller = try await makeController()
+        try await controller.applyDataset(makeDataset())
+
+        await controller.rotateVolumeCamera(screenDelta: CGSize(width: 0, height: 10_000))
+
+        XCTAssertEqual(controller.volumeCameraPitch, -1.35, accuracy: 0.0001)
+
+        await controller.rotateVolumeCamera(screenDelta: CGSize(width: 0, height: -20_000))
+
+        XCTAssertEqual(controller.volumeCameraPitch, 1.35, accuracy: 0.0001)
+    }
+
+    func testVolumeCameraRollRotatesUpVectorWithoutChangingOffset() async throws {
+        let controller = try await makeController()
+        try await controller.applyDataset(makeDataset())
+        let beforeOffset = controller.volumeCameraOffset
+
+        XCTAssertTrue(controller.tiltVolumeCameraInteractively(roll: Float.pi / 6, pitch: 0))
+
+        XCTAssertEqual(controller.volumeCameraOffset.x, beforeOffset.x, accuracy: 0.000_1)
+        XCTAssertEqual(controller.volumeCameraOffset.y, beforeOffset.y, accuracy: 0.000_1)
+        XCTAssertEqual(controller.volumeCameraOffset.z, beforeOffset.z, accuracy: 0.000_1)
+        XCTAssertGreaterThan(abs(controller.volumeCameraUp.x), 0.001)
+        XCTAssertEqual(simd_length(controller.volumeCameraUp), 1, accuracy: 0.000_1)
+    }
+
+    func testVolumeCameraZoomUsesPinchScaleAndClampsDistance() async throws {
+        let controller = try await makeController()
+        try await controller.applyDataset(makeDataset())
+        let initialDistance = simd_length(controller.volumeCameraOffset)
+
+        await controller.zoomVolumeCamera(scale: 2)
+
+        XCTAssertEqual(simd_length(controller.volumeCameraOffset),
+                       initialDistance / 2,
+                       accuracy: 0.0001)
+
+        await controller.zoomVolumeCamera(scale: 0.001)
+
+        XCTAssertEqual(simd_length(controller.volumeCameraOffset),
+                       16,
+                       accuracy: 0.0001)
+    }
+
+    func testVolumeViewport3DAndClinicalVolumeUseSameOrbitMath() async throws {
+        let viewport = try VolumeViewport3D()
+        let controller = try await makeController()
+        let delta = CGSize(width: 40, height: -20)
+
+        _ = viewport.applyNativeOrbitDelta(delta)
+        _ = controller.rotateVolumeCameraInteractively(screenDelta: delta)
+
+        let viewportOffset = viewport.state.camera.position - viewport.state.camera.target
+        assertVector(simd_normalize(viewportOffset),
+                     simd_normalize(controller.volumeCameraOffset),
+                     accuracy: 0.0001)
+        assertVector(viewport.state.camera.up,
+                     controller.volumeCameraUp,
+                     accuracy: 0.0001)
+    }
+
+    func testVolumeRenderSchedulingCoalescesInFlightRenderInsteadOfCancelling() async throws {
+        let controller = try await makeController()
+        try await controller.applyDataset(makeDataset())
+        await controller.renderAllAndWait()
+
+        let firstTask = try XCTUnwrap(controller.scheduleRender(for: controller.volumeViewportID))
+
+        XCTAssertTrue(controller.renderInFlightViewports.contains(controller.volumeViewportID))
+
+        let coalescedTask = controller.scheduleRender(for: controller.volumeViewportID)
+
+        XCTAssertNotNil(coalescedTask)
+        XCTAssertTrue(controller.renderInFlightViewports.contains(controller.volumeViewportID))
+        XCTAssertTrue(controller.renderPendingViewports.contains(controller.volumeViewportID))
+
+        await firstTask.value
+
+        XCTAssertFalse(controller.renderInFlightViewports.contains(controller.volumeViewportID))
+        XCTAssertFalse(controller.renderPendingViewports.contains(controller.volumeViewportID))
+    }
+
+    func testVolumeRenderSchedulingDefersWhilePresentationIsInFlight() async throws {
+        let controller = try await makeController()
+        controller.datasetApplied = true
+        controller.presentationInFlightTokens[controller.volumeViewportID] = 7
+
+        let task = controller.scheduleRender(for: controller.volumeViewportID)
+
+        XCTAssertNil(task)
+        XCTAssertEqual(controller.debugRenderGeneration(for: controller.volumeViewportID), 1)
+        XCTAssertTrue(controller.renderPendingViewports.contains(controller.volumeViewportID))
+        XCTAssertFalse(controller.renderInFlightViewports.contains(controller.volumeViewportID))
     }
 
     func testTransferFunctionSchedulesVolumeViewportOnly() async throws {

@@ -25,7 +25,7 @@ final class VolumeRenderingBuiltinPresetMetadataTests: XCTestCase {
         XCTAssertEqual(VolumeRenderingBuiltinPreset.ctLiverVasculature.category, .hepatic)
     }
 
-    func test_vtkSwiftStyleAddedPresetsUseExpectedMetadata() {
+    func test_ctBrainAndAbdomenUseExpectedMetadata() {
         XCTAssertEqual(VolumeRenderingBuiltinPreset.ctBrain.modality, .ct)
         XCTAssertEqual(VolumeRenderingBuiltinPreset.ctBrain.category, .neurological)
         XCTAssertEqual(VolumeRenderingBuiltinPreset.ctBrain.filename, "ct_brain")

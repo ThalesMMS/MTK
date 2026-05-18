@@ -17,8 +17,8 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
         return;
     }
 
-#if DEBUG
     const bool debugDensityEnabled = ((args.optionValue & VolumeCompute::OPTION_DEBUG_DENSITY) != 0);
+#if DEBUG
     const uint2 debugCenterPixel = uint2(width / 2, height / 2);
     bool debugDensitySentinelWritten = false;
     bool debugPreBlendSentinelWritten = false;
@@ -30,28 +30,42 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
     // Normalized device coordinates (-1 .. +1).
     const float x = (float(gid.x) + 0.5f) / float(width);
     const float y = (float(height - 1 - gid.y) + 0.5f) / float(height);
-    const float2 ndc = float2(x * 2.0f - 1.0f,
-                              y * 2.0f - 1.0f);
+    const float2 pixelUV = float2(x, y);
+    float3 localNear;
+    float3 localFar;
+    if (camera.rayBasisValid != 0u) {
+        localNear = camera.localNearOrigin.xyz +
+                    pixelUV.x * camera.localNearDeltaX.xyz +
+                    pixelUV.y * camera.localNearDeltaY.xyz;
+        localFar = camera.localFarOrigin.xyz +
+                   pixelUV.x * camera.localFarDeltaX.xyz +
+                   pixelUV.y * camera.localFarDeltaY.xyz;
+    } else {
+        const float2 ndc = float2(x * 2.0f - 1.0f,
+                                  y * 2.0f - 1.0f);
+        const float4 clipNear = float4(ndc, 0.0f, 1.0f);
+        const float4 clipFar  = float4(ndc, 1.0f, 1.0f);
 
-    const float4 clipNear = float4(ndc, 0.0f, 1.0f);
-    const float4 clipFar  = float4(ndc, 1.0f, 1.0f);
+        float4 worldNear = camera.inverseViewProjectionMatrix * clipNear;
+        float4 worldFar  = camera.inverseViewProjectionMatrix * clipFar;
+        worldNear /= worldNear.w;
+        worldFar  /= worldFar.w;
 
-    float4 worldNear = camera.inverseViewProjectionMatrix * clipNear;
-    float4 worldFar  = camera.inverseViewProjectionMatrix * clipFar;
-    worldNear /= worldNear.w;
-    worldFar  /= worldFar.w;
-
-    float4 localNear4 = camera.inverseModelMatrix * worldNear;
-    float4 localFar4  = camera.inverseModelMatrix * worldFar;
-    float3 localNear  = (localNear4.xyz / localNear4.w) + float3(0.5f);
-    float3 localFar   = (localFar4.xyz / localFar4.w) + float3(0.5f);
+        float4 localNear4 = camera.inverseModelMatrix * worldNear;
+        float4 localFar4  = camera.inverseModelMatrix * worldFar;
+        localNear = (localNear4.xyz / localNear4.w) + float3(0.5f);
+        localFar  = (localFar4.xyz / localFar4.w) + float3(0.5f);
+    }
 
     float3 cameraLocal01 = camera.cameraPositionLocal + float3(0.5f);
     float3 rayOrigin = camera.projectionType == 1u ? localNear : cameraLocal01;
-    float3 rayOriginWorld = VolumeCompute::transformPoint(camera.modelMatrix,
-                                                          rayOrigin - float3(0.5f));
     float3 rayDir = VolumeCompute::computeRayDirection(rayOrigin, localFar);
-    float3 rayDirWorld = normalize(VolumeCompute::transformDirection(camera.modelMatrix, rayDir));
+    constant VolumeUniforms& material = args.params.material;
+    const bool lightingEnabled = (material.isLightingOn != 0);
+    float3 rayDirWorld = float3(0.0f);
+    if (lightingEnabled) {
+        rayDirWorld = normalize(VolumeCompute::transformDirection(camera.modelMatrix, rayDir));
+    }
 
     float2 intersection = VR::intersectAABB(rayOrigin,
                                             rayDir,
@@ -74,8 +88,8 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
     float3 startPos = rayOrigin + rayDir * tEnter;
     float3 endPos   = rayOrigin + rayDir * tExit;
 
-    constant VolumeUniforms& material = args.params.material;
     const float opacityThreshold = clamp(args.params.earlyTerminationThreshold, 0.0f, 0.9999f);
+    const float alphaSkipThreshold = opacityThreshold <= 0.85f ? 0.005f : 0.001f;
 
     const int maxSteps = max(material.renderingQuality, 1);
     const float baseStepForJitter = sqrt(3.0f) / float(maxSteps);
@@ -129,13 +143,34 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
     const float3 dimension = float3(material.dimX,
                                     material.dimY,
                                     material.dimZ);
+    const float3 gradientStep = float3(
+        dimension.x > 1.0f ? 1.0f / (dimension.x - 1.0f) : 0.0f,
+        dimension.y > 1.0f ? 1.0f / (dimension.y - 1.0f) : 0.0f,
+        dimension.z > 1.0f ? 1.0f / (dimension.z - 1.0f) : 0.0f
+    );
 
     const float baseStep = max(march.stepSize, 1.0e-5f);
     int zeroCount = 0;
     constexpr int kZeroRun = 4;
     constexpr int kZeroSkip = 3;
+    const bool hasTrimBounds = args.params.trimXMin > 0.0f ||
+                               args.params.trimXMax < 1.0f ||
+                               args.params.trimYMin > 0.0f ||
+                               args.params.trimYMax < 1.0f ||
+                               args.params.trimZMin > 0.0f ||
+                               args.params.trimZMax < 1.0f;
+    const bool hasClipPlanes = any(abs(args.params.clipPlane0.xyz) > float3(1.0e-6f)) ||
+                               any(abs(args.params.clipPlane1.xyz) > float3(1.0e-6f)) ||
+                               any(abs(args.params.clipPlane2.xyz) > float3(1.0e-6f));
     const bool adaptiveEnabled = ((args.optionValue & VolumeCompute::OPTION_ADAPTIVE) != 0) &&
                                  (args.params.adaptiveGradientThreshold > 1.0e-4f);
+    const bool alphaRunSkipEnabled = adaptiveEnabled;
+    const float windowMinValue = float(material.voxelMinValue);
+    const float windowRange = float(material.voxelMaxValue - material.voxelMinValue);
+    const float invWindowRange = windowRange > 0.0f ? 1.0f / windowRange : 0.0f;
+    const float datasetMinValue = float(material.datasetMinValue);
+    const float datasetRange = float(material.datasetMaxValue - material.datasetMinValue);
+    const float invDatasetRange = datasetRange > 0.0f ? 1.0f / datasetRange : 0.0f;
     const float totalDistance = max(length(ray.endPosition - ray.startPosition), baseStep);
     float distanceTravelled = 0.0f;
     int iteration = 0;
@@ -156,12 +191,25 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
             break;
         }
 
-        VolumeCompute::ClipSampleContext clipContext = VolumeCompute::prepareClipSample(samplePos, args.params);
-        if (VolumeCompute::isOutsideTrimBounds(clipContext.orientedCoordinate, args.params) ||
-            VolumeCompute::isClippedByPlanes(clipContext, args.params)) {
-            distanceTravelled += stepDistance;
-            iteration++;
-            continue;
+        if (hasTrimBounds || hasClipPlanes) {
+            VolumeCompute::ClipSampleContext clipContext;
+            if (hasTrimBounds) {
+                clipContext = VolumeCompute::prepareClipSample(samplePos, args.params);
+                if (VolumeCompute::isOutsideTrimBounds(clipContext.orientedCoordinate, args.params)) {
+                    distanceTravelled += stepDistance;
+                    iteration++;
+                    continue;
+                }
+            } else {
+                clipContext.centeredCoordinate = samplePos - float3(0.5f);
+                clipContext.orientedCoordinate = samplePos;
+            }
+
+            if (hasClipPlanes && VolumeCompute::isClippedByPlanes(clipContext, args.params)) {
+                distanceTravelled += stepDistance;
+                iteration++;
+                continue;
+            }
         }
 
         // MPS-accelerated empty space skipping (if available)
@@ -183,17 +231,10 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
             }
         }
 
-        const short hu = VR::getDensity(args.volumeTexture, samplePos);
-        const short windowMin = (short)material.voxelMinValue;
-        const short windowMax = (short)material.voxelMaxValue;
-        const short dataMin = (short)material.datasetMinValue;
-        const short dataMax = (short)material.datasetMaxValue;
-
-        float densityWindow = Util::normalize(hu, windowMin, windowMax);
-        float densityDataset = Util::normalize(hu, dataMin, dataMax);
-
-        densityWindow = clamp(densityWindow, 0.0f, 1.0f);
-        densityDataset = clamp(densityDataset, 0.0f, 1.0f);
+        const float huValue = VR::getDensityTrilinear(args.volumeTexture, samplePos);
+        const short hu = VR::decodeInt16SampleToShort(huValue);
+        float densityWindow = clamp((huValue - windowMinValue) * invWindowRange, 0.0f, 1.0f);
+        float densityDataset = clamp((huValue - datasetMinValue) * invDatasetRange, 0.0f, 1.0f);
 
 #if DEBUG
         if (debugDensityEnabled && !debugDensitySentinelWritten) {
@@ -212,7 +253,9 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
         }
 #endif
 
-        debugMaxDensity = max(debugMaxDensity, densityWindow);
+        if (debugDensityEnabled) {
+            debugMaxDensity = max(debugMaxDensity, densityWindow);
+        }
 
         if (VolumeCompute::gateDensity(densityWindow, args.params, hu)) {
             distanceTravelled += stepDistance;
@@ -222,8 +265,9 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
 
         float3 gradient = float3(0.0f);
         const bool need2DTF = (material.use2DTF != 0);
-        if (adaptiveEnabled || material.isLightingOn != 0 || need2DTF) {
-            gradient = VR::calGradient(args.volumeTexture, samplePos, dimension);
+        const bool needsGradientBeforeOpacity = adaptiveEnabled || need2DTF || (!isDVR && lightingEnabled);
+        if (needsGradientBeforeOpacity) {
+            gradient = VR::calGradientWithStep(args.volumeTexture, samplePos, gradientStep);
         }
 
         if (adaptiveEnabled) {
@@ -287,22 +331,6 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
             sampleColour.rgb *= windowIntensity;
         }
 
-        if (material.isLightingOn != 0) {
-            float lengthSq = dot(gradient, gradient);
-            float3 normal = lengthSq > 1.0e-6f
-                ? VolumeCompute::transformNormal(camera.inverseModelMatrix, gradient)
-                : float3(0.0f);
-            float3 eyeDir = (material.isBackwardOn != 0) ? rayDirWorld : -rayDirWorld;
-            float3 sampleWorld = VolumeCompute::transformPoint(camera.modelMatrix,
-                                                               samplePos - float3(0.5f));
-            float3 lightDir = normalize(rayOriginWorld - sampleWorld);
-            sampleColour.rgb = Util::calculateLighting(sampleColour.rgb,
-                                                       normal,
-                                                       lightDir,
-                                                       eyeDir,
-                                                       0.3f);
-        }
-
         const float densityFloor = clamp(args.params.material.densityFloor, 0.0f, 1.0f);
         if (densityWindow <= densityFloor) {
             sampleColour.a = 0.0f;
@@ -314,9 +342,11 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
             sampleColour.a = densityWindow;
         }
 
-        debugMaxSampleAlpha = max(debugMaxSampleAlpha, clamp(sampleColour.a, 0.0f, 1.0f));
+        if (debugDensityEnabled) {
+            debugMaxSampleAlpha = max(debugMaxSampleAlpha, clamp(sampleColour.a, 0.0f, 1.0f));
+        }
 
-        if (sampleColour.a < 0.001f) {
+        if (alphaRunSkipEnabled && sampleColour.a < alphaSkipThreshold) {
             zeroCount++;
             if (zeroCount >= kZeroRun) {
                 distanceTravelled += baseStep * float(kZeroSkip);
@@ -329,6 +359,23 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
             continue;
         }
         zeroCount = 0;
+
+        if (lightingEnabled) {
+            if (!needsGradientBeforeOpacity) {
+                gradient = VR::calGradientWithStep(args.volumeTexture, samplePos, gradientStep);
+            }
+            float lengthSq = dot(gradient, gradient);
+            float3 normal = lengthSq > 1.0e-6f
+                ? VolumeCompute::transformNormal(camera.inverseModelMatrix, gradient)
+                : float3(0.0f);
+            float3 eyeDir = (material.isBackwardOn != 0) ? rayDirWorld : -rayDirWorld;
+            float3 lightDir = eyeDir;
+            sampleColour.rgb = Util::calculateLighting(sampleColour.rgb,
+                                                       normal,
+                                                       lightDir,
+                                                       eyeDir,
+                                                       0.3f);
+        }
 
         const float alpha = clamp(sampleColour.a, 0.0f, 1.0f);
         const float3 premultColor = sampleColour.rgb * alpha;
@@ -371,11 +418,8 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
             if (lengthSq > 1.0e-6f) {
                 projectionNormal = VolumeCompute::transformNormal(camera.inverseModelMatrix,
                                                                   projectionNormal);
-                float3 projectionPosition = VolumeCompute::projectionPosition(projectionState, material.method);
-                float3 projectionWorld = VolumeCompute::transformPoint(camera.modelMatrix,
-                                                                       projectionPosition - float3(0.5f));
                 float3 eyeDir = (material.isBackwardOn != 0) ? rayDirWorld : -rayDirWorld;
-                float3 lightDir = normalize(rayOriginWorld - projectionWorld);
+                float3 lightDir = eyeDir;
                 accumulator.rgb = Util::calculateLighting(accumulator.rgb,
                                                           projectionNormal,
                                                           lightDir,
@@ -383,14 +427,16 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
                                                           0.3f);
             }
         }
-        debugMaxDensity = max(debugMaxDensity,
-                              VolumeCompute::projectionDensityWindow(projectionState, material.method));
-        debugMaxSampleAlpha = max(debugMaxSampleAlpha, accumulator.a);
+        if (debugDensityEnabled) {
+            debugMaxDensity = max(debugMaxDensity,
+                                  VolumeCompute::projectionDensityWindow(projectionState, material.method));
+            debugMaxSampleAlpha = max(debugMaxSampleAlpha, accumulator.a);
+        }
     }
 
     accumulator = clamp(accumulator, float4(0.0f), float4(1.0f));
 
-    if ((args.optionValue & VolumeCompute::OPTION_DEBUG_DENSITY) != 0) {
+    if (debugDensityEnabled) {
         float3 debugRGB = float3(debugMaxDensity, debugMaxSampleAlpha, accumulator.a);
         args.outputTexture.write(float4(debugRGB, 1.0f), gid);
         return;

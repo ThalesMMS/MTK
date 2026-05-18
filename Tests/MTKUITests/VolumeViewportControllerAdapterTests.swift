@@ -23,6 +23,23 @@ final class VolumeViewportControllerAdapterTests: XCTestCase {
 #endif
     }
 
+    func testSurfaceRenderSchedulingDebouncesToLatestStableSize() async throws {
+        let device = try requireMetalDevice()
+        let controller = try makeController(device: device)
+        controller.debugSetSurfaceRenderDebounceDelayNanoseconds(1_000_000)
+        try await Task.sleep(nanoseconds: 90_000_000)
+        let baseline = controller.debugStableSurfaceRenderScheduleCount
+
+        controller.debugScheduleRenderAfterSurfaceSettles(size: CGSize(width: 32, height: 32),
+                                                          reason: "test")
+        controller.debugScheduleRenderAfterSurfaceSettles(size: CGSize(width: 64, height: 64),
+                                                          reason: "test")
+        try await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertEqual(controller.debugStableSurfaceRenderScheduleCount, baseline + 1)
+        XCTAssertEqual(controller.debugLastStableSurfaceRenderSize, CGSize(width: 64, height: 64))
+    }
+
 #if canImport(SwiftUI)
     func testMetalViewportViewHostsControllerSurface() throws {
         let device = try requireMetalDevice()
