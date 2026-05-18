@@ -143,6 +143,40 @@ final class VolumeRaycastPassTests: XCTestCase {
                              "side-view visible bounds should reflect z spacing: \(bounds)")
     }
 
+    func testDVRDoesNotDropEntryFacePixelsForSolidVolume() async throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("Metal device unavailable on this test runner")
+        }
+
+        let dataset = makeSolidSignedDataset(dimensions: VolumeDimensions(width: 64, height: 64, depth: 64),
+                                             spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+                                             value: 500,
+                                             intensityRange: 0...1000)
+        let camera = VolumeRenderRequest.Camera(position: SIMD3<Float>(0.5, -2.0, 0.5),
+                                                target: SIMD3<Float>(repeating: 0.5),
+                                                up: SIMD3<Float>(0, 0, 1),
+                                                fieldOfView: 50)
+        var setup = try await makeDirectPassSetup(device: device,
+                                                  compositing: .frontToBack,
+                                                  viewportSize: CGSize(width: 160, height: 160),
+                                                  dataset: dataset,
+                                                  requestCamera: camera)
+        setup.input.shaderParameters.material.renderingQuality = 768
+        setup.input.shaderParameters.material.isLightingOn = 0
+
+        let output = try await setup.pass.execute(input: setup.input,
+                                                  commandQueue: setup.commandQueue)
+        let frame = makeTestVolumeRenderFrame(from: output)
+        let image = try await TextureSnapshotExporter().makeCGImage(from: frame)
+        let fill = try XCTUnwrap(visiblePixelFill(in: image))
+
+        XCTAssertGreaterThan(fill.bounds.width, 40)
+        XCTAssertGreaterThan(fill.bounds.height, 40)
+        XCTAssertGreaterThan(fill.ratio,
+                             0.9,
+                             "solid DVR entry face should not have a stippled hole pattern: \(fill)")
+    }
+
     func testDVRCompositingDebugDensityProducesNonZeroOutput() async throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw XCTSkip("Metal device unavailable on this test runner")
@@ -384,6 +418,10 @@ final class VolumeRaycastPassTests: XCTestCase {
     }
 
     private func visiblePixelBounds(in image: CGImage) -> PixelBounds? {
+        visiblePixelFill(in: image)?.bounds
+    }
+
+    private func visiblePixelFill(in image: CGImage) -> PixelFill? {
         let width = image.width
         let height = image.height
         let bytesPerRow = width * 4
@@ -405,11 +443,13 @@ final class VolumeRaycastPassTests: XCTestCase {
         var minY = height
         var maxX = -1
         var maxY = -1
+        var visibleCount = 0
         for y in 0..<height {
             for x in 0..<width {
                 let index = y * bytesPerRow + x * 4
                 let visible = pixels[index] > 5 || pixels[index + 1] > 5 || pixels[index + 2] > 5
                 if visible {
+                    visibleCount += 1
                     minX = min(minX, x)
                     minY = min(minY, y)
                     maxX = max(maxX, x)
@@ -418,7 +458,11 @@ final class VolumeRaycastPassTests: XCTestCase {
             }
         }
         guard maxX >= minX, maxY >= minY else { return nil }
-        return PixelBounds(minX: minX, minY: minY, maxX: maxX, maxY: maxY)
+        let bounds = PixelBounds(minX: minX, minY: minY, maxX: maxX, maxY: maxY)
+        let area = max(bounds.width * bounds.height, 1)
+        return PixelFill(bounds: bounds,
+                         ratio: Double(visibleCount) / Double(area),
+                         visibleCount: visibleCount)
     }
 
     private static func shaderMethod(for compositing: VolumeRenderRequest.Compositing) -> Int32 {
@@ -472,5 +516,15 @@ private struct PixelBounds: CustomStringConvertible {
 
     var description: String {
         "x:\(minX)...\(maxX) y:\(minY)...\(maxY) width:\(width) height:\(height)"
+    }
+}
+
+private struct PixelFill: CustomStringConvertible {
+    var bounds: PixelBounds
+    var ratio: Double
+    var visibleCount: Int
+
+    var description: String {
+        "bounds:\(bounds) fillRatio:\(ratio) visibleCount:\(visibleCount)"
     }
 }

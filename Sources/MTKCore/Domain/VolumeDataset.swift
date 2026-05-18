@@ -246,8 +246,8 @@ public struct ClinicalImageMetadata: Sendable, Equatable {
 
 /// Canonical structured 3D image metadata and affine transform contract.
 ///
-/// `ImageData3D` is MTKCore's metadata model for scalar
-/// medical volumes. Index/voxel space is continuous, with `(0, 0, 0)` at the
+/// `ImageData3D` is MTKCore's structured metadata model for scalar medical
+/// volumes. Index/voxel space is continuous, with `(0, 0, 0)` at the
 /// center of the first voxel. World space is DICOM-style patient/world space in
 /// millimeters. Texture space is normalized `[0, 1]^3` and uses the center offset
 /// `(index + 0.5) / dimensions` for sampling.

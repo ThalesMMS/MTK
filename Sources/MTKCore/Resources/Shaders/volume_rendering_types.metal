@@ -101,7 +101,7 @@ struct CameraUniforms {
 };
 
 struct RenderingArguments {
-    texture3d<short, access::sample> volumeTexture [[id(0)]];
+    texture3d<short, access::read> volumeTexture [[id(0)]];
     constant RenderingParameters &params           [[id(1)]];
     texture2d<float, access::write> outputTexture  [[id(2)]];
     device float *toneBufferCh1                    [[id(3)]];

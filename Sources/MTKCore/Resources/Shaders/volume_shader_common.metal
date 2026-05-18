@@ -99,7 +99,7 @@ public:
         return short(clamp(sampleValue, -32768.0f, 32767.0f));
     }
 
-    static float sampleTrilinearDensity(texture3d<short, access::sample> volume,
+    static float sampleTrilinearDensity(texture3d<short, access::read> volume,
                                         float3 coord)
     {
         uint3 maxIndex = uint3(max(volume.get_width(), 1u) - 1u,
@@ -128,7 +128,7 @@ public:
         return mix(c0, c1, weight.z);
     }
 
-    static float3 calGradient(texture3d<short, access::sample> volume,
+    static float3 calGradient(texture3d<short, access::read> volume,
                               float3 coord,
                               float3 dimension)
     {
@@ -144,7 +144,7 @@ public:
         return calGradientWithStep(volume, coord, invDim);
     }
 
-    static float3 calGradientWithStep(texture3d<short, access::sample> volume,
+    static float3 calGradientWithStep(texture3d<short, access::read> volume,
                                       float3 coord,
                                       float3 invDim)
     {
@@ -185,12 +185,16 @@ public:
         return raymarchInfo;
     }
 
-    static short getDensity(texture3d<short, access::sample> volume, float3 coord)
+    static short getDensity(texture3d<short, access::read> volume, float3 coord)
     {
-        return decodeInt16SampleToShort(volume.sample(sampler3d, coord).r);
+        uint3 maxIndex = uint3(max(volume.get_width(), 1u) - 1u,
+                               max(volume.get_height(), 1u) - 1u,
+                               max(volume.get_depth(), 1u) - 1u);
+        uint3 index = uint3(round(clamp(coord, 0.0f, 1.0f) * float3(maxIndex)));
+        return decodeInt16SampleToShort(float(volume.read(index).r));
     }
 
-    static float getDensityTrilinear(texture3d<short, access::sample> volume, float3 coord)
+    static float getDensityTrilinear(texture3d<short, access::read> volume, float3 coord)
     {
         return sampleTrilinearDensity(volume, coord);
     }

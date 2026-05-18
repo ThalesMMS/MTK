@@ -175,21 +175,23 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
     float distanceTravelled = 0.0f;
     int iteration = 0;
     const int maxIterations = max(march.numSteps * 4, march.numSteps + 16);
+    constexpr float kVolumeBoundsEpsilon = 1.0e-4f;
 
     while (distanceTravelled < totalDistance && iteration < maxIterations) {
         float stepDistance = baseStep;
         const float t = (totalDistance > 0.0f)
             ? distanceTravelled / totalDistance
             : 0.0f;
-        const float3 samplePos = Util::lerp(ray.startPosition,
-                                            ray.endPosition,
-                                            t);
+        const float3 rawSamplePos = Util::lerp(ray.startPosition,
+                                               ray.endPosition,
+                                               t);
 
-        if (samplePos.x < 0.0f || samplePos.x > 1.0f ||
-            samplePos.y < 0.0f || samplePos.y > 1.0f ||
-            samplePos.z < 0.0f || samplePos.z > 1.0f) {
+        if (rawSamplePos.x < -kVolumeBoundsEpsilon || rawSamplePos.x > 1.0f + kVolumeBoundsEpsilon ||
+            rawSamplePos.y < -kVolumeBoundsEpsilon || rawSamplePos.y > 1.0f + kVolumeBoundsEpsilon ||
+            rawSamplePos.z < -kVolumeBoundsEpsilon || rawSamplePos.z > 1.0f + kVolumeBoundsEpsilon) {
             break;
         }
+        const float3 samplePos = clamp(rawSamplePos, 0.0f, 1.0f);
 
         if (hasTrimBounds || hasClipPlanes) {
             VolumeCompute::ClipSampleContext clipContext;
