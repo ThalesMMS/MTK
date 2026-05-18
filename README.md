@@ -8,7 +8,7 @@
 
 Swift Package with Metal-native volume rendering, SwiftUI overlays, and DICOM loader bridges. Metal is the only official clinical renderer. Interactive clinical frames are `MTLTexture` outputs presented through `MTKView` or `CAMetalLayer`; `CGImage` is allowed only for explicit export, snapshot, debug, and test readback use cases behind `SnapshotExporting`/`TextureSnapshotExporter`.
 
-![UI Screenshot](screenshots/ui.png)
+![UI Screenshot](screenshots/screenshot.png)
 
 ## Package layout
 - `MTKCore` — Domain types (`VolumeDataset`, orientation/spacing models), Metal helpers (`MetalRaycaster`, `VolumeTextureFactory`, `ShaderLibraryLoader`), serializable clinical transfer function models (`TransferFunction`, `ClinicalTransferFunctionPreset`, `AdvancedToneCurveModel`, `VolumeTransferFunctionLibrary`), runtime availability guards, and the `DicomVolumeLoader` protocol-based importer that wraps an injected `DicomSeriesLoading` bridge. MTKCore does not depend on a concrete DICOM parser.
