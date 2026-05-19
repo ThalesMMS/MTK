@@ -11,8 +11,8 @@ import Metal
 /// Loader for MTKCore's required bundled Metal shader library.
 ///
 /// `ShaderLibraryLoader` loads the precompiled `MTK.metallib` artifact from
-/// `Bundle.module`. The artifact is produced by `MTKShaderPlugin` and is required
-/// for Metal-backed rendering.
+/// `Bundle.module`. The artifact is versioned as an MTKCore resource and is
+/// required for Metal-backed rendering.
 ///
 /// ## Failure Semantics
 ///

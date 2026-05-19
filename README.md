@@ -149,9 +149,9 @@ Some DICOM-oriented tests rely on optional local fixtures from `MTK-Demo/DICOM_E
 
 ## Shaders and resources
 - `ShaderLibraryLoader` requires `MTK.metallib` to be bundled in `Bundle.module`. Missing or invalid artifacts are reported as structured `ShaderLibraryLoader.LoaderError` cases, such as `metallibNotBundled` or `metallibLoadFailed(underlying:)`.
-- Build-tool plugin `MTKShaderPlugin` compiles `Sources/MTKCore/Resources/Shaders/*.metal` into the required `MTK.metallib` artifact during the build. The plugin must complete successfully for the package's Metal rendering paths to function.
-- Manual shader build is only needed when compiling shaders outside the normal SwiftPM/Xcode plugin path, such as custom command-line packaging or CI steps that assemble resources separately: `bash Tooling/Shaders/build_metallib.sh Sources/MTKCore/Resources/Shaders .build/MTK.metallib`
-- Troubleshooting: if shader loading fails, verify that `MTKShaderPlugin` ran successfully and that `MTK.metallib` is present in the `MTKCore` resource bundle.
+- Precompiled Metal libraries are versioned under `Sources/MTKCore/Resources` so downstream Xcode projects build without shader-generation trust prompts.
+- Manual shader rebuild is only needed after changing `.metal` sources: `MTK_METAL_SDK=all METALLIB_STRICT=1 bash Tooling/Shaders/build_metallib.sh Sources/MTKCore/Resources/Shaders Sources/MTKCore/Resources/MTK.metallib`
+- Troubleshooting: if shader loading fails, verify that `MTK.metallib`, `MTK-iphonesimulator.metallib`, and `MTK-iphoneos.metallib` are present in the `MTKCore` resource bundle.
 - Public `.raw.zip` presets are not bundled. Use `ClinicalSyntheticFixtures` in `MTKFixtures` for sample volumes; `VolumeTextureFactory(preset:)` is deprecated and kept only for compatibility.
 - Preset loading now reports `noDataAvailable`; it does not silently return a stub volume.
 - Use `VolumeTextureFactory.debugPlaceholderDataset()` only for tests or explicit debug tooling that needs a minimal 1x1x1 volume.

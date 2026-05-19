@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # build_metallib.sh
-# Shared helper used by MTKShaderPlugin and CI to compile
+# Shared helper used by release packaging and CI to compile
 # MTK/Sources/MTKCore/Resources/**/*.metal into
 # MTK.metallib. By default the script remains permissive for headless
 # builders; set METALLIB_STRICT=1 to treat missing inputs or tools as errors.

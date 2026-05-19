@@ -42,9 +42,6 @@ let package = Package(
             path: "Sources/MTKCore",
             resources: [
                 .process("Resources")
-            ],
-            plugins: [
-                .plugin(name: "MTKShaderPlugin")
             ]
         ),
         // MTKUI intentionally stays independent from any legacy 3D wrapper. The
@@ -120,10 +117,5 @@ let package = Package(
                 .copy("ReferenceVolumeRayMarching.metal")
             ]
         ),
-        .plugin(
-            name: "MTKShaderPlugin",
-            capability: .buildTool(),
-            path: "Plugins/MTKShaderPlugin"
-        )
     ]
 )
