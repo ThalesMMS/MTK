@@ -8,7 +8,7 @@ MTKCore provides the foundational building blocks for GPU-accelerated medical vo
 
 The official clinical rendering path is Metal-native. The target flow is `DICOM / VolumeDataset -> VolumeResourceManager -> GPU textures -> MTKRenderingEngine -> ViewportRenderGraph -> render passes -> PresentationPass -> MTKView/CAMetalLayer drawable`. `MTLTexture` is the official result type for interactive rendering frames. `CGImage` is for export, snapshot, debug, and test readback use cases only; it is not the interactive display path.
 
-The app-facing API boundary is recorded in [Architecture/PublicAPI.md](../../../Architecture/PublicAPI.md), and the accepted architecture decision is recorded in [Architecture/ClinicalRenderingADR.md](../../../Architecture/ClinicalRenderingADR.md). The framework handles the pipeline from `VolumeDataset` through GPU texture creation, ray marching computation, and transfer function application. DICOM parser integrations feed MTKCore through the `DicomSeriesLoading` protocol, with the default DICOM-Decoder bridge isolated in the optional `MTKDicomBridge` product. Synchronized viewports should share GPU resources by handle, including volume textures, transfer textures, acceleration textures, and intermediate pass outputs.
+The app-facing API boundary is recorded in [Architecture/PublicAPI.md](../../../Architecture/PublicAPI.md), and the accepted architecture decision is recorded in [Architecture/ClinicalRenderingADR.md](../../../Architecture/ClinicalRenderingADR.md). The framework handles the pipeline from `VolumeDataset` through GPU texture creation, ray marching computation, and transfer function application. DICOM parsing and import policy live in `DICOM-Decoder`; the optional `MTKDicomBridge` product only converts decoded DICOM volumes into `VolumeDataset`. Synchronized viewports should share GPU resources by handle, including volume textures, transfer textures, acceleration textures, and intermediate pass outputs.
 
 For application code, the stable data contract is ``VolumeDataset``/``ImageData3D`` plus transfer functions, clipping, layers, and snapshot/export boundaries. Build viewer UI through ``MTKUI/StackViewport``, ``MTKUI/VolumeViewport``, ``MTKUI/VolumeViewport3D``, or ``MTKUI/ClinicalViewportSession`` instead of directly depending on render graph, resource manager, pass node, or output texture pool internals.
 
@@ -17,8 +17,8 @@ For application code, the stable data contract is ``VolumeDataset``/``ImageData3
 ### Key Features
 
 - **Metal Rendering**: Metal ray marching with adaptive sampling; MPS-accelerated empty space skipping is an inspectable capability
-- **Medical Imaging**: Hounsfield unit windowing, transfer function presets, and parser-independent DICOM import contracts
-- **Data Loading**: Protocol-based DICOM loading with ZIP archive support and progress tracking; concrete parser bridges live outside MTKCore
+- **Medical Imaging**: Hounsfield unit windowing, transfer function presets, and parser-independent volume dataset contracts
+- **Data Loading**: Renderer-ready `VolumeDataset` ingestion; DICOM source loading lives outside MTKCore
 - **Transfer Functions**: Multi-channel tone curves, opacity mapping, and preset libraries for CT/MR visualization
 - **Runtime Capability Contracts**: Runtime capability detection with explicit error reporting before Metal-only features are initialized
 
@@ -30,7 +30,6 @@ For application code, the stable data contract is ``VolumeDataset``/``ImageData3
 - ``VolumeDataset``
 - ``MetalVolumeRenderingAdapter``
 - ``VolumeRenderFrame``
-- ``DicomVolumeLoader``
 
 ### Volume Data Management
 
@@ -80,13 +79,9 @@ Transfer functions map volume intensities to visual properties (color and opacit
 - ``VolumeRenderingPreset``
 - ``ToneCurveConfiguration``
 
-### DICOM Loading
+### DICOM Integration Boundary
 
-Protocol-based DICOM series loading with support for sorting, spacing calculation, and ZIP extraction.
-
-- ``DicomVolumeLoader``
-- ``DicomSeriesLoading``
-- ``DicomVolumeProgress``
+MTKCore consumes `VolumeDataset`. Use the optional `MTKDicomBridge` product when an app needs to convert `DICOM-Decoder` output into MTKCore data.
 
 ### Metal Utilities
 

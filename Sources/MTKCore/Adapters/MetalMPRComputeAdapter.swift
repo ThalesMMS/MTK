@@ -16,32 +16,6 @@ import MetalPerformanceShaders
 import OSLog
 import simd
 
-private struct DatasetIdentity: Equatable, Sendable {
-    let pointer: UInt
-    let count: Int
-    let dimensions: VolumeDimensions
-    let pixelFormat: VolumePixelFormat
-    let contentFingerprint: UInt64
-
-    init(dataset: VolumeDataset) {
-        self.count = dataset.data.count
-        self.dimensions = dataset.dimensions
-        self.pixelFormat = dataset.pixelFormat
-        self.pointer = dataset.data.withUnsafeBytes { buffer in
-            buffer.baseAddress.map { UInt(bitPattern: $0) } ?? 0
-        }
-        self.contentFingerprint = DatasetContentFingerprint.make(for: dataset.data)
-    }
-
-    static func == (lhs: DatasetIdentity, rhs: DatasetIdentity) -> Bool {
-        lhs.count == rhs.count &&
-        lhs.dimensions == rhs.dimensions &&
-        lhs.pixelFormat == rhs.pixelFormat &&
-        lhs.contentFingerprint == rhs.contentFingerprint
-    }
-
-}
-
 private struct OutputTextureShape: Equatable, Sendable {
     let width: Int
     let height: Int
@@ -81,7 +55,7 @@ public actor MetalMPRComputeAdapter: MPRReslicePort {
     private let debugOptions: VolumeRenderingDebugOptions
     private var pipelineCache: [String: MTLComputePipelineState] = [:]
     private var cachedVolumeTexture: (any MTLTexture)?
-    private var cachedDatasetIdentity: DatasetIdentity?
+    private var cachedDatasetIdentity: DatasetIdentity.Content?
     private(set) var textureUploadCount: Int = 0
     private var cachedOutputTexture: (any MTLTexture)?
     private var cachedOutputShape: OutputTextureShape?
@@ -265,7 +239,6 @@ extension MetalMPRComputeAdapter {
 
     @_spi(Testing)
     public var debugCachedDatasetIdentity: (
-        pointer: UInt,
         count: Int,
         dimensions: VolumeDimensions,
         pixelFormat: VolumePixelFormat,
@@ -273,8 +246,7 @@ extension MetalMPRComputeAdapter {
     )? {
         guard let cachedDatasetIdentity else { return nil }
         return (
-            pointer: cachedDatasetIdentity.pointer,
-            count: cachedDatasetIdentity.count,
+            count: cachedDatasetIdentity.byteCount,
             dimensions: cachedDatasetIdentity.dimensions,
             pixelFormat: cachedDatasetIdentity.pixelFormat,
             contentFingerprint: cachedDatasetIdentity.contentFingerprint
@@ -323,7 +295,7 @@ private extension MetalMPRComputeAdapter {
     /// - Returns: A Metal texture representing the dataset volume.
     /// - Throws: `ComputeError.volumeTextureCreationFailed` if a new volume texture cannot be created.
     func provideVolumeTexture(for dataset: VolumeDataset) throws -> any MTLTexture {
-        let identity = DatasetIdentity(dataset: dataset)
+        let identity = DatasetIdentity.Content(dataset: dataset)
         if let cachedVolumeTexture, cachedDatasetIdentity == identity {
             return cachedVolumeTexture
         }
@@ -538,16 +510,10 @@ private extension MetalMPRComputeAdapter {
         let threadsPerThreadgroup = configuration.threadsPerThreadgroup
         let threadsPerGrid = MTLSize(width: width, height: height, depth: 1)
 
-        if featureFlags.contains(.nonUniformThreadgroups) {
-            encoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
-        } else {
-            let groups = MTLSize(
-                width: (threadsPerGrid.width + threadsPerThreadgroup.width - 1) / threadsPerThreadgroup.width,
-                height: (threadsPerGrid.height + threadsPerThreadgroup.height - 1) / threadsPerThreadgroup.height,
-                depth: 1
-            )
-            encoder.dispatchThreadgroups(groups, threadsPerThreadgroup: threadsPerThreadgroup)
-        }
+        MetalDispatch.dispatch(encoder: encoder,
+                               threadsPerGrid: threadsPerGrid,
+                               threadsPerThreadgroup: threadsPerThreadgroup,
+                               featureFlags: featureFlags)
 
         encoder.endEncoding()
 
@@ -584,115 +550,6 @@ private extension MetalMPRComputeAdapter {
     }
 
 }
-
-// MARK: - MPS Optimization Support
-
-#if canImport(MetalPerformanceShaders)
-private extension MetalMPRComputeAdapter {
-    /// Metal blit baseline with optional MPS optimization.
-    ///
-    /// The blit encoder path is first-class and fully supported. MPS provides
-    /// optimized conversion for compatible 2D normalized/float formats when available.
-    /// 3D textures and signed integer formats use the Metal blit baseline by design
-    /// because MPS image conversion does not cover those texture cases.
-    ///
-    /// - Parameters:
-    ///   - commandBuffer: Command buffer to encode operations
-    ///   - source: Source texture to convert
-    ///   - destination: Destination texture (must have compatible dimensions)
-    /// - Note: Currently not used in main pipeline but available for future optimizations
-    func convertTexture(on commandBuffer: any MTLCommandBuffer,
-                        source: any MTLTexture,
-                        destination: any MTLTexture) {
-        guard mpsAvailable else {
-            // Use Metal blit encoder (baseline path) when MPS is unavailable.
-            blitConvertTexture(on: commandBuffer, source: source, destination: destination)
-            return
-        }
-
-        // MPS operations require specific texture types and formats. 3D textures
-        // and signed integer formats use the Metal blit baseline by design.
-        let requiresBlitBaseline = source.textureType == .type3D ||
-                                    destination.textureType == .type3D ||
-                                    !source.pixelFormat.isMPSConvertible ||
-                                    !destination.pixelFormat.isMPSConvertible
-
-        if requiresBlitBaseline {
-            blitConvertTexture(on: commandBuffer, source: source, destination: destination)
-            return
-        }
-
-        // For 2D textures with normalized/float formats, MPS can optimize conversions
-        let conversion = MPSImageConversion(
-            device: device,
-            srcAlpha: .nonPremultiplied,
-            destAlpha: .nonPremultiplied,
-            backgroundColor: nil,
-            conversionInfo: nil
-        )
-        conversion.encode(commandBuffer: commandBuffer,
-                          sourceTexture: source,
-                          destinationTexture: destination)
-    }
-
-    /// Baseline texture conversion using Metal blit encoder.
-    private func blitConvertTexture(on commandBuffer: any MTLCommandBuffer,
-                                    source: any MTLTexture,
-                                    destination: any MTLTexture) {
-        guard let blitEncoder = commandBuffer.makeBlitCommandEncoder() else {
-            logger.error("Failed to create blit encoder for baseline texture conversion")
-            return
-        }
-        blitEncoder.label = "MPR.TextureConversionBlitBaseline"
-
-        // Handle different texture types
-        switch (source.textureType, destination.textureType) {
-        case (.type2D, .type2D):
-            blitEncoder.copy(from: source,
-                             sourceSlice: 0,
-                             sourceLevel: 0,
-                             sourceOrigin: MTLOriginMake(0, 0, 0),
-                             sourceSize: MTLSizeMake(source.width, source.height, 1),
-                             to: destination,
-                             destinationSlice: 0,
-                             destinationLevel: 0,
-                             destinationOrigin: MTLOriginMake(0, 0, 0))
-
-        case (.type3D, .type3D):
-            blitEncoder.copy(from: source,
-                             sourceSlice: 0,
-                             sourceLevel: 0,
-                             sourceOrigin: MTLOriginMake(0, 0, 0),
-                             sourceSize: MTLSizeMake(source.width, source.height, source.depth),
-                             to: destination,
-                             destinationSlice: 0,
-                             destinationLevel: 0,
-                             destinationOrigin: MTLOriginMake(0, 0, 0))
-
-        default:
-            logger.warning("Unsupported texture type combination for conversion: \(source.textureType) -> \(destination.textureType)")
-        }
-
-        blitEncoder.endEncoding()
-    }
-}
-
-private extension MTLPixelFormat {
-    /// Checks if pixel format is compatible with MPS image operations
-    var isMPSConvertible: Bool {
-        switch self {
-        case .r8Unorm, .r8Snorm, .r16Float, .r32Float,
-             .rg8Unorm, .rg8Snorm, .rg16Float, .rg32Float,
-             .rgba8Unorm, .rgba8Snorm, .rgba16Float, .rgba32Float,
-             .bgra8Unorm:
-            return true
-        default:
-            return false
-        }
-    }
-}
-#endif
-
 // MARK: - VolumePixelFormat Extension
 
 private extension VolumePixelFormat {

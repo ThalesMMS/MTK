@@ -291,14 +291,10 @@ public final class VolumeHistogramCalculator {
                                      height: texture.height,
                                      depth: max(texture.depth, 1))
 
-        if featureFlags.contains(.nonUniformThreadgroups) {
-            encoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
-        } else {
-            let groups = MTLSize(width: (threadsPerGrid.width + threadsPerThreadgroup.width - 1) / threadsPerThreadgroup.width,
-                                 height: (threadsPerGrid.height + threadsPerThreadgroup.height - 1) / threadsPerThreadgroup.height,
-                                 depth: (threadsPerGrid.depth + threadsPerThreadgroup.depth - 1) / threadsPerThreadgroup.depth)
-            encoder.dispatchThreadgroups(groups, threadsPerThreadgroup: threadsPerThreadgroup)
-        }
+        MetalDispatch.dispatch(encoder: encoder,
+                               threadsPerGrid: threadsPerGrid,
+                               threadsPerThreadgroup: threadsPerThreadgroup,
+                               featureFlags: featureFlags)
 
         encoder.endEncoding()
 

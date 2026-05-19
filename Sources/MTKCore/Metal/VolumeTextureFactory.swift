@@ -2,7 +2,7 @@
 //  VolumeTextureFactory.swift
 //  MTK
 //
-//  Converts volumetric datasets into Metal textures and exposes built-in presets.
+//  Converts volumetric datasets into Metal textures.
 //
 //  Thales Matheus Mendonça Santos — October 2025
 
@@ -10,13 +10,12 @@ import Foundation
 @preconcurrency import Metal
 import OSLog
 import simd
-import ZIPFoundation
 
 /// Factory for converting volumetric datasets into Metal 3D textures.
 ///
 /// `VolumeTextureFactory` handles the creation of GPU-compatible 3D textures from `VolumeDataset` instances,
 /// supporting both synchronous CPU-based uploads and asynchronous GPU-accelerated transfers via blit encoders.
-/// It also provides built-in presets for common medical imaging datasets (head, chest).
+/// Preset resource loading lives in the `MTKFixtures` target.
 ///
 /// ## Usage
 ///
@@ -29,13 +28,14 @@ import ZIPFoundation
 /// }
 /// ```
 ///
-/// Or use a built-in preset:
+/// Or load a fixture preset, then create a factory:
 /// ```swift
-/// let factory = try VolumeTextureFactory(preset: .head)
+/// let dataset = try FixtureVolumePresetLoader.dataset(for: .head)
+/// let factory = VolumeTextureFactory(dataset: dataset)
 /// let texture = try await factory.generateAsync(device: device, commandQueue: queue)
 /// ```
 ///
-/// - Note: Preset datasets are loaded from bundled `.raw.zip` resources. Missing or invalid resources throw ``PresetLoadingError``.
+/// - Note: `MTKCore` does not parse ZIP resources; use `MTKFixtures` for bundled `.raw.zip` presets.
 /// - Important: Textures created by this factory use `.type3D` with pixel formats matching the dataset's `VolumePixelFormat`.
 public final class VolumeTextureFactory {
     /// Errors that can occur during asynchronous texture upload.
@@ -100,10 +100,11 @@ public final class VolumeTextureFactory {
 
     /// Creates a factory from a built-in preset.
     ///
-    /// Preset datasets are loaded from bundled `.raw.zip` resources in `Bundle.module`.
+    /// Preset resource loading moved to `MTKFixtures`.
     ///
     /// - Parameter preset: The preset to load (`.head`, `.chest`, `.none`, or `.dicom`).
     /// - Throws: ``PresetLoadingError`` when the preset has no bundled data or its resource cannot be loaded.
+    @available(*, deprecated, message: "Use FixtureVolumePresetLoader.dataset(for:) from MTKFixtures, then initialize VolumeTextureFactory(dataset:).")
     public convenience init(preset: VolumeDatasetPreset) throws {
         self.init(dataset: try VolumeTextureFactory.dataset(for: preset))
     }
@@ -230,7 +231,7 @@ public final class VolumeTextureFactory {
     ///
     /// ## Example
     /// ```swift
-    /// let factory = try VolumeTextureFactory(preset: .head)
+    /// let factory = VolumeTextureFactory(dataset: dataset)
     /// let texture = try await factory.generateAsync(device: device, commandQueue: queue)
     /// // Texture is ready for immediate shader use
     /// ```
@@ -360,90 +361,13 @@ extension VolumeTextureFactory {
 private extension VolumeTextureFactory {
     static func dataset(for preset: VolumeDatasetPreset) throws -> VolumeDataset {
         switch preset {
-        case .head:
-            return try loadZippedResource(
-                named: "head",
-                dimensions: VolumeDimensions(width: 512, height: 512, depth: 511),
-                spacing: VolumeSpacing(x: 0.449, y: 0.449, z: 0.501),
-                pixelFormat: .int16Signed,
-                intensity: (-1024)...3071
-            )
-        case .chest:
-            return try loadZippedResource(
-                named: "chest",
-                dimensions: VolumeDimensions(width: 512, height: 512, depth: 179),
-                spacing: VolumeSpacing(x: 0.586, y: 0.586, z: 2.0),
-                pixelFormat: .int16Signed,
-                intensity: (-1024)...3071
-            )
+        case .head, .chest:
+            resourceLogger.warning("Preset \(preset.rawValue) moved to MTKFixtures")
+            throw PresetLoadingError.resourceNotBundled(preset: preset.rawValue)
         case .none, .dicom:
             resourceLogger.warning("Preset \(preset.rawValue) does not provide bundled voxel data")
             throw PresetLoadingError.noDataAvailable(preset: preset.rawValue)
         }
-    }
-
-    static func loadZippedResource(named name: String,
-                                   dimensions: VolumeDimensions,
-                                   spacing: VolumeSpacing,
-                                   pixelFormat: VolumePixelFormat,
-                                   intensity: ClosedRange<Int32>) throws -> VolumeDataset {
-        guard let url = Bundle.module.url(forResource: name, withExtension: "raw.zip") else {
-            resourceLogger.warning("Missing resource: \(name).raw.zip")
-            throw PresetLoadingError.resourceNotBundled(preset: name)
-        }
-
-        return try loadDataset(
-            fromArchiveAt: url,
-            dimensions: dimensions,
-            spacing: spacing,
-            pixelFormat: pixelFormat,
-            intensity: intensity
-        )
-    }
-
-    static func loadDataset(fromArchiveAt url: URL,
-                            dimensions: VolumeDimensions,
-                            spacing: VolumeSpacing,
-                            pixelFormat: VolumePixelFormat,
-                            intensity: ClosedRange<Int32>) throws -> VolumeDataset {
-        let presetName = presetName(fromArchiveURL: url)
-        let archive: Archive
-        do {
-            archive = try Archive(url: url, accessMode: .read)
-        } catch {
-            resourceLogger.error("Unable to read archive at \(url.path): \(String(describing: error))")
-            throw PresetLoadingError.archiveUnreadable(preset: presetName)
-        }
-
-        var data = Data(capacity: dimensions.voxelCount * pixelFormat.bytesPerVoxel)
-        do {
-            for entry in archive {
-                _ = try archive.extract(entry) { buffer in
-                    data.append(buffer)
-                }
-            }
-        } catch {
-            resourceLogger.error("Failed to extract archive \(url.lastPathComponent): \(String(describing: error))")
-            throw PresetLoadingError.extractionFailed(preset: presetName, underlying: error)
-        }
-
-        if data.isEmpty {
-            resourceLogger.warning("Archive \(url.lastPathComponent) extracted but returned empty data")
-            throw PresetLoadingError.emptyPayload(preset: presetName)
-        }
-
-        return VolumeDataset(
-            data: data,
-            dimensions: dimensions,
-            spacing: spacing,
-            pixelFormat: pixelFormat,
-            intensityRange: intensity
-        )
-    }
-
-    static func presetName(fromArchiveURL url: URL) -> String {
-        let rawName = url.deletingPathExtension().deletingPathExtension().lastPathComponent
-        return rawName.isEmpty ? url.lastPathComponent : rawName
     }
 }
 

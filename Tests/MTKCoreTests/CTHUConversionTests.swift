@@ -12,8 +12,8 @@ final class CTHUConversionTests: XCTestCase {
     }
 
     func test_cpuHUConversionMatchesMetalConversionRoundingPolicy() {
-        // Validates the CPU HU conversion performed by DicomVolumeLoader.loadVolume matches
-        // the Metal kernel (hu_conversion_compute.metal) behavior used during streaming/chunked upload.
+        // Validates CPU HU conversion rounding matches the Metal kernel
+        // (hu_conversion_compute.metal) behavior used during chunked upload.
         //
         // Contract: HU = round(raw * slope + intercept), then clamp to the supported HU domain.
 

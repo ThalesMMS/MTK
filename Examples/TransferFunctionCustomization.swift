@@ -150,7 +150,7 @@ struct AutoWindowPresetExample: View {
     private func setupAutoWindowing() async {
         // Step 1: Obtain histogram from volume dataset
         // In a real implementation, this would come from VolumeHistogramCalculator
-        // or MetalVolumeRenderingAdapter.getHistogram()
+        // or MetalVolumeRenderingAdapter.refreshHistogram(...)
         let sampleHistogram = generateSampleHistogram()
 
         // Step 2: Set histogram data (must be 256 or 512 bins)
@@ -515,8 +515,8 @@ struct CombinedCustomizationExample: View {
 
         // Step 2: Set histogram for auto-windowing (if available)
         // In a real implementation, get histogram from renderer
-        // let histogram = try? await coordinator.controller.getHistogram()
-        // toneCurveModel.setHistogram(histogram ?? [])
+        // let histogram = try? await adapter.refreshHistogram(...)
+        // toneCurveModel.setHistogram(histogram?.bins ?? [])
 
         // Step 3: Set initial window/level
         coordinator.applyHuWindow(min: windowMin, max: windowMax)

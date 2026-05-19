@@ -463,17 +463,14 @@ final class VolumeRaycastPass: @unchecked Sendable {
             throw VolumeRaycastPassError.invalidDimensions(width: width, height: height)
         }
 
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm,
-                                                                  width: width,
-                                                                  height: height,
-                                                                  mipmapped: false)
-        descriptor.usage = [.shaderWrite, .shaderRead, .renderTarget, .pixelFormatView]
-        descriptor.storageMode = .private
-
-        guard let texture = device.makeTexture(descriptor: descriptor) else {
+        guard let texture = OutputTextureFactory.makeTexture(
+            device: device,
+            width: width,
+            height: height,
+            label: "VolumeRaycastPass.Output"
+        ) else {
             throw VolumeRaycastPassError.outputTextureUnavailable
         }
-        texture.label = "VolumeRaycastPass.Output"
         return texture
     }
 
@@ -518,7 +515,7 @@ final class VolumeRaycastPass: @unchecked Sendable {
         guard texture.textureType == .type2D else {
             throw VolumeRaycastPassError.invalidOutputTexture("Output texture must be a 2D texture.")
         }
-        guard texture.pixelFormat == .bgra8Unorm else {
+        guard texture.pixelFormat == OutputTextureFactory.defaultPixelFormat else {
             throw VolumeRaycastPassError.invalidOutputTexture("Output texture pixel format must be bgra8Unorm.")
         }
         guard texture.storageMode == .private else {

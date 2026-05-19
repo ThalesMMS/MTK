@@ -6,14 +6,15 @@
 ![macOS 14+](https://img.shields.io/badge/macOS-14%2B-lightgrey.svg)
 ![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)
 
-Swift Package with Metal-native volume rendering, SwiftUI overlays, and DICOM loader bridges. Metal is the only official clinical renderer. Interactive clinical frames are `MTLTexture` outputs presented through `MTKView` or `CAMetalLayer`; `CGImage` is allowed only for explicit export, snapshot, debug, and test readback use cases behind `SnapshotExporting`/`TextureSnapshotExporter`.
+Swift Package with Metal-native volume rendering, SwiftUI overlays, and a thin DICOM dataset bridge. Metal is the only official clinical renderer. Interactive clinical frames are `MTLTexture` outputs presented through `MTKView` or `CAMetalLayer`; `CGImage` is allowed only for explicit export, snapshot, debug, and test readback use cases behind `SnapshotExporting`/`TextureSnapshotExporter`.
 
 ![UI Screenshot](screenshots/screenshot.png)
 
 ## Package layout
-- `MTKCore` — Domain types (`VolumeDataset`, orientation/spacing models), Metal helpers (`MetalRaycaster`, `VolumeTextureFactory`, `ShaderLibraryLoader`), serializable clinical transfer function models (`TransferFunction`, `ClinicalTransferFunctionPreset`, `AdvancedToneCurveModel`, `VolumeTransferFunctionLibrary`), runtime availability guards, and the `DicomVolumeLoader` protocol-based importer that wraps an injected `DicomSeriesLoading` bridge. MTKCore does not depend on a concrete DICOM parser.
+- `MTKCore` — Domain types (`VolumeDataset`, orientation/spacing models), Metal helpers (`MetalRaycaster`, `VolumeTextureFactory`, `ShaderLibraryLoader`), serializable clinical transfer function models (`TransferFunction`, `ClinicalTransferFunctionPreset`, `AdvancedToneCurveModel`, `VolumeTransferFunctionLibrary`), and runtime availability guards. MTKCore does not parse DICOM.
 - `MTKUI` — SwiftUI-friendly public viewport contracts (`StackViewport`, `VolumeViewport`, `VolumeViewport3D`, `ClinicalViewportSession`) plus containers, overlays, and compatibility controllers. MTKUI is the UI layer over MTKCore Metal volume/MPR adapters. `MetalViewportSurface` is the official clinical `MTKView` presentation surface.
-- `MTKDicomBridge` — Optional bridge product that depends on the versioned `DICOM-Decoder` package and provides `DicomDecoderSeriesLoader` plus the convenience `DicomVolumeLoader()` initializer.
+- `MTKDicomBridge` — Optional bridge product that depends on the versioned `DICOM-Decoder` package and converts `DicomCore.DicomDecodedSeries` into `VolumeDataset`.
+- `MTKFixtures` — Optional synthetic datasets and `.raw.zip` fixture/preset loading. This target owns ZIPFoundation usage; MTKCore does not parse ZIP resources.
 
 ## Architecture
 The public app-facing API contract is documented in [Architecture/PublicAPI.md](Architecture/PublicAPI.md). The accepted clinical rendering architecture is documented in [Architecture/ClinicalRenderingADR.md](Architecture/ClinicalRenderingADR.md). Multi-volume registration and resampling follow the staged plan in [Architecture/MultiVolumeRegistration.md](Architecture/MultiVolumeRegistration.md).
@@ -135,7 +136,7 @@ swift build
 Minimal smoke test that does not require private fixtures:
 
 ```bash
-swift test --filter DicomVolumeLoaderSecurityTests
+swift test --filter ImageData3DTests
 ```
 
 For broader testing on a Metal-capable Mac:
@@ -151,7 +152,7 @@ Some DICOM-oriented tests rely on optional local fixtures from `MTK-Demo/DICOM_E
 - Build-tool plugin `MTKShaderPlugin` compiles `Sources/MTKCore/Resources/Shaders/*.metal` into the required `MTK.metallib` artifact during the build. The plugin must complete successfully for the package's Metal rendering paths to function.
 - Manual shader build is only needed when compiling shaders outside the normal SwiftPM/Xcode plugin path, such as custom command-line packaging or CI steps that assemble resources separately: `bash Tooling/Shaders/build_metallib.sh Sources/MTKCore/Resources/Shaders .build/MTK.metallib`
 - Troubleshooting: if shader loading fails, verify that `MTKShaderPlugin` ran successfully and that `MTK.metallib` is present in the `MTKCore` resource bundle.
-- Sample RAW datasets referenced by `VolumeTextureFactory(preset:)` are not shipped by default. Missing or invalid preset resources throw `VolumeTextureFactory.PresetLoadingError`; preset loading does not silently return a stub volume.
+- Sample RAW datasets are loaded through `FixtureVolumePresetLoader` in `MTKFixtures`; `VolumeTextureFactory(preset:)` is deprecated and kept only for compatibility. Missing or invalid preset resources throw `VolumeTextureFactory.PresetLoadingError`; preset loading does not silently return a stub volume.
 - Preset resource failures are inspectable through `resourceNotBundled`, `archiveUnreadable`, `extractionFailed`, `emptyPayload`, and `noDataAvailable`.
 - Use `VolumeTextureFactory.debugPlaceholderDataset()` only for tests or explicit debug tooling that needs a minimal 1x1x1 volume.
 
@@ -204,26 +205,30 @@ try await session.applyTransferFunction(restored)
 When `gradientOpacity` is present, MTK builds a 2D transfer texture and multiplies scalar opacity by gradient magnitude during DVR. Presets without `gradientOpacity` keep the legacy 1D transfer-texture path.
 
 ## Loading DICOM volumes
-`DicomVolumeLoader` lives in `MTKCore` and orchestrates ZIP extraction plus `VolumeDataset` construction through any injected `DicomSeriesLoading` implementation. Use `MTKCore` alone when your app already has a `VolumeDataset` or a custom DICOM pipeline. Import `MTKDicomBridge` when you want the default pure-Swift `DicomDecoderSeriesLoader` backed by the versioned `DICOM-Decoder` dependency:
+`DICOM-Decoder` owns DICOM source loading, ZIP extraction, slice ordering, geometry validation, rescale slope/intercept, recommended window metadata, and DICOM errors. Use `MTKCore` alone when your app already has a `VolumeDataset`. Import `MTKDicomBridge` when you want to convert the default `DICOM-Decoder` result into a renderer-ready dataset:
 
 ```swift
 import MTKCore
 import MTKDicomBridge
 
-let loader = DicomVolumeLoader()
+let importer = DicomVolumeDatasetImporter()
+importer.loadDataset(from: sourceURL, progress: { _ in }) { result in
+    let dataset = try? result.get().dataset
+    _ = dataset
+}
 ```
 
-Progress updates can be mapped to UI with `DicomVolumeLoader.uiUpdate(from:)`.
+Progress and failures are surfaced from `DicomCore`; the bridge does not remap DICOM parser errors into MTKCore-specific error cases.
 
 ## Expected inputs and outputs
 **Typical inputs**
 - A synthetic or programmatically generated voxel buffer wrapped in `VolumeDataset`
-- A DICOM directory, ZIP archive, or individual file routed through `DicomVolumeLoader`
+- A DICOM directory, ZIP archive, or individual file routed through `DICOM-Decoder` and converted by `MTKDicomBridge`
 - 16-bit scalar volume data with spatial metadata available for reconstruction
 
 **Typical outputs**
 - An in-memory `VolumeDataset` ready for rendering
-- `DicomImportResult` metadata such as `sourceURL` and `seriesDescription`
+- `DicomVolumeDatasetImportResult` metadata such as `sourceURL` and `seriesDescription`
 - Interactive `MTLTexture` frame outputs for drawable-backed presentation
 - SwiftUI rendering surfaces, MPR views, overlays, and transfer-function-driven visualization backed by MTKCore Metal adapters
 
@@ -255,17 +260,13 @@ do {
 ## Testing notes
 - `swift test` requires a Metal-capable host for GPU-dependent suites; those tests require Metal and skip when unavailable.
 - DICOM-related tests can use optional fixtures under `MTK-Demo/DICOM_Example` from `https://github.com/ThalesMMS/MTK-Demo`; clone it as a sibling checkout with `git clone https://github.com/ThalesMMS/MTK-Demo.git ../MTK-Demo`. Tests will skip when fixtures are missing.
-- Security coverage includes ZIP path-traversal regression tests for `DicomVolumeLoader`; visual-quality checks compare MPS-accelerated empty-space skipping (feature availability requires MPS) against core Metal ray marching on synthetic datasets.
+- DICOM source security coverage lives in `DICOM-Decoder`; visual-quality checks compare MPS-accelerated empty-space skipping (feature availability requires MPS) against core Metal ray marching on synthetic datasets.
 
 ## Limitations and evaluation caveats
 - The package targets Apple-platform rendering workflows; it is not a cross-platform PACS, archive, or viewer.
 - Public examples and tests mostly exercise synthetic datasets, renderer behaviors, and optional local fixtures rather than a versioned benchmark corpus committed in this repository.
 - Rendering correctness checks and visual-regression tests are useful engineering signals, but they are **not** the same thing as clinical validation or reader-study evidence.
-- DICOM import support depends on the Swift decoder's metadata coverage and input quality. Import failures are explicit:
-  - unsupported transfer syntaxes, compressed pixel encodings, malformed datasets, or missing required tags surface as structured `DicomVolumeLoaderError` values when reported by `MTKDicomBridge`;
-  - empty directories or parser runs that produce no voxel data report `DicomVolumeLoaderError.missingResult`;
-  - non-16-bit scalar data, 8-bit or 12-bit inputs, and RGB or multi-component volumes report `DicomVolumeLoaderError.unsupportedBitDepth`;
-  - ZIP entries with path traversal report `DicomVolumeLoaderError.pathTraversal`.
+- DICOM import support depends on `DICOM-Decoder` metadata coverage and input quality. Unsupported transfer syntaxes, malformed datasets, geometry failures, unsupported scalar formats, empty sources, and unsafe ZIP entries surface as `DicomCore` errors.
 
 ## Documentation
 

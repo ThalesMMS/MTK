@@ -313,17 +313,14 @@ public final class ArgumentEncoderManager {
 
         if needsRecreation {
             // StorageModePolicy.md: render outputs are GPU-only and private.
-            let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-                pixelFormat: outputPixelFormat,
+            outputTexture = OutputTextureFactory.makeTexture(
+                device: device,
                 width: width,
                 height: height,
-                mipmapped: false
+                label: MTL_label.outputTexture,
+                pixelFormat: outputPixelFormat,
+                usage: [.shaderWrite, .shaderRead, .pixelFormatView]
             )
-            descriptor.usage = [.shaderWrite, .shaderRead, .pixelFormatView]
-            descriptor.storageMode = .private
-
-            outputTexture = device.makeTexture(descriptor: descriptor)
-            outputTexture?.label = MTL_label.outputTexture
             needsUpdate[index] = true
         }
 

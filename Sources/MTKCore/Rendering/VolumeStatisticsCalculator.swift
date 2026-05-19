@@ -187,14 +187,10 @@ public final class VolumeStatisticsCalculator {
             let threadsPerThreadgroup = MTLSize(width: threadCount, height: 1, depth: 1)
             let threadsPerGrid = MTLSize(width: binCount, height: 1, depth: 1)
 
-            if featureFlags.contains(.nonUniformThreadgroups) {
-                cumulativeEncoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
-            } else {
-                let groups = MTLSize(width: (threadsPerGrid.width + threadsPerThreadgroup.width - 1) / threadsPerThreadgroup.width,
-                                     height: 1,
-                                     depth: 1)
-                cumulativeEncoder.dispatchThreadgroups(groups, threadsPerThreadgroup: threadsPerThreadgroup)
-            }
+            MetalDispatch.dispatch(encoder: cumulativeEncoder,
+                                   threadsPerGrid: threadsPerGrid,
+                                   threadsPerThreadgroup: threadsPerThreadgroup,
+                                   featureFlags: featureFlags)
         } else {
             // Sequential cumulative sum
             cumulativeEncoder.setBuffer(histogramBuffer, offset: 0, index: 0)
@@ -231,14 +227,10 @@ public final class VolumeStatisticsCalculator {
         let percentileThreadsPerThreadgroup = MTLSize(width: percentileThreadCount, height: 1, depth: 1)
         let percentileThreadsPerGrid = MTLSize(width: percentiles.count, height: 1, depth: 1)
 
-        if featureFlags.contains(.nonUniformThreadgroups) {
-            percentilesEncoder.dispatchThreads(percentileThreadsPerGrid, threadsPerThreadgroup: percentileThreadsPerThreadgroup)
-        } else {
-            let groups = MTLSize(width: (percentileThreadsPerGrid.width + percentileThreadsPerThreadgroup.width - 1) / percentileThreadsPerThreadgroup.width,
-                                height: 1,
-                                depth: 1)
-            percentilesEncoder.dispatchThreadgroups(groups, threadsPerThreadgroup: percentileThreadsPerThreadgroup)
-        }
+        MetalDispatch.dispatch(encoder: percentilesEncoder,
+                               threadsPerGrid: percentileThreadsPerGrid,
+                               threadsPerThreadgroup: percentileThreadsPerThreadgroup,
+                               featureFlags: featureFlags)
 
         percentilesEncoder.endEncoding()
 

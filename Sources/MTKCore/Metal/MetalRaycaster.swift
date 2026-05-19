@@ -554,8 +554,7 @@ public final class MetalRaycaster {
     /// ## Usage
     ///
     /// ```swift
-    /// let dicomLoader = DicomVolumeLoader(...)
-    /// let dataset = try dicomLoader.loadSeries(at: url)
+    /// let dataset = VolumeDataset(...)
     ///
     /// let resources = try raycaster.load(dataset: dataset)
     /// print("Loaded \(resources.dimensions) volume")
@@ -724,11 +723,8 @@ public final class MetalRaycaster {
 
     /// Loads a built-in preset volume dataset for testing and development.
     ///
-    /// MTK includes procedurally generated test datasets for:
-    /// - Sphere primitive
-    /// - Cube primitive
-    /// - Gradient patterns
-    /// - Noise patterns
+    /// Preset loading moved to `MTKFixtures`. This compatibility entry point
+    /// remains deprecated for one release window.
     ///
     /// - Parameter preset: The built-in dataset preset to load.
     ///
@@ -743,15 +739,11 @@ public final class MetalRaycaster {
     ///
     /// ## Usage
     ///
-    /// ```swift
-    /// // Load sphere for testing ray marching
-    /// let sphereResources = try raycaster.loadBuiltinDataset(for: .sphere)
-    ///
-    /// // Load gradient for transfer function testing
-    /// let gradientResources = try raycaster.loadBuiltinDataset(for: .gradient)
-    /// ```
+    /// New code should load a fixture dataset through `FixtureVolumePresetLoader`
+    /// and upload it with `VolumeTextureFactory(dataset:)`.
     ///
     /// - SeeAlso: ``loadBuiltinDataset(for:includeAccelerationStructure:)`` for acceleration structure support.
+    @available(*, deprecated, message: "Use FixtureVolumePresetLoader.dataset(for:) from MTKFixtures, then upload the dataset through VolumeTextureFactory(dataset:).")
     @discardableResult
     public func loadBuiltinDataset(for preset: VolumeDatasetPreset) throws -> DatasetResources {
         try loadBuiltinDataset(for: preset, includeAccelerationStructure: false)
@@ -759,8 +751,8 @@ public final class MetalRaycaster {
 
     /// Loads a built-in preset volume dataset with optional acceleration structure.
     ///
-    /// Extended version of ``loadBuiltinDataset(for:)`` that supports acceleration structure
-    /// generation for performance testing.
+    /// Extended compatibility version of ``loadBuiltinDataset(for:)`` that
+    /// supports acceleration structure generation for performance testing.
     ///
     /// - Parameters:
     ///   - preset: The built-in dataset preset to load.
@@ -773,21 +765,9 @@ public final class MetalRaycaster {
     ///
     /// ## Usage
     ///
-    /// ```swift
-    /// // Load sphere with acceleration for performance testing
-    /// let resources = try raycaster.loadBuiltinDataset(
-    ///     for: .sphere,
-    ///     includeAccelerationStructure: true
-    /// )
-    ///
-    /// // Measure rendering performance with/without acceleration
-    /// let withAccel = benchmark { render(resources) }
-    /// let withoutAccel = benchmark {
-    ///     var res = resources
-    ///     res.accelerationTexture = nil
-    ///     render(res)
-    /// }
-    /// ```
+    /// New code should load a fixture dataset through `FixtureVolumePresetLoader`
+    /// and upload it with `VolumeTextureFactory(dataset:)`.
+    @available(*, deprecated, message: "Use FixtureVolumePresetLoader.dataset(for:) from MTKFixtures, then upload the dataset through VolumeTextureFactory(dataset:).")
     @discardableResult
     public func loadBuiltinDataset(for preset: VolumeDatasetPreset,
                                    includeAccelerationStructure: Bool) throws -> DatasetResources {

@@ -12,6 +12,23 @@ public enum VolumetricRenderMethod: String, CaseIterable, Identifiable, Sendable
 
     public var id: String { rawValue }
 
+    public var displayName: String {
+        switch self {
+        case .dvr:
+            return "DVR"
+        case .mip:
+            return "MIP"
+        case .minip:
+            return "MinIP"
+        case .avg:
+            return "AIP"
+        }
+    }
+
+    public var clinicalViewportMode: ClinicalVolumeViewportMode {
+        ClinicalVolumeViewportMode(method: self)
+    }
+
     public init(renderMode: ClinicalTransferFunctionRenderMode) {
         switch renderMode {
         case .dvr:
@@ -48,6 +65,34 @@ public enum VolumetricRenderMethod: String, CaseIterable, Identifiable, Sendable
             return 3
         case .avg:
             return 4
+        }
+    }
+}
+
+public extension ClinicalVolumeViewportMode {
+    init(method: VolumetricRenderMethod) {
+        switch method {
+        case .dvr:
+            self = .dvr
+        case .mip:
+            self = .mip
+        case .minip:
+            self = .minip
+        case .avg:
+            self = .aip
+        }
+    }
+
+    var volumetricRenderMethod: VolumetricRenderMethod {
+        switch self {
+        case .dvr:
+            return .dvr
+        case .mip:
+            return .mip
+        case .minip:
+            return .minip
+        case .aip:
+            return .avg
         }
     }
 }

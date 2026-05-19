@@ -128,20 +128,17 @@ final actor MetalInteractiveOutputTexturePool {
                               height: Int,
                               device: any MTLDevice,
                               frameIndex: UInt64?) throws -> OutputTextureLease {
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm,
-                                                                  width: width,
-                                                                  height: height,
-                                                                  mipmapped: false)
-        descriptor.usage = [.shaderWrite, .shaderRead, .renderTarget, .pixelFormatView]
-        descriptor.storageMode = .private
-
-        guard let texture = device.makeTexture(descriptor: descriptor) else {
+        guard let texture = OutputTextureFactory.makeTexture(
+            device: device,
+            width: width,
+            height: height,
+            label: "VolumeCompute.InteractiveOutput.slot\(nextSlotID)"
+        ) else {
             throw MetalVolumeRenderingAdapter.RenderingError.outputTextureUnavailable
         }
 
         let slotID = nextSlotID
         nextSlotID += 1
-        texture.label = "VolumeCompute.InteractiveOutput.slot\(slotID)"
         let slot = Slot(id: slotID,
                         texture: texture,
                         inUse: true)
@@ -157,20 +154,17 @@ final actor MetalInteractiveOutputTexturePool {
     private func appendAvailableSlot(width: Int,
                                      height: Int,
                                      device: any MTLDevice) throws {
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm,
-                                                                  width: width,
-                                                                  height: height,
-                                                                  mipmapped: false)
-        descriptor.usage = [.shaderWrite, .shaderRead, .renderTarget, .pixelFormatView]
-        descriptor.storageMode = .private
-
-        guard let texture = device.makeTexture(descriptor: descriptor) else {
+        guard let texture = OutputTextureFactory.makeTexture(
+            device: device,
+            width: width,
+            height: height,
+            label: "VolumeCompute.InteractiveOutput.slot\(nextSlotID)"
+        ) else {
             throw MetalVolumeRenderingAdapter.RenderingError.outputTextureUnavailable
         }
 
         let slotID = nextSlotID
         nextSlotID += 1
-        texture.label = "VolumeCompute.InteractiveOutput.slot\(slotID)"
         let slot = Slot(id: slotID,
                         texture: texture,
                         inUse: false)
@@ -242,10 +236,9 @@ final actor MetalInteractiveOutputTexturePool {
     private func matches(_ texture: any MTLTexture,
                          width: Int,
                          height: Int) -> Bool {
-        texture.width == width
-            && texture.height == height
-            && texture.pixelFormat == .bgra8Unorm
-            && texture.storageMode == .private
+        OutputTextureFactory.matchesPrivateBGRAOutput(texture,
+                                                      width: width,
+                                                      height: height)
     }
 
     private func waitForRelease() async {

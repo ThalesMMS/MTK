@@ -13,9 +13,9 @@ import MTKUI
 /// Example purpose: DICOM loading pipeline stages matching the ADR diagram.
 ///
 /// ADR concepts demonstrated:
-/// the example uses `DicomVolumeLoader.loadVolume(from:progress:completion:)`
-/// as the canonical import path, then applies the resulting `VolumeDataset`
-/// through `ClinicalViewportSession.applyDataset(_:)`. That call routes the
+/// the example uses `DicomVolumeDatasetImporter.loadDataset(from:progress:completion:)`
+/// to bridge a DICOM-Decoder result into `VolumeDataset`, then applies that
+/// dataset through `ClinicalViewportSession.applyDataset(_:)`. That call routes the
 /// dataset into the clinical grid implementation, which acquires a shared
 /// `VolumeResourceHandle` through `VolumeResourceManager` before binding the
 /// same GPU resource to the clinical viewports. See
@@ -85,11 +85,11 @@ struct BasicDicomLoaderExample: View {
         errorMessage = nil
         defer { isLoading = false }
 
-        let loader = DicomVolumeLoader()
+        let importer = DicomVolumeDatasetImporter()
 
         do {
             // DICOM -> VolumeDataset
-            let importResult = try await importDicomVolume(from: url, using: loader)
+            let importResult = try await importDicomVolume(from: url, using: importer)
             let dataset = importResult.dataset
 
             let session = try await resolvedSession()
@@ -125,9 +125,9 @@ struct BasicDicomLoaderExample: View {
     }
 
     private func importDicomVolume(from url: URL,
-                                   using loader: DicomVolumeLoader) async throws -> DicomImportResult {
+                                   using importer: VolumeDatasetImporting) async throws -> DicomVolumeDatasetImportResult {
         try await withCheckedThrowingContinuation { continuation in
-            loader.loadVolume(
+            importer.loadDataset(
                 from: url,
                 progress: { progress in
                     Task { @MainActor in
@@ -142,51 +142,26 @@ struct BasicDicomLoaderExample: View {
     }
 
     @MainActor
-    private func handle(_ progress: DicomVolumeProgress) {
+    private func handle(_ progress: DicomVolumeDatasetImportProgress) {
         switch progress {
         case .started(let sliceCount):
             totalSlices = sliceCount
             loadingProgress = 0
-        case .reading(let fraction):
+        case .reading(let fraction, _):
             loadingProgress = fraction
         }
     }
 
     private func makeUserFacingMessage(for error: Error) -> String {
-        guard let loaderError = error as? DicomVolumeLoaderError else {
-            return error.localizedDescription
-        }
-
-        switch loaderError {
-        case .securityScopeUnavailable:
-            return "The selected files could not be accessed."
-        case .unsupportedBitDepth:
-            return "Only 16-bit scalar DICOM series are currently supported."
-        case .unsupportedPixelData(let reason):
-            return "Unsupported pixel data: \(reason)"
-        case .unsupportedTransferSyntax:
-            return "The DICOM transfer syntax is not supported by this loader."
-        case .invalidGeometry(let reason):
-            return "Invalid DICOM geometry: \(reason)"
-        case .variableSliceSpacing:
-            return "The series has variable slice spacing beyond the supported tolerance."
-        case .duplicateSlicePosition:
-            return "The series contains duplicate slice positions."
-        case .missingResult:
-            return "The DICOM loader did not return a volume dataset."
-        case .pathTraversal:
-            return "The selected archive contains invalid paths and was rejected."
-        case .bridgeError(let nsError):
-            return nsError.localizedDescription
-        }
+        error.localizedDescription
     }
 }
 
 /*
- `DicomVolumeLoader` remains the canonical importer for directories, archives,
- and individual DICOM files. After loading:
+ `DICOM-Decoder` remains the canonical importer for directories, archives, and
+ individual DICOM files. `MTKDicomBridge` only converts the decoded result:
 
- 1. `DicomVolumeLoader` produces a `VolumeDataset`.
+ 1. `DicomVolumeDatasetImporter` produces a `VolumeDataset`.
  2. `ClinicalViewportSession.applyDataset(_:)` forwards that dataset into the
     Metal-native clinical grid implementation.
  3. `VolumeResourceManager` acquires one shared GPU volume resource.

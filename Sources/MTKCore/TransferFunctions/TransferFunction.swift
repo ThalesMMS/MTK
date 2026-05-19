@@ -334,6 +334,19 @@ public struct TransferFunction: Codable, Equatable, Sendable {
 }
 
 public extension TransferFunction {
+    /// Returns a copy with every alpha control point scaled into the closed `0...1` range.
+    func applyingOpacityScale(_ scale: Float) -> TransferFunction {
+        var copy = self
+        let resolvedScale = scale.isFinite ? scale : 1
+        copy.alphaPoints = alphaPoints.map { point in
+            AlphaPoint(dataValue: point.dataValue,
+                       alphaValue: min(max(point.alphaValue * resolvedScale, 0), 1))
+        }
+        return copy
+    }
+}
+
+public extension TransferFunction {
     /// Sanitize and validate color control points.
     ///
     /// Ensures color points are valid for texture generation by:

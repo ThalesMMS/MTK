@@ -235,17 +235,14 @@ extension MetalVolumeRenderingAdapter {
             throw RenderingError.outputTextureUnavailable
         }
 
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm,
-                                                                  width: width,
-                                                                  height: height,
-                                                                  mipmapped: false)
-        descriptor.usage = [.shaderWrite, .shaderRead, .renderTarget, .pixelFormatView]
-        descriptor.storageMode = .private
-
-        guard let texture = device.makeTexture(descriptor: descriptor) else {
+        guard let texture = OutputTextureFactory.makeTexture(
+            device: device,
+            width: width,
+            height: height,
+            label: "VolumeCompute.Output"
+        ) else {
             throw RenderingError.outputTextureUnavailable
         }
-        texture.label = "VolumeCompute.Output"
         return texture
     }
 

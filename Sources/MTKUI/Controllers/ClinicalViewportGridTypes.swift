@@ -65,7 +65,7 @@ public enum ClinicalVolumeViewportMode: String, CaseIterable, Sendable {
         }
     }
 
-    var displayName: String {
+    public var displayName: String {
         switch self {
         case .dvr:
             return "3D"

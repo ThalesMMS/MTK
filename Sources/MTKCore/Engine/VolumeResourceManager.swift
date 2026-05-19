@@ -82,36 +82,6 @@ final class VolumeResourceManager {
     private(set) var debugCounters = DebugCounters()
     #endif
 
-    private struct DatasetIdentity: Hashable, Sendable {
-        let count: Int
-        let dimensions: VolumeDimensions
-        let pixelFormat: VolumePixelFormat
-        let contentFingerprint: UInt64
-
-        init(dataset: VolumeDataset) {
-            self.count = dataset.data.count
-            self.dimensions = dataset.dimensions
-            self.pixelFormat = dataset.pixelFormat
-            self.contentFingerprint = DatasetContentFingerprint.make(for: dataset.data)
-        }
-
-        static func == (lhs: DatasetIdentity, rhs: DatasetIdentity) -> Bool {
-            lhs.count == rhs.count &&
-                lhs.dimensions == rhs.dimensions &&
-                lhs.pixelFormat == rhs.pixelFormat &&
-                lhs.contentFingerprint == rhs.contentFingerprint
-        }
-
-        func hash(into hasher: inout Hasher) {
-            hasher.combine(count)
-            hasher.combine(dimensions.width)
-            hasher.combine(dimensions.height)
-            hasher.combine(dimensions.depth)
-            hasher.combine(pixelFormat.hashKey)
-            hasher.combine(contentFingerprint)
-        }
-    }
-
     private struct StreamIdentity: Hashable, Sendable {
         let dimensions: VolumeDimensions
         let spacing: VolumeSpacing
@@ -173,7 +143,7 @@ final class VolumeResourceManager {
     }
 
     private enum ResourceIdentity: Hashable, Sendable {
-        case dataset(DatasetIdentity)
+        case dataset(DatasetIdentity.Content)
         case stream(StreamIdentity)
     }
 
@@ -240,7 +210,7 @@ final class VolumeResourceManager {
     func acquire(dataset: VolumeDataset,
                  device: any MTLDevice,
                  commandQueue: any MTLCommandQueue) async throws -> VolumeResourceHandle {
-        let identity = ResourceIdentity.dataset(DatasetIdentity(dataset: dataset))
+        let identity = ResourceIdentity.dataset(DatasetIdentity.Content(dataset: dataset))
 
         if var cached = textureCache[identity] {
             cached.referenceCount += 1
@@ -751,17 +721,6 @@ private struct HashedSliceDataUploadSequence<Base: AsyncSequence>: AsyncSequence
                                                 maxClamp: intensityRange.upperBound)
             hasher.mix(slice: uploadSlice)
             return uploadSlice
-        }
-    }
-}
-
-private extension VolumePixelFormat {
-    var hashKey: Int {
-        switch self {
-        case .int16Signed:
-            return 0
-        case .int16Unsigned:
-            return 1
         }
     }
 }

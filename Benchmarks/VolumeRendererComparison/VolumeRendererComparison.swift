@@ -1,4 +1,5 @@
 import CoreGraphics
+import DicomCore
 import Foundation
 @preconcurrency import Metal
 import MTKCore
@@ -432,21 +433,9 @@ private enum VolumeRendererComparison {
 }
 
 private func loadDicomDataset(from url: URL, device: any MTLDevice) throws -> VolumeDataset {
-    let loader = DicomVolumeLoader(device: device)
-    var captured: Result<DicomImportResult, any Error>?
-    loader.loadVolume(from: url, progress: { _ in }) { result in
-        captured = result
-    }
-
-    let deadline = Date().addingTimeInterval(120)
-    while captured == nil && Date() < deadline {
-        RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.01))
-    }
-
-    guard let captured else {
-        throw BenchmarkError.timedOutLoadingDicom
-    }
-    return try captured.get().dataset
+    _ = device
+    let decoded = try DicomSeriesLoader().loadDecodedSeries(from: url)
+    return DicomVolumeDatasetImporter.makeDataset(from: decoded)
 }
 
 private func makeMTKCamera(yaw: Float, pitch: Float) -> VolumeRenderRequest.Camera {

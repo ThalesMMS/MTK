@@ -2,7 +2,7 @@
 //  MetalVolumeRenderingAdapterExtended.swift
 //  MTK
 //
-//  Extended MetalVolumeRenderingAdapter with missing APIs
+//  Extended MetalVolumeRenderingAdapter controls and snapshots
 //  Thales Matheus Mendonça Santos — November 2025
 //
 
@@ -91,16 +91,6 @@ extension MetalVolumeRenderingAdapter: VolumeRenderingPortExtended {
         extendedState.shift = shift
     }
 
-    public func setRenderMethod(_ method: Int) async throws {
-        throw AdapterError.notSupported
-    }
-
-    // MARK: - MPR Controls
-
-    public func setMPRBlend(_ blend: Float) async throws {
-        throw AdapterError.notSupported
-    }
-
     // MARK: - Clip Controls
 
     public func updateClipBounds(xMin: Float, xMax: Float, yMin: Float, yMax: Float, zMin: Float, zMax: Float) async throws {
@@ -132,24 +122,8 @@ extension MetalVolumeRenderingAdapter: VolumeRenderingPortExtended {
         }
         extendedState.clipPlaneOffset = offset
     }
-
-    public nonisolated var supportsAlignClipBoxToView: Bool {
-        false
-    }
-
-    public func alignClipBoxToView() async throws {
-        throw AdapterError.notImplemented
-    }
-
-    public func alignClipPlaneToView() async throws {
-        throw AdapterError.notImplemented
-    }
     
     // MARK: - Snapshot Methods
-    
-    public func getHistogram() async throws -> [Int] {
-        throw AdapterError.histogramNotAvailable
-    }
     
     public func getToneCurveSnapshot() async throws -> [ChannelControlSnapshot] {
         try await getChannelControlSnapshot()

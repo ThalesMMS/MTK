@@ -25,19 +25,21 @@ let package = Package(
         .library(
             name: "MTKDicomBridge",
             targets: ["MTKDicomBridge"]
+        ),
+        .library(
+            name: "MTKFixtures",
+            targets: ["MTKFixtures"]
         )
     ],
     dependencies: [
         .package(url: "https://github.com/weichsel/ZIPFoundation.git", from: "0.9.19"),
-        .package(url: "https://github.com/ThalesMMS/DICOM-Decoder.git", from: "1.0.1"),
+        .package(path: "../DICOM-Decoder"),
         .package(url: "https://github.com/apple/swift-docc-plugin", from: "1.0.0")
     ],
     targets: [
         .target(
             name: "MTKCore",
-            dependencies: [
-                .product(name: "ZIPFoundation", package: "ZIPFoundation")
-            ],
+            dependencies: [],
             path: "Sources/MTKCore",
             resources: [
                 .process("Resources")
@@ -63,6 +65,17 @@ let package = Package(
             ],
             path: "Sources/MTKDicomBridge"
         ),
+        .target(
+            name: "MTKFixtures",
+            dependencies: [
+                "MTKCore",
+                .product(name: "ZIPFoundation", package: "ZIPFoundation")
+            ],
+            path: "Sources/MTKFixtures",
+            resources: [
+                .process("Resources")
+            ]
+        ),
         .testTarget(
             name: "MTKCoreTests",
             dependencies: [
@@ -84,15 +97,25 @@ let package = Package(
             name: "MTKDicomBridgeTests",
             dependencies: [
                 "MTKCore",
-                "MTKDicomBridge"
+                "MTKDicomBridge",
+                .product(name: "DicomCore", package: "DICOM-Decoder")
             ],
             path: "Tests/MTKDicomBridgeTests"
+        ),
+        .testTarget(
+            name: "MTKFixturesTests",
+            dependencies: [
+                "MTKCore",
+                "MTKFixtures"
+            ],
+            path: "Tests/MTKFixturesTests"
         ),
         .executableTarget(
             name: "VolumeRendererComparison",
             dependencies: [
                 "MTKCore",
-                "MTKDicomBridge"
+                "MTKDicomBridge",
+                .product(name: "DicomCore", package: "DICOM-Decoder")
             ],
             path: "Benchmarks/VolumeRendererComparison",
             resources: [

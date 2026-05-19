@@ -310,18 +310,10 @@ public struct MPRPresentationPass {
         let threadsPerGrid = MTLSize(width: frame.texture.width,
                                      height: frame.texture.height,
                                      depth: 1)
-        if FeatureFlags.evaluate(for: device).contains(.nonUniformThreadgroups) {
-            computeEncoder.dispatchThreads(threadsPerGrid,
-                                           threadsPerThreadgroup: dispatch.threadsPerThreadgroup)
-        } else {
-            let groups = MTLSize(
-                width: (threadsPerGrid.width + dispatch.threadsPerThreadgroup.width - 1) / dispatch.threadsPerThreadgroup.width,
-                height: (threadsPerGrid.height + dispatch.threadsPerThreadgroup.height - 1) / dispatch.threadsPerThreadgroup.height,
-                depth: 1
-            )
-            computeEncoder.dispatchThreadgroups(groups,
-                                                threadsPerThreadgroup: dispatch.threadsPerThreadgroup)
-        }
+        MetalDispatch.dispatch(encoder: computeEncoder,
+                               threadsPerGrid: threadsPerGrid,
+                               configuration: dispatch,
+                               featureFlags: FeatureFlags.evaluate(for: device))
         computeEncoder.endEncoding()
 
         let finalPresentationTexture = try encodeLabelmapOverlays(labelmapOverlays,
@@ -558,18 +550,10 @@ public struct MPRPresentationPass {
             let threadsPerGrid = MTLSize(width: width,
                                          height: height,
                                          depth: 1)
-            if FeatureFlags.evaluate(for: device).contains(.nonUniformThreadgroups) {
-                encoder.dispatchThreads(threadsPerGrid,
-                                        threadsPerThreadgroup: dispatch.threadsPerThreadgroup)
-            } else {
-                let groups = MTLSize(
-                    width: (threadsPerGrid.width + dispatch.threadsPerThreadgroup.width - 1) / dispatch.threadsPerThreadgroup.width,
-                    height: (threadsPerGrid.height + dispatch.threadsPerThreadgroup.height - 1) / dispatch.threadsPerThreadgroup.height,
-                    depth: 1
-                )
-                encoder.dispatchThreadgroups(groups,
-                                             threadsPerThreadgroup: dispatch.threadsPerThreadgroup)
-            }
+            MetalDispatch.dispatch(encoder: encoder,
+                                   threadsPerGrid: threadsPerGrid,
+                                   configuration: dispatch,
+                                   featureFlags: FeatureFlags.evaluate(for: device))
             encoder.endEncoding()
 
             if index < overlays.count - 1 {
@@ -685,29 +669,27 @@ public struct MPRPresentationPass {
     private func isReusablePresentationTexture(_ texture: any MTLTexture,
                                                width: Int,
                                                height: Int) -> Bool {
-        texture.device === device
-            && texture.width == width
-            && texture.height == height
-            && texture.pixelFormat == .bgra8Unorm
-            && texture.storageMode == .private
-            && texture.usage.contains(.shaderWrite)
-            && texture.usage.contains(.shaderRead)
+        OutputTextureFactory.matchesPrivateBGRAOutput(
+            texture,
+            width: width,
+            height: height,
+            device: device,
+            requiredUsage: OutputTextureFactory.shaderUsage
+        )
     }
 
     private func makePresentationTexture(width: Int,
                                          height: Int) throws -> any MTLTexture {
         // StorageModePolicy.md: presentation targets are GPU-only and private.
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm,
-                                                                  width: width,
-                                                                  height: height,
-                                                                  mipmapped: false)
-        descriptor.usage = [.shaderWrite, .shaderRead]
-        descriptor.storageMode = .private
-
-        guard let texture = device.makeTexture(descriptor: descriptor) else {
+        guard let texture = OutputTextureFactory.makeTexture(
+            device: device,
+            width: width,
+            height: height,
+            label: "MPR.presentationTexture",
+            usage: OutputTextureFactory.shaderUsage
+        ) else {
             throw MPRPresentationPassError.presentationTextureCreationFailed
         }
-        texture.label = "MPR.presentationTexture"
         return texture
     }
 

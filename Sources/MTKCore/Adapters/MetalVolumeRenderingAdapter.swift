@@ -87,25 +87,6 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
     var diagnosticLoggingEnabled: Bool = false
     var clipPlaneApproximationLogged = false
 
-    struct DatasetIdentity: Equatable, Sendable {
-        let count: Int
-        let dimensions: VolumeDimensions
-        let pixelFormat: VolumePixelFormat
-        let storageAddress: UInt
-
-        init(dataset: VolumeDataset) {
-            // Interactive rendering treats VolumeDataset data as immutable after upload.
-            // Hashing the full buffer here makes every cached frame scan the entire volume.
-            self.count = dataset.data.count
-            self.dimensions = dataset.dimensions
-            self.pixelFormat = dataset.pixelFormat
-            self.storageAddress = dataset.data.withUnsafeBytes { buffer in
-                guard let baseAddress = buffer.baseAddress else { return 0 }
-                return UInt(bitPattern: baseAddress)
-            }
-        }
-    }
-
     final class MetalState: @unchecked Sendable {
         struct TransferCache {
             var transfer: VolumeTransferFunction
@@ -117,7 +98,7 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
         let commandQueue: any MTLCommandQueue
         let raycastPass: VolumeRaycastPass
         let dispatchOptimizer: ThreadgroupDispatchOptimizer
-        var datasetIdentity: DatasetIdentity?
+        var datasetIdentity: DatasetIdentity.Storage?
         var volumeTexture: (any MTLTexture)?
         var transferCache: TransferCache?
         var interactiveOutputTexture: (any MTLTexture)?

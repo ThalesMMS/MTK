@@ -312,29 +312,6 @@ public enum VolumeLayerMPRMapper {
 }
 
 public final class VolumeLayerResourceCache {
-    private struct DatasetTextureKey: Hashable {
-        let count: Int
-        let dimensions: VolumeDimensions
-        let pixelFormatKey: Int
-        let contentFingerprint: UInt64
-
-        init(dataset: VolumeDataset) {
-            self.count = dataset.data.count
-            self.dimensions = dataset.dimensions
-            self.pixelFormatKey = dataset.pixelFormat.hashKey
-            self.contentFingerprint = DatasetContentFingerprint.make(for: dataset.data)
-        }
-
-        func hash(into hasher: inout Hasher) {
-            hasher.combine(count)
-            hasher.combine(dimensions.width)
-            hasher.combine(dimensions.height)
-            hasher.combine(dimensions.depth)
-            hasher.combine(pixelFormatKey)
-            hasher.combine(contentFingerprint)
-        }
-    }
-
     private struct LUTKey: Hashable {
         struct Entry: Hashable {
             let label: UInt16
@@ -365,7 +342,7 @@ public final class VolumeLayerResourceCache {
 
     private let lock = NSLock()
     private var cacheGeneration: UInt64 = 0
-    private var labelmapTextures: [DatasetTextureKey: any MTLTexture] = [:]
+    private var labelmapTextures: [DatasetIdentity.Content: any MTLTexture] = [:]
     private var colorLUTTextures: [LUTKey: any MTLTexture] = [:]
 
     public init() {}
@@ -406,7 +383,7 @@ public final class VolumeLayerResourceCache {
     private func texture(for labelmap: LabelmapVolume,
                          device: any MTLDevice,
                          commandQueue: any MTLCommandQueue) async throws -> any MTLTexture {
-        let key = DatasetTextureKey(dataset: labelmap.dataset)
+        let key = DatasetIdentity.Content(dataset: labelmap.dataset)
         let cacheState = cachedLabelmapTexture(for: key, device: device)
         if let texture = cacheState.texture {
             return texture
@@ -433,7 +410,7 @@ public final class VolumeLayerResourceCache {
         return texture
     }
 
-    private func cachedLabelmapTexture(for key: DatasetTextureKey,
+    private func cachedLabelmapTexture(for key: DatasetIdentity.Content,
                                        device: any MTLDevice) -> (texture: (any MTLTexture)?, generation: UInt64) {
         lock.lock()
         defer { lock.unlock() }
@@ -445,7 +422,7 @@ public final class VolumeLayerResourceCache {
     }
 
     private func storeLabelmapTexture(_ texture: any MTLTexture,
-                                      for key: DatasetTextureKey,
+                                      for key: DatasetIdentity.Content,
                                       generation: UInt64) {
         lock.lock()
         defer { lock.unlock() }
@@ -479,17 +456,6 @@ public final class VolumeLayerResourceCache {
 }
 
 extension VolumeLayerResourceCache: @unchecked Sendable {}
-
-private extension VolumePixelFormat {
-    var hashKey: Int {
-        switch self {
-        case .int16Signed:
-            return 0
-        case .int16Unsigned:
-            return 1
-        }
-    }
-}
 
 private extension LabelmapSegment {
     static func deterministicLUTOrder(lhs: LabelmapSegment, rhs: LabelmapSegment) -> Bool {

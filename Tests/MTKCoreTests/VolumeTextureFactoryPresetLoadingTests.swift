@@ -23,16 +23,13 @@ final class VolumeTextureFactoryPresetLoadingTests: XCTestCase {
         }
     }
 
-    func testMissingHeadPresetReportsResourceNotBundledOrLoadsRealResource() throws {
-        do {
-            let factory = try VolumeTextureFactory(preset: .head)
-            XCTAssertNotEqual(factory.dataset.dimensions.width, 1)
-            XCTAssertNotEqual(factory.dataset.dimensions.height, 1)
-            XCTAssertNotEqual(factory.dataset.dimensions.depth, 1)
-        } catch VolumeTextureFactory.PresetLoadingError.resourceNotBundled(let preset) {
+    func testHeadPresetReportsResourceNotBundledAfterMoveToFixtures() {
+        XCTAssertThrowsError(try VolumeTextureFactory(preset: .head)) { error in
+            guard case VolumeTextureFactory.PresetLoadingError.resourceNotBundled(let preset) = error else {
+                XCTFail("Expected resourceNotBundled, got \(error)")
+                return
+            }
             XCTAssertEqual(preset, "head")
-        } catch {
-            XCTFail("Expected resourceNotBundled or a real bundled dataset, got \(error)")
         }
     }
 

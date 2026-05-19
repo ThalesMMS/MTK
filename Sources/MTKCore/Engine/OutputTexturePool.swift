@@ -303,19 +303,15 @@ final class OutputTexturePool {
         stateLock.unlock()
 
         // StorageModePolicy.md: output render targets are GPU-only and private.
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: pixelFormat,
+        guard let texture = OutputTextureFactory.makeTexture(
+            device: device,
             width: width,
             height: height,
-            mipmapped: false
-        )
-        descriptor.usage = [.shaderWrite, .shaderRead, .renderTarget, .pixelFormatView]
-        descriptor.storageMode = .private
-
-        guard let texture = device.makeTexture(descriptor: descriptor) else {
+            label: MTL_label.outputTexture,
+            pixelFormat: pixelFormat
+        ) else {
             throw PoolError.textureCreationFailed(width: width, height: height, pixelFormat: pixelFormat)
         }
-        texture.label = MTL_label.outputTexture
 
         let id = ObjectIdentifier(texture as AnyObject)
         let estimatedBytes = ResourceMemoryEstimator.estimate(for: texture)

@@ -176,8 +176,12 @@ Cubic splines produce visually smoother gradients but may introduce slight overs
 
 ```swift
 // Load histogram from volume
-let histogram = try await renderer.getHistogram()
-toneCurve.setHistogram(histogram)
+let histogram = try await renderer.refreshHistogram(
+    for: dataset,
+    descriptor: VolumeHistogramDescriptor(binCount: 256, intensityRange: dataset.intensityRange),
+    transferFunction: transferFunction
+)
+toneCurve.setHistogram(histogram.bins)
 
 // Apply auto-window preset
 toneCurve.applyAutoWindow(.abdomen)
@@ -380,9 +384,13 @@ try await adapter.setRenderingMode(.directVolumeRendering)
 try await adapter.setLightingEnabled(true)
 
 // 4. Load histogram for auto-window
-let histogram = try await adapter.getHistogram()
+let histogram = try await adapter.refreshHistogram(
+    for: dataset,
+    descriptor: VolumeHistogramDescriptor(binCount: 256, intensityRange: dataset.intensityRange),
+    transferFunction: transferFunction
+)
 let toneCurve = AdvancedToneCurveModel()
-toneCurve.setHistogram(histogram)
+toneCurve.setHistogram(histogram.bins)
 
 // 5. Apply abdomen auto-window
 toneCurve.applyAutoWindow(.abdomen)

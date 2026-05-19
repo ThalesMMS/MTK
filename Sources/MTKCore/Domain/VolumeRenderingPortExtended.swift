@@ -2,7 +2,7 @@
 //  VolumeRenderingPortExtended.swift
 //  MTK
 //
-//  Extended volume rendering port with missing APIs
+//  Extended volume rendering controls and snapshots
 //  Thales Matheus Mendonça Santos — November 2025
 //
 
@@ -31,32 +31,18 @@ public protocol VolumeRenderingPortExtended: VolumeRenderingPort {
     func setLighting(_ enabled: Bool) async throws
     func setStep(_ step: Float) async throws
     func setShift(_ shift: Float) async throws
-    func setRenderMethod(_ method: Int) async throws
-    
-    // MPR controls
-    func setMPRBlend(_ blend: Float) async throws
     
     // Clip controls
     func updateClipBounds(xMin: Float, xMax: Float, yMin: Float, yMax: Float, zMin: Float, zMax: Float) async throws
     func resetClipBounds() async throws
     func setClipPlanePreset(_ preset: Int) async throws
     func setClipPlaneOffset(_ offset: Float) async throws
-    var supportsAlignClipBoxToView: Bool { get }
-    func alignClipBoxToView() async throws
-    func alignClipPlaneToView() async throws
     
     // Snapshot methods
-    func getHistogram() async throws -> [Int]
     func getToneCurveSnapshot() async throws -> [ChannelControlSnapshot]
     func getClipBoundsSnapshot() async throws -> ClipBoundsSnapshot
     func getClipPlaneSnapshot() async throws -> ClipPlaneSnapshot
     func getVolumeMetadata() async throws -> VolumeMetadata?
     func getCurrentRenderingQuality() async throws -> Float
     func getChannelControlSnapshot() async throws -> [ChannelControlSnapshot]
-}
-
-public extension VolumeRenderingPortExtended {
-    var supportsAlignClipBoxToView: Bool {
-        false
-    }
 }

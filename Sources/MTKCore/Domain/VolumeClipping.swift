@@ -355,6 +355,19 @@ public extension ClipPlaneSnapshot {
     }
 }
 
+public extension Axis {
+    var textureCenteredClipNormal: SIMD3<Float> {
+        switch self {
+        case .axial:
+            return SIMD3<Float>(0, 0, 1)
+        case .sagittal:
+            return SIMD3<Float>(1, 0, 0)
+        case .coronal:
+            return SIMD3<Float>(0, 1, 0)
+        }
+    }
+}
+
 private extension SIMD3 where Scalar == Float {
     var allFinite: Bool {
         x.isFinite && y.isFinite && z.isFinite

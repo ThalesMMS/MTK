@@ -112,7 +112,7 @@
             @Step {
                 Prepare your volume data as a `Data` buffer.
 
-                For this example, create a synthetic volume. In production, load from DICOM files using `DicomVolumeLoader` or from RAW binary files.
+                For this example, create a synthetic volume. In production, decode DICOM files with `DICOM-Decoder` and convert the decoded series with `MTKDicomBridge`, or load from RAW binary files.
 
                 ```swift
                 import SwiftUI

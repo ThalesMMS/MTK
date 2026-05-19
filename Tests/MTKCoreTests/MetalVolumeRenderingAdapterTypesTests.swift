@@ -256,7 +256,7 @@ final class OverridesDefaultsTests: XCTestCase {
 // MARK: - DatasetIdentity storage identity
 
 final class DatasetIdentityTests: XCTestCase {
-    func testDatasetIdentityUsesStorageShapeInsteadOfContentFingerprint() {
+    func testStorageIdentityIgnoresInPlaceContentMutation() {
         let dimensions = VolumeDimensions(width: 2, height: 2, depth: 2)
         let byteCount = dimensions.voxelCount * VolumePixelFormat.int16Unsigned.bytesPerVoxel
         guard let storage = NSMutableData(length: byteCount) else {
@@ -279,15 +279,68 @@ final class DatasetIdentityTests: XCTestCase {
             pixelFormat: .int16Unsigned
         )
 
-        let initialIdentity = MetalVolumeRenderingAdapter.DatasetIdentity(dataset: dataset)
+        let initialIdentity = DatasetIdentity.Storage(dataset: dataset)
         pointer[0] &+= 1
-        let mutatedIdentity = MetalVolumeRenderingAdapter.DatasetIdentity(dataset: dataset)
+        let mutatedIdentity = DatasetIdentity.Storage(dataset: dataset)
 
         XCTAssertEqual(initialIdentity, mutatedIdentity)
-        XCTAssertEqual(initialIdentity.count, byteCount)
+        XCTAssertEqual(initialIdentity.byteCount, byteCount)
         XCTAssertEqual(initialIdentity.dimensions, dimensions)
         XCTAssertEqual(initialIdentity.pixelFormat, .int16Unsigned)
-        XCTAssertNotEqual(initialIdentity.storageAddress, 0)
+        XCTAssertNotEqual(initialIdentity.baseAddress, 0)
+    }
+
+    func testContentIdentityDetectsDifferentStorageWithSameContentAsEqual() {
+        let dimensions = VolumeDimensions(width: 2, height: 2, depth: 2)
+        let values = Array<UInt16>(0..<UInt16(dimensions.voxelCount))
+        let datasetA = VolumeDataset(
+            data: values.withUnsafeBytes { Data($0) },
+            dimensions: dimensions,
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+            pixelFormat: .int16Unsigned
+        )
+        let datasetB = VolumeDataset(
+            data: Array(values).withUnsafeBytes { Data($0) },
+            dimensions: dimensions,
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+            pixelFormat: .int16Unsigned
+        )
+
+        XCTAssertEqual(DatasetIdentity.Content(dataset: datasetA),
+                       DatasetIdentity.Content(dataset: datasetB))
+        XCTAssertNotEqual(DatasetIdentity.Storage(dataset: datasetA),
+                          DatasetIdentity.Storage(dataset: datasetB))
+    }
+
+    func testContentIdentityDetectsInPlaceContentMutation() {
+        let dimensions = VolumeDimensions(width: 2, height: 2, depth: 2)
+        let byteCount = dimensions.voxelCount * VolumePixelFormat.int16Unsigned.bytesPerVoxel
+        guard let storage = NSMutableData(length: byteCount) else {
+            XCTFail("Expected shared test storage allocation to succeed")
+            return
+        }
+
+        let pointer = storage.mutableBytes.assumingMemoryBound(to: UInt16.self)
+        for index in 0..<dimensions.voxelCount {
+            pointer[index] = UInt16(index)
+        }
+
+        let data = Data(bytesNoCopy: storage.mutableBytes,
+                        count: byteCount,
+                        deallocator: .none)
+        let dataset = VolumeDataset(
+            data: data,
+            dimensions: dimensions,
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+            pixelFormat: .int16Unsigned
+        )
+
+        let initialIdentity = DatasetIdentity.Content(dataset: dataset)
+        pointer[0] &+= 1
+        let mutatedIdentity = DatasetIdentity.Content(dataset: dataset)
+
+        XCTAssertNotEqual(initialIdentity, mutatedIdentity)
+        XCTAssertEqual(initialIdentity.byteCount, byteCount)
     }
 }
 

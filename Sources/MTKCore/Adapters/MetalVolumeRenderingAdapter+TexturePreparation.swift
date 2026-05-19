@@ -16,7 +16,7 @@ extension MetalVolumeRenderingAdapter {
 
     func prepareDatasetTextureResult(for dataset: VolumeDataset,
                                      state: MetalState) async throws -> DatasetTexturePreparationResult {
-        let identity = DatasetIdentity(dataset: dataset)
+        let identity = DatasetIdentity.Storage(dataset: dataset)
         if let existing = state.volumeTexture,
            state.datasetIdentity == identity {
             return DatasetTexturePreparationResult(texture: existing,
@@ -37,7 +37,7 @@ extension MetalVolumeRenderingAdapter {
     func prepareDatasetTextureResult(for dataset: VolumeDataset,
                                      texture: any MTLTexture,
                                      state: MetalState) -> DatasetTexturePreparationResult {
-        let identity = DatasetIdentity(dataset: dataset)
+        let identity = DatasetIdentity.Storage(dataset: dataset)
         let sameTexture = state.volumeTexture.map {
             ($0 as AnyObject) === (texture as AnyObject)
         } ?? false

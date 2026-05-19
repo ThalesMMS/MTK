@@ -91,45 +91,6 @@ final class MetalVolumeRenderingAdapterValidationTests: XCTestCase {
         }
     }
 
-    func testExtendedPlaceholderMethodsThrowExplicitErrors() async throws {
-        let adapter = try makeTestAdapter()
-
-        do {
-            try await adapter.setRenderMethod(1)
-            XCTFail("Expected setRenderMethod to throw")
-        } catch let error as MetalVolumeRenderingAdapter.AdapterError {
-            XCTAssertEqual(error, .notSupported)
-        }
-
-        do {
-            try await adapter.setMPRBlend(0.5)
-            XCTFail("Expected setMPRBlend to throw")
-        } catch let error as MetalVolumeRenderingAdapter.AdapterError {
-            XCTAssertEqual(error, .notSupported)
-        }
-
-        do {
-            _ = try await adapter.getHistogram()
-            XCTFail("Expected getHistogram to throw")
-        } catch let error as MetalVolumeRenderingAdapter.AdapterError {
-            XCTAssertEqual(error, .histogramNotAvailable)
-        }
-
-        do {
-            try await adapter.alignClipBoxToView()
-            XCTFail("Expected alignClipBoxToView to throw")
-        } catch let error as MetalVolumeRenderingAdapter.AdapterError {
-            XCTAssertEqual(error, .notImplemented)
-        }
-
-        do {
-            try await adapter.alignClipPlaneToView()
-            XCTFail("Expected alignClipPlaneToView to throw")
-        } catch let error as MetalVolumeRenderingAdapter.AdapterError {
-            XCTAssertEqual(error, .notImplemented)
-        }
-    }
-
     private func makeDataset(recommendedWindow: ClosedRange<Int32>?) -> VolumeDataset {
         let dimensions = VolumeDimensions(width: 8, height: 8, depth: 8)
         let values: [UInt16] = Array(repeating: 1_000, count: dimensions.voxelCount)
@@ -191,9 +152,6 @@ final class AdapterErrorLocalizedErrorTests: XCTestCase {
             .emptyAlphaPoints,
             .degenerateCameraMatrix,
             .datasetReadFailed,
-            .notSupported,
-            .histogramNotAvailable,
-            .notImplemented,
         ]
 
         for error in allCases {
@@ -211,9 +169,6 @@ final class AdapterErrorLocalizedErrorTests: XCTestCase {
             .emptyAlphaPoints,
             .degenerateCameraMatrix,
             .datasetReadFailed,
-            .notSupported,
-            .histogramNotAvailable,
-            .notImplemented,
         ]
 
         for error in allCases {
@@ -230,9 +185,6 @@ final class AdapterErrorLocalizedErrorTests: XCTestCase {
         XCTAssertEqual(AdapterError.emptyAlphaPoints.errorDescription, "Alpha control points are empty")
         XCTAssertEqual(AdapterError.degenerateCameraMatrix.errorDescription, "Degenerate camera matrix")
         XCTAssertEqual(AdapterError.datasetReadFailed.errorDescription, "Dataset read failed")
-        XCTAssertEqual(AdapterError.notSupported.errorDescription, "Operation not supported")
-        XCTAssertEqual(AdapterError.histogramNotAvailable.errorDescription, "Histogram not available")
-        XCTAssertEqual(AdapterError.notImplemented.errorDescription, "Operation not implemented")
     }
 
     func testFailureReasonContainsExpectedInformation() {
@@ -260,17 +212,6 @@ final class AdapterErrorLocalizedErrorTests: XCTestCase {
         let datasetReason = AdapterError.datasetReadFailed.failureReason ?? ""
         XCTAssertTrue(datasetReason.contains("reader") || datasetReason.contains("dataset"), "failureReason should reference reader or dataset")
 
-        // notSupported
-        let notSupportedReason = AdapterError.notSupported.failureReason ?? ""
-        XCTAssertTrue(notSupportedReason.contains("not supported") || notSupportedReason.contains("Metal"), "failureReason should explain the lack of support")
-
-        // histogramNotAvailable
-        let histogramReason = AdapterError.histogramNotAvailable.failureReason ?? ""
-        XCTAssertTrue(histogramReason.contains("histogram"), "failureReason should reference histogram")
-
-        // notImplemented
-        let notImplReason = AdapterError.notImplemented.failureReason ?? ""
-        XCTAssertTrue(notImplReason.contains("not been implemented") || notImplReason.contains("implemented"), "failureReason should state the operation is not implemented")
     }
 
     func testAdapterErrorEquatableConformance() {
@@ -280,13 +221,9 @@ final class AdapterErrorLocalizedErrorTests: XCTestCase {
         XCTAssertEqual(AdapterError.emptyAlphaPoints, .emptyAlphaPoints)
         XCTAssertEqual(AdapterError.degenerateCameraMatrix, .degenerateCameraMatrix)
         XCTAssertEqual(AdapterError.datasetReadFailed, .datasetReadFailed)
-        XCTAssertEqual(AdapterError.notSupported, .notSupported)
-        XCTAssertEqual(AdapterError.histogramNotAvailable, .histogramNotAvailable)
-        XCTAssertEqual(AdapterError.notImplemented, .notImplemented)
 
         XCTAssertNotEqual(AdapterError.invalidHistogramBinCount, .windowNotSpecified)
         XCTAssertNotEqual(AdapterError.emptyColorPoints, .emptyAlphaPoints)
-        XCTAssertNotEqual(AdapterError.notSupported, .notImplemented)
     }
 
     func testAdapterErrorCanBeCastFromSwiftError() {
