@@ -1,13 +1,13 @@
 {
-  "originHash" : "ed0ff896a21abe6bed43204ce4bb82fa30b69666e325cc6c7e40655cad62061e",
+  "originHash" : "260d6c11a049817cf65810401d09c65792969d19f2d6e13c0fe8a92b0f878658",
   "pins" : [
     {
       "identity" : "dicom-decoder",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/ThalesMMS/DICOM-Decoder.git",
       "state" : {
-        "revision" : "188ac7ac391fe0550ebd9b13fe72ab95b857b0d0",
-        "version" : "1.1.1"
+        "revision" : "2e943d665869533daae2f1640c8a8600d4ff6269",
+        "version" : "1.1.2"
       }
     },
     {
