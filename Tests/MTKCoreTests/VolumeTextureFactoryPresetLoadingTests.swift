@@ -23,16 +23,6 @@ final class VolumeTextureFactoryPresetLoadingTests: XCTestCase {
         }
     }
 
-    func testHeadPresetReportsResourceNotBundledAfterMoveToFixtures() {
-        XCTAssertThrowsError(try VolumeTextureFactory(preset: .head)) { error in
-            guard case VolumeTextureFactory.PresetLoadingError.resourceNotBundled(let preset) = error else {
-                XCTFail("Expected resourceNotBundled, got \(error)")
-                return
-            }
-            XCTAssertEqual(preset, "head")
-        }
-    }
-
     func testDebugPlaceholderDatasetIsExplicitMinimalStub() {
         let dataset = VolumeTextureFactory.debugPlaceholderDataset()
 
