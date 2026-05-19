@@ -49,16 +49,6 @@ final class ClinicalSyntheticFixturesTests: XCTestCase {
         XCTAssertEqual(dataset.recommendedWindow, (-500)...650)
     }
 
-    func testFixturePresetLoaderReportsMissingHeadResource() {
-        XCTAssertThrowsError(try FixtureVolumePresetLoader.dataset(for: .head)) { error in
-            guard case VolumeTextureFactory.PresetLoadingError.resourceNotBundled(let preset) = error else {
-                XCTFail("Expected resourceNotBundled, got \(error)")
-                return
-            }
-            XCTAssertEqual(preset, "head")
-        }
-    }
-
     func testFixturePresetLoaderReportsNoDataForNonResourcePresets() {
         XCTAssertThrowsError(try FixtureVolumePresetLoader.dataset(for: .dicom)) { error in
             guard case VolumeTextureFactory.PresetLoadingError.noDataAvailable(let preset) = error else {

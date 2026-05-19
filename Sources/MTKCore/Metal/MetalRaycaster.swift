@@ -721,10 +721,11 @@ public final class MetalRaycaster {
 #endif
     }
 
-    /// Loads a built-in preset volume dataset for testing and development.
+    /// Loads a legacy built-in preset volume dataset for testing and development.
     ///
-    /// Preset loading moved to `MTKFixtures`. This compatibility entry point
-    /// remains deprecated for one release window.
+    /// Public preset volume resources have been removed. This compatibility
+    /// entry point remains deprecated for one release window and now reports
+    /// ``VolumeTextureFactory/PresetLoadingError/noDataAvailable(preset:)``.
     ///
     /// - Parameter preset: The built-in dataset preset to load.
     ///
@@ -739,11 +740,11 @@ public final class MetalRaycaster {
     ///
     /// ## Usage
     ///
-    /// New code should load a fixture dataset through `FixtureVolumePresetLoader`
-    /// and upload it with `VolumeTextureFactory(dataset:)`.
+    /// New code should load synthetic fixture datasets through `MTKFixtures`
+    /// and upload them with `VolumeTextureFactory(dataset:)`.
     ///
     /// - SeeAlso: ``loadBuiltinDataset(for:includeAccelerationStructure:)`` for acceleration structure support.
-    @available(*, deprecated, message: "Use FixtureVolumePresetLoader.dataset(for:) from MTKFixtures, then upload the dataset through VolumeTextureFactory(dataset:).")
+    @available(*, deprecated, message: "Use ClinicalSyntheticFixtures from MTKFixtures or provide a VolumeDataset directly.")
     @discardableResult
     public func loadBuiltinDataset(for preset: VolumeDatasetPreset) throws -> DatasetResources {
         try loadBuiltinDataset(for: preset, includeAccelerationStructure: false)
@@ -765,9 +766,9 @@ public final class MetalRaycaster {
     ///
     /// ## Usage
     ///
-    /// New code should load a fixture dataset through `FixtureVolumePresetLoader`
-    /// and upload it with `VolumeTextureFactory(dataset:)`.
-    @available(*, deprecated, message: "Use FixtureVolumePresetLoader.dataset(for:) from MTKFixtures, then upload the dataset through VolumeTextureFactory(dataset:).")
+    /// New code should load synthetic fixture datasets through `MTKFixtures`
+    /// and upload them with `VolumeTextureFactory(dataset:)`.
+    @available(*, deprecated, message: "Use ClinicalSyntheticFixtures from MTKFixtures or provide a VolumeDataset directly.")
     @discardableResult
     public func loadBuiltinDataset(for preset: VolumeDatasetPreset,
                                    includeAccelerationStructure: Bool) throws -> DatasetResources {

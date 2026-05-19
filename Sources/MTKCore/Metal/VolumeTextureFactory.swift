@@ -15,7 +15,7 @@ import simd
 ///
 /// `VolumeTextureFactory` handles the creation of GPU-compatible 3D textures from `VolumeDataset` instances,
 /// supporting both synchronous CPU-based uploads and asynchronous GPU-accelerated transfers via blit encoders.
-/// Preset resource loading lives in the `MTKFixtures` target.
+/// Synthetic fixture loading lives in the `MTKFixtures` target.
 ///
 /// ## Usage
 ///
@@ -28,14 +28,15 @@ import simd
 /// }
 /// ```
 ///
-/// Or load a fixture preset, then create a factory:
+/// Or load a synthetic fixture dataset, then create a factory:
 /// ```swift
-/// let dataset = try FixtureVolumePresetLoader.dataset(for: .head)
+/// let fixture = ClinicalSyntheticFixtures.makeFusion()
+/// let dataset = fixture.baseDataset
 /// let factory = VolumeTextureFactory(dataset: dataset)
 /// let texture = try await factory.generateAsync(device: device, commandQueue: queue)
 /// ```
 ///
-/// - Note: `MTKCore` does not parse ZIP resources; use `MTKFixtures` for bundled `.raw.zip` presets.
+/// - Note: `MTKCore` does not parse ZIP resources and the public package does not ship `.raw.zip` volume presets.
 /// - Important: Textures created by this factory use `.type3D` with pixel formats matching the dataset's `VolumePixelFormat`.
 public final class VolumeTextureFactory {
     /// Errors that can occur during asynchronous texture upload.
@@ -52,30 +53,11 @@ public final class VolumeTextureFactory {
 
     /// Errors that can occur when loading preset-backed volume resources.
     public enum PresetLoadingError: Error, LocalizedError {
-        /// The expected bundled `.raw.zip` resource was not found.
-        case resourceNotBundled(preset: String)
-        /// The bundled archive exists but cannot be opened for reading.
-        case archiveUnreadable(preset: String)
-        /// Archive extraction failed before a complete payload could be built.
-        case extractionFailed(preset: String, underlying: Error?)
-        /// The archive extracted successfully but produced no voxel data.
-        case emptyPayload(preset: String)
         /// The selected preset does not define bundled voxel data.
         case noDataAvailable(preset: String)
 
         public var errorDescription: String? {
             switch self {
-            case .resourceNotBundled(let preset):
-                return "Preset resource '\(preset).raw.zip' was not found in Bundle.module."
-            case .archiveUnreadable(let preset):
-                return "Preset resource archive for '\(preset)' could not be opened."
-            case .extractionFailed(let preset, let underlying):
-                if let underlying {
-                    return "Preset resource archive for '\(preset)' could not be extracted: \(underlying.localizedDescription)"
-                }
-                return "Preset resource archive for '\(preset)' could not be extracted."
-            case .emptyPayload(let preset):
-                return "Preset resource archive for '\(preset)' did not contain voxel data."
             case .noDataAvailable(let preset):
                 return "Preset '\(preset)' does not provide bundled voxel data."
             }
@@ -100,11 +82,11 @@ public final class VolumeTextureFactory {
 
     /// Creates a factory from a built-in preset.
     ///
-    /// Preset resource loading moved to `MTKFixtures`.
+    /// Public RAW preset resources have been removed from the package.
     ///
-    /// - Parameter preset: The preset to load (`.head`, `.chest`, `.none`, or `.dicom`).
-    /// - Throws: ``PresetLoadingError`` when the preset has no bundled data or its resource cannot be loaded.
-    @available(*, deprecated, message: "Use FixtureVolumePresetLoader.dataset(for:) from MTKFixtures, then initialize VolumeTextureFactory(dataset:).")
+    /// - Parameter preset: The preset to load.
+    /// - Throws: ``PresetLoadingError/noDataAvailable(preset:)`` because public presets no longer bundle volume data.
+    @available(*, deprecated, message: "Use ClinicalSyntheticFixtures from MTKFixtures or provide a VolumeDataset directly.")
     public convenience init(preset: VolumeDatasetPreset) throws {
         self.init(dataset: try VolumeTextureFactory.dataset(for: preset))
     }
@@ -361,9 +343,6 @@ extension VolumeTextureFactory {
 private extension VolumeTextureFactory {
     static func dataset(for preset: VolumeDatasetPreset) throws -> VolumeDataset {
         switch preset {
-        case .head, .chest:
-            resourceLogger.warning("Preset \(preset.rawValue) moved to MTKFixtures")
-            throw PresetLoadingError.resourceNotBundled(preset: preset.rawValue)
         case .none, .dicom:
             resourceLogger.warning("Preset \(preset.rawValue) does not provide bundled voxel data")
             throw PresetLoadingError.noDataAvailable(preset: preset.rawValue)
