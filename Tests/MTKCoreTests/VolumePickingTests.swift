@@ -27,6 +27,7 @@ final class VolumePickingTests: XCTestCase {
             dataset: dataset,
             plane: plane,
             displayTransform: .identity,
+            outputAspect: .fill,
             axis: .z
         )
 
@@ -59,6 +60,7 @@ final class VolumePickingTests: XCTestCase {
                 dataset: dataset,
                 plane: plane,
                 displayTransform: .identity,
+                outputAspect: .fill,
                 axis: testCase.axis
             )
 
@@ -93,12 +95,14 @@ final class VolumePickingTests: XCTestCase {
                                                    dataset: dataset,
                                                    plane: plane,
                                                    displayTransform: .identity,
+                                                   outputAspect: .fill,
                                                    viewportSize: CGSize(width: 200, height: 100))
         let pick = try VolumePicking.pickMPR(screenPoint: screen.screenPoint,
                                              viewportSize: screen.viewportSize,
                                              dataset: dataset,
                                              plane: plane,
                                              displayTransform: .identity,
+                                             outputAspect: .fill,
                                              axis: .z)
         XCTAssertEqual(pick.voxel.index, SIMD3<Int32>(2, 3, 1))
     }
@@ -131,6 +135,7 @@ final class VolumePickingTests: XCTestCase {
                                                    plane: plane,
                                                    displayTransform: display,
                                                    viewportTransform: viewport,
+                                                   outputAspect: .fill,
                                                    viewportSize: CGSize(width: 200, height: 200))
         let pick = try VolumePicking.pickMPR(screenPoint: screen.screenPoint,
                                              viewportSize: screen.viewportSize,
@@ -138,10 +143,126 @@ final class VolumePickingTests: XCTestCase {
                                              plane: plane,
                                              displayTransform: display,
                                              viewportTransform: viewport,
+                                             outputAspect: .fill,
                                              axis: .z)
 
         XCTAssertEqual(pick.voxel.index, target)
         XCTAssertEqual(pick.intensity.storedScalar, 421)
+    }
+
+    func testScreenPointAppliesAspectFitLetterbox() throws {
+        // Coronal plane on a phantom with anisotropic Z spacing has
+        // physicalAspectRatio = (spacingX * (width-1)) / (spacingZ * (depth-1)) = 1/3.
+        // In a square 200x200 viewport this produces a pillarbox: image rect
+        // is centered horizontally with size.x = 1/3, origin.x = 1/3.
+        let dataset = makeSignedPhantom(
+            dimensions: VolumeDimensions(width: 4, height: 4, depth: 4),
+            spacing: VolumeSpacing(x: 1, y: 1, z: 3)
+        )
+        let plane = MPRPlaneGeometryFactory.makePlane(for: dataset,
+                                                      axis: .y,
+                                                      slicePosition: 2.0 / 3.0)
+        XCTAssertEqual(plane.physicalAspectRatio, 1.0 / 3.0, accuracy: 1e-5)
+        let world = VolumePicking.worldPoint(forVoxelIndex: SIMD3<Float>(1, 2, 1),
+                                             in: dataset)
+        let viewportSize = CGSize(width: 200, height: 200)
+
+        let screenFill = try VolumePicking.screenPoint(
+            forWorldPoint: world,
+            dataset: dataset,
+            plane: plane,
+            displayTransform: .identity,
+            outputAspect: .fill,
+            viewportSize: viewportSize
+        )
+        let screenFit = try VolumePicking.screenPoint(
+            forWorldPoint: world,
+            dataset: dataset,
+            plane: plane,
+            displayTransform: .identity,
+            outputAspect: .aspectFit(physicalAspectRatio: plane.physicalAspectRatio),
+            viewportSize: viewportSize
+        )
+
+        // Layout origin.x = 1/3, size.x = 1/3 → x_aspectFit = (1/3 + x_fill_normalized * 1/3) * width.
+        let expectedX = (1.0 / 3.0 + (screenFill.normalizedPoint.x) * (1.0 / 3.0)) * Float(viewportSize.width)
+        XCTAssertEqual(Float(screenFit.screenPoint.x), expectedX, accuracy: 1e-3)
+        // Y axis is not letterboxed (size.y = 1) so it must match exactly.
+        XCTAssertEqual(screenFit.screenPoint.y, screenFill.screenPoint.y, accuracy: 1e-3)
+    }
+
+    func testPickMPRRejectsClickInAspectFitLetterboxBand() throws {
+        let dataset = makeSignedPhantom(
+            dimensions: VolumeDimensions(width: 4, height: 4, depth: 4),
+            spacing: VolumeSpacing(x: 1, y: 1, z: 3)
+        )
+        let plane = MPRPlaneGeometryFactory.makePlane(for: dataset,
+                                                      axis: .y,
+                                                      slicePosition: 2.0 / 3.0)
+        // Pillarbox band runs x ∈ [0, 200/3) ∪ (400/3, 200] for a 200×200 viewport.
+        XCTAssertThrowsError(
+            try VolumePicking.pickMPR(
+                screenPoint: CGPoint(x: 20, y: 100),
+                viewportSize: CGSize(width: 200, height: 200),
+                dataset: dataset,
+                plane: plane,
+                displayTransform: .identity,
+                outputAspect: .aspectFit(physicalAspectRatio: plane.physicalAspectRatio),
+                axis: .y
+            )
+        ) { error in
+            XCTAssertEqual(error as? VolumePickError, .outsideImagedArea)
+        }
+
+        // A click at the geometric center is always inside the imaged area
+        // regardless of letterboxing.
+        XCTAssertNoThrow(
+            try VolumePicking.pickMPR(
+                screenPoint: CGPoint(x: 100, y: 100),
+                viewportSize: CGSize(width: 200, height: 200),
+                dataset: dataset,
+                plane: plane,
+                displayTransform: .identity,
+                outputAspect: .aspectFit(physicalAspectRatio: plane.physicalAspectRatio),
+                axis: .y
+            )
+        )
+    }
+
+    func testScreenPointAndPickMPRAreInversesUnderAspectFit() throws {
+        let dataset = makeSignedPhantom(
+            dimensions: VolumeDimensions(width: 4, height: 4, depth: 4),
+            spacing: VolumeSpacing(x: 1, y: 1, z: 3)
+        )
+        let plane = MPRPlaneGeometryFactory.makePlane(for: dataset,
+                                                      axis: .y,
+                                                      slicePosition: 2.0 / 3.0)
+        let aspect = MPROutputAspect.aspectFit(physicalAspectRatio: plane.physicalAspectRatio)
+        let viewportSize = CGSize(width: 200, height: 200)
+
+        for target in [SIMD3<Int32>(1, 2, 1),
+                        SIMD3<Int32>(0, 2, 3),
+                        SIMD3<Int32>(3, 2, 0),
+                        SIMD3<Int32>(2, 2, 2)] {
+            let world = VolumePicking.worldPoint(
+                forVoxelIndex: SIMD3<Float>(Float(target.x), Float(target.y), Float(target.z)),
+                in: dataset
+            )
+            let screen = try VolumePicking.screenPoint(forWorldPoint: world,
+                                                       dataset: dataset,
+                                                       plane: plane,
+                                                       displayTransform: .identity,
+                                                       outputAspect: aspect,
+                                                       viewportSize: viewportSize)
+            let pick = try VolumePicking.pickMPR(screenPoint: screen.screenPoint,
+                                                 viewportSize: viewportSize,
+                                                 dataset: dataset,
+                                                 plane: plane,
+                                                 displayTransform: .identity,
+                                                 outputAspect: aspect,
+                                                 axis: .y)
+            XCTAssertEqual(pick.voxel.index, target, "round-trip failed for \(target)")
+        }
     }
 
     func testSamplingReturnsExplicitErrorsForOutsideViewportAndVolume() throws {

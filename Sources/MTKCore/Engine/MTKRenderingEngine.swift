@@ -85,6 +85,7 @@ package actor MTKRenderingEngine {
         var slabThickness: Int
         var slabSteps: Int
         var mprBlend: MPRBlendMode
+        var mprPlaneGeometry: MPRPlaneGeometry?
 
         init(descriptor: ViewportDescriptor) {
             self.descriptor = descriptor
@@ -109,6 +110,7 @@ package actor MTKRenderingEngine {
             self.slabThickness = 1
             self.slabSteps = 1
             self.mprBlend = .single
+            self.mprPlaneGeometry = nil
         }
     }
 
@@ -538,6 +540,12 @@ package actor MTKRenderingEngine {
             return
         }
         state.descriptor = next.descriptor
+        switch type {
+        case .mpr:
+            break
+        case .volume3D, .projection:
+            state.mprPlaneGeometry = nil
+        }
         viewports[viewport] = state
         await mprFrameCache.invalidate(viewport)
     }
@@ -643,6 +651,18 @@ package actor MTKRenderingEngine {
         }
         state.slicePosition = clampedSlicePosition
         state.window = window
+        viewports[viewport] = state
+    }
+
+    package func configure(_ viewport: ViewportID,
+                          mprPlaneGeometry: MPRPlaneGeometry?) async throws {
+        guard var state = viewports[viewport] else {
+            throw EngineError.viewportNotFound(viewport)
+        }
+        if state.mprPlaneGeometry != mprPlaneGeometry {
+            await mprFrameCache.invalidate(viewport)
+        }
+        state.mprPlaneGeometry = mprPlaneGeometry
         viewports[viewport] = state
     }
 
@@ -1006,6 +1026,10 @@ extension MTKRenderingEngine {
     package func debugMPRFrameTextureObjectIdentifier(for viewport: ViewportID) async -> ObjectIdentifier? {
         guard let texture = await mprFrameCache.storedFrame(for: viewport)?.texture else { return nil }
         return ObjectIdentifier(texture as AnyObject)
+    }
+
+    package func debugMPRPlaneGeometry(for viewport: ViewportID) -> MPRPlaneGeometry? {
+        viewports[viewport]?.mprPlaneGeometry
     }
 
     package func debugResourceMetadata(for viewport: ViewportID) -> VolumeResourceHandle.Metadata? {

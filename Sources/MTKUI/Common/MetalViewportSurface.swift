@@ -316,10 +316,24 @@ public final class MetalViewportSurface: ViewportPresenting {
         Self.pixelSize(for: metalView.bounds, scale: contentScale)
     }
 
+    @_spi(Testing)
+    public static func sanitizedDrawablePixelSize(for bounds: CGRect, scale: CGFloat) -> CGSize {
+        pixelSize(for: bounds, scale: scale)
+    }
+
     public var isPresentationSurfaceReady: Bool {
         metalView.window != nil
+            && metalView.bounds.width.isFinite
+            && metalView.bounds.height.isFinite
             && metalView.bounds.width > 0
             && metalView.bounds.height > 0
+    }
+
+    package func refreshPresentationSurface(forceReadyNotification: Bool = false) {
+        updateDrawableSize()
+        if forceReadyNotification {
+            notifyPresentationSurfaceReadyIfPossible(force: true)
+        }
     }
 
     /// Presents a completed frame texture through `PresentationPass`.
@@ -646,7 +660,7 @@ public final class MetalViewportSurface: ViewportPresenting {
                                              source: String) {
         submittedPresentationCount &+= 1
         lastPresentedTexture = texture
-        logInteractionDebug("[MTK3DInteraction] surface.present.submitted source=\(source) token=\(describe(presentationToken)) submitted=\(submittedPresentationCount) completed=\(completedPresentationCount) failed=\(failedPresentationCount) terminal=\(terminalPresentationCount) inFlight=\(inFlightPresentationCount) textureID=\(objectIdentifier(texture as AnyObject)) texture=\(texture.width)x\(texture.height) pixelFormat=\(texture.pixelFormat) storage=\(texture.storageMode) queueID=\(objectIdentifier(commandQueue as AnyObject)) drawable=\(Int(drawablePixelSize.width))x\(Int(drawablePixelSize.height))")
+        logInteractionDebug("[MTK3DInteraction] surface.present.submitted source=\(source) token=\(describe(presentationToken)) submitted=\(submittedPresentationCount) completed=\(completedPresentationCount) failed=\(failedPresentationCount) terminal=\(terminalPresentationCount) inFlight=\(inFlightPresentationCount) textureID=\(objectIdentifier(texture as AnyObject)) texture=\(texture.width)x\(texture.height) pixelFormat=\(texture.pixelFormat) storage=\(texture.storageMode) queueID=\(objectIdentifier(commandQueue as AnyObject)) drawable=\(describe(drawablePixelSize))")
     }
 
     func presentationCompletionSnapshot() -> (count: UInt64, completedAt: CFAbsoluteTime?) {
@@ -674,8 +688,8 @@ public final class MetalViewportSurface: ViewportPresenting {
         let size = drawablePixelSize
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: pixelFormat ?? metalView.colorPixelFormat,
-            width: max(1, Int(size.width.rounded())),
-            height: max(1, Int(size.height.rounded())),
+            width: Self.pixelDimension(size.width),
+            height: Self.pixelDimension(size.height),
             mipmapped: false
         )
         descriptor.usage = usage
@@ -835,8 +849,17 @@ public final class MetalViewportSurface: ViewportPresenting {
     }
 
     private static func pixelSize(for bounds: CGRect, scale: CGFloat) -> CGSize {
-        CGSize(width: max(ceil(bounds.width * scale), 1),
-               height: max(ceil(bounds.height * scale), 1))
+        CGSize(width: pixelDimension(bounds.width * scale),
+               height: pixelDimension(bounds.height * scale))
+    }
+
+    private static func pixelDimension(_ value: CGFloat) -> Int {
+        guard value.isFinite, value > 0 else { return 1 }
+        let rounded = ceil(value)
+        guard rounded.isFinite, rounded < CGFloat(Int.max) else {
+            return Int.max
+        }
+        return max(Int(rounded), 1)
     }
 
     private static func sameDevice(_ lhs: any MTLDevice, _ rhs: any MTLDevice) -> Bool {
@@ -859,6 +882,12 @@ public final class MetalViewportSurface: ViewportPresenting {
                 texture: texture.pixelFormat
             )
         }
+#if os(iOS)
+        guard isPresentationSurfaceReady else {
+            logInteractionInfo("[MTK3DInteraction] surface.drawable.validate.fail source=\(source) token=\(describe(presentationToken)) reason=surfaceNotReady windowReady=\(metalView.window != nil) bounds=\(describe(metalView.bounds)) drawable=\(describe(drawablePixelSize))")
+            throw PresentationPassError.drawableUnavailable
+        }
+#endif
 
         updateDrawableSize()
         let drawableWaitStartedAt = CFAbsoluteTimeGetCurrent()
@@ -908,6 +937,7 @@ public final class MetalViewportSurface: ViewportPresenting {
     }
 
     private func logInteractionInfo(_ message: @autoclosure () -> String) {
+        guard Logger.interactionLoggingEnabled else { return }
         interactionLogger.info(message())
     }
 
@@ -929,7 +959,7 @@ public final class MetalViewportSurface: ViewportPresenting {
     }
 
     private func describe(_ size: CGSize) -> String {
-        "\(Int(size.width))x\(Int(size.height))"
+        "\(Self.describe(size.width))x\(Self.describe(size.height))"
     }
 
     private func describe(_ rect: CGRect) -> String {
@@ -938,6 +968,11 @@ public final class MetalViewportSurface: ViewportPresenting {
                rect.origin.y,
                rect.size.width,
                rect.size.height)
+    }
+
+    private static func describe(_ value: CGFloat) -> String {
+        guard value.isFinite else { return String(describing: value) }
+        return String(Int(value.rounded()))
     }
 
     private func formatMilliseconds(_ value: Double) -> String {

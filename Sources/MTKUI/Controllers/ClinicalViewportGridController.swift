@@ -36,6 +36,8 @@ public final class ClinicalViewportGridController: ObservableObject {
     @Published public internal(set) var mprInteractionTool: ClinicalMPRInteractionTool = .crosshair
     @Published public internal(set) var normalizedPositions: [MTKCore.Axis: Float] = ClinicalViewportGridController.centeredNormalizedPositions
     @Published public internal(set) var crosshairOffsets: [MTKCore.Axis: CGPoint] = ClinicalViewportGridController.centeredCrosshairOffsets
+    @Published public internal(set) var mprCursorVoxel = SIMD3<Float>(repeating: 0)
+    @Published public internal(set) var mprCursorWorldPoint: SIMD3<Float>?
     @Published public internal(set) var mprViewportTransforms: [MTKCore.Axis: MPRViewportTransform] = ClinicalViewportGridController.defaultMPRViewportTransforms
     @Published public internal(set) var sharedResourceHandle: VolumeResourceHandle?
     @Published public internal(set) var volumeLayers: [MTKCore.VolumeLayer] = []
@@ -48,6 +50,13 @@ public final class ClinicalViewportGridController: ObservableObject {
     @Published public internal(set) var volumeClipping: VolumeClippingState = .disabled
     @Published public internal(set) var latestTimingSnapshot = ClinicalViewportTimingSnapshot()
     @Published public internal(set) var debugSnapshots: [ViewportID: ClinicalViewportDebugSnapshot] = [:]
+    @Published public internal(set) var adaptiveSamplingEnabled: Bool = true
+    @Published public internal(set) var crosshairAngles: [MTKCore.Axis: Double] = [
+        .axial: 0.0,
+        .coronal: 0.0,
+        .sagittal: 0.0
+    ]
+    public var baseSamplingStep: Float = 768.0
 
     var renderTasks: [ViewportID: Task<Void, Never>] = [:]
     var renderPendingViewports = Set<ViewportID>()
@@ -71,7 +80,9 @@ public final class ClinicalViewportGridController: ObservableObject {
     var volumeCameraFlushTask: Task<Void, Never>?
     var volumeCameraFlushPending = false
     var currentDataset: VolumeDataset?
+    var lastTransferFunction: TransferFunction?
     var currentVolumeTransferFunction: VolumeTransferFunction?
+    var mprPlaneRotationsByAxis: [MTKCore.Axis: simd_quatf] = [:]
     var displayTransformsByAxis: [MTKCore.Axis: MPRDisplayTransform] = [:]
     var viewportAxesByID: [ViewportID: MTKCore.Axis] = [:]
 #if DEBUG
@@ -249,6 +260,10 @@ public final class ClinicalViewportGridController: ObservableObject {
         mprInteractionTool = .crosshair
         normalizedPositions = Self.centeredNormalizedPositions
         crosshairOffsets = Self.centeredCrosshairOffsets
+        mprCursorVoxel = SIMD3<Float>(repeating: 0)
+        mprCursorWorldPoint = nil
+        crosshairAngles = [.axial: 0, .coronal: 0, .sagittal: 0]
+        mprPlaneRotationsByAxis.removeAll()
         mprViewportTransforms = Self.defaultMPRViewportTransforms
         datasetApplied = false
         lastRenderErrors.removeAll()
@@ -311,7 +326,7 @@ public final class ClinicalViewportGridController: ObservableObject {
                                         for axis: MTKCore.Axis) {
         guard viewportTransform(for: axis) != transform else { return }
         mprViewportTransforms[axis] = transform
-        _ = setCrosshairOffset(crosshairOffset(for: axis, positions: normalizedPositions), for: axis)
+        _ = setCrosshairOffset(crosshairOffset(for: axis), for: axis)
         scheduleRender(for: viewportID(for: axis))
     }
 
@@ -351,8 +366,24 @@ public final class ClinicalViewportGridController: ObservableObject {
     public func resetAllMPRViews() {
         logClinicalInteractionInfo("[MTKMPRInteraction] resetAll")
         mprViewportTransforms = Self.defaultMPRViewportTransforms
+        crosshairAngles = [.axial: 0, .coronal: 0, .sagittal: 0]
+        mprPlaneRotationsByAxis.removeAll()
+        displayTransformsByAxis.removeAll()
         rebuildAllCrosshairOffsets()
-        scheduleMPRRenderAll()
+        guard datasetApplied else {
+            scheduleMPRRenderAll()
+            return
+        }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await self.configureAllMPRSlices(window: self.windowLevel.range)
+                self.rebuildAllCrosshairOffsets()
+                self.scheduleMPRRenderAll()
+            } catch {
+                self.recordError(error, for: self.viewportID(for: self.activeMPRAxis))
+            }
+        }
     }
 
     public func setMPRSlicePosition(axis: MTKCore.Axis,
@@ -371,6 +402,47 @@ public final class ClinicalViewportGridController: ObservableObject {
         let nextLevel = windowLevel.level - Double(screenDelta.height) * 2
         logClinicalInteractionInfo("[MTKMPRInteraction] windowLevel delta=\(screenDelta) before=(window:\(windowLevel.window),level:\(windowLevel.level)) after=(window:\(nextWindow),level:\(nextLevel))")
         await setMPRWindowLevel(window: nextWindow, level: nextLevel)
+    }
+
+    public func setAdaptiveSampling(_ enabled: Bool) async {
+        guard adaptiveSamplingEnabled != enabled else { return }
+        adaptiveSamplingEnabled = enabled
+        if !enabled {
+            qualityScheduler.forceSettled()
+        }
+        do {
+            try await configureMPRSlabResolved()
+            scheduleMPRRenderAll()
+        } catch {
+            logger.error("Failed to reconfigure after toggling adaptive sampling", error: error)
+        }
+    }
+
+    public func setCrosshairAngle(_ angle: Double, for axis: MTKCore.Axis) {
+        let previous = crosshairAngles[axis] ?? 0
+        let normalized = Self.normalizedAngleDegrees(angle)
+        let delta = Self.shortestAngleDeltaDegrees(from: previous, to: normalized)
+        crosshairAngles[axis] = normalized
+        let affectedAxes = mprAxesAffectedByRotation(around: axis)
+        applyMPRRotation(deltaDegrees: delta, around: axis, affecting: affectedAxes)
+        displayTransformsByAxis.removeAll()
+        Task { @MainActor [weak self] in
+            guard let self, self.datasetApplied else { return }
+            var configuredViewports = [ViewportID]()
+            for affectedAxis in affectedAxes {
+                let viewport = self.viewportID(for: affectedAxis)
+                do {
+                    try await self.configureSlice(axis: affectedAxis, window: self.windowLevel.range)
+                    configuredViewports.append(viewport)
+                } catch {
+                    self.recordError(error, for: viewport)
+                }
+            }
+            self.rebuildAllCrosshairOffsets()
+            for viewport in configuredViewports {
+                self.scheduleRender(for: viewport)
+            }
+        }
     }
 
     /// Convenience factory for the common "create controller, then apply dataset" path.
@@ -403,15 +475,16 @@ public final class ClinicalViewportGridController: ObservableObject {
         return controller
     }
 
-    /// Uploads one dataset to all four viewports using the engine's shared resource handle.
+    /// Uploads one dataset to the MPR grid and retained on-demand volume viewport using the engine's shared resource handle.
     ///
-    /// All MPR and volume panes receive the same `VolumeResourceHandle`. In debug builds, the
-    /// Applies a volume dataset to all viewports, initializes window/level, slab, slice/crosshair and camera state, configures MPR and volume rendering pipelines, updates per-viewport debug snapshots to "ready", and schedules initial renders.
+    /// All MPR viewports and the on-demand volume viewport receive the same `VolumeResourceHandle`.
+    /// Applies a volume dataset, initializes window/level, slab, slice/crosshair and camera state, configures MPR rendering, updates per-viewport debug snapshots to "ready", and schedules initial MPR renders.
     /// 
-    /// This uploads the dataset to the rendering engine (creating a shared resource handle), resets cached display transforms and timing, sets sensible defaults (window/level, centered slice positions, slab thickness, and volume camera), clears prior render errors, configures all MPR slices and volume rendering state, refreshes debug snapshots for every viewport, and enqueues a render for each pane.
+    /// This uploads the dataset to the rendering engine (creating a shared resource handle), resets cached display transforms and timing, sets sensible defaults (window/level, centered slice positions, slab thickness, and volume camera), clears prior render errors, configures all MPR slices, refreshes debug snapshots for every viewport, and enqueues renders for the displayed MPR panes.
     /// - Parameter dataset: The volume dataset to apply; becomes the controller's current dataset and is uploaded to the engine.
     /// - Throws: Any error returned by the engine or by the configuration steps (for example failures when setting the volume, configuring slices, slab, volume window, camera, or render quality).
     public func applyDataset(_ dataset: VolumeDataset) async throws {
+        guard self.currentDataset != dataset || datasetApplied == false else { return }
         let runningRenderTasks = Array(renderTasks.values)
         runningRenderTasks.forEach { $0.cancel() }
         for task in runningRenderTasks {
@@ -441,6 +514,9 @@ public final class ClinicalViewportGridController: ObservableObject {
             mprInteractionTool = .crosshair
             mprViewportTransforms = Self.defaultMPRViewportTransforms
             normalizedPositions = Self.centeredNormalizedPositions
+            crosshairAngles = [.axial: 0, .coronal: 0, .sagittal: 0]
+            mprPlaneRotationsByAxis.removeAll()
+            setMPRCursorVoxel(centerCursorVoxel(for: dataset), in: dataset)
             rebuildAllCrosshairOffsets()
             slabThickness = 3
             resetVolumeCamera()
@@ -450,10 +526,6 @@ public final class ClinicalViewportGridController: ObservableObject {
             try await configureAllMPRSlices(window: windowLevel.range)
             committedMPRWindowRange = windowLevel.range
             try await configureMPRSlab()
-            try await configureVolumeWindow(windowLevel.range)
-            try await configureVolumeCamera()
-            try await configureVolumeRenderQuality()
-            try await configureVolumeClipping()
             datasetApplied = true
 
             let volumeTextureLabel = await engine.volumeTextureLabel(for: volumeViewportID)
@@ -470,7 +542,7 @@ public final class ClinicalViewportGridController: ObservableObject {
 #if DEBUG
             await logResourceSharingDiagnostics()
 #endif
-            scheduleRenderAll()
+            scheduleMPRRenderAll()
         } catch {
             if uploadedVolume {
                 await engine.clearVolume(for: allViewportIDs)
@@ -516,7 +588,6 @@ public final class ClinicalViewportGridController: ObservableObject {
         logClinicalInteractionInfo("[MTKMPRInteraction] adaptive.end before=\(qualityScheduler.state) \(nativeVolumeCameraInteractionDiagnostics())")
         qualityScheduler.endInteraction()
         logClinicalInteractionInfo("[MTKMPRInteraction] adaptive.end after=\(qualityScheduler.state) samplingStep=\(qualityScheduler.currentParameters.volumeSamplingStep) tier=\(qualityScheduler.currentParameters.qualityTier) \(nativeVolumeCameraInteractionDiagnostics())")
-        scheduleRender(for: volumeViewportID)
     }
 
     /// Forces the render-quality scheduler to transition to its settled (final) state, causing the controller to apply the final render-quality settings.
@@ -526,18 +597,28 @@ public final class ClinicalViewportGridController: ObservableObject {
         logClinicalInteractionInfo("[MTKMPRInteraction] adaptive.forceFinal after=\(qualityScheduler.state) samplingStep=\(qualityScheduler.currentParameters.volumeSamplingStep) tier=\(qualityScheduler.currentParameters.qualityTier)")
     }
 
-    /// Applies a transfer function to the volume viewport only.
+    /// Applies a transfer function to the retained on-demand volume viewport only.
     ///
     /// This intentionally does not update MPR window/level or MPR presentation state; the volume
-    /// Updates the transfer function used to render the 3D volume viewport and schedules a re-render.
+    /// transfer function is consumed by explicit snapshot/export rendering.
     /// - Parameter transferFunction: The transfer function to apply to the volume rendering; pass `nil` to clear it.
     /// - Throws: Any error returned by the rendering engine while configuring the volume viewport.
     public func setTransferFunction(_ transferFunction: TransferFunction?) async throws {
+        lastTransferFunction = transferFunction
         let converted = transferFunction.map(Self.volumeTransferFunction)
         try await engine.configure(volumeViewportID,
                                    transferFunction: converted)
         currentVolumeTransferFunction = converted
-        scheduleRender(for: volumeViewportID)
+    }
+
+    public func adjustTransferFunctionShift(screenDelta: CGSize) async {
+        guard var tf = lastTransferFunction else { return }
+        let range = tf.maximumValue - tf.minimumValue
+        let scale: Float = range > 0 ? range / 500.0 : 1.0
+        let deltaShift = Float(screenDelta.width) * scale
+        tf.shift += deltaShift
+        lastTransferFunction = tf
+        try? await setTransferFunction(tf)
     }
 
     public func setVolumeLayers(_ layers: [MTKCore.VolumeLayer]) async {
@@ -548,9 +629,6 @@ public final class ClinicalViewportGridController: ObservableObject {
     public func setSurfaceMeshLayers(_ layers: [SurfaceMeshLayer]) async {
         surfaceMeshLayers = layers
         try? await engine.configure(volumeViewportID, surfaceMeshLayers: layers)
-        if datasetApplied {
-            scheduleRender(for: volumeViewportID)
-        }
     }
 
     public func setVolumeClipping(_ clipping: VolumeClippingState) async throws {
@@ -558,11 +636,8 @@ public final class ClinicalViewportGridController: ObservableObject {
         try await configureVolumeClipping()
         updateDebugSnapshot(for: volumeViewportID) { snapshot in
             snapshot.lastPassExecuted = "configureVolumeClipping"
-            snapshot.presentationStatus = "scheduled"
+            snapshot.presentationStatus = "ready"
             snapshot.lastError = nil
-        }
-        if datasetApplied {
-            scheduleRender(for: volumeViewportID)
         }
     }
 
@@ -609,9 +684,6 @@ public final class ClinicalViewportGridController: ObservableObject {
 
     private func scheduleRendersForVolumeLayers() {
         scheduleMPRRenderAll()
-        if volumeLayers.contains(where: { $0.scalarVolume != nil }) {
-            scheduleRender(for: volumeViewportID)
-        }
     }
 
     public func setSurfaceMeshLayerVisibility(id: String, isVisible: Bool) async {
@@ -621,9 +693,6 @@ public final class ClinicalViewportGridController: ObservableObject {
         }
         surfaceMeshLayers[index].isVisible = isVisible
         try? await engine.configure(volumeViewportID, surfaceMeshLayers: surfaceMeshLayers)
-        if datasetApplied {
-            scheduleRender(for: volumeViewportID)
-        }
     }
 
     public func setSurfaceMeshLayerOpacity(id: String, opacity: Float) async {
@@ -633,14 +702,11 @@ public final class ClinicalViewportGridController: ObservableObject {
         }
         surfaceMeshLayers[index].opacity = opacity
         try? await engine.configure(volumeViewportID, surfaceMeshLayers: surfaceMeshLayers)
-        if datasetApplied {
-            scheduleRender(for: volumeViewportID)
-        }
     }
 
-    /// Reconfigures the volume viewport to the given mode, validates the engine's resolved descriptor, updates debug state, and schedules a render.
-    /// 
-    /// If the requested mode is already active this method returns immediately. On change, the engine viewport descriptor is updated and the engine's resolved viewport type is validated; the controller's `volumeViewportMode` and the corresponding debug snapshot are updated. If a dataset is already applied, a forced render is performed and the resulting frame is validated before scheduling a presentation.
+    /// Reconfigures the retained on-demand volume viewport to the given mode, validates the engine's resolved descriptor, and updates debug state.
+    ///
+    /// If the requested mode is already active this method returns immediately. On change, the engine viewport descriptor is updated and the engine's resolved viewport type is validated; the controller's `volumeViewportMode` and the corresponding debug snapshot are updated without scheduling hidden presentation work.
     /// - Throws: `RenderGraphError.invalidViewportConfiguration` if the engine's resolved viewport type does not match the requested mode's viewport type.
     public func setVolumeViewportMode(_ mode: ClinicalVolumeViewportMode) async throws {
         guard volumeViewportMode != mode else { return }
@@ -662,18 +728,12 @@ public final class ClinicalViewportGridController: ObservableObject {
             snapshot.viewportType = mode.viewportType.debugName
             snapshot.renderMode = mode.rawValue
             snapshot.lastPassExecuted = "configureVolumeMode"
-            snapshot.presentationStatus = "scheduled"
+            snapshot.presentationStatus = "ready"
             snapshot.lastError = nil
-        }
-        if datasetApplied {
-            let frame = try await engine.render(volumeViewportID)
-            frame.outputTextureLease?.release()
-            try renderGraph.validateFrame(frame)
         }
 #if DEBUG
         await assertVolumeViewportConfigured()
 #endif
-        scheduleRender(for: volumeViewportID)
     }
 
     /// Update the MPR window/level and commit the change if it differs from the current values.
@@ -699,28 +759,14 @@ public final class ClinicalViewportGridController: ObservableObject {
         await commitWindowLevel()
     }
 
-    /// Commits the controller's current MPR window range to the volume and MPR viewports.
-    /// 
-    /// If the current committed range already matches the controller's window range, this method does nothing. It attempts to configure the volume viewport first, then each MPR axis with the new range; if any step fails, the method restores the previously committed range, records the corresponding error, and aborts without updating the committed range or scheduling renders. On success, the committed range is updated and all viewports are scheduled for rendering.
+    /// Commits the controller's current MPR window range to the displayed MPR viewports.
+    ///
+    /// If the current committed range already matches the controller's window range, this method does nothing. It configures each MPR axis with the new range; if any step fails, the method restores the previously committed range, records the corresponding error, and aborts without updating the committed range or scheduling renders. On success, the committed range is updated and all MPR viewports are scheduled for rendering.
     public func commitWindowLevel() async {
         let range = windowLevel.range
         guard committedMPRWindowRange != range else { return }
         let previousRange = committedMPRWindowRange
         var failures: [(ViewportID, any Error)] = []
-
-        do {
-            try await configureVolumeWindow(range)
-        } catch {
-            failures.append((volumeViewportID, error))
-        }
-
-        guard failures.isEmpty else {
-            restoreWindowState(to: previousRange)
-            for (viewport, error) in failures {
-                recordError(error, for: viewport)
-            }
-            return
-        }
 
         for axis in MTKCore.Axis.allCases {
             do {
@@ -741,16 +787,10 @@ public final class ClinicalViewportGridController: ObservableObject {
         }
         committedMPRWindowRange = range
         scheduleMPRRenderAll()
-        scheduleRender(for: volumeViewportID)
     }
 
     private func restoreCommittedWindowRange(_ range: ClosedRange<Int32>?) async -> [(ViewportID, any Error)] {
         var failures: [(ViewportID, any Error)] = []
-        do {
-            try await configureVolumeWindow(range)
-        } catch {
-            failures.append((volumeViewportID, error))
-        }
         for axis in MTKCore.Axis.allCases {
             do {
                 try await configureSlice(axis: axis, window: range)
@@ -796,7 +836,7 @@ public final class ClinicalViewportGridController: ObservableObject {
 
     /// Rotates the volume camera by applying incremental yaw and pitch derived from a screen-space delta.
     ///
-    /// Updates the controller's `volumeCameraOffset` and `volumeCameraUp` vectors, reconfigures the volume camera, and schedules a render of the volume viewport. If `screenDelta` components are not finite or the computed rotation is effectively zero, no changes are made. Pitch is clamped to avoid camera inversion at the poles. Any error during camera configuration is recorded against the volume viewport.
+    /// Updates the controller's `volumeCameraOffset` and `volumeCameraUp` vectors and reconfigures the retained volume camera for future explicit snapshots. If `screenDelta` components are not finite or the computed rotation is effectively zero, no changes are made. Pitch is clamped to avoid camera inversion at the poles. Any error during camera configuration is recorded against the volume viewport.
     /// - Parameters:
     ///   - screenDelta: The pointer/touch movement in screen coordinates whose x component maps to yaw and y component maps to pitch.
     public func rotateVolumeCamera(screenDelta: CGSize) async {
@@ -820,6 +860,37 @@ public final class ClinicalViewportGridController: ObservableObject {
         }
         applyVolumeOrbitCamera(camera)
         logClinicalInteractionInfo("[MTKClinicalVolumeInteraction] camera.rotate delta=\(screenDelta) yaw=\(volumeCameraYaw) pitch=\(volumeCameraPitch) beforeOffset=\(beforeOffset) afterOffset=\(volumeCameraOffset) beforeUp=\(beforeUp) afterUp=\(volumeCameraUp)")
+        return true
+    }
+
+    @discardableResult
+    func panVolumeCameraInteractively(screenDelta: CGSize) -> Bool {
+        let threshold: CGFloat = 0.01
+        guard abs(screenDelta.width) > threshold || abs(screenDelta.height) > threshold else {
+            return false
+        }
+        let beforeTarget = Logger.interactionLoggingEnabled ? volumeCameraTarget : .zero
+        var up = safeNormalize(volumeCameraUp, fallback: SIMD3<Float>(0, 1, 0))
+        let forward = safeNormalize(-volumeCameraOffset, fallback: SIMD3<Float>(0, 0, -1))
+        let right = safeNormalize(simd_cross(forward, up), fallback: SIMD3<Float>(1, 0, 0))
+        up = safeNormalize(simd_cross(right, forward), fallback: up)
+        
+        let distance = max(simd_length(volumeCameraOffset), Float.ulpOfOne)
+        let scaleX = (distance * 0.5) / 500.0
+        let scaleY = (distance * 0.5) / 500.0
+        let translation = (-Float(screenDelta.width) * scaleX) * right + (Float(screenDelta.height) * scaleY) * up
+        
+        let limits = Float(-10)...Float(10)
+        volumeCameraTarget = SIMD3<Float>(
+            max(min(volumeCameraTarget.x + translation.x, limits.upperBound), limits.lowerBound),
+            max(min(volumeCameraTarget.y + translation.y, limits.upperBound), limits.lowerBound),
+            max(min(volumeCameraTarget.z + translation.z, limits.upperBound), limits.lowerBound)
+        )
+        volumeCameraUp = up
+        volumeOrbitState.syncTarget(volumeCameraTarget)
+        applyVolumeOrbitCamera(volumeOrbitState.camera)
+        
+        logClinicalInteractionInfo("[MTKClinicalVolumeInteraction] camera.pan delta=\(screenDelta) translation=\(translation) beforeTarget=\(beforeTarget) afterTarget=\(volumeCameraTarget)")
         return true
     }
 
@@ -865,7 +936,6 @@ public final class ClinicalViewportGridController: ObservableObject {
     private func configureAndScheduleVolumeCameraRender() async {
         do {
             try await configureVolumeCamera()
-            scheduleRender(for: volumeViewportID)
         } catch {
             logger.error("[MTKClinicalVolumeInteraction] camera.configure.error", error: error)
             recordError(error, for: volumeViewportID)
@@ -907,29 +977,59 @@ public final class ClinicalViewportGridController: ObservableObject {
     /// The `normalizedPositions` dictionary is the shared model. Viewports derive their slice configuration and
     /// crosshair overlays from this shared state, preventing per-pane divergence.
     public func applyCrosshairChange(from axis: MTKCore.Axis, normalizedPoint: CGPoint) async {
-        guard normalizedPoint.x.isFinite, normalizedPoint.y.isFinite else { return }
+        guard normalizedPoint.x.isFinite,
+              normalizedPoint.y.isFinite,
+              let dataset = currentDataset else { return }
 
-        // Always update the offset for the axis the user is directly interacting with.
-        let x = clampNormalized(Float(normalizedPoint.x))
-        let y = clampNormalized(Float(normalizedPoint.y))
-        let size = drawableSize(for: axis)
-        let dragOffset = CGPoint(x: CGFloat(x - 0.5) * size.width,
-                                 y: CGFloat(y - 0.5) * size.height)
-        _ = setCrosshairOffset(dragOffset, for: axis)
+        let surfaceSize = drawableSize(for: axis)
+        let clampedX = CGFloat(clampNormalized(Float(normalizedPoint.x)))
+        let clampedY = CGFloat(clampNormalized(Float(normalizedPoint.y)))
+        let pickPoint = CGPoint(x: clampedX * surfaceSize.width,
+                                y: clampedY * surfaceSize.height)
+        let plane = currentMPRPlane(for: axis) ?? MPRPlaneGeometryFactory.makePlane(
+            for: dataset,
+            axis: planeAxis(for: axis),
+            slicePosition: normalizedPositions[axis] ?? 0.5
+        )
+        let previousPositions = normalizedPositions
+        do {
+            let pick = try VolumePicking.pickMPR(
+                screenPoint: pickPoint,
+                viewportSize: surfaceSize,
+                dataset: dataset,
+                plane: plane,
+                displayTransform: displayTransform(for: axis),
+                viewportTransform: viewportTransform(for: axis),
+                outputAspect: .aspectFit(physicalAspectRatio: plane.physicalAspectRatio),
+                axis: planeAxis(for: axis),
+                layers: volumeLayers
+            )
+            setMPRCursorVoxel(pick.voxel.continuousIndex, in: dataset)
+        } catch VolumePickError.outsideImagedArea {
+            return
+        } catch {
+            let planeUpdates = normalizedPositionUpdates(from: normalizedPoint, in: axis)
+            var cursor = mprCursorVoxel
+            for (changedAxis, position) in planeUpdates {
+                switch changedAxis {
+                case .sagittal:
+                    cursor.x = position * Float(max(dataset.dimensions.width - 1, 0))
+                case .coronal:
+                    cursor.y = position * Float(max(dataset.dimensions.height - 1, 0))
+                case .axial:
+                    cursor.z = position * Float(max(dataset.dimensions.depth - 1, 0))
+                }
+            }
+            setMPRCursorVoxel(cursor, in: dataset)
+        }
 
-        let planeUpdates = normalizedPositionUpdates(from: normalizedPoint, in: axis)
+        rebuildAllCrosshairOffsets()
+
         var scheduledViewports = Set<ViewportID>([viewportID(for: axis)])
-
-        for (changedAxis, position) in planeUpdates {
-            guard setNormalizedPosition(position, for: changedAxis) else { continue }
-            let affectedAxes = updateCrosshairPositions(changedAxis: changedAxis,
-                                                        newNormalizedPosition: position)
+        for changedAxis in MTKCore.Axis.allCases where previousPositions[changedAxis] != normalizedPositions[changedAxis] {
             do {
                 try await configureSlice(axis: changedAxis, window: windowLevel.range)
                 scheduledViewports.insert(viewportID(for: changedAxis))
-                for affectedAxis in affectedAxes {
-                    scheduledViewports.insert(viewportID(for: affectedAxis))
-                }
             } catch {
                 recordError(error, for: viewportID(for: changedAxis))
             }
@@ -966,16 +1066,26 @@ public final class ClinicalViewportGridController: ObservableObject {
     ///   - normalizedPosition: The new slice position in normalized coordinates (0...1).
     public func setSlicePosition(axis: MTKCore.Axis, normalizedPosition: Float) async {
         setActiveMPRAxis(axis)
-        guard normalizedPosition.isFinite else { return }
-        guard setNormalizedPosition(normalizedPosition, for: axis) else { return }
-        let next = normalizedPositions[axis] ?? 0.5
-        let affectedAxes = updateCrosshairPositions(changedAxis: axis,
-                                                    newNormalizedPosition: next)
+        guard normalizedPosition.isFinite, let dataset = currentDataset else { return }
+        let previousPositions = normalizedPositions
+        var cursor = mprCursorVoxel
+        let next = clampNormalized(normalizedPosition)
+        switch axis {
+        case .sagittal:
+            cursor.x = next * Float(max(dataset.dimensions.width - 1, 0))
+        case .coronal:
+            cursor.y = next * Float(max(dataset.dimensions.height - 1, 0))
+        case .axial:
+            cursor.z = next * Float(max(dataset.dimensions.depth - 1, 0))
+        }
+        setMPRCursorVoxel(cursor, in: dataset)
+        guard previousPositions != normalizedPositions else { return }
+        rebuildAllCrosshairOffsets()
         do {
-            try await configureSlice(axis: axis, window: windowLevel.range)
-            var scheduledViewports = Set([viewportID(for: axis)])
-            for affectedAxis in affectedAxes {
-                scheduledViewports.insert(viewportID(for: affectedAxis))
+            var scheduledViewports = Set<ViewportID>()
+            for changedAxis in MTKCore.Axis.allCases where previousPositions[changedAxis] != normalizedPositions[changedAxis] {
+                try await configureSlice(axis: changedAxis, window: windowLevel.range)
+                scheduledViewports.insert(viewportID(for: changedAxis))
             }
             for viewport in scheduledViewports {
                 scheduleRender(for: viewport)
@@ -1018,13 +1128,24 @@ public final class ClinicalViewportGridController: ObservableObject {
     @discardableResult
     public func updateCrosshairPositions(changedAxis: MTKCore.Axis,
                                          newNormalizedPosition: Float) -> [MTKCore.Axis] {
-        let updatedPosition = clampNormalized(newNormalizedPosition)
-        let positions = normalizedPositions.merging([changedAxis: updatedPosition]) { _, new in new }
-        let affectedAxes = perpendicularAxes(to: changedAxis)
         var changedAxes: [MTKCore.Axis] = []
-
-        for axis in affectedAxes {
-            let nextOffset = crosshairOffset(for: axis, positions: positions)
+        if let dataset = currentDataset {
+            var cursor = mprCursorVoxel
+            let updatedPosition = clampNormalized(newNormalizedPosition)
+            switch changedAxis {
+            case .sagittal:
+                cursor.x = updatedPosition * Float(max(dataset.dimensions.width - 1, 0))
+            case .coronal:
+                cursor.y = updatedPosition * Float(max(dataset.dimensions.height - 1, 0))
+            case .axial:
+                cursor.z = updatedPosition * Float(max(dataset.dimensions.depth - 1, 0))
+            }
+            setMPRCursorVoxel(cursor, in: dataset)
+        } else {
+            _ = setNormalizedPosition(newNormalizedPosition, for: changedAxis)
+        }
+        for axis in MTKCore.Axis.allCases {
+            let nextOffset = crosshairOffset(for: axis)
             if setCrosshairOffset(nextOffset, for: axis) {
                 changedAxes.append(axis)
             }
@@ -1032,19 +1153,19 @@ public final class ClinicalViewportGridController: ObservableObject {
         return changedAxes
     }
 
-    /// Schedules a render for every configured viewport in the grid.
-    /// 
-    /// This enqueues a render request for each viewport pane so the controller will produce new frames for all viewports.
+    /// Schedules a render for every displayed MPR viewport in the triplanar grid.
+    ///
+    /// The retained volume viewport is rendered only by explicit snapshot/export calls.
     public func scheduleRenderAll() {
-        for viewport in allViewportIDs {
+        for viewport in mprViewportIDs {
             _ = scheduleRender(for: viewport)
         }
     }
 
-    /// Schedules a render for every viewport and waits until all scheduled render tasks complete.
+    /// Schedules a render for every displayed MPR viewport and waits until all scheduled render tasks complete.
     /// - Note: If no render tasks are scheduled, the method returns immediately.
     public func renderAllAndWait() async {
-        let tasks = allViewportIDs.compactMap { scheduleRender(for: $0) }
+        let tasks = mprViewportIDs.compactMap { scheduleRender(for: $0) }
         for task in tasks {
             await task.value
         }
@@ -1068,7 +1189,10 @@ public final class ClinicalViewportGridController: ObservableObject {
         await assertVolumeViewportConfigured()
 #endif
         qualityScheduler.forceSettled()
+        try await configureVolumeWindow(windowLevel.range)
+        try await configureVolumeCamera()
         try await configureVolumeRenderQuality()
+        try await configureVolumeClipping()
         let frame = try await engine.render(volumeViewportID)
         let snapshotTexture: any MTLTexture
         if let lease = frame.outputTextureLease {
@@ -1156,7 +1280,9 @@ public final class ClinicalViewportGridController: ObservableObject {
         let plane = MPRPlaneGeometryFactory.makePlane(for: currentDataset,
                                                       axis: planeAxis(for: axis),
                                                       slicePosition: normalizedPositions[axis] ?? 0.5)
-        return displayTransform(for: plane, axis: axis)
+        let transform = displayTransform(for: plane, axis: axis)
+        displayTransformsByAxis[axis] = transform
+        return transform
     }
 
     /// Retrieves the most recently recorded render error for the specified viewport.

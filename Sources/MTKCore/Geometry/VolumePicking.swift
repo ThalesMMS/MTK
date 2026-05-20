@@ -156,6 +156,7 @@ public enum VolumePickError: Error, Equatable, LocalizedError {
     case invalidViewport
     case invalidViewportSize
     case screenPointOutsideViewport
+    case outsideImagedArea
     case rayMissedVolume
     case outsideVolume
     case malformedData
@@ -170,6 +171,8 @@ public enum VolumePickError: Error, Equatable, LocalizedError {
             return "Picking requires a finite, non-zero viewport size."
         case .screenPointOutsideViewport:
             return "The screen point lies outside the viewport."
+        case .outsideImagedArea:
+            return "The screen point lies in the aspect-fit letterbox band, outside the rendered image."
         case .rayMissedVolume:
             return "The pick ray did not intersect the volume."
         case .outsideVolume:
@@ -339,12 +342,17 @@ public enum VolumePicking {
                                plane: MPRPlaneGeometry,
                                displayTransform: MPRDisplayTransform,
                                viewportTransform: MPRViewportTransform = .identity,
+                               outputAspect: MPROutputAspect,
                                axis: MPRPlaneAxis,
                                layers: [VolumeLayer] = []) throws -> VolumePickResult {
         let viewport = try ViewportPoint(screenPoint: screenPoint,
                                          viewportSize: viewportSize)
+        let layout = outputAspect.layout(destinationSize: viewportSize)
+        guard let imagePoint = layout.imagePoint(fromViewportPoint: viewport.normalizedPoint) else {
+            throw VolumePickError.outsideImagedArea
+        }
         let imageScreenPoint = viewportTransform
-            .imageScreenCoordinates(forViewportScreen: viewport.normalizedPoint)
+            .imageScreenCoordinates(forViewportScreen: imagePoint)
         let planePoint = displayTransform.textureCoordinates(forScreen: imageScreenPoint)
         let textureCoordinate = plane.originTexture
             + planePoint.x * plane.axisUTexture
@@ -527,12 +535,15 @@ public enum VolumePicking {
                                    plane: MPRPlaneGeometry,
                                    displayTransform: MPRDisplayTransform,
                                    viewportTransform: MPRViewportTransform = .identity,
+                                   outputAspect: MPROutputAspect,
                                    viewportSize: CGSize) throws -> ViewportPoint {
         let texture = dataset.imageData.worldToTexture.transformPoint(worldPoint)
         let uv = try planeUV(forTextureCoordinate: texture,
                              plane: plane)
         let imageScreen = displayTransform.screenCoordinates(forTexture: uv)
-        let normalized = viewportTransform.screenCoordinates(forImageScreen: imageScreen)
+        let imagePoint = viewportTransform.screenCoordinates(forImageScreen: imageScreen)
+        let layout = outputAspect.layout(destinationSize: viewportSize)
+        let normalized = layout.viewportPoint(fromImagePoint: imagePoint)
         return try ViewportPoint(normalizedPoint: normalized,
                                  viewportSize: viewportSize)
     }

@@ -17,6 +17,7 @@ public struct MTKViewRepresentable: UIViewRepresentable {
         private weak var installer: NativeVolume3DInteractionInstaller?
         private var interaction: NativeVolume3DInteraction?
         private var lastLifecycleRenderKey: LifecycleRenderKey?
+        private var presentationPriority = 0
         private let logger = Logger(category: "MTKViewRepresentable")
 
         private struct LifecycleRenderKey: Equatable {
@@ -25,30 +26,59 @@ public struct MTKViewRepresentable: UIViewRepresentable {
             var scale: CGFloat
         }
 
-        public func host(_ view: UIView) {
+        fileprivate var isHostingSurfaceView: Bool {
+            guard let surface else { return false }
+            return hostedView === surface.view && surface.view.superview === self
+        }
+
+        public func host(_ view: UIView) -> Bool {
             guard hostedView !== view || view.superview !== self else {
                 layoutHostedView()
-                return
+                return true
             }
 
-            hostedView?.removeFromSuperview()
+            if let currentHost = view.superview as? ContainerView,
+               currentHost !== self,
+               currentHost.window != nil,
+               currentHost.presentationPriority > presentationPriority {
+                if hostedView?.superview === self {
+                    hostedView?.removeFromSuperview()
+                }
+                hostedView = nil
+                lastLifecycleRenderKey = nil
+                logInteraction("[MTK3DInteraction] host.reparent.skip container=\(ObjectIdentifier(self)) surfaceView=\(ObjectIdentifier(view)) currentHost=\(ObjectIdentifier(currentHost)) currentPriority=\(currentHost.presentationPriority) requestedPriority=\(presentationPriority)")
+                return false
+            }
+
+            if hostedView?.superview === self {
+                hostedView?.removeFromSuperview()
+            }
             hostedView = view
+            lastLifecycleRenderKey = nil
 
             view.translatesAutoresizingMaskIntoConstraints = true
             view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
             view.isUserInteractionEnabled = false
             view.frame = bounds
-            addSubview(view)
+            if view.superview !== self {
+                view.removeFromSuperview()
+                addSubview(view)
+            }
+            layoutHostedView()
+            return true
         }
 
         func configure(surface: MetalViewportSurface,
                        installer: NativeVolume3DInteractionInstaller,
-                       interaction: NativeVolume3DInteraction?) {
+                       interaction: NativeVolume3DInteraction?,
+                       presentationPriority: Int = 0) {
             self.surface = surface
             self.installer = installer
             self.interaction = interaction
-            host(surface.view)
-            logInteraction("[MTK3DInteraction] host.configure container=\(ObjectIdentifier(self)) surfaceView=\(ObjectIdentifier(surface.view)) windowReady=\(window != nil) bounds=\(Self.describe(bounds))")
+            self.presentationPriority = presentationPriority
+            let didHost = host(surface.view)
+            logInteraction("[MTK3DInteraction] host.configure container=\(ObjectIdentifier(self)) surfaceView=\(ObjectIdentifier(surface.view)) hosted=\(didHost) priority=\(presentationPriority) windowReady=\(window != nil) bounds=\(Self.describe(bounds))")
+            guard didHost else { return }
             applyViewportLifecycle(reason: "configure")
         }
 
@@ -66,14 +96,20 @@ public struct MTKViewRepresentable: UIViewRepresentable {
         }
 
         private func layoutHostedView() {
+            guard hostedView?.superview === self else { return }
             hostedView?.frame = bounds
         }
 
         private func applyViewportLifecycle(reason: String) {
             guard let surface else { return }
+            guard isHostingSurfaceView else {
+                logInteraction("[MTK3DInteraction] host.lifecycle.skip reason=\(reason) hosted=false windowReady=\(window != nil) bounds=\(Self.describe(bounds))")
+                return
+            }
             let scale = MTKViewRepresentable.contentScale(for: self, hostedView: surface.view)
-            surface.setContentScale(scale)
             layoutHostedView()
+            surface.setContentScale(scale)
+            surface.refreshPresentationSurface()
             installer?.install(on: self, interaction: interaction)
 
             let key = LifecycleRenderKey(windowReady: window != nil,
@@ -108,11 +144,14 @@ public struct MTKViewRepresentable: UIViewRepresentable {
 
     public let surface: MetalViewportSurface
     private let native3DInteraction: NativeVolume3DInteraction?
+    private let presentationPriority: Int
 
     public init(surface: MetalViewportSurface,
-                native3DInteraction: NativeVolume3DInteraction? = nil) {
+                native3DInteraction: NativeVolume3DInteraction? = nil,
+                presentationPriority: Int = 0) {
         self.surface = surface
         self.native3DInteraction = native3DInteraction
+        self.presentationPriority = presentationPriority
     }
 
     public func makeCoordinator() -> NativeVolume3DInteractionInstaller {
@@ -123,7 +162,8 @@ public struct MTKViewRepresentable: UIViewRepresentable {
         let container = ContainerView()
         container.configure(surface: surface,
                             installer: context.coordinator,
-                            interaction: native3DInteraction)
+                            interaction: native3DInteraction,
+                            presentationPriority: presentationPriority)
         Self.scheduleDeferredInstall(on: container,
                                      coordinator: context.coordinator,
                                      interaction: native3DInteraction)
@@ -133,7 +173,8 @@ public struct MTKViewRepresentable: UIViewRepresentable {
     public func updateUIView(_ uiView: ContainerView, context: Context) {
         uiView.configure(surface: surface,
                          installer: context.coordinator,
-                         interaction: native3DInteraction)
+                         interaction: native3DInteraction,
+                         presentationPriority: presentationPriority)
         Self.scheduleDeferredInstall(on: uiView,
                                      coordinator: context.coordinator,
                                      interaction: native3DInteraction)
@@ -146,6 +187,7 @@ public struct MTKViewRepresentable: UIViewRepresentable {
                                                 interaction: NativeVolume3DInteraction?) {
         DispatchQueue.main.async { [weak container, weak coordinator] in
             guard let container, let coordinator else { return }
+            guard container.isHostingSurfaceView else { return }
             coordinator.install(on: container, interaction: interaction)
         }
     }
@@ -179,18 +221,22 @@ public struct MTKViewRepresentable: NSViewRepresentable {
                 return
             }
 
-            hostedView?.removeFromSuperview()
+            if hostedView?.superview === self {
+                hostedView?.removeFromSuperview()
+            }
             hostedView = view
 
             view.translatesAutoresizingMaskIntoConstraints = false
-            addSubview(view)
+            if view.superview !== self {
+                addSubview(view)
 
-            NSLayoutConstraint.activate([
-                view.leadingAnchor.constraint(equalTo: leadingAnchor),
-                view.trailingAnchor.constraint(equalTo: trailingAnchor),
-                view.topAnchor.constraint(equalTo: topAnchor),
-                view.bottomAnchor.constraint(equalTo: bottomAnchor)
-            ])
+                NSLayoutConstraint.activate([
+                    view.leadingAnchor.constraint(equalTo: leadingAnchor),
+                    view.trailingAnchor.constraint(equalTo: trailingAnchor),
+                    view.topAnchor.constraint(equalTo: topAnchor),
+                    view.bottomAnchor.constraint(equalTo: bottomAnchor)
+                ])
+            }
         }
     }
 

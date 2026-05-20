@@ -33,7 +33,9 @@ public struct ClinicalViewerSurface: View {
                     session: session,
                     viewportOverlay: coordinator.showDebugOverlay
                         ? { snapshot in AnyView(ClinicalViewportDebugOverlay(snapshot: snapshot)) }
-                        : nil
+                        : nil,
+                    interactionMode: coordinator.interactionMode,
+                    showsCompactChrome: false
                 )
                 .accessibilityIdentifier("MTKClinicalViewerGrid")
             } else if let message = coordinator.errorMessage {

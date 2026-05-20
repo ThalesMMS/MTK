@@ -81,6 +81,7 @@ public protocol VolumeViewportControlling: AnyObject {
     func setHuWindow(_ window: VolumetricHUWindowMapping) async
     func setRenderMode(_ mode: VolumetricRenderMode) async
     func updateTransferFunctionShift(_ shift: Float) async
+    func adjustTransferFunctionShift(screenDelta: SIMD2<Float>) async
     func setAdaptiveSampling(_ enabled: Bool) async
     func beginAdaptiveSamplingInteraction() async
     func endAdaptiveSamplingInteraction() async

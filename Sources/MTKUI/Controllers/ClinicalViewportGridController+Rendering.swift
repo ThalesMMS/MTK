@@ -12,12 +12,12 @@ import MTKCore
 
 extension ClinicalViewportGridController {
     func logClinicalInteractionInfo(_ message: @autoclosure () -> String) {
-        guard Logger.interactionLoggingEnabled else { return }
+        guard Logger.mprInteractionLoggingEnabled else { return }
         logger.info(message())
     }
 
     func logClinicalInteractionDebug(_ message: @autoclosure () -> String) {
-        guard Logger.interactionLoggingEnabled else { return }
+        guard Logger.mprInteractionLoggingEnabled else { return }
         logger.debug(message())
     }
 
@@ -171,7 +171,10 @@ extension ClinicalViewportGridController {
                 allowStalePreviewPresentation: Bool = false) async {
 #if DEBUG
         if viewport == volumeViewportID {
-            await assertVolumeViewportConfigured()
+            let currentGen = renderGenerations[viewport] ?? generation
+            if generation == currentGen {
+                await assertVolumeViewportConfigured()
+            }
         }
 #endif
         logClinicalInteractionDebug("[MTKMPRInteraction] render.start viewport=\(viewportName(for: viewport)) generation=\(generation) state=\(qualityScheduler.state)")
@@ -233,12 +236,34 @@ extension ClinicalViewportGridController {
             guard !Task.isCancelled, renderGenerations[viewport] == generation else {
                 return
             }
+            if shouldDeferPresentationUntilSurfaceReady(error, viewport: viewport) {
+                updateDebugSnapshot(for: viewport) { snapshot in
+                    snapshot.lastPassExecuted = "presentationDeferred"
+                    snapshot.presentationStatus = "surfacePending"
+                    snapshot.lastError = nil
+                }
+                logClinicalInteractionInfo("[MTKMPRInteraction] render.deferSurface viewport=\(viewportName(for: viewport)) generation=\(generation) error=\(error.localizedDescription)")
+                return
+            }
             recordError(error, for: viewport)
             updateDebugSnapshot(for: viewport) { snapshot in
                 snapshot.lastPassExecuted = "renderFailed"
             }
             logger.error("Viewport render failed viewport=\(viewportName(for: viewport)) generation=\(generation)", error: error)
         }
+    }
+
+    private func shouldDeferPresentationUntilSurfaceReady(_ error: any Swift.Error,
+                                                          viewport: ViewportID) -> Bool {
+        #if os(iOS)
+        guard let presentationError = error as? PresentationPassError,
+              presentationError == .drawableUnavailable,
+              surface(for: viewport)?.isPresentationSurfaceReady == false
+        else { return false }
+        return true
+        #else
+        return false
+        #endif
     }
 
     func canPresentRender(viewport: ViewportID,

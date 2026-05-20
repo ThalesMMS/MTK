@@ -218,18 +218,43 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
         const bool accelerationEnabled = ((args.optionValue & VolumeCompute::OPTION_USE_ACCELERATION) != 0);
         if (isDVR && accelerationEnabled && args.accelerationTexture.get_width() > 0) {
             uint maxMipLevel = args.accelerationTexture.get_num_mip_levels() - 1;
-            bool canSkip = ESS::sampleAccelerationStructure(args.accelerationTexture,
-                                                            args,
-                                                            samplePos,
-                                                            baseStep,
-                                                            maxMipLevel,
-                                                            args.volumeSampler);
+            
+            // Two-level hierarchical DDA skipping (coarse: level 3, fine: level 1)
+            uint coarseMip = min(3u, maxMipLevel);
+            uint fineMip = min(1u, maxMipLevel);
+            
+            bool canSkip = ESS::sampleAccelerationStructureAtLevel(args.accelerationTexture,
+                                                                   args,
+                                                                   samplePos,
+                                                                   coarseMip,
+                                                                   args.volumeSampler);
             if (canSkip) {
-                // Skip empty region with larger step
-                distanceTravelled += stepDistance * 2.0f;
+                float exitDist = ESS::calculateBlockExitDistance(samplePos,
+                                                                 ray.direction,
+                                                                 coarseMip,
+                                                                 dimension);
+                float skipStep = max(exitDist + 1.0e-4f, baseStep);
+                distanceTravelled += skipStep;
                 distanceTravelled = min(distanceTravelled, totalDistance);
                 iteration++;
                 continue;
+            } else if (coarseMip > fineMip) {
+                canSkip = ESS::sampleAccelerationStructureAtLevel(args.accelerationTexture,
+                                                                 args,
+                                                                 samplePos,
+                                                                 fineMip,
+                                                                 args.volumeSampler);
+                if (canSkip) {
+                    float exitDist = ESS::calculateBlockExitDistance(samplePos,
+                                                                     ray.direction,
+                                                                     fineMip,
+                                                                     dimension);
+                    float skipStep = max(exitDist + 1.0e-4f, baseStep);
+                    distanceTravelled += skipStep;
+                    distanceTravelled = min(distanceTravelled, totalDistance);
+                    iteration++;
+                    continue;
+                }
             }
         }
 

@@ -32,12 +32,13 @@ extension ClinicalViewportGridController {
             throw VolumePickError.invalidViewport
         }
         let planeAxis = planeAxis(for: axis)
-        let plane = MPRPlaneGeometryFactory.makePlane(
-            for: dataset,
-            axis: planeAxis,
-            slicePosition: normalizedPositions[axis] ?? 0.5
-        )
-        let displayTransform = displayTransform(for: plane, axis: axis)
+        let plane = currentMPRPlane(for: axis)
+            ?? MPRPlaneGeometryFactory.makePlane(
+                for: dataset,
+                axis: planeAxis,
+                slicePosition: normalizedPositions[axis] ?? 0.5
+            )
+        let displayTransform = displayTransform(for: axis)
         return try VolumePicking.pickMPR(
             screenPoint: screenPoint,
             viewportSize: drawableSize(for: axis),
@@ -45,6 +46,7 @@ extension ClinicalViewportGridController {
             plane: plane,
             displayTransform: displayTransform,
             viewportTransform: viewportTransform(for: axis),
+            outputAspect: .aspectFit(physicalAspectRatio: plane.physicalAspectRatio),
             axis: planeAxis,
             layers: volumeLayers
         )

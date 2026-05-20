@@ -37,12 +37,14 @@ final class DICOMGeometryPickingTests: XCTestCase {
                                                                dataset: dataset,
                                                                plane: plane,
                                                                displayTransform: .identity,
+                                                               outputAspect: .fill,
                                                                viewportSize: viewportSize)
                     let pick = try VolumePicking.pickMPR(screenPoint: screen.screenPoint,
                                                          viewportSize: viewportSize,
                                                          dataset: dataset,
                                                          plane: plane,
                                                          displayTransform: .identity,
+                                                         outputAspect: .fill,
                                                          axis: axis,
                                                          layers: [labelLayer])
 
@@ -73,6 +75,7 @@ final class DICOMGeometryPickingTests: XCTestCase {
                                       dataset: dataset,
                                       plane: plane,
                                       displayTransform: .identity,
+                                      outputAspect: .fill,
                                       axis: .z)
         ) { error in
             XCTAssertEqual(error as? VolumePickError, .screenPointOutsideViewport)

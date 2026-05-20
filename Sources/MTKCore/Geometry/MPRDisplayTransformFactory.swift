@@ -27,12 +27,6 @@ public enum MPRDisplayTransformFactory {
             }
         }
 
-#if DEBUG
-        assertionFailure(
-            "MPRDisplayTransformFactory could not match a clinical display candidate " +
-            "for axis=\(axis) rawLabels=\(rawLabels) expectedLabels=\(expectedLabels). Preserving geometry-derived labels."
-        )
-#endif
         return transform(orientation: .standard,
                          flipHorizontal: false,
                          flipVertical: false,

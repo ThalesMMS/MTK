@@ -20,18 +20,22 @@ public struct MetalViewportContainer<Overlays: View>: View {
     private let overlays: () -> Overlays
 #if os(iOS)
     private let native3DInteraction: NativeVolume3DInteraction?
+    private let presentationPriority: Int
 #endif
 
 #if os(iOS)
     public init(surface: MetalViewportSurface,
                 native3DInteraction: NativeVolume3DInteraction? = nil,
+                presentationPriority: Int = 0,
                 @ViewBuilder overlays: @escaping () -> Overlays) {
         self.surface = surface
         self.native3DInteraction = native3DInteraction
+        self.presentationPriority = presentationPriority
         self.overlays = overlays
     }
 #else
     public init(surface: MetalViewportSurface,
+                presentationPriority: Int = 0,
                 @ViewBuilder overlays: @escaping () -> Overlays) {
         self.surface = surface
         self.overlays = overlays
@@ -43,7 +47,8 @@ public struct MetalViewportContainer<Overlays: View>: View {
             ZStack {
 #if os(iOS)
                 MTKViewRepresentable(surface: surface,
-                                     native3DInteraction: native3DInteraction)
+                                     native3DInteraction: native3DInteraction,
+                                     presentationPriority: presentationPriority)
                     .accessibilityIdentifier("MetalViewportSurface")
                     .allowsHitTesting(native3DInteraction != nil)
 #else
@@ -63,13 +68,17 @@ public struct MetalViewportContainer<Overlays: View>: View {
 public extension MetalViewportContainer where Overlays == EmptyView {
 #if os(iOS)
     init(surface: MetalViewportSurface,
-         native3DInteraction: NativeVolume3DInteraction? = nil) {
+         native3DInteraction: NativeVolume3DInteraction? = nil,
+         presentationPriority: Int = 0) {
         self.init(surface: surface,
-                  native3DInteraction: native3DInteraction) { EmptyView() }
+                  native3DInteraction: native3DInteraction,
+                  presentationPriority: presentationPriority) { EmptyView() }
     }
 #else
-    init(surface: MetalViewportSurface) {
-        self.init(surface: surface) { EmptyView() }
+    init(surface: MetalViewportSurface,
+         presentationPriority: Int = 0) {
+        self.init(surface: surface,
+                  presentationPriority: presentationPriority) { EmptyView() }
     }
 #endif
 }

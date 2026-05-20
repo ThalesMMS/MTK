@@ -21,6 +21,7 @@ extension VolumeViewportController {
     }
 
     func logInteractionInfo(_ message: @autoclosure () -> String) {
+        guard Logger.interactionLoggingEnabled else { return }
         logger.info(message())
     }
 

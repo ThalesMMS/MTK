@@ -56,6 +56,28 @@ final class MPRPresentationPassTests: XCTestCase {
         XCTAssertEqual(try MPRTestHelpers.readGrayBytes(from: drawable.texture), [0, 64, 128, 255], accuracy: 1)
     }
 
+    func test_aspectFitLetterboxesInsteadOfStretchingSourcePixels() throws {
+        let values: [Int16] = [0, 100, 200, 300]
+        let input = try MPRTestHelpers.makeSignedTexture(values, width: 2, height: 2, device: device)
+        let drawable = try MPRTestMetalDrawable(device: device, width: 4, height: 2)
+        let frame = MPRTestHelpers.makeFrame(texture: input,
+                                             pixelFormat: .int16Signed,
+                                             intensityRange: 0...300)
+        var pass = try MPRPresentationPass(device: device,
+                                           commandQueue: commandQueue,
+                                           library: library)
+
+        try pass.present(frame: frame, window: 0...300, to: drawable)
+        try MPRTestHelpers.waitForQueue(commandQueue)
+
+        XCTAssertEqual(try MPRTestHelpers.readGrayBytes(from: drawable.texture),
+                       [
+                           0, 0, 85, 0,
+                           0, 170, 255, 0
+                       ],
+                       accuracy: 1)
+    }
+
     func test_narrowWindowClampsOutput() throws {
         let values: [Int16] = [9, 10, 11, 12]
         let input = try MPRTestHelpers.makeSignedTexture(values, width: 2, height: 2, device: device)

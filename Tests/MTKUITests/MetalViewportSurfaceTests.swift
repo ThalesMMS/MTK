@@ -74,6 +74,34 @@ final class MetalViewportSurfaceTests: XCTestCase {
         XCTAssertNotNil(surface.lastPresentationSurfaceReadyAtForTesting)
     }
 
+    func testDetachedSurfaceRejectsPresentationWithoutSubmittingDrawable() async throws {
+        let device = try requireMetalDevice()
+        let surface = try MetalViewportSurface(device: device)
+        surface.view.frame = CGRect(x: 0, y: 0, width: 4, height: 4)
+        surface.setContentScale(1)
+        let window = attachSurfaceToPresentationWindowIfNeeded(surface, width: 4, height: 4)
+        let texture = try makeTexture(device: device,
+                                      width: 4,
+                                      height: 4,
+                                      pixelFormat: .bgra8Unorm)
+        let completedBefore = surface.completedPresentationCountForTesting
+
+        try surface.present(texture, presentationToken: 1)
+        _ = try await waitForCompletedPresentation(surface, after: completedBefore)
+
+        surface.view.removeFromSuperview()
+        XCTAssertFalse(surface.isPresentationSurfaceReady)
+        surface.clearPresentedTexture()
+        let submittedBeforeDetachedPresent = surface.submittedPresentationCountForTesting
+
+        XCTAssertThrowsError(try surface.present(texture, presentationToken: 2)) { error in
+            XCTAssertEqual(error as? PresentationPassError, .drawableUnavailable)
+        }
+        XCTAssertNil(surface.presentedTexture)
+        XCTAssertEqual(surface.submittedPresentationCountForTesting, submittedBeforeDetachedPresent)
+        withExtendedLifetime(window) {}
+    }
+
     func testVolumeViewportRendersAfterSurfaceAttachmentWhenDatasetWasAppliedBeforeViewWasReady() async throws {
         let device = try requireMetalDevice()
         let viewport = try VolumeViewport3D(device: device)
@@ -116,6 +144,22 @@ final class MetalViewportSurfaceTests: XCTestCase {
         XCTAssertEqual(surface.currentContentScale, 2)
         XCTAssertNil(surface.currentMaximumContentScale)
         XCTAssertEqual(surface.drawablePixelSize, CGSize(width: 80, height: 60))
+    }
+
+    func testDrawablePixelSizeFallsBackForInvalidTransientLayout() throws {
+        let device = try requireMetalDevice()
+        let surface = try MetalViewportSurface(device: device)
+        let invalidBounds = CGRect(x: 0, y: 0, width: CGFloat.nan, height: CGFloat.infinity)
+
+        let drawableSize = MetalViewportSurface.sanitizedDrawablePixelSize(for: invalidBounds,
+                                                                           scale: 3)
+
+        XCTAssertEqual(drawableSize, CGSize(width: 1, height: 1))
+
+        surface.view.bounds = CGRect(x: 0, y: 0, width: -40, height: 0)
+        let descriptor = surface.makeOutputTextureDescriptor()
+        XCTAssertEqual(descriptor.width, 1)
+        XCTAssertEqual(descriptor.height, 1)
     }
 
     func testMultipleViewportSurfacesKeepIndependentDrawableState() throws {
@@ -411,6 +455,69 @@ final class MetalViewportSurfaceTests: XCTestCase {
         XCTAssertFalse(surface.view.translatesAutoresizingMaskIntoConstraints)
         XCTAssertEqual(container.constraints.count, 4)
     }
+
+    func testMTKViewRepresentableContainerDoesNotDetachSurfaceReparentedElsewhere() throws {
+        let device = try requireMetalDevice()
+        let firstSurface = try MetalViewportSurface(device: device)
+        let secondSurface = try MetalViewportSurface(device: device)
+#if os(iOS)
+        let firstContainer = MTKViewRepresentable.ContainerView()
+        let secondContainer = MTKViewRepresentable.ContainerView()
+#elseif os(macOS)
+        let firstContainer = MTKViewRepresentable.ContainerView(frame: .zero)
+        let secondContainer = MTKViewRepresentable.ContainerView(frame: .zero)
+#endif
+
+        firstContainer.host(firstSurface.view)
+        secondContainer.host(secondSurface.view)
+        firstContainer.host(secondSurface.view)
+        secondContainer.host(firstSurface.view)
+
+        XCTAssertTrue(secondSurface.view.superview === firstContainer)
+        XCTAssertTrue(firstSurface.view.superview === secondContainer)
+    }
+
+#if os(iOS)
+    func testHigherPriorityContainerRetainsSurfaceViewWhileAttachedToWindow() throws {
+        let device = try requireMetalDevice()
+        let surface = try MetalViewportSurface(device: device)
+        let lowPriorityContainer = MTKViewRepresentable.ContainerView()
+        let highPriorityContainer = MTKViewRepresentable.ContainerView()
+        lowPriorityContainer.frame = CGRect(x: 0, y: 0, width: 96, height: 64)
+        highPriorityContainer.frame = CGRect(x: 0, y: 0, width: 96, height: 64)
+        let lowPriorityInstaller = NativeVolume3DInteractionInstaller()
+        let highPriorityInstaller = NativeVolume3DInteractionInstaller()
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 96, height: 64))
+        window.addSubview(lowPriorityContainer)
+        window.addSubview(highPriorityContainer)
+        window.makeKeyAndVisible()
+        window.layoutIfNeeded()
+
+        lowPriorityContainer.configure(surface: surface,
+                                       installer: lowPriorityInstaller,
+                                       interaction: nil,
+                                       presentationPriority: 0)
+        highPriorityContainer.configure(surface: surface,
+                                        installer: highPriorityInstaller,
+                                        interaction: nil,
+                                        presentationPriority: 1)
+        lowPriorityContainer.configure(surface: surface,
+                                       installer: lowPriorityInstaller,
+                                       interaction: nil,
+                                       presentationPriority: 0)
+
+        XCTAssertTrue(surface.view.superview === highPriorityContainer)
+
+        highPriorityContainer.removeFromSuperview()
+        lowPriorityContainer.configure(surface: surface,
+                                       installer: lowPriorityInstaller,
+                                       interaction: nil,
+                                       presentationPriority: 0)
+
+        XCTAssertTrue(surface.view.superview === lowPriorityContainer)
+        withExtendedLifetime(window) {}
+    }
+#endif
 
     func testMetalViewportContainerCanBeConstructedWithOverlay() throws {
         let device = try requireMetalDevice()

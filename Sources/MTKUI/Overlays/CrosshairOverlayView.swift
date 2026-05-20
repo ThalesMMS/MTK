@@ -90,12 +90,16 @@ public struct CrosshairOverlayView: View {
     /// display transform so the crosshair stays aligned with the presented texture.
     private let position: CGPoint
 
-    /// Creates a crosshair overlay with optional styling and position offset.
+    /// Visual angle to rotate/tilt the crosshair lines.
+    private let angle: Angle
+
+    /// Creates a crosshair overlay with optional styling, position offset, and rotation angle.
     ///
     /// - Parameters:
     ///   - style: The visual style configuration. Defaults to ``DefaultVolumetricUIStyle``.
     ///   - position: Offset from the view center for crosshair intersection. Defaults to `.zero`
     ///     for a centered crosshair. Use non-zero offsets for cursor tracking or alignment guides.
+    ///   - angle: Visual angle to rotate/tilt the crosshair lines around their intersection center. Defaults to `.zero`.
     ///
     /// ## Example
     ///
@@ -103,15 +107,17 @@ public struct CrosshairOverlayView: View {
     /// // Centered crosshair with default style
     /// CrosshairOverlayView()
     ///
-    /// // Offset crosshair with custom styling
+    /// // Offset crosshair with custom styling and rotation
     /// CrosshairOverlayView(
     ///     style: CustomStyle(),
-    ///     position: CGPoint(x: 10, y: -5)
+    ///     position: CGPoint(x: 10, y: -5),
+    ///     angle: Angle(degrees: 15)
     /// )
     /// ```
-    public init(style: any VolumetricUIStyle = DefaultVolumetricUIStyle(), position: CGPoint = .zero) {
+    public init(style: any VolumetricUIStyle = DefaultVolumetricUIStyle(), position: CGPoint = .zero, angle: Angle = .zero) {
         self.style = style
         self.position = position
+        self.angle = angle
     }
 
     /// The SwiftUI view hierarchy rendering the crosshair lines.
@@ -126,6 +132,8 @@ public struct CrosshairOverlayView: View {
         GeometryReader { proxy in
             let size = proxy.size
             let center = CGPoint(x: size.width / 2 + position.x, y: size.height / 2 + position.y)
+            let anchorX = size.width > 0 ? center.x / size.width : 0.5
+            let anchorY = size.height > 0 ? center.y / size.height : 0.5
             Path { path in
                 path.move(to: CGPoint(x: center.x, y: 0))
                 path.addLine(to: CGPoint(x: center.x, y: size.height))
@@ -133,6 +141,7 @@ public struct CrosshairOverlayView: View {
                 path.addLine(to: CGPoint(x: size.width, y: center.y))
             }
             .stroke(style.crosshairColor, style: StrokeStyle(lineWidth: style.lineWidth, lineCap: .round))
+            .rotationEffect(angle, anchor: UnitPoint(x: anchorX, y: anchorY))
         }
         .accessibilityIdentifier("VolumetricCrosshair")
     }

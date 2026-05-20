@@ -129,6 +129,8 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
 
     public func updateTransferFunctionShift(_ shift: Float) async { _ = shift }
 
+    public func adjustTransferFunctionShift(screenDelta: SIMD2<Float>) async { _ = screenDelta }
+
     public func setAdaptiveSampling(_ enabled: Bool) async {
         statePublisher.setAdaptiveSamplingFlag(enabled)
     }

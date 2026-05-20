@@ -33,6 +33,28 @@ final class MetalMPRComputeAdapterGeometryTests: MetalMPRComputeAdapterTestCase 
         XCTAssertEqual(frame.planeGeometry, plane)
     }
 
+    func test_singlePixelOutputDispatchesWithoutInvalidEncoderAccess() async throws {
+        let dataset = VolumeDatasetTestFactory.makeTestDataset()
+        let plane = MPRTestHelpers.makeTestPlaneGeometry(for: dataset)
+            .sizedForOutput(CGSize(width: 1, height: 1))
+        let volumeTexture = try await makeVolumeTexture(for: dataset)
+
+        let frame = try await adapter.makeSlabTexture(
+            dataset: dataset,
+            volumeTexture: volumeTexture,
+            plane: plane,
+            thickness: 1,
+            steps: 1,
+            blend: .single
+        )
+
+        MPRTestHelpers.assertValidFrame(frame,
+                                        expectedWidth: 1,
+                                        expectedHeight: 1,
+                                        expectedPixelFormat: dataset.pixelFormat)
+        XCTAssertEqual(try MPRTestHelpers.readInputValues(UInt16.self, from: frame).count, 1)
+    }
+
     func test_dominantAxisDetection() async throws {
         let dataset = VolumeDatasetTestFactory.makeTestDataset()
         let volumeTexture = try await makeVolumeTexture(for: dataset)

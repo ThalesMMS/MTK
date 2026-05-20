@@ -402,6 +402,14 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
         scheduleRender()
     }
 
+    public func adjustTransferFunctionShift(screenDelta: SIMD2<Float>) async {
+        guard let tf = transferFunction else { return }
+        let range = tf.maximumValue - tf.minimumValue
+        let scale: Float = range > 0 ? range / 500.0 : 1.0
+        let deltaShift = screenDelta.x * scale
+        await setShift(tf.shift + deltaShift)
+    }
+
     /// Enables or disables the HU (Hounsfield unit) gate used during projection rendering and triggers a new render.
     /// - Parameter enabled: `true` to enable HU gating, `false` to disable it.
     public func setHuGate(enabled: Bool) async {

@@ -151,6 +151,10 @@ public struct MPRPresentationPass {
         var viewportPanX: Float
         var viewportPanY: Float
         var _pad1: Float
+        var imageOriginX: Float
+        var imageOriginY: Float
+        var imageWidth: Float
+        var imageHeight: Float
     }
 
     private struct MPRLabelmapOverlayUniforms {
@@ -168,6 +172,10 @@ public struct MPRPresentationPass {
         var viewportPanX: Float
         var viewportPanY: Float
         var _pad4: Float
+        var imageOriginX: Float
+        var imageOriginY: Float
+        var imageWidth: Float
+        var imageHeight: Float
     }
 
     public init(device: any MTLDevice,
@@ -270,8 +278,13 @@ public struct MPRPresentationPass {
                      colormap: colormap,
                      labelmapOverlays: labelmapOverlays)
 
-        let presentationTexture = try reusablePresentationTexture(width: frame.texture.width,
-                                                                  height: frame.texture.height)
+        let drawableWidth = drawable.texture.width
+        let drawableHeight = drawable.texture.height
+        let layout = MPRPresentationLayout.aspectFit(contentAspectRatio: frame.planeGeometry.physicalAspectRatio,
+                                                     destinationWidth: drawableWidth,
+                                                     destinationHeight: drawableHeight)
+        let presentationTexture = try reusablePresentationTexture(width: drawableWidth,
+                                                                  height: drawableHeight)
         let colormapTexture = try colormap ?? reusableFallbackColormapTexture()
         let pipeline = try pipelineState(for: frame.pixelFormat)
         var uniforms = MPRPresentationUniforms(
@@ -286,7 +299,11 @@ public struct MPRPresentationPass {
             viewportZoom: viewportTransform.zoom,
             viewportPanX: viewportTransform.pan.x,
             viewportPanY: viewportTransform.pan.y,
-            _pad1: 0
+            _pad1: 0,
+            imageOriginX: layout.origin.x,
+            imageOriginY: layout.origin.y,
+            imageWidth: layout.size.x,
+            imageHeight: layout.size.y
         )
 
         guard let commandBuffer = commandQueue.makeCommandBuffer() else {
@@ -307,11 +324,11 @@ public struct MPRPresentationPass {
                                 index: 0)
 
         let dispatch = ThreadgroupDispatchConfiguration.default(for: pipeline)
-        let threadsPerGrid = MTLSize(width: frame.texture.width,
-                                     height: frame.texture.height,
-                                     depth: 1)
+        let presentationThreadsPerGrid = MTLSize(width: presentationTexture.width,
+                                                 height: presentationTexture.height,
+                                                 depth: 1)
         MetalDispatch.dispatch(encoder: computeEncoder,
-                               threadsPerGrid: threadsPerGrid,
+                               threadsPerGrid: presentationThreadsPerGrid,
                                configuration: dispatch,
                                featureFlags: FeatureFlags.evaluate(for: device))
         computeEncoder.endEncoding()
@@ -319,10 +336,11 @@ public struct MPRPresentationPass {
         let finalPresentationTexture = try encodeLabelmapOverlays(labelmapOverlays,
                                                                   initialTexture: presentationTexture,
                                                                   commandBuffer: commandBuffer,
-                                                                  width: frame.texture.width,
-                                                                  height: frame.texture.height,
+                                                                  width: presentationTexture.width,
+                                                                  height: presentationTexture.height,
                                                                   flipHorizontal: flipHorizontal,
                                                                   flipVertical: flipVertical,
+                                                                  layout: layout,
                                                                   viewportTransform: viewportTransform)
 
         guard let blitEncoder = commandBuffer.makeBlitCommandEncoder() else {
@@ -350,8 +368,6 @@ public struct MPRPresentationPass {
         }
         let profilerDevice = device
         let presentationMemoryEstimate = ResourceMemoryEstimator.estimate(for: presentationTexture)
-        let drawableWidth = drawable.texture.width
-        let drawableHeight = drawable.texture.height
         let drawablePixelFormat = drawable.texture.pixelFormat
         commandBuffer.addCompletedHandler { buffer in
             guard buffer.error == nil, buffer.status == .completed else {
@@ -506,6 +522,7 @@ public struct MPRPresentationPass {
                                                  height: Int,
                                                  flipHorizontal: Bool,
                                                  flipVertical: Bool,
+                                                 layout: MPRPresentationLayout,
                                                  viewportTransform: MPRViewportTransform) throws -> any MTLTexture {
         guard overlays.isEmpty == false else { return initialTexture }
 
@@ -540,7 +557,11 @@ public struct MPRPresentationPass {
                 viewportZoom: viewportTransform.zoom,
                 viewportPanX: viewportTransform.pan.x,
                 viewportPanY: viewportTransform.pan.y,
-                _pad4: 0
+                _pad4: 0,
+                imageOriginX: layout.origin.x,
+                imageOriginY: layout.origin.y,
+                imageWidth: layout.size.x,
+                imageHeight: layout.size.y
             )
             encoder.setBytes(&uniforms,
                              length: MemoryLayout<MPRLabelmapOverlayUniforms>.stride,
@@ -785,8 +806,10 @@ public struct MPRPresentationPass {
                                                                       actual: frame.texture.pixelFormat)
         }
 
-        guard frame.texture.width == drawableTexture.width,
-              frame.texture.height == drawableTexture.height else {
+        guard frame.texture.width > 0,
+              frame.texture.height > 0,
+              drawableTexture.width > 0,
+              drawableTexture.height > 0 else {
             throw MPRPresentationPassError.sizeMismatch(
                 source: CGSize(width: frame.texture.width, height: frame.texture.height),
                 drawable: CGSize(width: drawableTexture.width, height: drawableTexture.height)

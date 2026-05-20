@@ -32,6 +32,7 @@ public actor MetalMPRComputeAdapter: MPRReslicePort {
         case volumeTextureCreationFailed
         case outputTextureCreationFailed
         case outputBufferAllocationFailed
+        case invalidComputeConfiguration(String)
     }
 
     public struct Overrides: Equatable {
@@ -489,6 +490,18 @@ private extension MetalMPRComputeAdapter {
                          uniforms: inout MPRSlabUniforms,
                          width: Int,
                          height: Int) async throws -> CommandBufferTimings {
+        guard width > 0, height > 0 else {
+            throw ComputeError.invalidComputeConfiguration("MPR compute dimensions must be positive, got \(width)x\(height).")
+        }
+        guard pipeline.device.registryID == commandQueue.device.registryID,
+              volumeTexture.device.registryID == commandQueue.device.registryID,
+              outputTexture.device.registryID == commandQueue.device.registryID else {
+            throw ComputeError.invalidComputeConfiguration("MPR compute resources must belong to the command queue device.")
+        }
+        guard outputTexture.width >= width,
+              outputTexture.height >= height else {
+            throw ComputeError.invalidComputeConfiguration("MPR output texture \(outputTexture.width)x\(outputTexture.height) is smaller than dispatch \(width)x\(height).")
+        }
         guard let commandBuffer = commandQueue.makeCommandBuffer() else {
             throw ComputeError.commandBufferCreationFailed
         }
@@ -544,6 +557,10 @@ private extension MetalMPRComputeAdapter {
     }
 
     func sliceDimensions(for plane: MPRPlaneGeometry) -> (width: Int, height: Int) {
+        if let outputWidth = plane.outputWidth,
+           let outputHeight = plane.outputHeight {
+            return (max(1, outputWidth), max(1, outputHeight))
+        }
         let width = max(1, Int(round(simd_length(plane.axisUVoxel))) + 1)
         let height = max(1, Int(round(simd_length(plane.axisVVoxel))) + 1)
         return (width, height)

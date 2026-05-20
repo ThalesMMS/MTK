@@ -542,6 +542,11 @@ public final class VolumeViewport3D: ObservableObject, MedicalViewport {
         try await applyTransferFunction(preset.loadTransferFunction())
     }
 
+    public func adjustTransferFunctionShift(screenDelta: SIMD2<Float>) async {
+        await controller.adjustTransferFunctionShift(screenDelta: screenDelta)
+        refreshState()
+    }
+
     public func setWindowLevel(window: Double, level: Double) async {
         let mapping = Self.windowMapping(window: window,
                                          level: level,
@@ -782,6 +787,8 @@ public final class ClinicalViewportSession: ObservableObject {
     public var surfaceMeshLayers: [SurfaceMeshLayer] { controller.surfaceMeshLayers }
     public var latestTimingSnapshot: ClinicalViewportTimingSnapshot { controller.latestTimingSnapshot }
     public var lastRenderError: (any Error)? { controller.lastRenderErrors.values.first ?? controller.lastRenderError }
+    public var adaptiveSamplingEnabled: Bool { controller.adaptiveSamplingEnabled }
+    public var crosshairAngles: [MTKCore.Axis: Double] { controller.crosshairAngles }
 
     public init(controller: ClinicalViewportGridController) {
         self.controller = controller
@@ -902,6 +909,10 @@ public final class ClinicalViewportSession: ObservableObject {
 
     public func resetAllMPRViews() {
         controller.resetAllMPRViews()
+    }
+
+    public func setAdaptiveSampling(_ enabled: Bool) async {
+        await controller.setAdaptiveSampling(enabled)
     }
 
     public func pick(in viewport: ViewportID,

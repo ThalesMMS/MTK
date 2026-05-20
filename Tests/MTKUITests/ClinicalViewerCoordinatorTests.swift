@@ -56,6 +56,68 @@ final class ClinicalViewerCoordinatorTests: XCTestCase {
         }
     }
 
+    func testClinicalOpacityScaleReappliesScaledTransferFunctionToExistingSession() async throws {
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("Metal unavailable in this environment.")
+        }
+        let coordinator = ClinicalViewerCoordinator()
+        defer { coordinator.shutdownActiveViewports() }
+
+        coordinator.setMode(.clinical)
+        try await coordinator.applyDataset(makeDataset())
+        let session = try XCTUnwrap(coordinator.clinicalViewportSession)
+
+        coordinator.setVolumeOpacityScale(0.5)
+        let expected = try coordinator.transferFunction(for: coordinator.transferPreset)
+
+        try await waitUntil("clinical transfer function uses opacity scale") {
+            session.controller.lastTransferFunction?.alphaPoints == expected.alphaPoints
+        }
+        assertTransferFunction(session.controller.lastTransferFunction, matches: expected)
+    }
+
+    func testPreferencesApplyToFutureClinicalSession() async throws {
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("Metal unavailable in this environment.")
+        }
+        let coordinator = ClinicalViewerCoordinator()
+        defer { coordinator.shutdownActiveViewports() }
+
+        coordinator.setVolumeOpacityScale(0.5)
+        coordinator.setAdaptiveSamplingEnabled(false)
+        coordinator.setMode(.clinical)
+        try await coordinator.applyDataset(makeDataset())
+
+        let session = try XCTUnwrap(coordinator.clinicalViewportSession)
+        let expected = try coordinator.transferFunction(for: coordinator.transferPreset)
+
+        XCTAssertFalse(session.adaptiveSamplingEnabled)
+        assertTransferFunction(session.controller.lastTransferFunction, matches: expected)
+    }
+
+    func testAdaptiveSamplingPreferenceAppliesToFutureSingle3DViewport() async throws {
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("Metal unavailable in this environment.")
+        }
+        let coordinator = ClinicalViewerCoordinator()
+        defer { coordinator.shutdownActiveViewports() }
+
+        coordinator.setAdaptiveSamplingEnabled(false)
+        coordinator.ensureActiveViewport()
+        try await waitUntil("single 3D viewport disabled adaptive sampling") {
+            coordinator.volumeViewport3D?.adaptiveSamplingEnabled == false
+        }
+        XCTAssertFalse(try XCTUnwrap(coordinator.volumeViewport3D).adaptiveSamplingEnabled)
+
+        coordinator.shutdownActiveViewports()
+        coordinator.setAdaptiveSamplingEnabled(true)
+        coordinator.ensureActiveViewport()
+        try await waitUntil("single 3D viewport enabled adaptive sampling") {
+            coordinator.volumeViewport3D?.adaptiveSamplingEnabled == true
+        }
+        XCTAssertTrue(try XCTUnwrap(coordinator.volumeViewport3D).adaptiveSamplingEnabled)
+    }
+
     func testCropAndClipStateBuildsPublicClippingContract() throws {
         let coordinator = ClinicalViewerCoordinator()
 
@@ -103,6 +165,29 @@ final class ClinicalViewerCoordinatorTests: XCTestCase {
         XCTAssertNil(coordinator.clinicalViewportSession)
     }
 
+    func testModeSwitchCachesClinicalSession() async throws {
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("Metal unavailable in this environment.")
+        }
+        let coordinator = ClinicalViewerCoordinator()
+        defer { coordinator.shutdownActiveViewports() }
+
+        coordinator.setMode(.clinical)
+        try await coordinator.applyDataset(makeDataset())
+
+        let session1 = try XCTUnwrap(coordinator.clinicalViewportSession)
+
+        coordinator.setMode(.single3D)
+
+        let session2 = try XCTUnwrap(coordinator.clinicalViewportSession)
+        XCTAssertTrue(session1 === session2, "Clinical session should be cached when switching to single3D")
+
+        coordinator.setMode(.clinical)
+
+        let session3 = try XCTUnwrap(coordinator.clinicalViewportSession)
+        XCTAssertTrue(session1 === session3, "Clinical session should remain the same when switching back to clinical")
+    }
+
     func testDebugOverlayAndHUDConstructAsViews() {
 #if canImport(SwiftUI)
         let coordinator = ClinicalViewerCoordinator()
@@ -114,6 +199,36 @@ final class ClinicalViewerCoordinatorTests: XCTestCase {
                                                                                 renderMode: "DVR"))
 #endif
     }
+}
+
+private enum ClinicalViewerCoordinatorTestError: Error {
+    case timeout(String)
+}
+
+@MainActor
+private func waitUntil(_ label: String,
+                       attempts: Int = 100,
+                       pollNanoseconds: UInt64 = 20_000_000,
+                       condition: @escaping @MainActor () -> Bool) async throws {
+    for _ in 0..<attempts {
+        if condition() {
+            return
+        }
+        try await Task.sleep(nanoseconds: pollNanoseconds)
+    }
+    throw ClinicalViewerCoordinatorTestError.timeout(label)
+}
+
+private func assertTransferFunction(_ actual: TransferFunction?,
+                                    matches expected: TransferFunction,
+                                    file: StaticString = #filePath,
+                                    line: UInt = #line) {
+    guard let actual else {
+        XCTFail("Expected transfer function", file: file, line: line)
+        return
+    }
+    XCTAssertEqual(actual.alphaPoints, expected.alphaPoints, file: file, line: line)
+    XCTAssertEqual(actual.renderingIntent, expected.renderingIntent, file: file, line: line)
 }
 
 private func makeDataset() -> VolumeDataset {

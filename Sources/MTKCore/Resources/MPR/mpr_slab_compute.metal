@@ -75,8 +75,8 @@ kernel void computeMPRSlab(texture3d<short, access::sample> volume   [[texture(0
         return;
     }
 
-    float u = float(gid.x) / float(width - 1);
-    float v = float(gid.y) / float(height - 1);
+    float u = width > 1 ? float(gid.x) / float(width - 1) : 0.0f;
+    float v = height > 1 ? float(gid.y) / float(height - 1) : 0.0f;
 
     float3 planePosition = uniforms.planeOrigin
                          + u * uniforms.planeX
@@ -156,8 +156,8 @@ kernel void computeMPRSlabUnsigned(texture3d<ushort, access::sample> volume [[te
         return;
     }
 
-    float u = float(gid.x) / float(width - 1);
-    float v = float(gid.y) / float(height - 1);
+    float u = width > 1 ? float(gid.x) / float(width - 1) : 0.0f;
+    float v = height > 1 ? float(gid.y) / float(height - 1) : 0.0f;
 
     float3 planePosition = uniforms.planeOrigin
                          + u * uniforms.planeX

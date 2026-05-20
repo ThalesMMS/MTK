@@ -7,6 +7,7 @@ import UIKit
 public enum NativeVolume3DInteractionMode: String, CaseIterable, Identifiable, Sendable, Equatable {
     case orbit
     case pan
+    case transferFunction
 
     public var id: String { rawValue }
 
@@ -16,6 +17,8 @@ public enum NativeVolume3DInteractionMode: String, CaseIterable, Identifiable, S
             return "Orbit"
         case .pan:
             return "Pan"
+        case .transferFunction:
+            return "Transfer Function"
         }
     }
 }
@@ -49,6 +52,11 @@ public struct NativeVolume3DInteraction {
                     return viewport.applyNativeOrbitDelta(delta)
                 case .pan:
                     return viewport.applyNativePanDelta(delta)
+                case .transferFunction:
+                    Task { @MainActor in
+                        await viewport.adjustTransferFunctionShift(screenDelta: SIMD2<Float>(Float(delta.width), Float(delta.height)))
+                    }
+                    return true
                 }
             },
             twoFingerPan: { delta in
@@ -96,16 +104,27 @@ public struct NativeVolume3DInteraction {
     }
 
     init(controller: ClinicalViewportGridController,
+         interactionMode: NativeVolume3DInteractionMode = .orbit,
          preferredFramesPerSecond: Int = 30) {
         self.handlers = Handlers(
             begin: {
                 controller.beginNativeVolumeCameraInteraction()
             },
             pan: { delta in
-                controller.rotateVolumeCameraInteractively(screenDelta: delta)
+                switch interactionMode {
+                case .orbit:
+                    return controller.rotateVolumeCameraInteractively(screenDelta: delta)
+                case .pan:
+                    return controller.panVolumeCameraInteractively(screenDelta: delta)
+                case .transferFunction:
+                    Task { @MainActor in
+                        await controller.adjustTransferFunctionShift(screenDelta: delta)
+                    }
+                    return true
+                }
             },
             twoFingerPan: { delta in
-                controller.rotateVolumeCameraInteractively(screenDelta: delta)
+                controller.panVolumeCameraInteractively(screenDelta: delta)
             },
             pinch: { scale in
                 controller.zoomVolumeCameraInteractively(scale: Float(scale))
@@ -664,21 +683,29 @@ private final class NativeVolume3DTouchProbeRecognizer: UIGestureRecognizer {
         sequence &+= 1
         moveCount = 0
         beganAt = CFAbsoluteTimeGetCurrent()
-        logger.info("[MTK3DInteraction] native.touch.began sequence=\(sequence) touches=\(touches.count) \(describeTouches(touches)) view=\(describe(view)) windowReady=\(view?.window != nil)")
+        if Logger.interactionLoggingEnabled {
+            logger.info("[MTK3DInteraction] native.touch.began sequence=\(sequence) touches=\(touches.count) \(describeTouches(touches)) view=\(describe(view)) windowReady=\(view?.window != nil)")
+        }
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
         moveCount &+= 1
-        logger.info("[MTK3DInteraction] native.touch.moved sequence=\(sequence) move=\(moveCount) touches=\(touches.count) ageMs=\(formatAge()) \(describeTouches(touches))")
+        if Logger.interactionLoggingEnabled {
+            logger.info("[MTK3DInteraction] native.touch.moved sequence=\(sequence) move=\(moveCount) touches=\(touches.count) ageMs=\(formatAge()) \(describeTouches(touches))")
+        }
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
-        logger.info("[MTK3DInteraction] native.touch.ended sequence=\(sequence) moves=\(moveCount) touches=\(touches.count) ageMs=\(formatAge()) \(describeTouches(touches))")
+        if Logger.interactionLoggingEnabled {
+            logger.info("[MTK3DInteraction] native.touch.ended sequence=\(sequence) moves=\(moveCount) touches=\(touches.count) ageMs=\(formatAge()) \(describeTouches(touches))")
+        }
         state = .failed
     }
 
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
-        logger.info("[MTK3DInteraction] native.touch.cancelled sequence=\(sequence) moves=\(moveCount) touches=\(touches.count) ageMs=\(formatAge()) \(describeTouches(touches))")
+        if Logger.interactionLoggingEnabled {
+            logger.info("[MTK3DInteraction] native.touch.cancelled sequence=\(sequence) moves=\(moveCount) touches=\(touches.count) ageMs=\(formatAge()) \(describeTouches(touches))")
+        }
         state = .failed
     }
 

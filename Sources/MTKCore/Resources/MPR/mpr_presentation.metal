@@ -22,6 +22,10 @@ struct MPRPresentationUniforms {
     float viewportPanX;
     float viewportPanY;
     float _pad1;
+    float imageOriginX;
+    float imageOriginY;
+    float imageWidth;
+    float imageHeight;
 };
 
 struct MPRLabelmapOverlayUniforms {
@@ -39,6 +43,10 @@ struct MPRLabelmapOverlayUniforms {
     float viewportPanX;
     float viewportPanY;
     float _pad4;
+    float imageOriginX;
+    float imageOriginY;
+    float imageWidth;
+    float imageHeight;
 };
 
 namespace {
@@ -64,12 +72,26 @@ inline bool isInUnitSquare(float2 position) {
     return all(position >= 0.0f) && all(position <= 1.0f);
 }
 
+inline float2 imageCoordinates(float2 outputUV,
+                               float2 imageOrigin,
+                               float2 imageSize) {
+    float2 safeSize = max(imageSize, float2(1e-6f));
+    return (outputUV - imageOrigin) / safeSize;
+}
+
 inline float2 sourceCoordinates(float2 outputUV,
                                 int flipHorizontal,
                                 int flipVertical,
                                 float viewportZoom,
-                                float2 viewportPan) {
-    float2 sourceUV = inverseViewportTransform(outputUV, viewportZoom, viewportPan);
+                                float2 viewportPan,
+                                float2 imageOrigin,
+                                float2 imageSize) {
+    float2 imageUV = imageCoordinates(outputUV, imageOrigin, imageSize);
+    if (!isInUnitSquare(imageUV)) {
+        return imageUV;
+    }
+
+    float2 sourceUV = inverseViewportTransform(imageUV, viewportZoom, viewportPan);
     if (!isInUnitSquare(sourceUV)) {
         return sourceUV;
     }
@@ -91,7 +113,9 @@ inline float2 sourceCoordinates(uint2 outputGid,
                              uniforms.flipHorizontal,
                              uniforms.flipVertical,
                              uniforms.viewportZoom,
-                             float2(uniforms.viewportPanX, uniforms.viewportPanY));
+                             float2(uniforms.viewportPanX, uniforms.viewportPanY),
+                             float2(uniforms.imageOriginX, uniforms.imageOriginY),
+                             float2(uniforms.imageWidth, uniforms.imageHeight));
 }
 
 inline float2 sourceCoordinates(uint2 outputGid,
@@ -102,7 +126,9 @@ inline float2 sourceCoordinates(uint2 outputGid,
                              uniforms.flipHorizontal,
                              uniforms.flipVertical,
                              uniforms.viewportZoom,
-                             float2(uniforms.viewportPanX, uniforms.viewportPanY));
+                             float2(uniforms.viewportPanX, uniforms.viewportPanY),
+                             float2(uniforms.imageOriginX, uniforms.imageOriginY),
+                             float2(uniforms.imageWidth, uniforms.imageHeight));
 }
 
 inline uint2 nearestPixel(float2 uv, uint width, uint height) {

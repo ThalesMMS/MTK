@@ -2,6 +2,7 @@
 public enum NativeVolume3DInteractionMode: String, CaseIterable, Identifiable, Sendable, Equatable {
     case orbit
     case pan
+    case transferFunction
 
     public var id: String { rawValue }
 
@@ -11,6 +12,8 @@ public enum NativeVolume3DInteractionMode: String, CaseIterable, Identifiable, S
             return "Orbit"
         case .pan:
             return "Pan"
+        case .transferFunction:
+            return "Transfer Function"
         }
     }
 }

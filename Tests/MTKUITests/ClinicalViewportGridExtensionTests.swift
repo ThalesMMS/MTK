@@ -94,8 +94,8 @@ final class ClinicalViewportGridCrosshairTests: XCTestCase {
         let controller = try await makeController()
         let positions: [MTKCore.Axis: Float] = [.axial: 0.6, .coronal: 0.5, .sagittal: 0.2]
         let texCoords = controller.textureCoordinates(for: .coronal, positions: positions)
-        // For coronal: x = sagittal, y = axial
-        XCTAssertEqual(texCoords.x, 0.2, accuracy: 0.000_01)
+        // For coronal: x = 1 - sagittal, y = axial
+        XCTAssertEqual(texCoords.x, 0.8, accuracy: 0.000_01)
         XCTAssertEqual(texCoords.y, 0.6, accuracy: 0.000_01)
     }
 

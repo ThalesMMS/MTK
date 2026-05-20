@@ -45,6 +45,29 @@ final class VolumeViewportContainerIntegrationTests: XCTestCase {
         throw XCTSkip("Integration test currently implemented for iOS host view inspection")
 #endif
     }
+
+    func testClinicalViewportGridHostsThreeMPRMetalViewportSurfaces() async throws {
+#if os(iOS)
+        try XCTSkipIf(MTLCreateSystemDefaultDevice() == nil, "Metal not available - skipping GPU-dependent test")
+
+        let session = try await ClinicalViewportSession.make()
+        let view = ClinicalViewportGrid(session: session)
+        let host = UIHostingController(rootView: view)
+
+        let window = UIWindow(frame: UIScreen.main.bounds)
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        window.layoutIfNeeded()
+        host.view.layoutIfNeeded()
+
+        let renderSurfaces = findViews(withAccessibilityIdentifier: "MetalViewportSurface", in: host.view)
+        XCTAssertEqual(renderSurfaces.count, 3)
+
+        await session.shutdown()
+#else
+        throw XCTSkip("Integration test currently implemented for iOS host view inspection")
+#endif
+    }
 }
 
 #if os(iOS)
@@ -54,6 +77,14 @@ private func findView(withAccessibilityIdentifier identifier: String, in root: U
         if let found = findView(withAccessibilityIdentifier: identifier, in: subview) { return found }
     }
     return nil
+}
+
+private func findViews(withAccessibilityIdentifier identifier: String, in root: UIView) -> [UIView] {
+    var matches: [UIView] = root.accessibilityIdentifier == identifier ? [root] : []
+    for subview in root.subviews {
+        matches.append(contentsOf: findViews(withAccessibilityIdentifier: identifier, in: subview))
+    }
+    return matches
 }
 #endif
 #endif

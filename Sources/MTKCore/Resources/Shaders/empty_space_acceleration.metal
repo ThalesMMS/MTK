@@ -155,6 +155,112 @@ namespace ESS {
     return isTransparentInRange(transferTexture, minMaxRange, opacityThreshold);
 }
 
+/// Calculate the distance along the ray to the boundary of the current mip-block in texture coordinate space.
+/// Returns the distance to exit the current block at the specified mip level.
+[[maybe_unused]] static inline float calculateBlockExitDistance(float3 samplePos,
+                                                                float3 rayDir,
+                                                                uint mipLevel,
+                                                                float3 dimension)
+{
+    // The block size in normalized texture coordinate space.
+    // A block at mipLevel covers 2^mipLevel voxels.
+    // The voxel size is 1.0 / dimension.
+    float3 voxelSize = float3(float(1 << mipLevel)) / max(dimension, float3(1.0f));
+    
+    // Position of the current voxel in mip-grid units
+    float3 mipVoxelIdx = floor(samplePos / voxelSize);
+    
+    // Bounds of the current mip-block in texture coordinate space
+    float3 blockMin = mipVoxelIdx * voxelSize;
+    float3 blockMax = (mipVoxelIdx + 1.0f) * voxelSize;
+    
+    // Calculate distance to boundaries along the ray direction
+    float3 tCandidate;
+    
+    // X axis
+    if (rayDir.x > 1.0e-6f) {
+        tCandidate.x = (blockMax.x - samplePos.x) / rayDir.x;
+    } else if (rayDir.x < -1.0e-6f) {
+        tCandidate.x = (blockMin.x - samplePos.x) / rayDir.x;
+    } else {
+        tCandidate.x = 1e10f;
+    }
+    
+    // Y axis
+    if (rayDir.y > 1.0e-6f) {
+        tCandidate.y = (blockMax.y - samplePos.y) / rayDir.y;
+    } else if (rayDir.y < -1.0e-6f) {
+        tCandidate.y = (blockMin.y - samplePos.y) / rayDir.y;
+    } else {
+        tCandidate.y = 1e10f;
+    }
+    
+    // Z axis
+    if (rayDir.z > 1.0e-6f) {
+        tCandidate.z = (blockMax.z - samplePos.z) / rayDir.z;
+    } else if (rayDir.z < -1.0e-6f) {
+        tCandidate.z = (blockMin.z - samplePos.z) / rayDir.z;
+    } else {
+        tCandidate.z = 1e10f;
+    }
+    
+    // Return the minimum positive intersection distance
+    return min(tCandidate.x, min(tCandidate.y, tCandidate.z));
+}
+
+/// Sample the acceleration structure at a specific mip level and check for visible opacity.
+/// Returns true if the region can be skipped (empty space), false if sampling is needed.
+[[maybe_unused]] static inline bool sampleAccelerationStructureAtLevel(texture3d<half, access::sample> accelerationTexture,
+                                                                       constant RenderingArguments& args,
+                                                                       float3 texCoordinate,
+                                                                       uint mipLevel,
+                                                                       sampler textureSampler)
+{
+    // Sample min-max values from pyramid at the requested mip level
+    float2 minMaxRange = sampleMinMaxPyramid(accelerationTexture,
+                                             texCoordinate,
+                                             mipLevel,
+                                             textureSampler);
+
+    // Use early termination threshold as opacity cutoff
+    constant RenderingParameters& params = args.params;
+    float opacityThreshold = clamp(params.earlyTerminationThreshold, 0.001f, 0.9999f);
+
+    // Check each active channel to see if any would produce visible opacity
+    float4 channelWeights = params.intensityRatio;
+
+    // Channel 1
+    if (channelWeights.x > 0.0001f) {
+        if (!isTransparentInRange(args.transferTextureCh1, minMaxRange, opacityThreshold)) {
+            return false; // This channel has visible content, must sample
+        }
+    }
+
+    // Channel 2
+    if (channelWeights.y > 0.0001f) {
+        if (!isTransparentInRange(args.transferTextureCh2, minMaxRange, opacityThreshold)) {
+            return false;
+        }
+    }
+
+    // Channel 3
+    if (channelWeights.z > 0.0001f) {
+        if (!isTransparentInRange(args.transferTextureCh3, minMaxRange, opacityThreshold)) {
+            return false;
+        }
+    }
+
+    // Channel 4
+    if (channelWeights.w > 0.0001f) {
+        if (!isTransparentInRange(args.transferTextureCh4, minMaxRange, opacityThreshold)) {
+            return false;
+        }
+    }
+
+    // All channels are transparent in this region, can skip sampling
+    return true;
+}
+
 } // namespace ESS
 
 #endif // empty_space_acceleration_metal

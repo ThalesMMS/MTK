@@ -273,10 +273,11 @@ struct RenderPassDispatcher {
                    volumeTexture: any MTLTexture,
                    route: RenderRoute,
                    profilingOptions: ProfilingOptions) async throws -> MPRFrameResult {
-        let plane = MPRPlaneGeometryFactory
-            .makePlane(for: dataset,
-                       axis: axis.mprPlaneAxis,
-                       slicePosition: state.slicePosition)
+        let basePlane = state.mprPlaneGeometry
+            ?? MPRPlaneGeometryFactory.makePlane(for: dataset,
+                                                 axis: axis.mprPlaneAxis,
+                                                 slicePosition: state.slicePosition)
+        let plane = basePlane
             .sizedForOutput(state.currentSize)
         let signature = MPRFrameSignature(
             planeGeometry: plane,

@@ -52,6 +52,8 @@ public struct MPRPlaneGeometry: Sendable, Equatable {
     public var originVoxel: SIMD3<Float>
     public var axisUVoxel: SIMD3<Float>
     public var axisVVoxel: SIMD3<Float>
+    public var outputWidth: Int?
+    public var outputHeight: Int?
 
     public var originWorld: SIMD3<Float>
     public var axisUWorld: SIMD3<Float>
@@ -66,6 +68,8 @@ public struct MPRPlaneGeometry: Sendable, Equatable {
     public init(originVoxel: SIMD3<Float>,
                 axisUVoxel: SIMD3<Float>,
                 axisVVoxel: SIMD3<Float>,
+                outputWidth: Int? = nil,
+                outputHeight: Int? = nil,
                 originWorld: SIMD3<Float>,
                 axisUWorld: SIMD3<Float>,
                 axisVWorld: SIMD3<Float>,
@@ -76,6 +80,8 @@ public struct MPRPlaneGeometry: Sendable, Equatable {
         self.originVoxel = originVoxel
         self.axisUVoxel = axisUVoxel
         self.axisVVoxel = axisVVoxel
+        self.outputWidth = outputWidth
+        self.outputHeight = outputHeight
         self.originWorld = originWorld
         self.axisUWorld = axisUWorld
         self.axisVWorld = axisVWorld
@@ -83,6 +89,29 @@ public struct MPRPlaneGeometry: Sendable, Equatable {
         self.axisUTexture = axisUTexture
         self.axisVTexture = axisVTexture
         self.normalWorld = normalWorld
+    }
+}
+
+public extension MPRPlaneGeometry {
+    var outputPixelSize: CGSize? {
+        guard let outputWidth, let outputHeight else { return nil }
+        return CGSize(width: max(outputWidth, 1), height: max(outputHeight, 1))
+    }
+
+    var physicalAspectRatio: Float {
+        let worldU = simd_length(axisUWorld)
+        let worldV = simd_length(axisVWorld)
+        if worldU > Float.ulpOfOne, worldV > Float.ulpOfOne {
+            return max(worldU / worldV, Float.ulpOfOne)
+        }
+
+        let voxelU = simd_length(axisUVoxel)
+        let voxelV = simd_length(axisVVoxel)
+        if voxelU > Float.ulpOfOne, voxelV > Float.ulpOfOne {
+            return max(voxelU / voxelV, Float.ulpOfOne)
+        }
+
+        return 1
     }
 }
 
@@ -112,6 +141,8 @@ public struct MPRFrameSignature: Hashable, Sendable, Equatable {
         hasher.combine(planeGeometry.axisVVoxel.x)
         hasher.combine(planeGeometry.axisVVoxel.y)
         hasher.combine(planeGeometry.axisVVoxel.z)
+        hasher.combine(planeGeometry.outputWidth)
+        hasher.combine(planeGeometry.outputHeight)
         hasher.combine(planeGeometry.originWorld.x)
         hasher.combine(planeGeometry.originWorld.y)
         hasher.combine(planeGeometry.originWorld.z)
@@ -181,17 +212,13 @@ public extension MPRPlaneGeometry {
     func sizedForOutput(_ size: CGSize) -> MPRPlaneGeometry {
         let width = max(1, Int(size.width.rounded()))
         let height = max(1, Int(size.height.rounded()))
-        let targetULength = width > 1 ? Float(width - 1) : 0
-        let targetVLength = height > 1 ? Float(height - 1) : 0
-        let uLength = simd_length(axisUVoxel)
-        let vLength = simd_length(axisVVoxel)
-        let uScale = uLength > Float.ulpOfOne ? targetULength / uLength : 0
-        let vScale = vLength > Float.ulpOfOne ? targetVLength / vLength : 0
 
         return MPRPlaneGeometry(
             originVoxel: originVoxel,
-            axisUVoxel: axisUVoxel * uScale,
-            axisVVoxel: axisVVoxel * vScale,
+            axisUVoxel: axisUVoxel,
+            axisVVoxel: axisVVoxel,
+            outputWidth: width,
+            outputHeight: height,
             originWorld: originWorld,
             axisUWorld: axisUWorld,
             axisVWorld: axisVWorld,

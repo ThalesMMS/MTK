@@ -112,12 +112,14 @@ final class DICOMGeometryCorpusTests: XCTestCase {
                                                            dataset: dataset,
                                                            plane: plane,
                                                            displayTransform: .identity,
+                                                           outputAspect: .fill,
                                                            viewportSize: viewportSize)
                 let pick = try VolumePicking.pickMPR(screenPoint: screen.screenPoint,
                                                      viewportSize: screen.viewportSize,
                                                      dataset: dataset,
                                                      plane: plane,
                                                      displayTransform: .identity,
+                                                     outputAspect: .fill,
                                                      axis: expectation.mprAxis)
 
                 assertVector(pick.worldPoint,

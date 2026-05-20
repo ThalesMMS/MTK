@@ -108,6 +108,28 @@ final class MPRDisplayTransformFactoryTests: XCTestCase {
         XCTAssertEqual(sagittal.labels.bottom, "I")
     }
 
+    func test_unmatchedObliquePlanePreservesRawLabelsWithoutCrashing() {
+        let plane = MPRPlaneGeometry(
+            originVoxel: .zero,
+            axisUVoxel: SIMD3<Float>(0.1, 0, 1),
+            axisVVoxel: SIMD3<Float>(0, 0.1, 1),
+            originWorld: .zero,
+            axisUWorld: SIMD3<Float>(0.1, 0, 1),
+            axisVWorld: SIMD3<Float>(0, 0.1, 1),
+            originTexture: .zero,
+            axisUTexture: SIMD3<Float>(0.1, 0, 1),
+            axisVTexture: SIMD3<Float>(0, 0.1, 1),
+            normalWorld: SIMD3<Float>(-0.1, -0.1, 0.01)
+        )
+
+        let transform = MPRDisplayTransformFactory.makeTransform(for: plane, axis: .y)
+
+        XCTAssertEqual(transform.labels.leading, "I")
+        XCTAssertEqual(transform.labels.trailing, "S")
+        XCTAssertEqual(transform.labels.top, "I")
+        XCTAssertEqual(transform.labels.bottom, "S")
+    }
+
     func test_screenAndTextureCoordinateMappingAreInverseOperations() {
         let transform = MPRDisplayTransform(
             orientation: .rotated90CW,

@@ -240,12 +240,14 @@ final class MPRPlaneGeometryFactoryTests: XCTestCase {
         let plane = MPRPlaneGeometryFactory.makePlane(for: dataset, axis: .z, slicePosition: 0.5)
         let resized = plane.sizedForOutput(CGSize(width: 9, height: 13))
 
-        assertVector(resized.axisUVoxel, plane.axisUVoxel * 2)
-        assertVector(resized.axisVVoxel, plane.axisVVoxel * 2)
+        assertVector(resized.axisUVoxel, plane.axisUVoxel)
+        assertVector(resized.axisVVoxel, plane.axisVVoxel)
         assertVector(resized.axisUWorld, plane.axisUWorld)
         assertVector(resized.axisVWorld, plane.axisVWorld)
         assertVector(resized.axisUTexture, plane.axisUTexture)
         assertVector(resized.axisVTexture, plane.axisVTexture)
+        XCTAssertEqual(resized.outputWidth, 9)
+        XCTAssertEqual(resized.outputHeight, 13)
     }
 }
 

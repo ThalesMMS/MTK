@@ -42,7 +42,7 @@ public struct ViewportPresentingView: UIViewRepresentable {
 
         public override func layoutSubviews() {
             super.layoutSubviews()
-            if let hostedView = hostedView {
+            if let hostedView, hostedView.superview === self {
                 hostedView.frame = bounds
             }
         }
@@ -59,18 +59,22 @@ public struct ViewportPresentingView: UIViewRepresentable {
                 logger.error("CRITICAL: Attempting to host _UIReparentingView! This indicates a UIHostingController's view is being passed instead of the raw render view.")
             }
 
-            hostedView?.removeFromSuperview()
+            if hostedView?.superview === self {
+                hostedView?.removeFromSuperview()
+            }
             hostedView = view
 
             view.translatesAutoresizingMaskIntoConstraints = false
-            addSubview(view)
-            
-            NSLayoutConstraint.activate([
-                view.leadingAnchor.constraint(equalTo: leadingAnchor),
-                view.trailingAnchor.constraint(equalTo: trailingAnchor),
-                view.topAnchor.constraint(equalTo: topAnchor),
-                view.bottomAnchor.constraint(equalTo: bottomAnchor)
-            ])
+            if view.superview !== self {
+                addSubview(view)
+
+                NSLayoutConstraint.activate([
+                    view.leadingAnchor.constraint(equalTo: leadingAnchor),
+                    view.trailingAnchor.constraint(equalTo: trailingAnchor),
+                    view.topAnchor.constraint(equalTo: topAnchor),
+                    view.bottomAnchor.constraint(equalTo: bottomAnchor)
+                ])
+            }
 
             setNeedsLayout()
             layoutIfNeeded()
@@ -127,7 +131,7 @@ public struct ViewportPresentingView: NSViewRepresentable {
 
         public override func layout() {
             super.layout()
-            if let hostedView = hostedView {
+            if let hostedView, hostedView.superview === self {
                 hostedView.frame = bounds
             }
         }
@@ -137,18 +141,22 @@ public struct ViewportPresentingView: NSViewRepresentable {
                 return
             }
 
-            hostedView?.removeFromSuperview()
+            if hostedView?.superview === self {
+                hostedView?.removeFromSuperview()
+            }
             hostedView = view
 
             view.translatesAutoresizingMaskIntoConstraints = false
-            addSubview(view)
+            if view.superview !== self {
+                addSubview(view)
 
-            NSLayoutConstraint.activate([
-                view.leadingAnchor.constraint(equalTo: leadingAnchor),
-                view.trailingAnchor.constraint(equalTo: trailingAnchor),
-                view.topAnchor.constraint(equalTo: topAnchor),
-                view.bottomAnchor.constraint(equalTo: bottomAnchor)
-            ])
+                NSLayoutConstraint.activate([
+                    view.leadingAnchor.constraint(equalTo: leadingAnchor),
+                    view.trailingAnchor.constraint(equalTo: trailingAnchor),
+                    view.topAnchor.constraint(equalTo: topAnchor),
+                    view.bottomAnchor.constraint(equalTo: bottomAnchor)
+                ])
+            }
         }
     }
 

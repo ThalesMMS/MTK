@@ -68,6 +68,7 @@ public final class ClinicalViewerCoordinator: ObservableObject {
     @Published public var transferPreset: ClinicalTransferFunctionPreset = .ctSoftTissue
     @Published public var showDebugOverlay = false
     @Published public var isExportingSnapshot = false
+    @Published public var adaptiveSamplingEnabled = true
     @Published public var snapshotError: String?
     @Published public var cropEnabled = false
     @Published public var cropXMin: Double = 0
@@ -109,7 +110,7 @@ public final class ClinicalViewerCoordinator: ObservableObject {
         case .single3D:
             return volumeViewport3D != nil
         case .clinical:
-            return clinicalViewportSession != nil
+            return false
         }
     }
 
@@ -136,7 +137,7 @@ public final class ClinicalViewerCoordinator: ObservableObject {
         mode = newMode
         switch newMode {
         case .single3D:
-            shutdownClinicalViewportSession()
+            // The clinical viewport session is kept alive/cached to allow instant switching back to MPR.
             ensureVolumeViewport3D()
             Task { @MainActor [weak self] in
                 guard let self, let viewport = await self.volumeViewportReady() else { return }
@@ -263,6 +264,8 @@ public final class ClinicalViewerCoordinator: ObservableObject {
                 await viewport.rotateCamera(screenDelta: delta)
             case .pan:
                 await viewport.panCamera(screenDelta: delta)
+            case .transferFunction:
+                await viewport.adjustTransferFunctionShift(screenDelta: delta)
             }
         }
     }
@@ -373,6 +376,30 @@ public final class ClinicalViewerCoordinator: ObservableObject {
         guard scale.isFinite else { return }
         volumeOpacityScale = min(max(scale, 0.1), 2.0)
         reapplySingleViewportTransferFunction()
+        if mode == .clinical, let session = clinicalViewportSession {
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                do {
+                    try await session.setTransferFunction(self.transferFunction(for: self.transferPreset))
+                    self.errorMessage = nil
+                } catch {
+                    self.errorMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    public func setAdaptiveSamplingEnabled(_ enabled: Bool) {
+        adaptiveSamplingEnabled = enabled
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            if let volumeViewport = self.volumeViewport3D {
+                await volumeViewport.setAdaptiveSampling(enabled)
+            }
+            if let session = self.clinicalViewportSession {
+                await session.setAdaptiveSampling(enabled)
+            }
+        }
     }
 
     public func applyQuickPreset(_ quickPreset: ClinicalViewerTransferQuickPreset) {
@@ -449,7 +476,7 @@ public final class ClinicalViewerCoordinator: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 do {
-                    try await session.applyClinicalTransferFunctionPreset(newPreset)
+                    try await session.applyTransferFunction(self.transferFunction(for: newPreset))
                     self.errorMessage = nil
                 } catch {
                     self.errorMessage = error.localizedDescription
@@ -706,9 +733,7 @@ public final class ClinicalViewerCoordinator: ObservableObject {
     }
 
     private func configureSingle3DViewport(_ viewport: VolumeViewport3D) async {
-        if viewport.adaptiveSamplingEnabled {
-            await viewport.setAdaptiveSampling(false)
-        }
+        await viewport.setAdaptiveSampling(adaptiveSamplingEnabled)
         await viewport.setSamplingStep(single3DFinalSamplingStep)
     }
 
@@ -757,6 +782,7 @@ public final class ClinicalViewerCoordinator: ObservableObject {
         mprLevel = session.windowLevel.level
         mprSlabThickness = session.slabThickness
         mprViewportTransforms = session.mprViewportTransforms
+        adaptiveSamplingEnabled = session.adaptiveSamplingEnabled
     }
 
     private func volumeViewportReady() async -> VolumeViewport3D? {
@@ -804,8 +830,9 @@ public final class ClinicalViewerCoordinator: ObservableObject {
 
     private func applyCurrentConfiguration(to session: ClinicalViewportSession) async throws {
         try await session.setVolumeViewportMode(renderMethod.clinicalViewportMode)
-        try await session.setTransferFunction(transferPreset.loadTransferFunction())
+        try await session.setTransferFunction(transferFunction(for: transferPreset))
         try await applyCropClip(to: session)
+        await session.setAdaptiveSampling(adaptiveSamplingEnabled)
         session.setMPRInteractionTool(mprInteractionTool)
         session.setActiveMPRAxis(activeMPRAxis)
 

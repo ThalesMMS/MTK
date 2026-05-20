@@ -147,7 +147,18 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         #endif
     }
 
-    func testWindowLevelSyncsAllViewports() async throws {
+    func testApplyDatasetSchedulesOnlyDisplayedMPRViewports() async throws {
+        let controller = try await makeController()
+
+        try await controller.applyDataset(makeDataset())
+
+        for viewport in controller.mprViewportIDs {
+            XCTAssertGreaterThan(controller.debugRenderGeneration(for: viewport), 0)
+        }
+        XCTAssertEqual(controller.debugRenderGeneration(for: controller.volumeViewportID), 0)
+    }
+
+    func testWindowLevelSyncsMPRViewportsOnly() async throws {
         let controller = try await makeController()
         let dataset = makeDataset()
         try await controller.applyDataset(dataset)
@@ -158,11 +169,9 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         let axialWindow = await controller.engine.debugWindow(for: controller.axialViewportID)
         let coronalWindow = await controller.engine.debugWindow(for: controller.coronalViewportID)
         let sagittalWindow = await controller.engine.debugWindow(for: controller.sagittalViewportID)
-        let volumeWindow = await controller.engine.debugWindow(for: controller.volumeViewportID)
         XCTAssertEqual(axialWindow, expected)
         XCTAssertEqual(coronalWindow, expected)
         XCTAssertEqual(sagittalWindow, expected)
-        XCTAssertEqual(volumeWindow, expected)
 
         // Ensure shared state drives the value: setting same WL again should not schedule any new renders.
         let mprBefore = controller.mprViewportIDs.map { controller.debugRenderGeneration(for: $0) }
@@ -177,10 +186,10 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
     }
 
 #if DEBUG
-    func testWindowLevelCommitDoesNotMutateMPRWindowsWhenVolumeWindowFails() async throws {
+    func testWindowLevelCommitIgnoresHiddenVolumeWindowFailure() async throws {
         let controller = try await makeController()
         try await controller.applyDataset(makeDataset())
-        let committedRange = try XCTUnwrap(controller.committedMPRWindowRange)
+        let expected: ClosedRange<Int32> = (-20)...100
         let mprBefore = controller.mprViewportIDs.map { controller.debugRenderGeneration(for: $0) }
         let volumeBefore = controller.debugRenderGeneration(for: controller.volumeViewportID)
         let volumeWindowBefore = await controller.engine.debugWindow(for: controller.volumeViewportID)
@@ -192,13 +201,15 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         let coronalWindow = await controller.engine.debugWindow(for: controller.coronalViewportID)
         let sagittalWindow = await controller.engine.debugWindow(for: controller.sagittalViewportID)
         let volumeWindowAfter = await controller.engine.debugWindow(for: controller.volumeViewportID)
-        XCTAssertEqual(axialWindow, committedRange)
-        XCTAssertEqual(coronalWindow, committedRange)
-        XCTAssertEqual(sagittalWindow, committedRange)
+        XCTAssertEqual(axialWindow, expected)
+        XCTAssertEqual(coronalWindow, expected)
+        XCTAssertEqual(sagittalWindow, expected)
         XCTAssertEqual(volumeWindowAfter, volumeWindowBefore)
-        XCTAssertEqual(controller.windowLevel.range, committedRange)
-        XCTAssertEqual(controller.committedMPRWindowRange, committedRange)
-        XCTAssertEqual(controller.mprViewportIDs.map { controller.debugRenderGeneration(for: $0) }, mprBefore)
+        XCTAssertEqual(controller.windowLevel.range, expected)
+        XCTAssertEqual(controller.committedMPRWindowRange, expected)
+        XCTAssertTrue(zip(controller.mprViewportIDs, mprBefore).allSatisfy { pair in
+            controller.debugRenderGeneration(for: pair.0) > pair.1
+        })
         XCTAssertEqual(controller.debugRenderGeneration(for: controller.volumeViewportID), volumeBefore)
     }
 #endif
@@ -243,7 +254,7 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         XCTAssertEqual(controller.volumeLayers.first?.opacity, 0.25)
     }
 
-    func testSurfaceMeshLayerControlsSyncToVolumeViewportOnly() async throws {
+    func testSurfaceMeshLayerControlsSyncToVolumeViewportWithoutSchedulingHiddenRender() async throws {
         let controller = try await makeController()
         try await controller.applyDataset(makeDataset())
         let layer = makeSurfaceMeshLayer()
@@ -262,7 +273,7 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         XCTAssertTrue(zip(controller.mprViewportIDs, mprBefore).allSatisfy { pair in
             controller.debugRenderGeneration(for: pair.0) == pair.1
         })
-        XCTAssertGreaterThan(controller.debugRenderGeneration(for: controller.volumeViewportID), volumeBefore)
+        XCTAssertEqual(controller.debugRenderGeneration(for: controller.volumeViewportID), volumeBefore)
 
         await controller.setSurfaceMeshLayerVisibility(id: layer.id, isVisible: false)
         XCTAssertEqual(controller.surfaceMeshLayers.first?.isVisible, false)
@@ -320,11 +331,20 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         let dataset = makePickingDataset(dimensions: VolumeDimensions(width: 5, height: 7, depth: 9))
         try await controller.applyDataset(dataset)
 
-        let targetUV = SIMD2<Float>(1.0 / 4.0, 4.0 / 6.0)
-        let screenPoint = controller.displayTransform(for: .axial).screenCoordinates(forTexture: targetUV)
+        let target = SIMD3<Float>(1, 4, 4)
+        let plane = try XCTUnwrap(controller.currentMPRPlane(for: .axial))
+        let viewportSize = controller.drawableSize(for: .axial)
+        let screenPoint = try VolumePicking.screenPoint(
+            forWorldPoint: VolumePicking.worldPoint(forVoxelIndex: target, in: dataset),
+            dataset: dataset,
+            plane: plane,
+            displayTransform: controller.displayTransform(for: .axial),
+            outputAspect: .aspectFit(physicalAspectRatio: plane.physicalAspectRatio),
+            viewportSize: viewportSize
+        ).screenPoint
         await controller.setCrosshair(in: .axial,
-                                      normalizedPoint: CGPoint(x: CGFloat(screenPoint.x),
-                                                               y: CGFloat(screenPoint.y)))
+                                      normalizedPoint: CGPoint(x: screenPoint.x / viewportSize.width,
+                                                               y: screenPoint.y / viewportSize.height))
 
         let sagittalSliceValue = await controller.engine.debugSlicePosition(for: controller.sagittalViewportID)
         let coronalSliceValue = await controller.engine.debugSlicePosition(for: controller.coronalViewportID)
@@ -332,6 +352,154 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         let coronalSlice = try XCTUnwrap(coronalSliceValue)
         XCTAssertEqual(sagittalSlice, 1.0 / 4.0, accuracy: 0.0001)
         XCTAssertEqual(coronalSlice, 4.0 / 6.0, accuracy: 0.0001)
+    }
+
+    func testCrosshairDragFromAnyMPRPaneUpdatesOneGlobalCursor() async throws {
+        let controller = try await makeController()
+        let dataset = makePickingDataset(dimensions: VolumeDimensions(width: 5, height: 7, depth: 9))
+        let target = SIMD3<Float>(1, 4, 6)
+        try await controller.applyDataset(dataset)
+
+        for axis in MTKCore.Axis.allCases {
+            await controller.setSlicePosition(axis: axis,
+                                              normalizedPosition: normalizedPosition(for: axis,
+                                                                                     target: SIMD3<Int32>(1, 4, 6),
+                                                                                     dimensions: dataset.dimensions))
+            let plane = try XCTUnwrap(controller.currentMPRPlane(for: axis))
+            let screen = try VolumePicking.screenPoint(
+                forWorldPoint: VolumePicking.worldPoint(forVoxelIndex: target, in: dataset),
+                dataset: dataset,
+                plane: plane,
+                displayTransform: controller.displayTransform(for: axis),
+                outputAspect: .aspectFit(physicalAspectRatio: plane.physicalAspectRatio),
+                viewportSize: CGSize(width: 1, height: 1)
+            )
+
+            await controller.setCrosshair(in: axis, normalizedPoint: screen.screenPoint)
+
+            assertVector(controller.mprCursorVoxel, target, accuracy: 0.0001, "axis \(axis)")
+            assertVector(try XCTUnwrap(controller.mprCursorWorldPoint),
+                         VolumePicking.worldPoint(forVoxelIndex: target, in: dataset),
+                         accuracy: 0.0001,
+                         "axis \(axis)")
+        }
+    }
+
+    /// Internal-invariance check: projecting the cursor with the same math
+    /// used for picking always yields the same voxel. This is intentionally
+    /// circular — both sides of the round trip share `screenPoint`/`pickMPR`.
+    /// It does **not** detect aspect-fit drift between the overlay and the
+    /// presented pixels; see
+    /// `testCrosshairOverlayMatchesPresentationLayoutPixelOnAnisotropicPanes`
+    /// for that.
+    func testProjectedCrosshairCentersPickTheSameGlobalCursorVoxel() async throws {
+        let controller = try await makeController()
+        setMPRSurfaceSizes(controller, size: CGSize(width: 120, height: 120))
+        let dataset = makePickingDataset(dimensions: VolumeDimensions(width: 5, height: 7, depth: 9))
+        try await controller.applyDataset(dataset)
+
+        await controller.setCrosshair(in: .axial, normalizedPoint: CGPoint(x: 0.25, y: 4.0 / 6.0))
+        controller.rebuildAllCrosshairOffsets()
+
+        for axis in MTKCore.Axis.allCases {
+            let offset = try XCTUnwrap(controller.crosshairOffsets[axis])
+            let screenPoint = CGPoint(x: 60 + offset.x, y: 60 + offset.y)
+            let pick = try controller.pick(in: axis, screenPoint: screenPoint)
+            assertVector(pick.voxel.continuousIndex,
+                         controller.mprCursorVoxel,
+                         accuracy: 0.0001,
+                         "axis \(axis)")
+        }
+    }
+
+    /// Regression for the MPR aspect-fit letterbox bug: the crosshair overlay
+    /// pixel must match the pixel where `MPRPresentationPass` (the GPU shader)
+    /// renders the voxel center, including the aspect-fit layout. We compute
+    /// the GPU-side pixel independently using the public
+    /// `MPRPresentationLayout.aspectFit`, the same routine the shader uses,
+    /// and compare it against the controller's overlay offset.
+    func testCrosshairOverlayMatchesPresentationLayoutPixelOnAnisotropicPanes() async throws {
+        let controller = try await makeController()
+        let drawable = CGSize(width: 200, height: 200)
+        setMPRSurfaceSizes(controller, size: drawable)
+        // Spacing (0.8, 1.2, 2.4) makes coronal & sagittal panes letterbox
+        // when shown in a square drawable (physicalAspectRatio ≈ 1/6 and
+        // 0.375 respectively).
+        let dataset = makePickingDataset(dimensions: VolumeDimensions(width: 5, height: 7, depth: 9))
+        try await controller.applyDataset(dataset)
+
+        // Off-center voxel: with the bug, coronal/sagittal overlays drift
+        // away from the rendered voxel pixel. With the fix they coincide.
+        let targetVoxel = SIMD3<Float>(1, 4, 6)
+        controller.setMPRCursorVoxel(targetVoxel, in: dataset)
+        controller.rebuildAllCrosshairOffsets()
+
+        let world = VolumePicking.worldPoint(forVoxelIndex: targetVoxel, in: dataset)
+        for axis in MTKCore.Axis.allCases {
+            let plane = try XCTUnwrap(controller.currentMPRPlane(for: axis))
+
+            // Step 1: image-screen [0,1] coords WITHOUT layout. This is what
+            // the GPU shader receives as `imageUV` after sampling the slab.
+            let imageScreenPoint = try VolumePicking.screenPoint(
+                forWorldPoint: world,
+                dataset: dataset,
+                plane: plane,
+                displayTransform: controller.displayTransform(for: axis),
+                outputAspect: .fill,
+                viewportSize: CGSize(width: 1, height: 1)
+            ).normalizedPoint
+
+            // Step 2: apply the same aspect-fit layout the shader applies.
+            let layout = MPRPresentationLayout.aspectFit(
+                contentAspectRatio: plane.physicalAspectRatio,
+                destinationWidth: Int(drawable.width),
+                destinationHeight: Int(drawable.height)
+            )
+            let viewportNormalized = layout.viewportPoint(fromImagePoint: imageScreenPoint)
+            let expectedPixel = CGPoint(
+                x: CGFloat(viewportNormalized.x) * drawable.width,
+                y: CGFloat(viewportNormalized.y) * drawable.height
+            )
+
+            // Step 3: actual overlay pixel (drawable center + crosshairOffset).
+            let offset = try XCTUnwrap(controller.crosshairOffsets[axis])
+            let actualPixel = CGPoint(
+                x: drawable.width * 0.5 + offset.x,
+                y: drawable.height * 0.5 + offset.y
+            )
+
+            XCTAssertEqual(actualPixel.x, expectedPixel.x, accuracy: 1.0, "axis \(axis) X mismatch")
+            XCTAssertEqual(actualPixel.y, expectedPixel.y, accuracy: 1.0, "axis \(axis) Y mismatch")
+        }
+    }
+
+    func testCrosshairDragInAspectFitLetterboxBandIsIgnored() async throws {
+        let controller = try await makeController()
+        let drawable = CGSize(width: 200, height: 200)
+        setMPRSurfaceSizes(controller, size: drawable)
+        let dataset = makePickingDataset(dimensions: VolumeDimensions(width: 5, height: 7, depth: 9))
+        try await controller.applyDataset(dataset)
+
+        let initialVoxel = SIMD3<Float>(2, 3, 4)
+        controller.setMPRCursorVoxel(initialVoxel, in: dataset)
+        controller.rebuildAllCrosshairOffsets()
+        let positionsBefore = controller.normalizedPositions
+        let offsetsBefore = controller.crosshairOffsets
+        let worldBefore = try XCTUnwrap(controller.mprCursorWorldPoint)
+
+        let coronalPlane = try XCTUnwrap(controller.currentMPRPlane(for: .coronal))
+        let layout = MPROutputAspect
+            .aspectFit(physicalAspectRatio: coronalPlane.physicalAspectRatio)
+            .layout(destinationSize: drawable)
+        XCTAssertGreaterThan(layout.origin.x, 0)
+        let letterboxPoint = CGPoint(x: CGFloat(layout.origin.x * 0.5), y: 0.5)
+
+        await controller.setCrosshair(in: .coronal, normalizedPoint: letterboxPoint)
+
+        assertVector(controller.mprCursorVoxel, initialVoxel, accuracy: 0.0001)
+        assertVector(try XCTUnwrap(controller.mprCursorWorldPoint), worldBefore, accuracy: 0.0001)
+        XCTAssertEqual(controller.normalizedPositions, positionsBefore)
+        XCTAssertEqual(controller.crosshairOffsets, offsetsBefore)
     }
 
     func testClinicalSessionPickReturnsIntensityAndLabelForMPRViewport() async throws {
@@ -495,6 +663,74 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         XCTAssertEqual(MPRScrollStepMapper.steps(deltaY: -0.5, hasPreciseScrollingDeltas: false), 0)
     }
 
+    func testCrosshairRotationConfiguresObliquePlanesForPerpendicularMPRViews() async throws {
+        let controller = try await makeController()
+        try await controller.applyDataset(makeDataset())
+
+        let initialAxialGeometry = await controller.engine.debugMPRPlaneGeometry(for: controller.axialViewportID)
+        let initialCoronalGeometry = await controller.engine.debugMPRPlaneGeometry(for: controller.coronalViewportID)
+        let initialSagittalGeometry = await controller.engine.debugMPRPlaneGeometry(for: controller.sagittalViewportID)
+        let initialAxial = try XCTUnwrap(initialAxialGeometry)
+        let initialCoronal = try XCTUnwrap(initialCoronalGeometry)
+        let initialSagittal = try XCTUnwrap(initialSagittalGeometry)
+
+        controller.setCrosshairAngle(30, for: .axial)
+
+        let currentAxial = try XCTUnwrap(controller.currentMPRPlane(for: .axial))
+        let currentCoronal = try XCTUnwrap(controller.currentMPRPlane(for: .coronal))
+        let currentSagittal = try XCTUnwrap(controller.currentMPRPlane(for: .sagittal))
+        XCTAssertGreaterThan(abs(simd_dot(initialAxial.normalWorld, currentAxial.normalWorld)), 0.999)
+        XCTAssertLessThan(abs(simd_dot(initialCoronal.normalWorld, currentCoronal.normalWorld)), 0.99)
+        XCTAssertLessThan(abs(simd_dot(initialSagittal.normalWorld, currentSagittal.normalWorld)), 0.99)
+
+        var configuredAxial: MPRPlaneGeometry?
+        var configuredCoronal: MPRPlaneGeometry?
+        var configuredSagittal: MPRPlaneGeometry?
+        for _ in 0..<50 {
+            let axial = await controller.engine.debugMPRPlaneGeometry(for: controller.axialViewportID)
+            let coronal = await controller.engine.debugMPRPlaneGeometry(for: controller.coronalViewportID)
+            let sagittal = await controller.engine.debugMPRPlaneGeometry(for: controller.sagittalViewportID)
+            if let axial,
+               let coronal,
+               let sagittal,
+               abs(simd_dot(initialAxial.normalWorld, axial.normalWorld)) > 0.999,
+               abs(simd_dot(initialCoronal.normalWorld, coronal.normalWorld)) < 0.99,
+               abs(simd_dot(initialSagittal.normalWorld, sagittal.normalWorld)) < 0.99 {
+                configuredAxial = axial
+                configuredCoronal = coronal
+                configuredSagittal = sagittal
+                break
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        XCTAssertGreaterThan(abs(simd_dot(initialAxial.normalWorld,
+                                          try XCTUnwrap(configuredAxial).normalWorld)), 0.999)
+        XCTAssertLessThan(abs(simd_dot(initialCoronal.normalWorld,
+                                       try XCTUnwrap(configuredCoronal).normalWorld)), 0.99)
+        XCTAssertLessThan(abs(simd_dot(initialSagittal.normalWorld,
+                                       try XCTUnwrap(configuredSagittal).normalWorld)), 0.99)
+    }
+
+    func testCrosshairRotationKeepsDisplayTransformOnClinicalContract() async throws {
+        let controller = try await makeController()
+        try await controller.applyDataset(makeDataset())
+
+        controller.setCrosshairAngle(30, for: .axial)
+
+        let coronal = controller.displayTransform(for: .coronal)
+        XCTAssertEqual(coronal.labels.leading, "R")
+        XCTAssertEqual(coronal.labels.trailing, "L")
+        XCTAssertEqual(coronal.labels.top, "S")
+        XCTAssertEqual(coronal.labels.bottom, "I")
+
+        let sagittal = controller.displayTransform(for: .sagittal)
+        XCTAssertEqual(sagittal.labels.leading, "A")
+        XCTAssertEqual(sagittal.labels.trailing, "P")
+        XCTAssertEqual(sagittal.labels.top, "S")
+        XCTAssertEqual(sagittal.labels.bottom, "I")
+    }
+
     func testMPRManipulationDefaultsAndTransformsArePresentationOnly() async throws {
         let controller = try await makeController()
         try await controller.applyDataset(makeDataset())
@@ -593,17 +829,20 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         XCTAssertEqual(volumeSlab?.steps, 1)
     }
 
-    func testAdaptiveInteractionUpdatesVolumeAndMPRQuality() async throws {
+    func testAdaptiveInteractionUpdatesMPRQualityWithoutChangingHiddenVolumeQuality() async throws {
         let controller = try await makeController()
         try await controller.applyDataset(makeDataset())
+        let initialQuality = await controller.engine.debugRenderQuality(for: controller.volumeViewportID)
 
         await controller.beginAdaptiveSamplingInteraction()
 
         XCTAssertEqual(controller.renderQualityState, .interacting)
         let previewQuality = await controller.engine.debugRenderQuality(for: controller.volumeViewportID)
         let previewSlab = await controller.engine.debugSlabConfiguration(for: controller.axialViewportID)
-        XCTAssertEqual(previewQuality?.quality, .preview)
-        XCTAssertEqual(previewQuality?.samplingDistance ?? 0, 1 / 256, accuracy: 0.000_001)
+        XCTAssertEqual(previewQuality?.quality, initialQuality?.quality)
+        XCTAssertEqual(previewQuality?.samplingDistance ?? 0,
+                       initialQuality?.samplingDistance ?? 0,
+                       accuracy: 0.000_001)
         XCTAssertEqual(previewSlab?.steps, 5)
 
         await controller.endAdaptiveSamplingInteraction()
@@ -612,8 +851,10 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
 
         let finalQuality = await controller.engine.debugRenderQuality(for: controller.volumeViewportID)
         let finalSlab = await controller.engine.debugSlabConfiguration(for: controller.axialViewportID)
-        XCTAssertEqual(finalQuality?.quality, .production)
-        XCTAssertEqual(finalQuality?.samplingDistance ?? 0, 1 / 512, accuracy: 0.000_001)
+        XCTAssertEqual(finalQuality?.quality, initialQuality?.quality)
+        XCTAssertEqual(finalQuality?.samplingDistance ?? 0,
+                       initialQuality?.samplingDistance ?? 0,
+                       accuracy: 0.000_001)
         XCTAssertEqual(finalSlab?.steps, 7)
     }
 
@@ -698,6 +939,14 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         try await controller.applyDataset(makeDataset())
         await controller.renderAllAndWait()
 
+        // Wait for asynchronous presentation callbacks to finish and clear the presentation gate
+        for _ in 0..<100 {
+            if controller.presentationInFlightTokens[controller.volumeViewportID] == nil {
+                break
+            }
+            try await Task.sleep(nanoseconds: 10_000_000) // 10ms
+        }
+
         let firstTask = try XCTUnwrap(controller.scheduleRender(for: controller.volumeViewportID))
 
         XCTAssertTrue(controller.renderInFlightViewports.contains(controller.volumeViewportID))
@@ -727,18 +976,20 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         XCTAssertFalse(controller.renderInFlightViewports.contains(controller.volumeViewportID))
     }
 
-    func testTransferFunctionSchedulesVolumeViewportOnly() async throws {
+    func testTransferFunctionUpdatesHiddenVolumeStateWithoutSchedulingRender() async throws {
         let controller = try await makeController()
         try await controller.applyDataset(makeDataset())
         let mprBefore = controller.mprViewportIDs.map { controller.debugRenderGeneration(for: $0) }
         let volumeBefore = controller.debugRenderGeneration(for: controller.volumeViewportID)
+        let transferFunction = TransferFunction()
 
-        try await controller.setTransferFunction(TransferFunction())
+        try await controller.setTransferFunction(transferFunction)
 
         let mprAfter = controller.mprViewportIDs.map { controller.debugRenderGeneration(for: $0) }
         let volumeAfter = controller.debugRenderGeneration(for: controller.volumeViewportID)
         XCTAssertEqual(mprAfter, mprBefore)
-        XCTAssertGreaterThan(volumeAfter, volumeBefore)
+        XCTAssertEqual(volumeAfter, volumeBefore)
+        XCTAssertEqual(controller.lastTransferFunction?.alphaPoints, transferFunction.alphaPoints)
     }
 
     func testVolumeViewportModeUpdatesDebugSnapshotRenderMode() async throws {
@@ -1045,6 +1296,7 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
                                                    dataset: dataset,
                                                    plane: plane,
                                                    displayTransform: controller.displayTransform(for: plane, axis: axis),
+                                                   outputAspect: .aspectFit(physicalAspectRatio: plane.physicalAspectRatio),
                                                    viewportSize: viewportSize)
         return screen.screenPoint
     }
