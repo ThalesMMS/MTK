@@ -212,22 +212,28 @@ public struct OrientationOverlayView: View {
     public var body: some View {
         ZStack {
             VStack {
-                Text(labels.top)
+                orientationLabel(labels.top)
                 Spacer()
-                Text(labels.bottom)
+                orientationLabel(labels.bottom)
             }
             HStack {
-                Text(labels.leading)
+                orientationLabel(labels.leading)
                 Spacer()
-                Text(labels.trailing)
+                orientationLabel(labels.trailing)
             }
         }
         .font(.footnote.monospaced())
         .foregroundStyle(style.overlayForeground)
         .padding(8)
-        .background(style.overlayBackground.cornerRadius(8))
         .environment(\.layoutDirection, .leftToRight)
         .accessibilityIdentifier("VolumetricOrientationOverlay")
+    }
+
+    private func orientationLabel(_ text: String) -> some View {
+        Text(text)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
+            .background(style.overlayBackground, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
     }
 }
 #endif
