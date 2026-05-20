@@ -363,7 +363,7 @@ extension ClinicalViewportGridController {
     func presentationTransform(for viewport: ViewportID,
                                frame: MPRTextureFrame) -> MPRDisplayTransform? {
         guard let axis = viewportAxesByID[viewport] else { return nil }
-        let transform = displayTransform(for: axis)
+        let transform = displayTransform(for: frame.planeGeometry, axis: axis)
         displayTransformsByAxis[axis] = transform
         return transform
     }

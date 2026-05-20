@@ -637,7 +637,11 @@ private struct ClinicalViewportGridContent: View {
     private func schedulePostLayoutRender(axis: MTKCore.Axis) {
         Task { @MainActor in
             await Task.yield()
-            try? await Task.sleep(nanoseconds: 16_000_000)
+            do {
+                try await Task.sleep(nanoseconds: 50_000_000)
+            } catch {
+                return
+            }
             await controller.refreshPresentationLayout(for: axis)
         }
     }

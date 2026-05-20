@@ -12,9 +12,10 @@ public protocol LoggerProtocol: Sendable {
 public final class Logger: @unchecked Sendable, LoggerProtocol {
     private let logger: os.Logger
     private let fileCategory: String
-    public static var interactionLoggingEnabled =
+    // Environment-backed startup toggles. Set before concurrent logging begins.
+    nonisolated(unsafe) public static var interactionLoggingEnabled =
         ProcessInfo.processInfo.environment["MTK_INTERACTION_LOGGING"] == "1"
-    public static var mprInteractionLoggingEnabled =
+    nonisolated(unsafe) public static var mprInteractionLoggingEnabled =
         ProcessInfo.processInfo.environment["MTK_MPR_INTERACTION_LOGGING"] == "1"
 
     public init(subsystem: String = "com.mtk.ui", category: String) {

@@ -731,6 +731,30 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         XCTAssertEqual(sagittal.labels.bottom, "I")
     }
 
+    func testPresentationTransformUsesRenderedPlaneGeometry() async throws {
+        let controller = try await makeController()
+        try await controller.applyDataset(makeDataset())
+        let cached = controller.displayTransform(for: .coronal)
+        let renderedPlane = makePresentationPlane(
+            axisUWorld: SIMD3<Float>(0, 0, 1),
+            axisVWorld: SIMD3<Float>(-1, 0, 0)
+        )
+        let expected = controller.displayTransform(for: renderedPlane, axis: .coronal)
+        let texture = try makePresentationTexture()
+        let frame = MPRTextureFrame(texture: texture,
+                                    intensityRange: 0...1,
+                                    pixelFormat: .int16Signed,
+                                    viewportID: controller.coronalViewportID,
+                                    planeGeometry: renderedPlane)
+
+        let transform = try XCTUnwrap(controller.presentationTransform(for: controller.coronalViewportID,
+                                                                       frame: frame))
+
+        XCTAssertNotEqual(expected, cached)
+        XCTAssertEqual(transform, expected)
+        XCTAssertEqual(controller.displayTransformsByAxis[.coronal], expected)
+    }
+
     func testMPRManipulationDefaultsAndTransformsArePresentationOnly() async throws {
         let controller = try await makeController()
         try await controller.applyDataset(makeDataset())
@@ -915,6 +939,25 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         XCTAssertEqual(simd_length(controller.volumeCameraOffset),
                        16,
                        accuracy: 0.0001)
+    }
+
+    func testVolumeCameraPanUsesDatasetDerivedBounds() async throws {
+        let controller = try await makeController()
+        try await controller.applyDataset(makeDataset())
+        controller.volumeCameraTarget = SIMD3<Float>(9.9, 0.5, 0.5)
+        controller.volumeCameraOffset = SIMD3<Float>(0, 0, 20)
+        controller.volumeCameraUp = SIMD3<Float>(0, 1, 0)
+        _ = controller.volumeOrbitState.reset(target: controller.volumeCameraTarget,
+                                              offset: controller.volumeCameraOffset,
+                                              up: controller.volumeCameraUp,
+                                              distanceLimits: 0.1...64)
+
+        XCTAssertTrue(controller.panVolumeCameraInteractively(screenDelta: CGSize(width: -10_000,
+                                                                                  height: 0)))
+
+        XCTAssertLessThan(controller.volumeCameraTarget.x, 10)
+        XCTAssertLessThanOrEqual(controller.volumeCameraTarget.x, 1.25)
+        XCTAssertTrue(controller.volumeCameraTarget.x.isFinite)
     }
 
     func testVolumeViewport3DAndClinicalVolumeUseSameOrbitMath() async throws {
@@ -1138,6 +1181,33 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
             intensityRange: (-1024)...3071,
             recommendedWindow: (-100)...300
         )
+    }
+
+    private func makePresentationTexture() throws -> any MTLTexture {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("Metal not available")
+        }
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .r16Sint,
+                                                                  width: 1,
+                                                                  height: 1,
+                                                                  mipmapped: false)
+        descriptor.usage = [.shaderRead, .shaderWrite]
+        return try XCTUnwrap(device.makeTexture(descriptor: descriptor))
+    }
+
+    private func makePresentationPlane(axisUWorld: SIMD3<Float>,
+                                       axisVWorld: SIMD3<Float>) -> MPRPlaneGeometry {
+        let normal = simd_normalize(simd_cross(axisUWorld, axisVWorld))
+        return MPRPlaneGeometry(originVoxel: .zero,
+                                axisUVoxel: axisUWorld,
+                                axisVVoxel: axisVWorld,
+                                originWorld: .zero,
+                                axisUWorld: axisUWorld,
+                                axisVWorld: axisVWorld,
+                                originTexture: .zero,
+                                axisUTexture: axisUWorld,
+                                axisVTexture: axisVWorld,
+                                normalWorld: normal)
     }
 
     private func makeLabelmapLayer() throws -> VolumeLayer {

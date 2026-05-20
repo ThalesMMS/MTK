@@ -866,7 +866,9 @@ public final class ClinicalViewportGridController: ObservableObject {
     @discardableResult
     func panVolumeCameraInteractively(screenDelta: CGSize) -> Bool {
         let threshold: CGFloat = 0.01
-        guard abs(screenDelta.width) > threshold || abs(screenDelta.height) > threshold else {
+        guard screenDelta.width.isFinite,
+              screenDelta.height.isFinite,
+              abs(screenDelta.width) > threshold || abs(screenDelta.height) > threshold else {
             return false
         }
         let beforeTarget = Logger.interactionLoggingEnabled ? volumeCameraTarget : .zero
@@ -880,12 +882,7 @@ public final class ClinicalViewportGridController: ObservableObject {
         let scaleY = (distance * 0.5) / 500.0
         let translation = (-Float(screenDelta.width) * scaleX) * right + (Float(screenDelta.height) * scaleY) * up
         
-        let limits = Float(-10)...Float(10)
-        volumeCameraTarget = SIMD3<Float>(
-            max(min(volumeCameraTarget.x + translation.x, limits.upperBound), limits.lowerBound),
-            max(min(volumeCameraTarget.y + translation.y, limits.upperBound), limits.lowerBound),
-            max(min(volumeCameraTarget.z + translation.z, limits.upperBound), limits.lowerBound)
-        )
+        volumeCameraTarget = clampVolumeCameraTarget(volumeCameraTarget + translation)
         volumeCameraUp = up
         volumeOrbitState.syncTarget(volumeCameraTarget)
         applyVolumeOrbitCamera(volumeOrbitState.camera)
@@ -949,6 +946,51 @@ public final class ClinicalViewportGridController: ObservableObject {
         volumeCameraYaw = volumeOrbitState.yaw
         volumeCameraPitch = volumeOrbitState.pitch
         volumeCameraInteractionGeneration &+= 1
+    }
+
+    private func clampVolumeCameraTarget(_ target: SIMD3<Float>) -> SIMD3<Float> {
+        guard target.x.isFinite,
+              target.y.isFinite,
+              target.z.isFinite else {
+            return volumeCameraTarget
+        }
+        guard let currentDataset else { return target }
+
+        let renderGeometry = VolumeRenderGeometry.make(for: currentDataset)
+        let bounds = volumeCameraWorldBounds(for: renderGeometry)
+        let padding = SIMD3<Float>(repeating: max(renderGeometry.boundingRadius * 0.25, 1e-3))
+        let worldTarget = renderGeometry.worldPosition(forTextureCoordinate: target)
+        let clampedWorldTarget = VolumetricMath.clampSIMD3(worldTarget,
+                                                           min: bounds.minimum - padding,
+                                                           max: bounds.maximum + padding)
+        return renderGeometry.textureCoordinate(forWorldPosition: clampedWorldTarget)
+    }
+
+    private func volumeCameraWorldBounds(for renderGeometry: VolumeRenderGeometry) -> (minimum: SIMD3<Float>, maximum: SIMD3<Float>) {
+        var minimum = SIMD3<Float>(repeating: Float.greatestFiniteMagnitude)
+        var maximum = SIMD3<Float>(repeating: -Float.greatestFiniteMagnitude)
+        for x in [Float(0), Float(1)] {
+            for y in [Float(0), Float(1)] {
+                for z in [Float(0), Float(1)] {
+                    let corner = renderGeometry.worldPosition(forTextureCoordinate: SIMD3<Float>(x, y, z))
+                    minimum = minComponents(minimum, corner)
+                    maximum = maxComponents(maximum, corner)
+                }
+            }
+        }
+        return (minimum, maximum)
+    }
+
+    private func minComponents(_ lhs: SIMD3<Float>, _ rhs: SIMD3<Float>) -> SIMD3<Float> {
+        SIMD3<Float>(min(lhs.x, rhs.x),
+                     min(lhs.y, rhs.y),
+                     min(lhs.z, rhs.z))
+    }
+
+    private func maxComponents(_ lhs: SIMD3<Float>, _ rhs: SIMD3<Float>) -> SIMD3<Float> {
+        SIMD3<Float>(max(lhs.x, rhs.x),
+                     max(lhs.y, rhs.y),
+                     max(lhs.z, rhs.z))
     }
 
     /// Update the crosshair position on the specified MPR axis and schedule rendering for all affected viewports.
@@ -1272,6 +1314,11 @@ public final class ClinicalViewportGridController: ObservableObject {
     public func displayTransform(for axis: MTKCore.Axis) -> MPRDisplayTransform {
         if let cached = displayTransformsByAxis[axis] {
             return cached
+        }
+        if let plane = currentMPRPlane(for: axis) {
+            let transform = displayTransform(for: plane, axis: axis)
+            displayTransformsByAxis[axis] = transform
+            return transform
         }
         guard let currentDataset else {
             return displayTransform(for: fallbackPlaneGeometry(for: axis), axis: axis)
