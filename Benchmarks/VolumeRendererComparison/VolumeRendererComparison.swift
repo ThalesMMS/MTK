@@ -14,10 +14,7 @@ private struct Options {
     var sampleStep: Float
 
     static func parse(arguments: [String]) throws -> Options {
-        var dicomURL = firstExistingURL([
-            "MTK-Demo/DICOM_Example/dicom_series_example.zip",
-            "../MTK-Demo/DICOM_Example/dicom_series_example.zip"
-        ])
+        var dicomURL: URL?
         var referenceShaderURL = bundledReferenceShaderURL()
         var frameCount = 60
         var viewportSize = 512
@@ -48,6 +45,10 @@ private struct Options {
                 throw BenchmarkError.invalidArgument(argument)
             }
             index += 1
+        }
+
+        guard let dicomURL else {
+            throw BenchmarkError.missingRequiredOption("--dicom")
         }
 
         return Options(dicomURL: dicomURL.standardizedFileURL,
@@ -89,6 +90,7 @@ private enum BenchmarkError: Error, CustomStringConvertible {
     case help
     case invalidArgument(String)
     case missingValue(String)
+    case missingRequiredOption(String)
     case missingFile(URL)
     case metalUnavailable
     case commandQueueUnavailable
@@ -104,8 +106,10 @@ private enum BenchmarkError: Error, CustomStringConvertible {
             Usage:
               swift run VolumeRendererComparison [--dicom path] [--reference-shader path] [--frames n] [--size px] [--sample-step distance]
 
+            Required:
+              --dicom path to a local DICOM directory, file, or ZIP archive
+
             Defaults:
-              --dicom ../MTK-Demo/DICOM_Example/dicom_series_example.zip
               --reference-shader bundled ReferenceVolumeRayMarching.metal
               --frames 60
               --size 512
@@ -115,6 +119,8 @@ private enum BenchmarkError: Error, CustomStringConvertible {
             return "Invalid argument: \(argument)"
         case .missingValue(let option):
             return "Missing value for \(option)"
+        case .missingRequiredOption(let option):
+            return "Missing required option: \(option)"
         case .missingFile(let url):
             return "Required file does not exist: \(url.path)"
         case .metalUnavailable:

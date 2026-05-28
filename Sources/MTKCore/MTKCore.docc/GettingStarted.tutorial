@@ -18,7 +18,7 @@
             @Step {
                 Add the MTK package dependency to your Swift package or Xcode project.
 
-                Point Swift Package Manager at the MTK directory (local checkout or Git URL) and depend on the library products you need.
+                Point Swift Package Manager at the MTK Git repository and depend on the library products you need.
 
                 ```swift
                 // swift-tools-version: 5.10
@@ -31,7 +31,7 @@
                         .macOS(.v14)
                     ],
                     dependencies: [
-                        .package(path: "../MTK")
+                        .package(url: "https://github.com/ThalesMMS/MTK.git", from: "1.0.8")
                     ],
                     targets: [
                         .target(

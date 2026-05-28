@@ -33,7 +33,6 @@
 //  - voxelToWorld uses the standard DICOM affine:
 //      world = ipp0 + i*(spacingX*iopRow) + j*(spacingY*iopCol) + k*(spacingZ*iopNorm)
 //
-//  Originally from MTK-Demo — Migrated to MTKCore for reusability.
 //  Thales Matheus Mendonça Santos — November 2025
 //
 

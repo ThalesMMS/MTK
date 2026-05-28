@@ -697,6 +697,6 @@ struct CombinedCustomizationExample: View {
 
  - See `BasicVolumeRendering.swift` for basic volume setup
  - See `MPRViewer.swift` for multi-plane reconstruction
- - See MTK-Demo for complete UI implementation with interactive tone curve editor
+ - Build an app-specific editor around these models for interactive tone curve workflows
  - Consult MTK documentation for advanced transfer function techniques
  */

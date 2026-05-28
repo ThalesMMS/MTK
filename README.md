@@ -89,10 +89,10 @@ MTK is a rendering and UI toolkit for research, education, and prototype applica
 If you load real DICOM studies, keep PHI handling, local security, and institutional review requirements in mind. The repository demonstrates rendering infrastructure and loading patterns; it does not claim regulatory clearance, dataset-wide clinical validation, or diagnostic performance.
 
 ## Add via Swift Package Manager
-Point Xcode or SwiftPM at the local `MTK` package directory and depend on the library products you need:
+Point Xcode or SwiftPM at the MTK Git repository and depend on the library products you need:
 
 ```swift
-.package(path: "../MTK"),
+.package(url: "https://github.com/ThalesMMS/MTK.git", from: "1.0.8"),
 .target(
     name: "YourApp",
     dependencies: [
@@ -244,7 +244,7 @@ do {
 
 ## Testing notes
 - `swift test` requires a Metal-capable host for GPU-dependent suites; those tests require Metal and skip when unavailable.
-- DICOM-related tests can use optional fixtures under `../MTK-Demo/DICOM_Example`. Tests will skip when fixtures are missing.
+- The standalone `VolumeRendererComparison` benchmark requires an explicit local DICOM path through `--dicom`. If you want to use the sample data from the demo project, clone or download fixtures from `https://github.com/ThalesMMS/MTK-Demo.git` and pass the local path explicitly.
 - DICOM source security coverage lives in `DICOM-Decoder`; visual-quality checks compare MPS-accelerated empty-space skipping (feature availability requires MPS) against core Metal ray marching on synthetic datasets.
 
 ## Limitations and evaluation caveats

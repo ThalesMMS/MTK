@@ -326,8 +326,7 @@ final class TransferFunction2DIntegrationTests: XCTestCase {
     /// Verifies that 2D transfer function presets can be loaded from files.
     /// Tests: Preset files exist and can be decoded into TransferFunction2D model.
     func testAcceptanceCriteria4_PresetsExistAndLoad() {
-        // Note: Preset files are in MTK-Demo/Resource/TransferFunction/
-        // We verify the model can load preset-format data
+        // Verify the model can load preset-format data.
 
         let presetJSON = """
         {

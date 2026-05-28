@@ -3,7 +3,6 @@
 //  MTKCore
 //
 //  Standard window/level presets for medical imaging modalities.
-//  Originally from MTK-Demo — Migrated to MTKCore for reusability.
 //  Thales Matheus Mendonça Santos — November 2025
 //
 

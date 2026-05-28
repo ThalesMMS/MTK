@@ -3,7 +3,6 @@
 //  MTKCore
 //
 //  Provides cubic-spline tone curve editing and auto-window presets for advanced volume rendering.
-//  Originally from MTK-Demo — Migrated to MTKCore for reusability.
 //  Thales Matheus Mendonça Santos — November 2025
 //
 

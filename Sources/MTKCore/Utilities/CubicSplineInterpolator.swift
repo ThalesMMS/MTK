@@ -3,7 +3,6 @@
 //  MTKCore
 //
 //  Provides cubic spline interpolation utilities for advanced tone curve editing.
-//  Originally from MTK-Demo — Migrated to MTKCore for reusability.
 //  Thales Matheus Mendonça Santos — November 2025
 //
 

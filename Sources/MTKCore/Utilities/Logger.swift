@@ -3,7 +3,6 @@
 //  MTK
 //
 //  Comprehensive logging infrastructure with configurable levels and file output.
-//  Migrated from MTK-Demo and enhanced for reuse across all MTK consumers.
 //  Thales Matheus Mendonça Santos — November 2025
 //
 

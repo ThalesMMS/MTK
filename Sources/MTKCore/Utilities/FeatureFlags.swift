@@ -23,7 +23,7 @@ public struct FeatureFlags: OptionSet, CustomStringConvertible {
     public static let heapAllocations = FeatureFlags(rawValue: 1 << 2)
     public static let diagnosticLogging = FeatureFlags(rawValue: 1 << 3)
 
-    // Rendering features (added from MTK-Demo)
+    // Rendering features
     public static let adaptiveRendering = FeatureFlags(rawValue: 1 << 4)
     public static let toneMapping = FeatureFlags(rawValue: 1 << 5)
     public static let clipping = FeatureFlags(rawValue: 1 << 6)
