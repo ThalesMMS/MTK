@@ -13,6 +13,10 @@ extension MetalVolumeRenderingAdapter {
     func buildRenderingParameters(for request: VolumeRenderRequest) throws -> RenderingParameters {
         var params = RenderingParameters()
         params.material = try buildVolumeUniforms(for: request)
+        let renderQualitySettings = request.renderQualitySettings.sanitized
+        params.scale = renderQualitySettings.depthGradientScale
+        params.light = Float(renderQualitySettings.directionalLightIntensity)
+        params.shade = Float(renderQualitySettings.ambientLightIntensity)
         params.renderingStep = request.samplingDistance
         params.earlyTerminationThreshold = interactiveEarlyTerminationThreshold(for: request)
         params.adaptiveGradientThreshold = extendedState.adaptiveThreshold
@@ -69,7 +73,10 @@ extension MetalVolumeRenderingAdapter {
             uniforms.method = 1
         }
 
-        let lightingEnabled = overrides.lightingEnabled && extendedState.lightingEnabled
+        let renderQualitySettings = request.renderQualitySettings.sanitized
+        let lightingEnabled = overrides.lightingEnabled &&
+            extendedState.lightingEnabled &&
+            renderQualitySettings.lightingEnabled(for: request.quality)
         uniforms.isLightingOn = lightingEnabled ? 1 : 0
 
         if let gate = extendedState.huGate {

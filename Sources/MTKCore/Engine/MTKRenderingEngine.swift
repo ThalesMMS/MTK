@@ -77,6 +77,7 @@ package actor MTKRenderingEngine {
         var slicePosition: Float
         var samplingDistance: Float
         var quality: VolumeRenderRequest.Quality
+        var renderQualitySettings: VolumeRenderQualitySettings
         var transferFunction: VolumeTransferFunction?
         var volumeLayers: [VolumeLayer]
         var volumeLayerResourceHandles: [String: VolumeResourceHandle]
@@ -102,6 +103,7 @@ package actor MTKRenderingEngine {
             self.slicePosition = 0.5
             self.samplingDistance = 1.0 / 512.0
             self.quality = .production
+            self.renderQualitySettings = .default
             self.transferFunction = nil
             self.volumeLayers = []
             self.volumeLayerResourceHandles = [:]
@@ -698,12 +700,25 @@ package actor MTKRenderingEngine {
 
     package func configure(_ viewport: ViewportID,
                           samplingDistance: Float,
-                          quality: VolumeRenderRequest.Quality) async throws {
+                          quality: VolumeRenderRequest.Quality,
+                          renderQualitySettings: VolumeRenderQualitySettings? = nil) async throws {
         guard var state = viewports[viewport] else {
             throw EngineError.viewportNotFound(viewport)
         }
         state.samplingDistance = max(samplingDistance, Float.leastNonzeroMagnitude)
         state.quality = quality
+        if let renderQualitySettings {
+            state.renderQualitySettings = renderQualitySettings.sanitized
+        }
+        viewports[viewport] = state
+    }
+
+    package func configure(_ viewport: ViewportID,
+                          renderQualitySettings: VolumeRenderQualitySettings) async throws {
+        guard var state = viewports[viewport] else {
+            throw EngineError.viewportNotFound(viewport)
+        }
+        state.renderQualitySettings = renderQualitySettings.sanitized
         viewports[viewport] = state
     }
 

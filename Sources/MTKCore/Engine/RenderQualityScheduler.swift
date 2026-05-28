@@ -24,7 +24,7 @@ public final class RenderQualityScheduler: ObservableObject, RenderQualitySchedu
 
     public private(set) var baseSamplingStep: Float
     public private(set) var baseSlabSteps: Int
-    public let interactionFactor: Float
+    public private(set) var interactionFactor: Float
 
     private let settlingDelayNanoseconds: UInt64
     private var settlingTask: Task<Void, Never>?
@@ -69,6 +69,16 @@ public final class RenderQualityScheduler: ObservableObject, RenderQualitySchedu
 
     public func setBaseSamplingStep(_ step: Float) {
         baseSamplingStep = max(step, 1)
+    }
+
+    public func setInteractionFactor(_ factor: Float) {
+        interactionFactor = VolumetricMath.clampFloat(factor, lower: 0.1, upper: 1)
+    }
+
+    public func applyVolumeRenderQualitySettings(_ settings: VolumeRenderQualitySettings) {
+        let sanitized = settings.sanitized
+        setBaseSamplingStep(sanitized.finalSamplingStep)
+        setInteractionFactor(sanitized.interactionSamplingFactor)
     }
 
     public func setBaseSlabSteps(_ steps: Int) {

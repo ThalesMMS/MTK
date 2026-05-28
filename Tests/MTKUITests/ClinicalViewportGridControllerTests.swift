@@ -185,6 +185,50 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         XCTAssertEqual(volumeAfter, volumeBefore)
     }
 
+    func testMPRWindowPresetAppliesAllAxesAndDefaultRestoresDatasetWindow() async throws {
+        let controller = try await makeController()
+        try await controller.applyDataset(makeDataset())
+
+        await controller.applyMPRWindowPreset(.bone)
+
+        XCTAssertEqual(controller.mprWindowPreset, .bone)
+        let bonePreset = WindowLevelPresetLibrary.bone
+        let expectedBoneWindow = WindowLevelShift(window: bonePreset.window,
+                                                  level: bonePreset.level).range
+        try await assertMPRWindows(controller: controller,
+                                   expected: expectedBoneWindow)
+
+        let positionsAfterPreset = controller.normalizedPositions
+        let slabAfterPreset = controller.slabThickness
+
+        await controller.applyMPRWindowPreset(.default)
+
+        XCTAssertEqual(controller.mprWindowPreset, .default)
+        try await assertMPRWindows(controller: controller, expected: (-100)...300)
+        XCTAssertEqual(controller.normalizedPositions, positionsAfterPreset)
+        XCTAssertEqual(controller.slabThickness, slabAfterPreset, accuracy: 0.0001)
+    }
+
+    func testMPRCLUTAndInvertDoNotMutateNavigationState() async throws {
+        let controller = try await makeController()
+        try await controller.applyDataset(makeDataset())
+        let clut = try XCTUnwrap(Volume3DCLUTPreset.allPresets.first { $0.id == "system-clut" })
+
+        let initialPositions = controller.normalizedPositions
+        let initialWindow = controller.windowLevel
+        let initialSlab = controller.slabThickness
+
+        controller.setMPRCLUTPreset(clut)
+        controller.setMPRWindowInverted(true)
+
+        XCTAssertEqual(controller.mprCLUTPreset, clut)
+        XCTAssertTrue(controller.isMPRWindowInverted)
+        XCTAssertNotNil(controller.mprColormapTexture)
+        XCTAssertEqual(controller.normalizedPositions, initialPositions)
+        XCTAssertEqual(controller.windowLevel, initialWindow)
+        XCTAssertEqual(controller.slabThickness, initialSlab, accuracy: 0.0001)
+    }
+
 #if DEBUG
     func testWindowLevelCommitIgnoresHiddenVolumeWindowFailure() async throws {
         let controller = try await makeController()
@@ -653,6 +697,31 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         XCTAssertEqual(axialSlice, 1.0 / 3.0, accuracy: 0.0001)
     }
 
+    func testStepSliceScrollUpdatesActiveAxisAndOnlyRequestedSlice() async throws {
+        let controller = try await makeController()
+        try await controller.applyDataset(makeDataset())
+
+        let initialPositions = controller.normalizedPositions
+        let initialWindowLevel = controller.windowLevel
+
+        await controller.scrollSlice(axis: .coronal, steps: 1)
+
+        let coronalSliceValue = await controller.engine.debugSlicePosition(for: controller.coronalViewportID)
+        let coronalSlice = try XCTUnwrap(coronalSliceValue)
+        let normalizedCoronal = try XCTUnwrap(controller.normalizedPositions[.coronal])
+        let initialAxial = try XCTUnwrap(initialPositions[.axial])
+        let initialSagittal = try XCTUnwrap(initialPositions[.sagittal])
+        let normalizedAxial = try XCTUnwrap(controller.normalizedPositions[.axial])
+        let normalizedSagittal = try XCTUnwrap(controller.normalizedPositions[.sagittal])
+        XCTAssertEqual(controller.activeMPRAxis, .coronal)
+        XCTAssertEqual(normalizedCoronal, 2.0 / 3.0, accuracy: 0.0001)
+        XCTAssertEqual(coronalSlice, 2.0 / 3.0, accuracy: 0.0001)
+        XCTAssertEqual(normalizedAxial, initialAxial, accuracy: 0.0001)
+        XCTAssertEqual(normalizedSagittal, initialSagittal, accuracy: 0.0001)
+        XCTAssertEqual(controller.windowLevel.window, initialWindowLevel.window, accuracy: 0.0001)
+        XCTAssertEqual(controller.windowLevel.level, initialWindowLevel.level, accuracy: 0.0001)
+    }
+
     func testMPRScrollStepMapperMatchesClinicalThresholds() {
         XCTAssertEqual(MPRScrollStepMapper.steps(deltaY: 6, hasPreciseScrollingDeltas: true), 1)
         XCTAssertEqual(MPRScrollStepMapper.steps(deltaY: -6, hasPreciseScrollingDeltas: true), -1)
@@ -661,6 +730,26 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         XCTAssertEqual(MPRScrollStepMapper.steps(deltaY: -0.6, hasPreciseScrollingDeltas: false), -1)
         XCTAssertEqual(MPRScrollStepMapper.steps(deltaY: 0.5, hasPreciseScrollingDeltas: false), 0)
         XCTAssertEqual(MPRScrollStepMapper.steps(deltaY: -0.5, hasPreciseScrollingDeltas: false), 0)
+    }
+
+    func testMPRRotationDragAngleCalculationNormalizesDelta() {
+        let center = CGPoint(x: 100, y: 100)
+
+        let quarterTurn = ClinicalViewportGridController.rotationAngleDegrees(
+            initialAngleDegrees: 350,
+            center: center,
+            startLocation: CGPoint(x: 200, y: 100),
+            currentLocation: CGPoint(x: 100, y: 200)
+        )
+        let counterTurn = ClinicalViewportGridController.rotationAngleDegrees(
+            initialAngleDegrees: 10,
+            center: center,
+            startLocation: CGPoint(x: 200, y: 100),
+            currentLocation: CGPoint(x: 100, y: 0)
+        )
+
+        XCTAssertEqual(quarterTurn, 80, accuracy: 0.0001)
+        XCTAssertEqual(counterTurn, 280, accuracy: 0.0001)
     }
 
     func testCrosshairRotationConfiguresObliquePlanesForPerpendicularMPRViews() async throws {
@@ -710,6 +799,32 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
                                        try XCTUnwrap(configuredCoronal).normalWorld)), 0.99)
         XCTAssertLessThan(abs(simd_dot(initialSagittal.normalWorld,
                                        try XCTUnwrap(configuredSagittal).normalWorld)), 0.99)
+    }
+
+    func testMPRRotationToolPreservesPresentationStateAndResetClearsAngles() async throws {
+        let controller = try await makeController()
+        try await controller.applyDataset(makeDataset())
+        await controller.setMPRSlabThickness(7)
+        let initialWindowLevel = controller.windowLevel
+        let initialSlab = controller.slabThickness
+
+        controller.setMPRInteractionTool(.rotation)
+        controller.setCrosshairAngle(35, for: .axial)
+
+        XCTAssertEqual(controller.mprInteractionTool, .rotation)
+        XCTAssertEqual(controller.crosshairAngles[.axial], 35)
+        XCTAssertNil(controller.mprPlaneRotationsByAxis[.axial])
+        XCTAssertNotNil(controller.mprPlaneRotationsByAxis[.coronal])
+        XCTAssertNotNil(controller.mprPlaneRotationsByAxis[.sagittal])
+        XCTAssertEqual(controller.windowLevel, initialWindowLevel)
+        XCTAssertEqual(controller.slabThickness, initialSlab, accuracy: 0.0001)
+
+        controller.resetAllMPRViews()
+
+        XCTAssertEqual(controller.crosshairAngles, [.axial: 0, .coronal: 0, .sagittal: 0])
+        XCTAssertTrue(controller.mprPlaneRotationsByAxis.isEmpty)
+        XCTAssertEqual(controller.windowLevel, initialWindowLevel)
+        XCTAssertEqual(controller.slabThickness, initialSlab, accuracy: 0.0001)
     }
 
     func testCrosshairRotationKeepsDisplayTransformOnClinicalContract() async throws {
@@ -851,6 +966,45 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         XCTAssertEqual(sagittalSlab?.steps, 19)
         XCTAssertEqual(volumeSlab?.thickness, 1)
         XCTAssertEqual(volumeSlab?.steps, 1)
+    }
+
+    func testSlabBlendModeSyncsOnlyMPRViewports() async throws {
+        let controller = try await makeController()
+        try await controller.applyDataset(makeDataset())
+
+        await controller.setMPRSlabBlendMode(.mip)
+
+        let axialSlab = await controller.engine.debugSlabConfiguration(for: controller.axialViewportID)
+        let coronalSlab = await controller.engine.debugSlabConfiguration(for: controller.coronalViewportID)
+        let sagittalSlab = await controller.engine.debugSlabConfiguration(for: controller.sagittalViewportID)
+        let volumeSlab = await controller.engine.debugSlabConfiguration(for: controller.volumeViewportID)
+        XCTAssertEqual(controller.mprSlabBlendMode, .mip)
+        XCTAssertEqual(axialSlab?.blend, .maximum)
+        XCTAssertEqual(coronalSlab?.blend, .maximum)
+        XCTAssertEqual(sagittalSlab?.blend, .maximum)
+        XCTAssertEqual(volumeSlab?.blend, .single)
+    }
+
+    func testMPRImageAnnotationsStateUsesCurrentTechnicalValues() async throws {
+        let controller = try await makeController()
+        try await controller.applyDataset(makeDataset())
+
+        await controller.setMPRWindowLevel(window: 300, level: 50)
+        await controller.setMPRSlabThickness(7)
+        controller.zoomMPR(axis: .axial, factor: 2)
+        controller.setCrosshairAngle(15, for: .axial)
+
+        let state = controller.mprImageAnnotationsOverlayState(slotIndex: 0, axis: .axial)
+
+        XCTAssertEqual(state.displayLines, [
+            "Panel 1",
+            "Image size: 4x4",
+            "WW: 300 WL: 50",
+            "Orientation: Axial",
+            "Thickness: 7 mm",
+            "Zoom: 200%",
+            "Angle: 15 deg"
+        ])
     }
 
     func testAdaptiveInteractionUpdatesMPRQualityWithoutChangingHiddenVolumeQuality() async throws {
@@ -1169,6 +1323,18 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         }
         return try await ClinicalViewportGridController(device: device,
                                                         initialViewportSize: CGSize(width: 32, height: 32))
+    }
+
+    private func assertMPRWindows(controller: ClinicalViewportGridController,
+                                  expected: ClosedRange<Int32>,
+                                  file: StaticString = #filePath,
+                                  line: UInt = #line) async throws {
+        let axialWindow = await controller.engine.debugWindow(for: controller.axialViewportID)
+        let coronalWindow = await controller.engine.debugWindow(for: controller.coronalViewportID)
+        let sagittalWindow = await controller.engine.debugWindow(for: controller.sagittalViewportID)
+        XCTAssertEqual(axialWindow, expected, file: file, line: line)
+        XCTAssertEqual(coronalWindow, expected, file: file, line: line)
+        XCTAssertEqual(sagittalWindow, expected, file: file, line: line)
     }
 
     private func makeDataset() -> VolumeDataset {

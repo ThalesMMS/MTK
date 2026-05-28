@@ -243,6 +243,27 @@ final class MPRPresentationPassTests: XCTestCase {
         XCTAssertEqual(try MPRTestHelpers.readInputValues(Int16.self, from: input), values)
     }
 
+    func test_viewportRotationWritesPresentationOnlyOrientation() throws {
+        let values: [Int16] = [0, 1, 2, 3]
+        let input = try MPRTestHelpers.makeSignedTexture(values, width: 2, height: 2, device: device)
+        let drawable = try MPRTestMetalDrawable(device: device, width: 2, height: 2)
+        let frame = MPRTestHelpers.makeFrame(texture: input,
+                                             pixelFormat: .int16Signed,
+                                             intensityRange: 0...3)
+        var pass = try MPRPresentationPass(device: device,
+                                           commandQueue: commandQueue,
+                                           library: library)
+
+        try pass.present(frame: frame,
+                         window: 0...3,
+                         to: drawable,
+                         viewportTransform: MPRViewportTransform(rotationRadians: .pi / 2))
+        try MPRTestHelpers.waitForQueue(commandQueue)
+
+        XCTAssertEqual(try MPRTestHelpers.readGrayBytes(from: drawable.texture), [170, 0, 255, 85], accuracy: 1)
+        XCTAssertEqual(try MPRTestHelpers.readInputValues(Int16.self, from: input), values)
+    }
+
     func test_bitShiftAdjustsDisplayWithoutMutatingRawTexture() throws {
         let values: [UInt16] = [0, 1_024, 2_048, 4_095]
         let input = try MPRTestHelpers.makeUnsignedTexture(values, width: 2, height: 2, device: device)

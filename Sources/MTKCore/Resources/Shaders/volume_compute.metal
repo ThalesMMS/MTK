@@ -143,7 +143,8 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
     const float3 dimension = float3(material.dimX,
                                     material.dimY,
                                     material.dimZ);
-    const float3 gradientStep = float3(
+    const float depthGradientScale = clamp(args.params.scale, 0.25f, 4.0f);
+    const float3 gradientStep = depthGradientScale * float3(
         dimension.x > 1.0f ? 1.0f / (dimension.x - 1.0f) : 0.0f,
         dimension.y > 1.0f ? 1.0f / (dimension.y - 1.0f) : 0.0f,
         dimension.z > 1.0f ? 1.0f / (dimension.z - 1.0f) : 0.0f
@@ -401,7 +402,9 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
                                                        normal,
                                                        lightDir,
                                                        eyeDir,
-                                                       0.3f);
+                                                       0.3f,
+                                                       args.params.shade,
+                                                       args.params.light);
         }
 
         const float alpha = clamp(sampleColour.a, 0.0f, 1.0f);
@@ -439,7 +442,7 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
                                                         args.params,
                                                         projectionState,
                                                         useTransfer);
-        if (material.isLightingOn != 0 && projectionState.hit) {
+        if (lightingEnabled && projectionState.hit) {
             float3 projectionNormal = VolumeCompute::projectionGradient(projectionState, material.method);
             float lengthSq = dot(projectionNormal, projectionNormal);
             if (lengthSq > 1.0e-6f) {
@@ -451,7 +454,9 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
                                                           projectionNormal,
                                                           lightDir,
                                                           eyeDir,
-                                                          0.3f);
+                                                          0.3f,
+                                                          args.params.shade,
+                                                          args.params.light);
             }
         }
         if (debugDensityEnabled) {

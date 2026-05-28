@@ -21,7 +21,11 @@ struct MPRPresentationUniforms {
     float viewportZoom;
     float viewportPanX;
     float viewportPanY;
+    float viewportRotationCos;
+    float viewportRotationSin;
     float _pad1;
+    float _pad2;
+    float _pad3;
     float imageOriginX;
     float imageOriginY;
     float imageWidth;
@@ -42,7 +46,11 @@ struct MPRLabelmapOverlayUniforms {
     float viewportZoom;
     float viewportPanX;
     float viewportPanY;
+    float viewportRotationCos;
+    float viewportRotationSin;
     float _pad4;
+    float _pad5;
+    float _pad6;
     float imageOriginX;
     float imageOriginY;
     float imageWidth;
@@ -63,13 +71,21 @@ inline float2 normalizedCoordinates(uint2 gid, uint width, uint height) {
                   height > 1 ? float(gid.y) / float(height - 1) : 0.0f);
 }
 
-inline float2 inverseViewportTransform(float2 outputUV, float zoom, float2 pan) {
+inline float2 inverseViewportTransform(float2 outputUV,
+                                       float zoom,
+                                       float2 pan,
+                                       float rotationCos,
+                                       float rotationSin) {
     float safeZoom = max(zoom, 1.0f);
-    return float2(0.5f) + (outputUV - float2(0.5f) - pan) / safeZoom;
+    float2 centered = outputUV - float2(0.5f) - pan;
+    float2 rotated = float2(centered.x * rotationCos + centered.y * rotationSin,
+                            -centered.x * rotationSin + centered.y * rotationCos);
+    return float2(0.5f) + rotated / safeZoom;
 }
 
 inline bool isInUnitSquare(float2 position) {
-    return all(position >= 0.0f) && all(position <= 1.0f);
+    constexpr float epsilon = 1e-5f;
+    return all(position >= -epsilon) && all(position <= 1.0f + epsilon);
 }
 
 inline float2 imageCoordinates(float2 outputUV,
@@ -84,6 +100,8 @@ inline float2 sourceCoordinates(float2 outputUV,
                                 int flipVertical,
                                 float viewportZoom,
                                 float2 viewportPan,
+                                float viewportRotationCos,
+                                float viewportRotationSin,
                                 float2 imageOrigin,
                                 float2 imageSize) {
     float2 imageUV = imageCoordinates(outputUV, imageOrigin, imageSize);
@@ -91,7 +109,11 @@ inline float2 sourceCoordinates(float2 outputUV,
         return imageUV;
     }
 
-    float2 sourceUV = inverseViewportTransform(imageUV, viewportZoom, viewportPan);
+    float2 sourceUV = inverseViewportTransform(imageUV,
+                                               viewportZoom,
+                                               viewportPan,
+                                               viewportRotationCos,
+                                               viewportRotationSin);
     if (!isInUnitSquare(sourceUV)) {
         return sourceUV;
     }
@@ -114,6 +136,8 @@ inline float2 sourceCoordinates(uint2 outputGid,
                              uniforms.flipVertical,
                              uniforms.viewportZoom,
                              float2(uniforms.viewportPanX, uniforms.viewportPanY),
+                             uniforms.viewportRotationCos,
+                             uniforms.viewportRotationSin,
                              float2(uniforms.imageOriginX, uniforms.imageOriginY),
                              float2(uniforms.imageWidth, uniforms.imageHeight));
 }
@@ -127,6 +151,8 @@ inline float2 sourceCoordinates(uint2 outputGid,
                              uniforms.flipVertical,
                              uniforms.viewportZoom,
                              float2(uniforms.viewportPanX, uniforms.viewportPanY),
+                             uniforms.viewportRotationCos,
+                             uniforms.viewportRotationSin,
                              float2(uniforms.imageOriginX, uniforms.imageOriginY),
                              float2(uniforms.imageWidth, uniforms.imageHeight));
 }

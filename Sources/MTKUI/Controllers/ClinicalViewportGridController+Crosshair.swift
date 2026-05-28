@@ -29,6 +29,25 @@ extension ClinicalViewportGridController {
         return delta
     }
 
+    static func rotationAngleDegrees(initialAngleDegrees: Double,
+                                     center: CGPoint,
+                                     startLocation: CGPoint,
+                                     currentLocation: CGPoint) -> Double {
+        guard initialAngleDegrees.isFinite,
+              center.x.isFinite,
+              center.y.isFinite,
+              startLocation.x.isFinite,
+              startLocation.y.isFinite,
+              currentLocation.x.isFinite,
+              currentLocation.y.isFinite else {
+            return normalizedAngleDegrees(initialAngleDegrees)
+        }
+        let currentDragAngle = atan2(Double(currentLocation.y - center.y), Double(currentLocation.x - center.x))
+        let startDragTouchAngle = atan2(Double(startLocation.y - center.y), Double(startLocation.x - center.x))
+        let deltaAngleDegrees = (currentDragAngle - startDragTouchAngle) * 180.0 / .pi
+        return normalizedAngleDegrees(initialAngleDegrees + deltaAngleDegrees)
+    }
+
     func mprAxesAffectedByRotation(around axis: MTKCore.Axis) -> [MTKCore.Axis] {
         MTKCore.Axis.allCases.filter { $0 != axis }
     }

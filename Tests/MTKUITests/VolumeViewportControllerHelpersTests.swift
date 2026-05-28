@@ -365,6 +365,36 @@ final class VolumeViewportControllerHelpersTests: XCTestCase {
         XCTAssertEqual(controller.cameraUpVector.z, initialUp.z, accuracy: 0.000_1)
     }
 
+    @MainActor
+    func testResetCameraRotationPreservesPanAndZoom() async throws {
+        let controller = try makeController()
+        let initialOffsetDirection = simd_normalize(controller.initialCameraOffset)
+        let initialUp = controller.initialCameraUp
+
+        await controller.panCamera(screenDelta: SIMD2<Float>(25, -10))
+        await controller.zoomCamera(scale: 1.6)
+        let targetAfterPan = controller.cameraTarget
+        let distanceAfterZoom = simd_length(controller.cameraOffset)
+
+        await controller.rotateCamera(screenDelta: SIMD2<Float>(40, 18))
+        await controller.tiltCamera(roll: Float.pi / 5, pitch: 0.12)
+
+        await controller.resetCameraRotation()
+
+        XCTAssertEqual(controller.cameraYawRadians, 0, accuracy: 0.000_1)
+        XCTAssertEqual(controller.cameraPitchRadians, 0, accuracy: 0.000_1)
+        XCTAssertEqual(controller.cameraTarget.x, targetAfterPan.x, accuracy: 0.000_1)
+        XCTAssertEqual(controller.cameraTarget.y, targetAfterPan.y, accuracy: 0.000_1)
+        XCTAssertEqual(controller.cameraTarget.z, targetAfterPan.z, accuracy: 0.000_1)
+        XCTAssertEqual(simd_length(controller.cameraOffset), distanceAfterZoom, accuracy: 0.000_1)
+        XCTAssertEqual(simd_normalize(controller.cameraOffset).x, initialOffsetDirection.x, accuracy: 0.000_1)
+        XCTAssertEqual(simd_normalize(controller.cameraOffset).y, initialOffsetDirection.y, accuracy: 0.000_1)
+        XCTAssertEqual(simd_normalize(controller.cameraOffset).z, initialOffsetDirection.z, accuracy: 0.000_1)
+        XCTAssertEqual(controller.cameraUpVector.x, initialUp.x, accuracy: 0.000_1)
+        XCTAssertEqual(controller.cameraUpVector.y, initialUp.y, accuracy: 0.000_1)
+        XCTAssertEqual(controller.cameraUpVector.z, initialUp.z, accuracy: 0.000_1)
+    }
+
     func testInteractivePreviewDoesNotPresentOlderGestureGeneration() throws {
         let controller = try makeController()
 

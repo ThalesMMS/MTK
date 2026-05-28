@@ -210,6 +210,7 @@ public enum VolumePixelFormat: Sendable, Equatable {
 
 /// UI-independent clinical metadata associated with structured volume data.
 public struct ClinicalImageMetadata: Sendable, Equatable {
+    public var patientName: String?
     public var modality: String?
     public var seriesDescription: String?
     public var studyInstanceUID: String?
@@ -221,7 +222,8 @@ public struct ClinicalImageMetadata: Sendable, Equatable {
     public var windowCenter: Double?
     public var windowWidth: Double?
 
-    public init(modality: String? = nil,
+    public init(patientName: String? = nil,
+                modality: String? = nil,
                 seriesDescription: String? = nil,
                 studyInstanceUID: String? = nil,
                 seriesInstanceUID: String? = nil,
@@ -231,6 +233,7 @@ public struct ClinicalImageMetadata: Sendable, Equatable {
                 sourcePixelFormat: VolumePixelFormat? = nil,
                 windowCenter: Double? = nil,
                 windowWidth: Double? = nil) {
+        self.patientName = patientName
         self.modality = modality
         self.seriesDescription = seriesDescription
         self.studyInstanceUID = studyInstanceUID

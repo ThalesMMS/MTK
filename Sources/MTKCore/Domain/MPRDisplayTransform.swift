@@ -96,8 +96,11 @@ public struct MPRViewportTransform: Sendable, Equatable {
 
     public var zoom: Float
     public var pan: SIMD2<Float>
+    public var rotationRadians: Float
 
-    public init(zoom: Float = 1, pan: SIMD2<Float> = .zero) {
+    public init(zoom: Float = 1,
+                pan: SIMD2<Float> = .zero,
+                rotationRadians: Float = 0) {
         let sanitizedZoom = zoom.isFinite ? zoom : Self.minimumZoom
         self.zoom = min(max(sanitizedZoom, Self.minimumZoom), Self.maximumZoom)
         let sanitizedPan = SIMD2<Float>(
@@ -105,24 +108,30 @@ public struct MPRViewportTransform: Sendable, Equatable {
             pan.y.isFinite ? pan.y : 0
         )
         self.pan = Self.clampedPan(sanitizedPan, zoom: self.zoom)
+        self.rotationRadians = rotationRadians.isFinite ? rotationRadians : 0
     }
 
     public var isIdentity: Bool {
-        zoom == Self.minimumZoom && pan == .zero
+        zoom == Self.minimumZoom && pan == .zero && rotationRadians == 0
     }
 
     public func screenCoordinates(forImageScreen point: SIMD2<Float>) -> SIMD2<Float> {
         let centered = point - SIMD2<Float>(repeating: 0.5)
-        return SIMD2<Float>(repeating: 0.5) + centered * zoom + pan
+        return SIMD2<Float>(repeating: 0.5) + Self.rotated(centered * zoom,
+                                                           radians: rotationRadians) + pan
     }
 
     public func imageScreenCoordinates(forViewportScreen point: SIMD2<Float>) -> SIMD2<Float> {
         let safeZoom = max(zoom, Self.minimumZoom)
-        return SIMD2<Float>(repeating: 0.5) + (point - SIMD2<Float>(repeating: 0.5) - pan) / safeZoom
+        let centered = point - SIMD2<Float>(repeating: 0.5) - pan
+        return SIMD2<Float>(repeating: 0.5) + Self.rotated(centered,
+                                                           radians: -rotationRadians) / safeZoom
     }
 
     public func translated(by delta: SIMD2<Float>) -> MPRViewportTransform {
-        MPRViewportTransform(zoom: zoom, pan: pan + delta)
+        MPRViewportTransform(zoom: zoom,
+                             pan: pan + delta,
+                             rotationRadians: rotationRadians)
     }
 
     public func zoomed(by factor: Float, around anchor: SIMD2<Float>) -> MPRViewportTransform {
@@ -133,10 +142,14 @@ public struct MPRViewportTransform: Sendable, Equatable {
         )
         let previousImagePoint = imageScreenCoordinates(forViewportScreen: safeAnchor)
         let nextZoom = min(max(zoom * factor, Self.minimumZoom), Self.maximumZoom)
+        let rotatedImagePoint = Self.rotated((previousImagePoint - SIMD2<Float>(repeating: 0.5)) * nextZoom,
+                                             radians: rotationRadians)
         let nextPan = safeAnchor
             - SIMD2<Float>(repeating: 0.5)
-            - (previousImagePoint - SIMD2<Float>(repeating: 0.5)) * nextZoom
-        return MPRViewportTransform(zoom: nextZoom, pan: nextPan)
+            - rotatedImagePoint
+        return MPRViewportTransform(zoom: nextZoom,
+                                    pan: nextPan,
+                                    rotationRadians: rotationRadians)
     }
 
     private static func clampedPan(_ pan: SIMD2<Float>, zoom: Float) -> SIMD2<Float> {
@@ -145,6 +158,16 @@ public struct MPRViewportTransform: Sendable, Equatable {
         return SIMD2<Float>(
             min(max(pan.x, -limit), limit),
             min(max(pan.y, -limit), limit)
+        )
+    }
+
+    private static func rotated(_ point: SIMD2<Float>, radians: Float) -> SIMD2<Float> {
+        guard radians != 0 else { return point }
+        let cosTheta = cos(radians)
+        let sinTheta = sin(radians)
+        return SIMD2<Float>(
+            point.x * cosTheta - point.y * sinTheta,
+            point.x * sinTheta + point.y * cosTheta
         )
     }
 }

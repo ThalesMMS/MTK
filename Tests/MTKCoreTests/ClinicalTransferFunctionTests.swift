@@ -127,7 +127,7 @@ final class ClinicalTransferFunctionTests: XCTestCase {
                        ClinicalTransferFunctionPreset.ctAbdomen.metadata)
     }
 
-    func test_falconParityCTPresetsUseGradientOpacity() throws {
+    func test_CTPresetsUseGradientOpacity() throws {
         let expected = try XCTUnwrap(ClinicalTransferFunctionPreset.ctVRBone.gradientOpacity)
 
         XCTAssertEqual(expected.maximumGradient, 100)

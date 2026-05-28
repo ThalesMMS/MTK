@@ -86,6 +86,7 @@ struct RenderPassDispatcher {
                 samplingDistance: state.samplingDistance,
                 compositing: compositing,
                 quality: state.quality,
+                renderQualitySettings: state.renderQualitySettings,
                 clipping: state.clipping,
                 outputTexture: currentLease.texture
             )
@@ -106,6 +107,7 @@ struct RenderPassDispatcher {
                         samplingDistance: state.samplingDistance,
                         compositing: compositing,
                         quality: state.quality,
+                        renderQualitySettings: state.renderQualitySettings,
                         clipping: state.clipping,
                         outputTexture: layerLease.texture
                     )
@@ -206,6 +208,7 @@ struct RenderPassDispatcher {
                              samplingDistance: Float,
                              compositing: VolumeRenderRequest.Compositing,
                              quality: VolumeRenderRequest.Quality,
+                             renderQualitySettings: VolumeRenderQualitySettings,
                              clipping: VolumeClippingState,
                              outputTexture: any MTLTexture) async throws -> VolumeRenderFrame {
         let window = layer.dataset.recommendedWindow ?? layer.dataset.intensityRange
@@ -220,6 +223,7 @@ struct RenderPassDispatcher {
             compositing: compositing,
             quality: quality,
             clipping: clipping,
+            renderQualitySettings: renderQualitySettings,
             layers: [layer.requestLayer]
         )
         return try await volumeAdapter.renderTexture(

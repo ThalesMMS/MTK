@@ -27,6 +27,7 @@ final class DicomBridgePackagingTests: XCTestCase {
             origin: SIMD3<Double>(10, 20, 30),
             modalityIntensityRange: -1024...512,
             recommendedWindow: -160...239,
+            patientName: "Sample^Subject",
             modality: "CT",
             seriesDescription: "Bridge fixture",
             studyInstanceUID: "1.2.3",
@@ -50,6 +51,7 @@ final class DicomBridgePackagingTests: XCTestCase {
         XCTAssertEqual(dataset.intensityRange, -1024...512)
         XCTAssertEqual(dataset.recommendedWindow, -160...239)
         XCTAssertEqual(dataset.imageData.clinicalMetadata?.modality, "CT")
+        XCTAssertEqual(dataset.imageData.clinicalMetadata?.patientName, "Sample^Subject")
         XCTAssertEqual(dataset.imageData.clinicalMetadata?.seriesDescription, "Bridge fixture")
         XCTAssertEqual(dataset.imageData.clinicalMetadata?.studyInstanceUID, "1.2.3")
         XCTAssertEqual(dataset.imageData.clinicalMetadata?.seriesInstanceUID, "1.2.3.4")

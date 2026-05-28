@@ -143,6 +143,7 @@ public final class DicomVolumeDatasetImporter: VolumeDatasetImporting {
             intensityRange: decoded.modalityIntensityRange,
             recommendedWindow: decoded.recommendedWindow,
             clinicalMetadata: ClinicalImageMetadata(
+                patientName: nonEmpty(decoded.patientName),
                 modality: nonEmpty(decoded.modality),
                 seriesDescription: nonEmpty(decoded.seriesDescription),
                 studyInstanceUID: decoded.studyInstanceUID,

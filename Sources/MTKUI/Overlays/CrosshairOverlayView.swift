@@ -74,7 +74,7 @@ import SwiftUI
 /// ### Instance Properties
 /// - ``body``
 ///
-/// - Note: The crosshair is assigned the accessibility identifier `"VolumetricCrosshair"` for
+/// - Note: The crosshair uses the accessibility identifier `"VolumetricCrosshair"` by default for
 ///   UI testing purposes.
 public struct CrosshairOverlayView: View {
     /// The styling configuration for crosshair appearance.
@@ -93,6 +93,9 @@ public struct CrosshairOverlayView: View {
     /// Visual angle to rotate/tilt the crosshair lines.
     private let angle: Angle
 
+    /// Accessibility identifier assigned to the rendered crosshair.
+    private let accessibilityIdentifier: String
+
     /// Creates a crosshair overlay with optional styling, position offset, and rotation angle.
     ///
     /// - Parameters:
@@ -100,6 +103,7 @@ public struct CrosshairOverlayView: View {
     ///   - position: Offset from the view center for crosshair intersection. Defaults to `.zero`
     ///     for a centered crosshair. Use non-zero offsets for cursor tracking or alignment guides.
     ///   - angle: Visual angle to rotate/tilt the crosshair lines around their intersection center. Defaults to `.zero`.
+    ///   - accessibilityIdentifier: Identifier exposed for UI automation.
     ///
     /// ## Example
     ///
@@ -114,10 +118,14 @@ public struct CrosshairOverlayView: View {
     ///     angle: Angle(degrees: 15)
     /// )
     /// ```
-    public init(style: any VolumetricUIStyle = DefaultVolumetricUIStyle(), position: CGPoint = .zero, angle: Angle = .zero) {
+    public init(style: any VolumetricUIStyle = DefaultVolumetricUIStyle(),
+                position: CGPoint = .zero,
+                angle: Angle = .zero,
+                accessibilityIdentifier: String = "VolumetricCrosshair") {
         self.style = style
         self.position = position
         self.angle = angle
+        self.accessibilityIdentifier = accessibilityIdentifier
     }
 
     /// The SwiftUI view hierarchy rendering the crosshair lines.
@@ -126,8 +134,7 @@ public struct CrosshairOverlayView: View {
     /// (horizontal and vertical) that span the entire view bounds and intersect at the
     /// calculated center point (geometric center plus `position` offset).
     ///
-    /// - Important: The rendered path is assigned the accessibility identifier
-    ///   `"VolumetricCrosshair"` for UI testing.
+    /// - Important: The rendered path is assigned the configured accessibility identifier.
     public var body: some View {
         GeometryReader { proxy in
             let size = proxy.size
@@ -143,7 +150,7 @@ public struct CrosshairOverlayView: View {
             .stroke(style.crosshairColor, style: StrokeStyle(lineWidth: style.lineWidth, lineCap: .round))
             .rotationEffect(angle, anchor: UnitPoint(x: anchorX, y: anchorY))
         }
-        .accessibilityIdentifier("VolumetricCrosshair")
+        .accessibilityIdentifier(accessibilityIdentifier)
     }
 }
 #endif

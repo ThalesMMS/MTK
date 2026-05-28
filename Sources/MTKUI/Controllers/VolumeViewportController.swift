@@ -146,10 +146,16 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     var geometry: DICOMGeometry?
     var currentDisplay: DisplayConfiguration?
     var transferFunction: TransferFunction?
+    var primaryVolumeDatasetOverride: VolumeDataset?
     var volumeLayers: [MTKCore.VolumeLayer] = []
     var surfaceMeshLayers: [SurfaceMeshLayer] = []
     var huWindow: VolumetricHUWindowMapping?
     var mprHuWindow: ClosedRange<Int32>?
+    var mprPresentationInvert = false
+    var mprPresentationColormap: (any MTLTexture)?
+    var mprViewportTransform = MPRViewportTransform.identity
+    var mprPresentationFlipHorizontal = false
+    var mprPresentationFlipVertical = false
     var currentVolumeMethod: VolumetricRenderMethod = .dvr
     var currentMprAxis: Axis?
     var currentMprBlend: VolumetricMPRBlendMode = .single
@@ -158,6 +164,7 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     var mprPlaneIndex = 0
     var mprEuler = SIMD3<Float>.zero
     var baseSamplingStep: Float = 512
+    public private(set) var volumeRenderQualitySettings: VolumeRenderQualitySettings = .default
     var renderMode: VolumetricRenderMode = .active
     var lightingEnabled = true
     var projectionsUseTransferFunction = true
@@ -284,6 +291,7 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     public func applyDataset(_ dataset: VolumeDataset) async {
         guard self.dataset != dataset || datasetApplied == false else { return }
         self.dataset = dataset
+        primaryVolumeDatasetOverride = nil
         datasetIntensityRange = dataset.intensityRange
         mprVolumeTextureCache.invalidate()
         volumeLayerResourceCache.invalidate()
@@ -403,11 +411,36 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     }
 
     public func adjustTransferFunctionShift(screenDelta: SIMD2<Float>) async {
-        guard let tf = transferFunction else { return }
-        let range = tf.maximumValue - tf.minimumValue
-        let scale: Float = range > 0 ? range / 500.0 : 1.0
-        let deltaShift = screenDelta.x * scale
-        await setShift(tf.shift + deltaShift)
+        guard screenDelta.x.isFinite, screenDelta.y.isFinite else { return }
+        let currentWindow: Double
+        let currentLevel: Double
+        if let huWindow {
+            currentWindow = Double(max(huWindow.maxHU - huWindow.minHU, 1))
+            currentLevel = Double(huWindow.minHU) + currentWindow / 2
+        } else {
+            currentWindow = max(statePublisher.windowLevelState.window, 1)
+            currentLevel = statePublisher.windowLevelState.level
+        }
+
+        let nextWindow = max(currentWindow + Double(screenDelta.x) * 2, 1)
+        let nextLevel = currentLevel - Double(screenDelta.y) * 2
+        let lower = Self.clampedInt32ForWindow((nextLevel - nextWindow / 2).rounded())
+        let upper = Self.clampedInt32ForWindow((nextLevel + nextWindow / 2).rounded())
+        let datasetRange = dataset?.intensityRange ?? min(lower, upper)...max(lower, upper)
+        let mapping = VolumetricHUWindowMapping.makeHuWindowMapping(
+            minHU: min(lower, upper),
+            maxHU: max(lower, upper),
+            datasetRange: datasetRange,
+            transferDomain: transferFunctionDomain
+        )
+        await setHuWindow(mapping)
+    }
+
+    private static func clampedInt32ForWindow(_ value: Double) -> Int32 {
+        guard value.isFinite else {
+            return value.sign == .minus ? Int32.min : Int32.max
+        }
+        return Int32(min(max(value, Double(Int32.min)), Double(Int32.max)))
     }
 
     /// Enables or disables the HU (Hounsfield unit) gate used during projection rendering and triggers a new render.
@@ -533,6 +566,15 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
         scheduleRender()
     }
 
+    public func setVolumeRenderQualitySettings(_ settings: VolumeRenderQualitySettings) async {
+        let sanitized = settings.sanitized
+        volumeRenderQualitySettings = sanitized
+        qualityScheduler.applyVolumeRenderQualitySettings(sanitized)
+        baseSamplingStep = qualityScheduler.baseSamplingStep
+        lightingEnabled = sanitized.shadowMode.usesCurrentLightingPlaceholder
+        scheduleRender()
+    }
+
     /// Enable or disable applying the current transfer function to projection renderings.
     /// 
     /// Setting this updates the controller's projection rendering mode and schedules a re-render to apply the change.
@@ -563,6 +605,12 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
 
     public func setVolumeLayers(_ layers: [MTKCore.VolumeLayer]) async {
         volumeLayers = layers
+        volumeLayerResourceCache.invalidate()
+        scheduleRender()
+    }
+
+    public func setPrimaryVolumeDatasetOverride(_ dataset: VolumeDataset?) async {
+        primaryVolumeDatasetOverride = dataset
         volumeLayerResourceCache.invalidate()
         scheduleRender()
     }
@@ -669,6 +717,41 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     ///   - max: The maximum HU (Hounsfield unit) value for the MPR window.
     public func setMprHuWindow(min: Int32, max: Int32) async {
         mprHuWindow = Swift.min(min, max)...Swift.max(min, max)
+        if volumeLayers.isEmpty, presentCachedMPRFrameIfPossible() {
+            return
+        }
+        scheduleRender()
+    }
+
+    /// Updates presentation-only MPR styling such as luminance inversion and CLUT lookup.
+    ///
+    /// This does not invalidate the cached MPR slice texture because the raw intensity frame is unchanged.
+    public func setMPRPresentation(invert: Bool,
+                                   colormap: (any MTLTexture)? = nil) {
+        guard mprPresentationInvert != invert
+            || !Self.sameTexture(mprPresentationColormap, colormap) else {
+            return
+        }
+        mprPresentationInvert = invert
+        mprPresentationColormap = colormap
+        if volumeLayers.isEmpty, presentCachedMPRFrameIfPossible() {
+            return
+        }
+        scheduleRender()
+    }
+
+    /// Updates presentation-only MPR viewport transforms without invalidating the cached raw slice.
+    public func setMPRViewportTransform(_ transform: MPRViewportTransform,
+                                        flipHorizontal: Bool = false,
+                                        flipVertical: Bool = false) {
+        guard mprViewportTransform != transform
+            || mprPresentationFlipHorizontal != flipHorizontal
+            || mprPresentationFlipVertical != flipVertical else {
+            return
+        }
+        mprViewportTransform = transform
+        mprPresentationFlipHorizontal = flipHorizontal
+        mprPresentationFlipVertical = flipVertical
         if volumeLayers.isEmpty, presentCachedMPRFrameIfPossible() {
             return
         }
@@ -944,6 +1027,11 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     }
 
     @_spi(Testing)
+    public var debugVolumeRenderQualitySettings: VolumeRenderQualitySettings {
+        volumeRenderQualitySettings
+    }
+
+    @_spi(Testing)
     public var debugProjectionDensityGate: ClosedRange<Float>? {
         projectionDensityGate
     }
@@ -956,6 +1044,11 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     @_spi(Testing)
     public var debugHuWindow: VolumetricHUWindowMapping? {
         huWindow
+    }
+
+    @_spi(Testing)
+    public var debugMPRPresentationInvert: Bool {
+        mprPresentationInvert
     }
 
     @_spi(Testing)
@@ -988,5 +1081,17 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
                                                        reason: String = "test") {
         scheduleRenderAfterSurfaceSettles(size: size,
                                           reason: reason)
+    }
+
+    private static func sameTexture(_ lhs: (any MTLTexture)?,
+                                    _ rhs: (any MTLTexture)?) -> Bool {
+        switch (lhs, rhs) {
+        case (nil, nil):
+            return true
+        case let (lhs?, rhs?):
+            return lhs === rhs
+        default:
+            return false
+        }
     }
 }

@@ -1,4 +1,5 @@
 import Combine
+import CoreGraphics
 import Foundation
 @preconcurrency import Metal
 import MTKCore
@@ -35,15 +36,18 @@ public enum ClinicalViewerCoordinatorError: Error, Equatable, LocalizedError {
 private enum ActiveClinicalViewerViewport {
     case single3D(VolumeViewport3D)
     case clinical(ClinicalViewportSession)
+    case stack2D(StackViewport)
 }
 
 @MainActor
 public final class ClinicalViewerCoordinator: ObservableObject {
     private let single3DFinalSamplingStep: Float
+    private let volumeRenderQualitySettingsStore: VolumeRenderQualitySettingsStoring
     private let snapshotExporter = TextureSnapshotExporter()
 
     @Published public private(set) var clinicalViewportSession: ClinicalViewportSession?
     @Published public private(set) var volumeViewport3D: VolumeViewport3D?
+    @Published public private(set) var stack2DViewport: StackViewport?
     @Published public private(set) var dataset: VolumeDataset?
     @Published public var mode: ClinicalViewerMode = .single3D
     @Published public var interactionMode: NativeVolume3DInteractionMode = .orbit
@@ -56,19 +60,45 @@ public final class ClinicalViewerCoordinator: ObservableObject {
     ]
     @Published public var mprWindow: Double = 400
     @Published public var mprLevel: Double = 40
+    @Published public var mprWindowPreset: MPRWindowPreset = .default
+    @Published public var mprCLUTPreset: Volume3DCLUTPreset = .defaultPreset
+    @Published public var isMPRWindowInverted = false
+    @Published public var mprROIKind: ViewerROIKind = .distance
+    @Published public private(set) var mprROIAnnotations: [ViewerROIAnnotation] = []
+    @Published public var mprSlabBlendMode: MPRSlabBlendOption = .mean
     @Published public var mprSlabThickness: Double = 3
+    @Published public var isMPRAnnotationsVisible = true
+    @Published public var isMPRCrosshairVisible = true
+    @Published public var selectedMPRScreenLayout: MPRScreenLayout = .defaultLayout
     @Published public var mprViewportTransforms: [MTKCore.Axis: MPRViewportTransform] = [
         .axial: .identity,
         .coronal: .identity,
         .sagittal: .identity
     ]
+    @Published public var twoDAxis: MTKCore.Axis = .axial
+    @Published public var twoDTool: Clinical2DTool = .scroll
+    @Published public private(set) var twoDWindowLevelState = TwoDWindowLevelState.default
+    @Published public var twoDTransform = Viewer2DTransform.identity
+    @Published public private(set) var twoDSliceIndex = 0
+    @Published public private(set) var twoDSliceCount = 0
+    @Published public var twoDROIKind: ViewerROIKind = .distance
+    @Published public private(set) var twoDROIAnnotations: [ViewerROIAnnotation] = []
+    @Published public private(set) var twoDSyncState = ViewerSyncState.default
+    @Published public var twoDScrollSettings = TwoDScrollSettings.default
+    @Published public var twoDHUDSettings = TwoDHUDSettings.default
+    @Published public var twoDResliceAxis: MTKCore.Axis = .axial
+    private var preferredTwoDSyncLocation = ViewerSyncState.default.syncLocation
     @Published public var volumeOpacityScale: Double = 1.0
     @Published public var errorMessage: String?
     @Published public var renderMethod: VolumetricRenderMethod = .dvr
     @Published public var transferPreset: ClinicalTransferFunctionPreset = .ctSoftTissue
+    @Published public var volume3DWindowPreset: Volume3DWindowPreset = .default
+    @Published public var volume3DCLUTPreset: Volume3DCLUTPreset = .defaultPreset
+    @Published public var volume3DRotationTarget: Volume3DRotationTarget = .model
     @Published public var showDebugOverlay = false
     @Published public var isExportingSnapshot = false
     @Published public var adaptiveSamplingEnabled = true
+    @Published public private(set) var volumeRenderQualitySettings: VolumeRenderQualitySettings
     @Published public var snapshotError: String?
     @Published public var cropEnabled = false
     @Published public var cropXMin: Double = 0
@@ -81,6 +111,9 @@ public final class ClinicalViewerCoordinator: ObservableObject {
     @Published public var clipAxis: MTKCore.Axis = .axial
     @Published public var clipPlaneOffset: Double = 0
     @Published public var clippingErrorMessage: String?
+    @Published public var volumeBrushState = VolumeBrushState()
+    @Published public private(set) var volumeBrushCursor: CGPoint?
+    @Published public private(set) var volumeBrushMaskHasEdits = false
     @Published public private(set) var hudRenderTimeMilliseconds: Double?
     @Published public private(set) var hudPresentationTimeMilliseconds: Double?
     @Published public private(set) var hudUploadTimeMilliseconds: Double?
@@ -89,13 +122,20 @@ public final class ClinicalViewerCoordinator: ObservableObject {
 
     private var clinicalViewportSessionTask: Task<ClinicalViewportSession?, Never>?
     private var volumeViewport3DTask: Task<VolumeViewport3D?, Never>?
+    private var stack2DViewportTask: Task<StackViewport?, Never>?
     private var snapshotMetricsClearTask: Task<Void, Never>?
     private var clinicalSessionCancellable: AnyCancellable?
     private var currentVolumeLayers: [VolumeLayer] = []
     private var currentSurfaceMeshLayers: [SurfaceMeshLayer] = []
+    private var volumeBrushMaskedDataset: VolumeDataset?
+    private var activeTwoDInteractionCount = 0
+    private var twoDROIStore = ViewerROIStore()
 
-    public init(single3DFinalSamplingStep: Float = 768) {
+    public init(single3DFinalSamplingStep: Float = 768,
+                volumeRenderQualitySettingsStore: VolumeRenderQualitySettingsStoring = UserDefaultsVolumeRenderQualitySettingsStore()) {
         self.single3DFinalSamplingStep = single3DFinalSamplingStep
+        self.volumeRenderQualitySettingsStore = volumeRenderQualitySettingsStore
+        self.volumeRenderQualitySettings = volumeRenderQualitySettingsStore.loadVolumeRenderQualitySettings() ?? .default
     }
 
     public var isMetalAvailable: Bool {
@@ -111,7 +151,48 @@ public final class ClinicalViewerCoordinator: ObservableObject {
             return volumeViewport3D != nil
         case .clinical:
             return false
+        case .stack2D:
+            return false
         }
+    }
+
+    public var twoDWindowLevel: WindowLevelShift {
+        twoDWindowLevelState.windowLevel
+    }
+
+    public var twoDWindowPreset: Volume3DWindowPreset {
+        twoDWindowLevelState.selectedWindowPreset
+    }
+
+    public var twoDCLUTPreset: Clinical2DCLUT {
+        twoDWindowLevelState.clut
+    }
+
+    public var isTwoDWindowInverted: Bool {
+        twoDWindowLevelState.isInverted
+    }
+
+    public var isTwoDSyncEnabled: Bool {
+        twoDSyncState.hasActiveSyncChannels
+    }
+
+    public var currentTwoDPanelIdentity: ViewerPanelIdentity {
+        ViewerPanelIdentity(panelID: "stack2D.primary", dataset: dataset)
+    }
+
+    public var canSyncTwoDLocation: Bool {
+        currentTwoDPanelIdentity.datasetIdentifier != nil ||
+            currentTwoDPanelIdentity.frameOfReferenceUID != nil
+    }
+
+    public var canUseTwoDReslice: Bool {
+        guard let dataset else { return false }
+        return Self.supportsTwoDReslice(dataset)
+    }
+
+    public var twoDResliceDisabledMessage: String? {
+        guard let dataset else { return "No dataset loaded." }
+        return Self.supportsTwoDReslice(dataset) ? nil : "2D reslice requires a volumetric dataset."
     }
 
     public var volumeLayers: [VolumeLayer] {
@@ -128,6 +209,8 @@ public final class ClinicalViewerCoordinator: ObservableObject {
             ensureVolumeViewport3D()
         case .clinical:
             ensureClinicalViewportSession()
+        case .stack2D:
+            ensureStack2DViewport()
         }
     }
 
@@ -147,6 +230,7 @@ public final class ClinicalViewerCoordinator: ObservableObject {
                 try? await self.applyCurrentConfiguration(to: viewport)
                 await viewport.setVolumeLayers(self.currentVolumeLayers)
                 await viewport.setSurfaceMeshLayers(self.currentSurfaceMeshLayers)
+                await viewport.setPrimaryVolumeDatasetOverride(self.volumeBrushMaskedDataset)
             }
         case .clinical:
             ensureClinicalViewportSession()
@@ -158,6 +242,17 @@ public final class ClinicalViewerCoordinator: ObservableObject {
                 try? await self.applyCurrentConfiguration(to: session)
                 await session.setVolumeLayers(self.currentVolumeLayers)
                 await session.setSurfaceMeshLayers(self.currentSurfaceMeshLayers)
+            }
+        case .stack2D:
+            ensureStack2DViewport()
+            Task { @MainActor [weak self] in
+                guard let self, let viewport = await self.stack2DReady() else { return }
+                if let dataset = self.dataset {
+                    await viewport.applyDataset(dataset)
+                }
+                await self.applyCurrentConfiguration(to: viewport)
+                self.sync2DState(from: viewport)
+                self.errorMessage = nil
             }
         }
     }
@@ -187,6 +282,7 @@ public final class ClinicalViewerCoordinator: ObservableObject {
                 try await self.applyCurrentConfiguration(to: viewport)
                 await viewport.setVolumeLayers(self.currentVolumeLayers)
                 await viewport.setSurfaceMeshLayers(self.currentSurfaceMeshLayers)
+                await viewport.setPrimaryVolumeDatasetOverride(self.volumeBrushMaskedDataset)
                 self.volumeViewport3D = viewport
                 self.errorMessage = nil
                 self.volumeViewport3DTask = nil
@@ -227,6 +323,25 @@ public final class ClinicalViewerCoordinator: ObservableObject {
         }
     }
 
+    public func ensureStack2DViewport() {
+        guard isMetalAvailable else {
+            errorMessage = "Metal is not available on this device."
+            return
+        }
+        if let stack2DViewport {
+            sync2DState(from: stack2DViewport)
+            Task { @MainActor [weak self, weak stack2DViewport] in
+                guard let self, let stack2DViewport else { return }
+                await self.applyCurrentConfiguration(to: stack2DViewport)
+            }
+            return
+        }
+        guard stack2DViewportTask == nil else { return }
+
+        createStack2DViewport(axis: twoDAxis,
+                              initialSliceIndex: twoDSliceIndex)
+    }
+
     public func shutdownClinicalViewportSession() {
         clinicalViewportSessionTask?.cancel()
         clinicalViewportSessionTask = nil
@@ -239,8 +354,43 @@ public final class ClinicalViewerCoordinator: ObservableObject {
         }
     }
 
+    public func shutdownStack2DViewport() {
+        stack2DViewportTask?.cancel()
+        stack2DViewportTask = nil
+        clearSnapshotMetrics()
+        stack2DViewport = nil
+        twoDSliceIndex = 0
+        twoDSliceCount = 0
+        twoDROIAnnotations = []
+    }
+
+    private func createStack2DViewport(axis: MTKCore.Axis,
+                                       initialSliceIndex: Int) {
+        stack2DViewportTask = Task { @MainActor [weak self] in
+            guard let self else { return nil }
+            do {
+                let viewport = try StackViewport(axis: axis,
+                                                 initialSliceIndex: initialSliceIndex)
+                if let dataset = self.dataset {
+                    await viewport.applyDataset(dataset)
+                }
+                await self.applyCurrentConfiguration(to: viewport)
+                self.stack2DViewport = viewport
+                self.sync2DState(from: viewport)
+                self.errorMessage = nil
+                self.stack2DViewportTask = nil
+                return viewport
+            } catch {
+                self.errorMessage = error.localizedDescription
+                self.stack2DViewportTask = nil
+                return nil
+            }
+        }
+    }
+
     public func shutdownActiveViewports() {
         shutdownClinicalViewportSession()
+        shutdownStack2DViewport()
         volumeViewport3DTask?.cancel()
         volumeViewport3DTask = nil
         volumeViewport3D = nil
@@ -266,6 +416,10 @@ public final class ClinicalViewerCoordinator: ObservableObject {
                 await viewport.panCamera(screenDelta: delta)
             case .transferFunction:
                 await viewport.adjustTransferFunctionShift(screenDelta: delta)
+            case .crop:
+                break
+            case .brush:
+                break
             }
         }
     }
@@ -284,6 +438,38 @@ public final class ClinicalViewerCoordinator: ObservableObject {
         guard mode == .single3D, let viewport = volumeViewport3D else { return }
         Task { @MainActor in
             await viewport.resetCamera()
+        }
+    }
+
+    public func set3DOrientation(_ orientation: Volume3DAnatomicalOrientation) {
+        guard mode == .single3D, let viewport = volumeViewport3D else { return }
+        interactionMode = .orbit
+        Task { @MainActor in
+            await viewport.setCameraOrientation(orientation)
+        }
+    }
+
+    public func reset3DOrientation() {
+        resetSingleViewportCamera()
+        interactionMode = .orbit
+    }
+
+    public func set3DRotationTarget(_ target: Volume3DRotationTarget) {
+        guard target.isEnabled else { return }
+        volume3DRotationTarget = target
+        interactionMode = .orbit
+    }
+
+    public func reset3DRotation() {
+        switch volume3DRotationTarget {
+        case .model:
+            guard mode == .single3D, let viewport = volumeViewport3D else { return }
+            interactionMode = .orbit
+            Task { @MainActor in
+                await viewport.resetCameraRotation()
+            }
+        case .cropBox:
+            break
         }
     }
 
@@ -311,6 +497,24 @@ public final class ClinicalViewerCoordinator: ObservableObject {
     public func setMPRInteractionTool(_ tool: ClinicalMPRInteractionTool) {
         mprInteractionTool = tool
         clinicalViewportSession?.setMPRInteractionTool(tool)
+    }
+
+    public func setMPRROIKind(_ kind: ViewerROIKind) {
+        guard kind.isImplementedInMPRFirstDelivery else { return }
+        mprROIKind = kind
+        mprInteractionTool = .roi
+        clinicalViewportSession?.setMPRROIKind(kind)
+        syncMPRState(from: clinicalViewportSession)
+    }
+
+    public func deleteMPRROIsInActiveView() {
+        clinicalViewportSession?.deleteMPRROIsInActiveView()
+        syncMPRState(from: clinicalViewportSession)
+    }
+
+    public func deleteAllMPRROIs() {
+        clinicalViewportSession?.deleteAllMPRROIs()
+        syncMPRState(from: clinicalViewportSession)
     }
 
     public func setActiveMPRAxis(_ axis: MTKCore.Axis) {
@@ -342,6 +546,16 @@ public final class ClinicalViewerCoordinator: ObservableObject {
         }
     }
 
+    public func setMPRSlabBlendMode(_ blendMode: MPRSlabBlendOption) {
+        mprSlabBlendMode = blendMode
+        guard mode == .clinical else { return }
+        Task { @MainActor [weak self] in
+            guard let self, let session = await self.sessionReady() else { return }
+            await session.setMPRSlabBlendMode(blendMode)
+            self.syncMPRState(from: session)
+        }
+    }
+
     public func zoomActiveMPR(factor: Float) {
         guard mode == .clinical, factor.isFinite, factor > 0 else { return }
         clinicalViewportSession?.zoomMPR(axis: activeMPRAxis, factor: factor)
@@ -360,16 +574,460 @@ public final class ClinicalViewerCoordinator: ObservableObject {
         syncMPRState(from: clinicalViewportSession)
     }
 
+    public func setMPRScreenLayout(_ layout: MPRScreenLayout) {
+        selectedMPRScreenLayout = layout
+    }
+
+    public func setTwoDTool(_ tool: Clinical2DTool) {
+        twoDTool = tool
+    }
+
+    public func setTwoDAxis(_ axis: MTKCore.Axis) {
+        set2DResliceAxis(axis)
+    }
+
+    public func set2DResliceAxis(_ axis: MTKCore.Axis) {
+        guard canUseTwoDReslice else {
+            errorMessage = twoDResliceDisabledMessage
+            return
+        }
+        twoDTool = .reslice
+        guard axis != twoDAxis else { return }
+        let normalizedPosition = currentTwoDNormalizedSlicePosition(default: 0.5)
+        let mappedSliceIndex = Self.twoDSliceIndex(forNormalizedPosition: normalizedPosition,
+                                                   axis: axis,
+                                                   dataset: dataset)
+        twoDAxis = axis
+        twoDResliceAxis = axis
+        twoDSliceCount = Self.twoDSliceCount(for: axis, in: dataset)
+        twoDSliceIndex = mappedSliceIndex
+        publishTwoDROIAnnotations()
+        guard mode == .stack2D else { return }
+        stack2DViewportTask?.cancel()
+        stack2DViewportTask = nil
+        stack2DViewport = nil
+        clearSnapshotMetrics()
+        if isMetalAvailable {
+            createStack2DViewport(axis: axis,
+                                  initialSliceIndex: mappedSliceIndex)
+        } else {
+            errorMessage = "Metal is not available on this device."
+        }
+    }
+
+    public func setTwoDSliceIndex(_ index: Int) {
+        let upperBound = twoDSliceCount > 0 ? twoDSliceCount - 1 : Int.max
+        twoDSliceIndex = min(max(index, 0), upperBound)
+        publishTwoDROIAnnotations()
+        guard let stack2DViewport else { return }
+        Task { @MainActor [weak self, weak stack2DViewport] in
+            guard let self, let stack2DViewport else { return }
+            await stack2DViewport.setSliceIndex(self.twoDSliceIndex)
+            self.sync2DState(from: stack2DViewport)
+        }
+    }
+
+    public func setTwoDWindowLevel(window: Double, level: Double) {
+        setTwoDWindowLevel(window: window,
+                           level: level,
+                           presetID: Volume3DWindowPreset.other.rawValue)
+    }
+
+    public func applyTwoDWindowPreset(_ preset: Volume3DWindowPreset) {
+        twoDTool = .windowLevel
+        switch preset {
+        case .default:
+            let resolved = defaultTwoDWindowLevel()
+            setTwoDWindowLevel(window: resolved.window,
+                               level: resolved.level,
+                               presetID: preset.rawValue)
+        case .endoscopy, .other:
+            var next = twoDWindowLevelState
+            next.presetID = preset.rawValue
+            twoDWindowLevelState = next
+        case .abdomen, .bone, .brain, .lungs:
+            guard let windowPreset = preset.windowLevelPreset else { return }
+            setTwoDWindowLevel(window: windowPreset.window,
+                               level: windowPreset.level,
+                               presetID: preset.rawValue)
+        }
+    }
+
+    public func applyTwoDCLUTPreset(_ preset: Clinical2DCLUT) {
+        var next = twoDWindowLevelState
+        next.clut = preset
+        twoDWindowLevelState = next
+        twoDTool = .windowLevel
+        applyTwoDWindowPresentationToViewport()
+    }
+
+    public func toggleTwoDWindowInverted() {
+        var next = twoDWindowLevelState
+        next.isInverted.toggle()
+        twoDWindowLevelState = next
+        twoDTool = .windowLevel
+        applyTwoDWindowPresentationToViewport()
+    }
+
+    private func setTwoDWindowLevel(window: Double,
+                                    level: Double,
+                                    presetID: String?) {
+        guard let next = twoDWindowLevelState.applying(window: window,
+                                                       level: level,
+                                                       presetID: presetID) else {
+            return
+        }
+        twoDWindowLevelState = next
+        twoDTool = .windowLevel
+        applyTwoDWindowLevelToViewport()
+    }
+
+    private func applyTwoDWindowLevelToViewport() {
+        let state = twoDWindowLevelState
+        guard let stack2DViewport else { return }
+        Task { @MainActor [weak self, weak stack2DViewport] in
+            guard let self, let stack2DViewport else { return }
+            await stack2DViewport.setWindowLevel(window: state.window,
+                                                 level: state.level)
+            stack2DViewport.setWindowPresentation(isInverted: state.isInverted,
+                                                  clut: state.clut)
+            self.sync2DState(from: stack2DViewport)
+        }
+    }
+
+    private func applyTwoDWindowPresentationToViewport() {
+        let state = twoDWindowLevelState
+        guard let stack2DViewport else { return }
+        stack2DViewport.setWindowPresentation(isInverted: state.isInverted,
+                                              clut: state.clut)
+        sync2DState(from: stack2DViewport)
+    }
+
+    private func applyTwoDTransformToViewport() {
+        guard let stack2DViewport else { return }
+        stack2DViewport.setViewportTransform(twoDTransform)
+        sync2DState(from: stack2DViewport)
+    }
+
+    public func setTwoDTransform(_ transform: Viewer2DTransform) {
+        let zoom = transform.zoom.isFinite ? max(transform.zoom, 0.01) : 1
+        let panX = transform.pan.x.isFinite ? transform.pan.x : 0
+        let panY = transform.pan.y.isFinite ? transform.pan.y : 0
+        let rotation = transform.rotationRadians.isFinite ? transform.rotationRadians : 0
+        twoDTransform = Viewer2DTransform(
+            zoom: zoom,
+            pan: SIMD2<Double>(panX, panY),
+            rotationRadians: rotation,
+            isFlippedHorizontally: transform.isFlippedHorizontally,
+            isFlippedVertically: transform.isFlippedVertically
+        )
+        applyTwoDTransformToViewport()
+    }
+
+    public func scrollTwoD(by steps: Int) {
+        guard steps != 0 else { return }
+        twoDTool = .scroll
+        let target: Int
+        if twoDSliceCount > 0, twoDScrollSettings.loopThroughImages {
+            target = Self.wrappedTwoDSliceIndex(twoDSliceIndex + steps, count: twoDSliceCount)
+        } else {
+            let upperBound = twoDSliceCount > 0 ? twoDSliceCount - 1 : Int.max
+            target = min(max(twoDSliceIndex + steps, 0), upperBound)
+        }
+        setTwoDSliceIndex(target)
+    }
+
+    public func set2DScrollSettings(_ settings: TwoDScrollSettings) {
+        twoDScrollSettings = settings
+        twoDTool = .scroll
+    }
+
+    public func set2DScrollSpeed(_ speed: Double) {
+        var settings = twoDScrollSettings
+        settings.speed = speed.isFinite ? max(speed, 0.1) : 1.0
+        set2DScrollSettings(settings)
+    }
+
+    public func set2DImageSortMode(_ sortMode: TwoDImageSortMode) {
+        var settings = twoDScrollSettings
+        settings.sortMode = sortMode
+        set2DScrollSettings(settings)
+    }
+
+    public func set2DLoopThroughImages(_ enabled: Bool) {
+        var settings = twoDScrollSettings
+        settings.loopThroughImages = enabled
+        set2DScrollSettings(settings)
+    }
+
+    public func set2DOnScreenControls(_ enabled: Bool) {
+        var settings = twoDScrollSettings
+        settings.showsOnScreenControls = enabled
+        set2DScrollSettings(settings)
+    }
+
+    public func set2DHUDSettings(_ settings: TwoDHUDSettings) {
+        twoDHUDSettings = settings
+    }
+
+    public func scroll2D(by delta: Int) {
+        scrollTwoD(by: delta)
+    }
+
+    public func set2DSliceIndex(_ index: Int) {
+        setTwoDSliceIndex(index)
+    }
+
+    public func adjustTwoDWindowLevel(screenDelta: CGSize) {
+        guard screenDelta.width.isFinite, screenDelta.height.isFinite else { return }
+        twoDTool = .windowLevel
+        setTwoDWindowLevel(window: twoDWindowLevel.window + Double(screenDelta.width) * 2,
+                           level: twoDWindowLevel.level - Double(screenDelta.height) * 2)
+    }
+
+    public func panTwoD(deltaNormalized: SIMD2<Double>) {
+        guard deltaNormalized.x.isFinite, deltaNormalized.y.isFinite else { return }
+        var transform = twoDTransform
+        transform.pan += deltaNormalized
+        setTwoDTransform(transform)
+    }
+
+    public func zoomTwoD(factor: Double,
+                         anchor: SIMD2<Double> = SIMD2<Double>(repeating: 0.5)) {
+        guard factor.isFinite, factor > 0,
+              anchor.x.isFinite, anchor.y.isFinite else {
+            return
+        }
+        var transform = twoDTransform
+        transform.zoom *= factor
+        setTwoDTransform(transform)
+    }
+
+    public func rotateTwoD(byRadians radians: Double) {
+        guard radians.isFinite else { return }
+        var transform = twoDTransform
+        transform.rotationRadians += radians
+        setTwoDTransform(transform)
+        twoDTool = .rotation
+    }
+
+    public func beginTwoDInteraction() {
+        activeTwoDInteractionCount += 1
+        guard activeTwoDInteractionCount == 1,
+              let stack2DViewport else {
+            return
+        }
+        Task { @MainActor [weak stack2DViewport] in
+            await stack2DViewport?.beginAdaptiveSamplingInteraction()
+        }
+    }
+
+    public func endTwoDInteraction() {
+        guard activeTwoDInteractionCount > 0 else { return }
+        activeTwoDInteractionCount -= 1
+        guard activeTwoDInteractionCount == 0,
+              let stack2DViewport else {
+            return
+        }
+        Task { @MainActor [weak stack2DViewport] in
+            await stack2DViewport?.endAdaptiveSamplingInteraction()
+        }
+    }
+
+    public func handleTwoDROIInteraction(_ interaction: Clinical2DROIInteraction) {
+        guard interaction.axis == twoDAxis else { return }
+        twoDTool = .roi
+        let points = Self.twoDROIPoints(kind: interaction.kind,
+                                        start: interaction.startImagePoint,
+                                        end: interaction.endImagePoint)
+        guard !points.isEmpty else { return }
+        let annotation = ViewerROIAnnotation(
+            kind: interaction.kind,
+            axis: interaction.axis,
+            sliceIndex: interaction.sliceIndex,
+            seriesIdentifier: currentTwoDSeriesIdentifier,
+            normalizedImagePoints: points,
+            text: interaction.kind == .text ? "Annotation" : nil,
+            measurement: twoDMeasurement(kind: interaction.kind,
+                                         axis: interaction.axis,
+                                         points: points)
+        )
+        twoDROIStore.add(annotation)
+        publishTwoDROIAnnotations()
+    }
+
+    private static func wrappedTwoDSliceIndex(_ index: Int,
+                                              count: Int) -> Int {
+        guard count > 0 else { return 0 }
+        return ((index % count) + count) % count
+    }
+
+    public func resetTwoDTransform() {
+        setTwoDTransform(.identity)
+    }
+
+    public func rotateTwoD(byDegrees degrees: Double) {
+        guard degrees.isFinite else { return }
+        var transform = twoDTransform
+        transform.rotationRadians += degrees * .pi / 180.0
+        setTwoDTransform(transform)
+        twoDTool = .rotation
+    }
+
+    public func rotate2D(deltaDegrees degrees: Double) {
+        rotateTwoD(byDegrees: degrees)
+    }
+
+    public func rotate2DClockwise90() {
+        rotateTwoD(byDegrees: 90)
+    }
+
+    public func rotate2DCounterClockwise90() {
+        rotateTwoD(byDegrees: -90)
+    }
+
+    public func flip2DHorizontal() {
+        flipTwoDHorizontal()
+    }
+
+    public func flip2DVertical() {
+        flipTwoDVertical()
+    }
+
+    public func reset2DTransform() {
+        resetTwoDTransform()
+    }
+
+    public func flipTwoDHorizontal() {
+        var transform = twoDTransform
+        transform.isFlippedHorizontally.toggle()
+        setTwoDTransform(transform)
+        twoDTool = .rotation
+    }
+
+    public func flipTwoDVertical() {
+        var transform = twoDTransform
+        transform.isFlippedVertically.toggle()
+        setTwoDTransform(transform)
+        twoDTool = .rotation
+    }
+
+    public func setTwoDROIKind(_ kind: ViewerROIKind) {
+        twoDROIKind = kind
+        twoDTool = .roi
+    }
+
+    public func twoDROIAnnotations(axis: MTKCore.Axis? = nil,
+                                   sliceIndex: Int? = nil) -> [ViewerROIAnnotation] {
+        twoDROIStore.annotations(axis: axis ?? twoDAxis,
+                                 sliceIndex: sliceIndex ?? twoDSliceIndex,
+                                 seriesIdentifier: currentTwoDSeriesIdentifier)
+    }
+
+    public func deleteTwoDROIsInView() {
+        twoDROIStore.deleteAnnotations(axis: twoDAxis,
+                                       sliceIndex: twoDSliceIndex,
+                                       seriesIdentifier: currentTwoDSeriesIdentifier)
+        twoDTool = .roi
+        publishTwoDROIAnnotations()
+    }
+
+    public func deleteAllTwoDROIs() {
+        twoDROIStore.deleteAll(seriesIdentifier: currentTwoDSeriesIdentifier)
+        twoDTool = .roi
+        publishTwoDROIAnnotations()
+    }
+
+    public func setTwoDSyncEnabled(_ enabled: Bool) {
+        if enabled {
+            twoDSyncState.syncTransforms = true
+            twoDSyncState.syncWindowLevel = true
+            twoDSyncState.syncLocation = preferredTwoDSyncLocation && canSyncTwoDLocation
+        } else {
+            preferredTwoDSyncLocation = twoDSyncState.syncLocation
+            twoDSyncState.syncTransforms = false
+            twoDSyncState.syncWindowLevel = false
+            twoDSyncState.syncLocation = false
+        }
+        twoDTool = .sync
+    }
+
+    public func setTwoDSyncOption(_ option: ViewerSyncOption,
+                                  enabled: Bool) {
+        if option == .location {
+            let allowed = enabled && canSyncTwoDLocation
+            preferredTwoDSyncLocation = allowed
+            twoDSyncState = twoDSyncState.setting(.location, enabled: allowed)
+        } else {
+            twoDSyncState = twoDSyncState.setting(option, enabled: enabled)
+        }
+        twoDTool = .sync
+    }
+
+    public func setMPRAnnotationsVisible(_ visible: Bool) {
+        isMPRAnnotationsVisible = visible
+    }
+
+    public func setMPRCrosshairVisible(_ visible: Bool) {
+        isMPRCrosshairVisible = visible
+    }
+
     public func applyMPRQuickWindowPreset(_ quickPreset: ClinicalViewerWindowQuickPreset) {
         let preset = quickPreset.windowLevelPreset
+        let resolvedPreset = MPRWindowPreset.allCases.first { $0.quickPreset == quickPreset } ?? .other
+        mprWindowPreset = resolvedPreset
         mprWindow = preset.window
         mprLevel = preset.level
         guard mode == .clinical else { return }
         Task { @MainActor [weak self] in
             guard let self, let session = await self.sessionReady() else { return }
-            await session.setMPRWindowLevel(window: preset.window, level: preset.level)
+            await session.applyMPRWindowPreset(resolvedPreset)
             self.syncMPRState(from: session)
         }
+    }
+
+    public func applyMPRWindowPreset(_ preset: MPRWindowPreset) {
+        mprWindowPreset = preset
+        if let quickPreset = preset.quickPreset {
+            let windowPreset = quickPreset.windowLevelPreset
+            mprWindow = windowPreset.window
+            mprLevel = windowPreset.level
+        } else if preset == .default, let range = defaultMPRWindowRange() {
+            let window = WindowLevelShift(range: range)
+            mprWindow = window.window
+            mprLevel = window.level
+        }
+        guard mode == .clinical else { return }
+        Task { @MainActor [weak self] in
+            guard let self, let session = await self.sessionReady() else { return }
+            await session.applyMPRWindowPreset(preset)
+            self.syncMPRState(from: session)
+        }
+    }
+
+    public func setMPRWindowLevel(window: Double, level: Double) {
+        guard window.isFinite, level.isFinite else { return }
+        mprWindowPreset = .other
+        mprWindow = max(window, 1)
+        mprLevel = level
+        guard mode == .clinical else { return }
+        Task { @MainActor [weak self] in
+            guard let self, let session = await self.sessionReady() else { return }
+            await session.setMPRWindowLevel(window: window, level: level)
+            self.syncMPRState(from: session)
+        }
+    }
+
+    public func applyMPRCLUTPreset(_ preset: Volume3DCLUTPreset) {
+        mprCLUTPreset = preset
+        guard mode == .clinical else { return }
+        clinicalViewportSession?.setMPRCLUTPreset(preset)
+    }
+
+    public func setMPRWindowInverted(_ inverted: Bool) {
+        isMPRWindowInverted = inverted
+        guard mode == .clinical else { return }
+        clinicalViewportSession?.setMPRWindowInverted(inverted)
     }
 
     public func setVolumeOpacityScale(_ scale: Double) {
@@ -402,6 +1060,22 @@ public final class ClinicalViewerCoordinator: ObservableObject {
         }
     }
 
+    public func setVolumeRenderQualitySettings(_ settings: VolumeRenderQualitySettings) {
+        let sanitized = settings.sanitized
+        volumeRenderQualitySettings = sanitized
+        volumeRenderQualitySettingsStore.saveVolumeRenderQualitySettings(sanitized)
+        clearSnapshotMetrics()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            if let volumeViewport = self.volumeViewport3D {
+                await volumeViewport.setVolumeRenderQualitySettings(sanitized)
+            }
+            if let session = self.clinicalViewportSession {
+                await session.setVolumeRenderQualitySettings(sanitized)
+            }
+        }
+    }
+
     public func applyQuickPreset(_ quickPreset: ClinicalViewerTransferQuickPreset) {
         applyPreset(quickPreset.preset)
     }
@@ -411,6 +1085,13 @@ public final class ClinicalViewerCoordinator: ObservableObject {
         let transferFunction = try preset.loadTransferFunction()
         let scale = Float(min(max(opacityScale ?? volumeOpacityScale, 0.1), 2.0))
         return applyingOpacityScale(scale, to: transferFunction)
+    }
+
+    public func volume3DTransferFunction(for preset: ClinicalTransferFunctionPreset,
+                                         opacityScale: Double? = nil) throws -> TransferFunction {
+        volume3DCLUTPreset.transferFunction(
+            basedOn: try transferFunction(for: preset, opacityScale: opacityScale)
+        )
     }
 
     @discardableResult
@@ -442,6 +1123,8 @@ public final class ClinicalViewerCoordinator: ObservableObject {
                     }
                 }
             }
+        case .stack2D:
+            break
         }
         return true
     }
@@ -452,6 +1135,7 @@ public final class ClinicalViewerCoordinator: ObservableObject {
         let previousMethod = renderMethod
         transferPreset = newPreset
         renderMethod = VolumetricRenderMethod(renderMode: newPreset.renderingIntent.mode)
+        volume3DWindowPreset = Volume3DWindowPreset.preset(for: newPreset)
         switch mode {
         case .single3D:
             guard let viewport = volumeViewport3D else {
@@ -461,7 +1145,7 @@ public final class ClinicalViewerCoordinator: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 do {
-                    try await viewport.applyTransferFunction(self.transferFunction(for: newPreset))
+                    try await viewport.applyTransferFunction(self.volume3DTransferFunction(for: newPreset))
                     self.errorMessage = nil
                 } catch {
                     self.errorMessage = error.localizedDescription
@@ -486,12 +1170,65 @@ public final class ClinicalViewerCoordinator: ObservableObject {
                     }
                 }
             }
+        case .stack2D:
+            break
+        }
+    }
+
+    public func applyVolume3DWindowPreset(_ preset: Volume3DWindowPreset) {
+        clearSnapshotMetrics()
+        volume3DWindowPreset = preset
+        let newPreset = preset.clinicalTransferFunctionPreset
+        let previousPreset = transferPreset
+        let previousMethod = renderMethod
+        transferPreset = newPreset
+        renderMethod = VolumetricRenderMethod(renderMode: newPreset.renderingIntent.mode)
+        guard mode == .single3D else { return }
+        guard let viewport = volumeViewport3D else {
+            ensureVolumeViewport3D()
+            return
+        }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await viewport.applyTransferFunction(self.volume3DTransferFunction(for: newPreset))
+                await self.applyVolume3DWindowPresetWindow(preset, to: viewport)
+                self.errorMessage = nil
+            } catch {
+                self.errorMessage = error.localizedDescription
+                if self.transferPreset == newPreset {
+                    self.transferPreset = previousPreset
+                    self.renderMethod = previousMethod
+                }
+            }
+        }
+    }
+
+    public func applyVolume3DCLUTPreset(_ preset: Volume3DCLUTPreset) {
+        clearSnapshotMetrics()
+        volume3DCLUTPreset = preset
+        guard mode == .single3D, let viewport = volumeViewport3D else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await viewport.setTransferFunction(self.volume3DTransferFunction(for: self.transferPreset))
+                self.errorMessage = nil
+            } catch {
+                self.errorMessage = error.localizedDescription
+            }
         }
     }
 
     public func applyDataset(_ dataset: VolumeDataset) async throws {
         clearSnapshotMetrics()
         self.dataset = dataset
+        publishTwoDROIAnnotations()
+        resolveDefaultTwoDWindowLevelIfNeeded()
+        resetCropClipState()
+        resetVolumeBrushMaskState()
+        if let volumeViewport3D {
+            await volumeViewport3D.setPrimaryVolumeDatasetOverride(nil)
+        }
         ensureActiveViewport()
         guard let viewport = await activeViewportReady() else {
             throw activeViewportUnavailableError()
@@ -600,17 +1337,77 @@ public final class ClinicalViewerCoordinator: ObservableObject {
     }
 
     public func resetCropClip() {
-        cropEnabled = false
-        cropXMin = 0
-        cropXMax = 1
-        cropYMin = 0
-        cropYMax = 1
-        cropZMin = 0
-        cropZMax = 1
-        clipEnabled = false
-        clipAxis = .axial
-        clipPlaneOffset = 0
+        resetCropClipState()
         reapplyCropClip()
+    }
+
+    public func setVolumeBrushEnabled(_ enabled: Bool) {
+        volumeBrushState = volumeBrushState.settingEnabled(enabled)
+        if enabled {
+            interactionMode = .brush
+        } else if interactionMode == .brush {
+            interactionMode = .orbit
+            volumeBrushCursor = nil
+        }
+    }
+
+    public func setVolumeBrushSizeMM(_ size: Double) {
+        volumeBrushState = volumeBrushState.settingBrushSizeMM(size)
+    }
+
+    public func adjustVolumeBrushSizeMM(by delta: Double) {
+        volumeBrushState = volumeBrushState.adjustingBrushSizeMM(by: delta)
+    }
+
+    public func setVolumeBrushMode(_ mode: VolumeBrushMode) {
+        volumeBrushState = volumeBrushState.settingMode(mode)
+    }
+
+    public func applyVolumeBrush(at screenPoint: CGPoint) {
+        volumeBrushCursor = screenPoint
+        guard mode == .single3D,
+              volumeBrushState.isEnabled,
+              let dataset,
+              let viewport = volumeViewport3D else {
+            return
+        }
+
+        do {
+            let pick = try viewport.pickVolume(screenPoint: screenPoint,
+                                              dataset: dataset)
+            let result = try VolumeBrushMask.applyingStroke(
+                to: dataset,
+                existingMaskedData: volumeBrushMaskedDataset?.data,
+                centerVoxel: pick.voxel.continuousIndex,
+                brushSizeMM: volumeBrushState.brushSizeMM,
+                mode: volumeBrushState.mode
+            )
+            volumeBrushMaskedDataset = result.dataset
+            volumeBrushMaskHasEdits = true
+            clearSnapshotMetrics()
+            Task { @MainActor in
+                await viewport.setPrimaryVolumeDatasetOverride(result.dataset)
+            }
+            errorMessage = nil
+        } catch {
+            guard !isNonFatalBrushPickError(error) else { return }
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    public func endVolumeBrushStroke() {
+        volumeBrushCursor = nil
+    }
+
+    public func resetVolumeBrushMask() {
+        volumeBrushMaskedDataset = nil
+        volumeBrushMaskHasEdits = false
+        volumeBrushCursor = nil
+        clearSnapshotMetrics()
+        guard let volumeViewport3D else { return }
+        Task { @MainActor in
+            await volumeViewport3D.setPrimaryVolumeDatasetOverride(nil)
+        }
     }
 
     public func currentVolumeClippingState() throws -> VolumeClippingState {
@@ -648,6 +1445,8 @@ public final class ClinicalViewerCoordinator: ObservableObject {
             return try await volumeViewport.renderSnapshotFrame()
         case .clinical(let session):
             return try await session.renderVolumeSnapshotFrame()
+        case .stack2D:
+            throw ClinicalViewerCoordinatorError.viewportUnavailable("2D snapshot export is not available yet.")
         }
     }
 
@@ -735,6 +1534,8 @@ public final class ClinicalViewerCoordinator: ObservableObject {
     private func configureSingle3DViewport(_ viewport: VolumeViewport3D) async {
         await viewport.setAdaptiveSampling(adaptiveSamplingEnabled)
         await viewport.setSamplingStep(single3DFinalSamplingStep)
+        await viewport.setVolumeRenderQualitySettings(volumeRenderQualitySettings)
+        await viewport.setPrimaryVolumeDatasetOverride(volumeBrushMaskedDataset)
     }
 
     private func zoomSingleViewportScale(_ scale: Float) {
@@ -780,9 +1581,157 @@ public final class ClinicalViewerCoordinator: ObservableObject {
         mprSlicePositions = session.normalizedPositions.mapValues { Double($0) }
         mprWindow = session.windowLevel.window
         mprLevel = session.windowLevel.level
+        mprWindowPreset = session.mprWindowPreset
+        mprCLUTPreset = session.mprCLUTPreset
+        isMPRWindowInverted = session.isMPRWindowInverted
+        mprROIKind = session.mprROIKind
+        mprROIAnnotations = session.mprROIAnnotations
+        mprSlabBlendMode = session.mprSlabBlendMode
         mprSlabThickness = session.slabThickness
         mprViewportTransforms = session.mprViewportTransforms
         adaptiveSamplingEnabled = session.adaptiveSamplingEnabled
+    }
+
+    private func sync2DState(from viewport: StackViewport?) {
+        guard let viewport else { return }
+        twoDAxis = viewport.axis
+        twoDResliceAxis = viewport.axis
+        twoDSliceIndex = viewport.sliceIndex
+        twoDSliceCount = viewport.sliceCount
+        publishTwoDROIAnnotations()
+    }
+
+    private func currentTwoDNormalizedSlicePosition(default defaultValue: Float) -> Float {
+        if twoDSliceCount > 1 {
+            return min(max(Float(twoDSliceIndex) / Float(twoDSliceCount - 1), 0), 1)
+        }
+        if let position = stack2DViewport?.state.slice?.normalizedPosition, position.isFinite {
+            return min(max(position, 0), 1)
+        }
+        return min(max(defaultValue, 0), 1)
+    }
+
+    private static func twoDSliceCount(for axis: MTKCore.Axis,
+                                       in dataset: VolumeDataset?) -> Int {
+        guard let dimensions = dataset?.dimensions else { return 0 }
+        switch axis {
+        case .axial:
+            return dimensions.depth
+        case .coronal:
+            return dimensions.height
+        case .sagittal:
+            return dimensions.width
+        }
+    }
+
+    private static func twoDSliceIndex(forNormalizedPosition position: Float,
+                                       axis: MTKCore.Axis,
+                                       dataset: VolumeDataset?) -> Int {
+        let count = twoDSliceCount(for: axis, in: dataset)
+        guard count > 1 else { return 0 }
+        let normalized = min(max(position.isFinite ? position : 0.5, 0), 1)
+        return Int((Float(count - 1) * normalized).rounded())
+    }
+
+    private static func supportsTwoDReslice(_ dataset: VolumeDataset) -> Bool {
+        dataset.dimensions.width > 1
+            && dataset.dimensions.height > 1
+            && dataset.dimensions.depth > 1
+    }
+
+    private var currentTwoDSeriesIdentifier: String? {
+        Self.twoDSeriesIdentifier(for: dataset)
+    }
+
+    private func publishTwoDROIAnnotations() {
+        twoDROIAnnotations = twoDROIStore.annotations(axis: twoDAxis,
+                                                      sliceIndex: twoDSliceIndex,
+                                                      seriesIdentifier: currentTwoDSeriesIdentifier)
+    }
+
+    private func twoDMeasurement(kind: ViewerROIKind,
+                                 axis: MTKCore.Axis,
+                                 points: [CGPoint]) -> ViewerROIMeasurement? {
+        ViewerROIMeasurementCalculator.measurement(kind: kind,
+                                                   axis: axis,
+                                                   normalizedImagePoints: points,
+                                                   dimensions: dataset?.dimensions,
+                                                   spacing: dataset?.spacing)
+    }
+
+    private static func twoDROIPoints(kind: ViewerROIKind,
+                                      start: CGPoint,
+                                      end: CGPoint) -> [CGPoint] {
+        switch kind {
+        case .distance, .arrow, .curvedLine, .scribble:
+            return [start, end]
+        case .point, .text:
+            return [end]
+        case .angle:
+            return [CGPoint(x: end.x, y: start.y), start, end]
+        case .cobbAngle:
+            return [
+                start,
+                CGPoint(x: end.x, y: start.y),
+                CGPoint(x: start.x, y: end.y),
+                end
+            ]
+        case .area, .closedPath:
+            return [
+                start,
+                CGPoint(x: end.x, y: start.y),
+                end,
+                CGPoint(x: start.x, y: end.y)
+            ]
+        case .ctr:
+            let left = min(start.x, end.x)
+            let right = max(start.x, end.x)
+            let y = (start.y + end.y) * 0.5
+            let centerX = (left + right) * 0.5
+            let cardiacHalfWidth = (right - left) * 0.25
+            return [
+                CGPoint(x: left, y: y),
+                CGPoint(x: right, y: y),
+                CGPoint(x: centerX - cardiacHalfWidth, y: y),
+                CGPoint(x: centerX + cardiacHalfWidth, y: y)
+            ]
+        }
+    }
+
+    private static func twoDSeriesIdentifier(for dataset: VolumeDataset?) -> String? {
+        guard let dataset else { return nil }
+        if let seriesUID = dataset.imageData.clinicalMetadata?.seriesInstanceUID,
+           !seriesUID.isEmpty {
+            return seriesUID
+        }
+        return [
+            "\(dataset.dimensions.width)x\(dataset.dimensions.height)x\(dataset.dimensions.depth)",
+            "\(dataset.spacing.x),\(dataset.spacing.y),\(dataset.spacing.z)",
+            "\(dataset.pixelFormat)",
+            "\(dataset.data.count)"
+        ].joined(separator: "|")
+    }
+
+    private func defaultMPRWindowRange() -> ClosedRange<Int32>? {
+        guard let dataset else { return nil }
+        return dataset.recommendedWindow ?? dataset.intensityRange
+    }
+
+    private func defaultTwoDWindowLevel() -> WindowLevelShift {
+        guard let range = dataset?.recommendedWindow ?? dataset?.intensityRange else {
+            return TwoDWindowLevelState.default.windowLevel
+        }
+        return WindowLevelShift(range: range)
+    }
+
+    private func resolveDefaultTwoDWindowLevelIfNeeded() {
+        guard twoDWindowPreset == .default else { return }
+        let resolved = defaultTwoDWindowLevel()
+        twoDWindowLevelState = TwoDWindowLevelState(window: resolved.window,
+                                                   level: resolved.level,
+                                                   presetID: Volume3DWindowPreset.default.rawValue,
+                                                   isInverted: twoDWindowLevelState.isInverted,
+                                                   clut: twoDWindowLevelState.clut)
     }
 
     private func volumeViewportReady() async -> VolumeViewport3D? {
@@ -792,6 +1741,18 @@ public final class ClinicalViewerCoordinator: ObservableObject {
         ensureVolumeViewport3D()
         let viewport = await volumeViewport3DTask?.value
         return viewport ?? volumeViewport3D
+    }
+
+    private func stack2DReady() async -> StackViewport? {
+        if let viewport = stack2DViewport {
+            return viewport
+        }
+        ensureStack2DViewport()
+        let viewport = await stack2DViewportTask?.value
+        if let viewport {
+            sync2DState(from: viewport)
+        }
+        return viewport ?? stack2DViewport
     }
 
     private func activeViewportUnavailableError() -> ClinicalViewerCoordinatorError {
@@ -806,6 +1767,9 @@ public final class ClinicalViewerCoordinator: ObservableObject {
         case .clinical:
             guard let session = await sessionReady() else { return nil }
             return .clinical(session)
+        case .stack2D:
+            guard let viewport = await stack2DReady() else { return nil }
+            return .stack2D(viewport)
         }
     }
 
@@ -816,6 +1780,9 @@ public final class ClinicalViewerCoordinator: ObservableObject {
             await volumeViewport.applyDataset(dataset)
         case .clinical(let session):
             try await session.applyDataset(dataset)
+        case .stack2D(let viewport):
+            await viewport.applyDataset(dataset)
+            sync2DState(from: viewport)
         }
     }
 
@@ -825,7 +1792,19 @@ public final class ClinicalViewerCoordinator: ObservableObject {
             try await applyCurrentConfiguration(to: volumeViewport)
         case .clinical(let session):
             try await applyCurrentConfiguration(to: session)
+        case .stack2D(let viewport):
+            await applyCurrentConfiguration(to: viewport)
         }
+    }
+
+    private func applyCurrentConfiguration(to viewport: StackViewport) async {
+        let state = twoDWindowLevelState
+        await viewport.setWindowLevel(window: state.window,
+                                      level: state.level)
+        viewport.setWindowPresentation(isInverted: state.isInverted,
+                                       clut: state.clut)
+        viewport.setViewportTransform(twoDTransform)
+        sync2DState(from: viewport)
     }
 
     private func applyCurrentConfiguration(to session: ClinicalViewportSession) async throws {
@@ -833,23 +1812,35 @@ public final class ClinicalViewerCoordinator: ObservableObject {
         try await session.setTransferFunction(transferFunction(for: transferPreset))
         try await applyCropClip(to: session)
         await session.setAdaptiveSampling(adaptiveSamplingEnabled)
+        await session.setVolumeRenderQualitySettings(volumeRenderQualitySettings)
+        await session.setMPRSlabBlendMode(mprSlabBlendMode)
+        await session.setMPRSlabThickness(mprSlabThickness)
+        session.setMPRROIKind(mprROIKind, activateTool: false)
         session.setMPRInteractionTool(mprInteractionTool)
         session.setActiveMPRAxis(activeMPRAxis)
-
-        if let dataset {
-            let window = dataset.recommendedWindow ?? dataset.intensityRange
-            await session.setMPRWindowLevel(window: Double(max(window.upperBound - window.lowerBound, 1)),
-                                            level: Double(window.lowerBound + window.upperBound) / 2.0)
+        session.setMPRCLUTPreset(mprCLUTPreset)
+        session.setMPRWindowInverted(isMPRWindowInverted)
+        if mprWindowPreset == .other {
+            await session.setMPRWindowLevel(window: mprWindow, level: mprLevel)
+        } else {
+            await session.applyMPRWindowPreset(mprWindowPreset)
         }
         syncMPRState(from: session)
     }
 
     private func applyCurrentConfiguration(to viewport: VolumeViewport3D) async throws {
-        await viewport.setRenderMethod(renderMethod)
-        try await viewport.setTransferFunction(transferFunction(for: transferPreset))
+        try await viewport.applyTransferFunction(volume3DTransferFunction(for: transferPreset))
         try await applyCropClip(to: viewport)
+        await viewport.setVolumeRenderQualitySettings(volumeRenderQualitySettings)
+        await applyVolume3DWindowPresetWindow(volume3DWindowPreset, to: viewport)
+    }
 
-        if let dataset {
+    private func applyVolume3DWindowPresetWindow(_ preset: Volume3DWindowPreset,
+                                                to viewport: VolumeViewport3D) async {
+        if let windowPreset = preset.windowLevelPreset {
+            await viewport.setWindowLevel(window: windowPreset.window,
+                                          level: windowPreset.level)
+        } else if let dataset {
             let window = dataset.recommendedWindow ?? dataset.intensityRange
             await viewport.setWindowLevel(window: Double(max(window.upperBound - window.lowerBound, 1)),
                                           level: Double(window.lowerBound + window.upperBound) / 2.0)
@@ -862,7 +1853,7 @@ public final class ClinicalViewerCoordinator: ObservableObject {
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                try await viewport.setTransferFunction(self.transferFunction(for: self.transferPreset))
+                try await viewport.setTransferFunction(self.volume3DTransferFunction(for: self.transferPreset))
                 self.errorMessage = nil
             } catch {
                 self.errorMessage = error.localizedDescription
@@ -874,6 +1865,11 @@ public final class ClinicalViewerCoordinator: ObservableObject {
         clearSnapshotMetrics()
         Task { @MainActor [weak self] in
             guard let self else { return }
+            guard self.dataset != nil ||
+                    self.volumeViewport3D != nil ||
+                    self.clinicalViewportSession != nil else {
+                return
+            }
             guard let viewport = await self.activeViewportReady() else { return }
             do {
                 try await self.applyCropClip(to: viewport)
@@ -886,12 +1882,54 @@ public final class ClinicalViewerCoordinator: ObservableObject {
         }
     }
 
+    private func resetCropClipState() {
+        cropEnabled = false
+        cropXMin = 0
+        cropXMax = 1
+        cropYMin = 0
+        cropYMax = 1
+        cropZMin = 0
+        cropZMax = 1
+        clipEnabled = false
+        clipAxis = .axial
+        clipPlaneOffset = 0
+        clippingErrorMessage = nil
+    }
+
+    private func resetVolumeBrushMaskState() {
+        volumeBrushState = VolumeBrushState()
+        volumeBrushCursor = nil
+        volumeBrushMaskedDataset = nil
+        volumeBrushMaskHasEdits = false
+    }
+
+    private func isNonFatalBrushPickError(_ error: any Error) -> Bool {
+        guard let pickError = error as? VolumePickError else {
+            return false
+        }
+        switch pickError {
+        case .screenPointOutsideViewport,
+             .outsideImagedArea,
+             .rayMissedVolume,
+             .outsideVolume,
+             .noVisibleSample:
+            return true
+        case .invalidViewport,
+             .invalidViewportSize,
+             .malformedData,
+             .degenerateGeometry:
+            return false
+        }
+    }
+
     private func applyCropClip(to viewport: ActiveClinicalViewerViewport) async throws {
         switch viewport {
         case .single3D(let volumeViewport):
             try await applyCropClip(to: volumeViewport)
         case .clinical(let session):
             try await applyCropClip(to: session)
+        case .stack2D:
+            clippingErrorMessage = nil
         }
     }
 
@@ -915,6 +1953,8 @@ public final class ClinicalViewerCoordinator: ObservableObject {
             await volumeViewport.setVolumeLayers(layers)
         case .clinical(let session):
             await session.setVolumeLayers(layers)
+        case .stack2D:
+            break
         }
     }
 
@@ -926,6 +1966,8 @@ public final class ClinicalViewerCoordinator: ObservableObject {
             await volumeViewport.setSurfaceMeshLayers(layers)
         case .clinical(let session):
             await session.setSurfaceMeshLayers(layers)
+        case .stack2D:
+            break
         }
     }
 
@@ -940,6 +1982,8 @@ public final class ClinicalViewerCoordinator: ObservableObject {
             await volumeViewport.setVolumeLayerVisibility(id: id, isVisible: isVisible)
         case .clinical(let session):
             await session.setVolumeLayerVisibility(id: id, isVisible: isVisible)
+        case .stack2D:
+            break
         }
     }
 
@@ -954,6 +1998,8 @@ public final class ClinicalViewerCoordinator: ObservableObject {
             await volumeViewport.setVolumeLayerOpacity(id: id, opacity: opacity)
         case .clinical(let session):
             await session.setVolumeLayerOpacity(id: id, opacity: opacity)
+        case .stack2D:
+            break
         }
     }
 
@@ -968,6 +2014,8 @@ public final class ClinicalViewerCoordinator: ObservableObject {
             await volumeViewport.setVolumeLayerBlendMode(id: id, blendMode: blendMode)
         case .clinical(let session):
             await session.setVolumeLayerBlendMode(id: id, blendMode: blendMode)
+        case .stack2D:
+            break
         }
     }
 
@@ -982,6 +2030,8 @@ public final class ClinicalViewerCoordinator: ObservableObject {
             await volumeViewport.setSurfaceMeshLayerVisibility(id: id, isVisible: isVisible)
         case .clinical(let session):
             await session.setSurfaceMeshLayerVisibility(id: id, isVisible: isVisible)
+        case .stack2D:
+            break
         }
     }
 
@@ -996,6 +2046,8 @@ public final class ClinicalViewerCoordinator: ObservableObject {
             await volumeViewport.setSurfaceMeshLayerOpacity(id: id, opacity: opacity)
         case .clinical(let session):
             await session.setSurfaceMeshLayerOpacity(id: id, opacity: opacity)
+        case .stack2D:
+            break
         }
     }
 

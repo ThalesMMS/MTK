@@ -30,6 +30,21 @@ final class MedicalViewportContractTests: XCTestCase {
 
         await viewport.scroll(by: -1, loop: true)
         XCTAssertEqual(viewport.sliceIndex, 5)
+
+        viewport.setWindowPresentation(isInverted: false, clut: .invertedGrayscale)
+        XCTAssertEqual(viewport.windowPresentation.clut, .invertedGrayscale)
+        XCTAssertTrue(viewport.windowPresentation.effectiveInversion)
+
+        viewport.setWindowPresentation(isInverted: true, clut: .invertedGrayscale)
+        XCTAssertFalse(viewport.windowPresentation.effectiveInversion)
+
+        let transform = Viewer2DTransform(zoom: 2,
+                                          pan: SIMD2<Double>(0.1, -0.1),
+                                          rotationRadians: .pi / 2,
+                                          isFlippedHorizontally: true,
+                                          isFlippedVertically: false)
+        viewport.setViewportTransform(transform)
+        XCTAssertEqual(viewport.viewportTransform, transform)
     }
 
     func testVolumeViewportSwitchesBetweenMPRAndProjectionContracts() async throws {

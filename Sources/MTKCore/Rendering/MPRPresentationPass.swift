@@ -150,7 +150,11 @@ public struct MPRPresentationPass {
         var viewportZoom: Float
         var viewportPanX: Float
         var viewportPanY: Float
+        var viewportRotationCos: Float
+        var viewportRotationSin: Float
         var _pad1: Float
+        var _pad2: Float
+        var _pad3: Float
         var imageOriginX: Float
         var imageOriginY: Float
         var imageWidth: Float
@@ -171,7 +175,11 @@ public struct MPRPresentationPass {
         var viewportZoom: Float
         var viewportPanX: Float
         var viewportPanY: Float
+        var viewportRotationCos: Float
+        var viewportRotationSin: Float
         var _pad4: Float
+        var _pad5: Float
+        var _pad6: Float
         var imageOriginX: Float
         var imageOriginY: Float
         var imageWidth: Float
@@ -299,7 +307,11 @@ public struct MPRPresentationPass {
             viewportZoom: viewportTransform.zoom,
             viewportPanX: viewportTransform.pan.x,
             viewportPanY: viewportTransform.pan.y,
+            viewportRotationCos: cos(viewportTransform.rotationRadians),
+            viewportRotationSin: sin(viewportTransform.rotationRadians),
             _pad1: 0,
+            _pad2: 0,
+            _pad3: 0,
             imageOriginX: layout.origin.x,
             imageOriginY: layout.origin.y,
             imageWidth: layout.size.x,
@@ -557,7 +569,11 @@ public struct MPRPresentationPass {
                 viewportZoom: viewportTransform.zoom,
                 viewportPanX: viewportTransform.pan.x,
                 viewportPanY: viewportTransform.pan.y,
+                viewportRotationCos: cos(viewportTransform.rotationRadians),
+                viewportRotationSin: sin(viewportTransform.rotationRadians),
                 _pad4: 0,
+                _pad5: 0,
+                _pad6: 0,
                 imageOriginX: layout.origin.x,
                 imageOriginY: layout.origin.y,
                 imageWidth: layout.size.x,

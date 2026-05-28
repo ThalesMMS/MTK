@@ -77,6 +77,52 @@ extension VolumeViewportController {
         publishCameraState()
     }
 
+    /// Reorients the 3D camera to an anatomical preset without changing windowing, transfer function,
+    /// clipping, crop, or volume layer state.
+    public func setCameraOrientation(_ orientation: Volume3DAnatomicalOrientation) async {
+        guard datasetApplied, let dataset else { return }
+        let desiredAxes = orientation.cameraAxes(for: dataset)
+        let axes = orthonormalCameraAxes(normal: desiredAxes.normal, up: desiredAxes.up)
+        let currentDistance = simd_length(cameraOffset)
+        let fallbackDistance = max(volumeBoundingRadius * defaultCameraDistanceFactor,
+                                   volumeBoundingRadius * 1.25,
+                                   1.5)
+        let distance = currentDistance.isFinite && currentDistance > Float.ulpOfOne
+            ? currentDistance
+            : fallbackDistance
+
+        cameraOffset = clampCameraOffset(axes.normal * distance)
+        cameraUpVector = axes.up
+        fallbackWorldUp = axes.up
+        cameraYawRadians = 0
+        cameraPitchRadians = 0
+        _ = volumeOrbitState.reset(target: cameraTarget,
+                                   offset: cameraOffset,
+                                   up: cameraUpVector,
+                                   distanceLimits: cameraDistanceLimits)
+        cameraInteractionGeneration &+= 1
+        publishCameraState()
+        scheduleRender()
+    }
+
+    /// Resets the current 3D model rotation while preserving pan, zoom, crop, and clipping state.
+    public func resetCameraRotation() async {
+        let distance = max(simd_length(cameraOffset), Float.ulpOfOne)
+        let initialDirection = safeNormalize(initialCameraOffset, fallback: SIMD3<Float>(0, -1, 0))
+        cameraOffset = clampCameraOffset(initialDirection * distance)
+        cameraUpVector = safeNormalize(initialCameraUp, fallback: fallbackWorldUp)
+        fallbackWorldUp = cameraUpVector
+        cameraYawRadians = 0
+        cameraPitchRadians = 0
+        _ = volumeOrbitState.reset(target: cameraTarget,
+                                   offset: cameraOffset,
+                                   up: cameraUpVector,
+                                   distanceLimits: cameraDistanceLimits)
+        cameraInteractionGeneration &+= 1
+        publishCameraState()
+        scheduleRender()
+    }
+
     @discardableResult
     func rotateCameraInteractively(screenDelta: SIMD2<Float>) -> Bool {
         let beforeOffset = Logger.interactionLoggingEnabled ? cameraOffset : .zero

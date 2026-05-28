@@ -277,7 +277,12 @@ extension VolumeViewportController {
                 logInteractionDebug("[MTK3DInteraction] controller.present.begin generation=\(generation) current=\(renderGeneration) display=mpr submitted=\(progressBeforePresent.submitted) completed=\(progressBeforePresent.completed) failed=\(progressBeforePresent.failed) terminal=\(progressBeforePresent.terminal) presentInFlight=\(progressBeforePresent.inFlight) texture=\(frame.texture.width)x\(frame.texture.height) pixelFormat=\(frame.texture.pixelFormat)")
                 let presentDuration = try viewportSurface.present(mprFrame: frame,
                                                                   window: resolvedMPRWindow(for: dataset),
+                                                                  invert: mprPresentationInvert,
+                                                                  colormap: mprPresentationColormap,
                                                                   labelmapOverlays: labelmapOverlays,
+                                                                  viewportTransform: mprViewportTransform,
+                                                                  flipHorizontal: mprPresentationFlipHorizontal,
+                                                                  flipVertical: mprPresentationFlipVertical,
                                                                   presentationToken: generation)
                 closePresentationGate(token: generation,
                                       frameIndex: nil,
@@ -596,6 +601,7 @@ extension VolumeViewportController {
             compositing: method.compositing,
             quality: forceFinalQuality ? .production : parameters.qualityTier,
             clipping: volumeClipping,
+            renderQualitySettings: volumeRenderQualitySettings,
             layers: makeVolumeRenderLayers(baseDataset: dataset,
                                            baseTransferFunction: transfer)
         )
@@ -603,9 +609,10 @@ extension VolumeViewportController {
 
     private func makeVolumeRenderLayers(baseDataset: VolumeDataset,
                                         baseTransferFunction: VolumeTransferFunction) -> [MTKCore.VolumeLayer] {
+        let primaryDataset = primaryVolumeDatasetOverride ?? baseDataset
         var layers = [
             MTKCore.VolumeLayer(id: VolumeRenderRequest.primaryVolumeLayerID,
-                                dataset: baseDataset,
+                                dataset: primaryDataset,
                                 transferFunction: baseTransferFunction)
         ]
         layers.append(contentsOf: volumeLayers.filter { layer in

@@ -107,6 +107,11 @@ extension VolumeViewportController {
         do {
             try viewportSurface.present(mprFrame: frame,
                                         window: resolvedMPRWindow(for: dataset),
+                                        invert: mprPresentationInvert,
+                                        colormap: mprPresentationColormap,
+                                        viewportTransform: mprViewportTransform,
+                                        flipHorizontal: mprPresentationFlipHorizontal,
+                                        flipVertical: mprPresentationFlipVertical,
                                         presentationToken: renderGeneration)
             return true
         } catch {

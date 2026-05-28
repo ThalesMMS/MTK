@@ -51,10 +51,12 @@ public:
                                     float3 normal,
                                     float3 lightDir,
                                     float3 eyeDir,
-                                    float specularIntensity)
+                                    float specularIntensity,
+                                    float ambientIntensity,
+                                    float directionalIntensity)
     {
-        constexpr float ambient = 0.2f;
-        constexpr float diffuseWeight = 0.7f;
+        const float ambient = clamp(ambientIntensity, 0.0f, 1.0f);
+        const float diffuseWeight = 0.7f * clamp(directionalIntensity, 0.0f, 2.0f);
         constexpr float specularPower = 20.0f;
 
         float lengthSq = dot(normal, normal);
@@ -68,7 +70,8 @@ public:
         float diffuse = max(dot(n, l), 0.0f);
         float3 halfVector = ::normalize(l + v);
         float specular = pow(max(dot(n, halfVector), 0.0f), specularPower);
-        return col * (ambient + diffuseWeight * diffuse) + float3(specularIntensity * specular);
+        return col * (ambient + diffuseWeight * diffuse) +
+               float3(specularIntensity * directionalIntensity * specular);
     }
 };
 

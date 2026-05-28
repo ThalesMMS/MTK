@@ -10,6 +10,63 @@ import XCTest
 import MTKCore
 @testable import MTKUI
 
+final class MPRViewportGridLayoutCalculatorTests: XCTestCase {
+    func testHSplit1x2MatchesLegacyGrid() {
+        let result = layout(.hSplit1x2)
+
+        XCTAssertEqual(result.rect1, CGRect(x: 0, y: 0, width: 400, height: 144))
+        XCTAssertEqual(result.rect2, CGRect(x: 0, y: 156, width: 194, height: 144))
+        XCTAssertEqual(result.rect3, CGRect(x: 206, y: 156, width: 194, height: 144))
+        XCTAssertEqual(result.dividers, [
+            .horizontal(CGRect(x: 0, y: 144, width: 400, height: 12)),
+            .vertical(CGRect(x: 194, y: 156, width: 12, height: 144))
+        ])
+    }
+
+    func testHSplit2x1PlacesTwoPanelsAboveFullWidthPanel() {
+        let result = layout(.hSplit2x1)
+
+        XCTAssertEqual(result.rect1, CGRect(x: 0, y: 0, width: 194, height: 144))
+        XCTAssertEqual(result.rect2, CGRect(x: 206, y: 0, width: 194, height: 144))
+        XCTAssertEqual(result.rect3, CGRect(x: 0, y: 156, width: 400, height: 144))
+        XCTAssertEqual(result.dividers, [
+            .horizontal(CGRect(x: 0, y: 144, width: 400, height: 12)),
+            .vertical(CGRect(x: 194, y: 0, width: 12, height: 144))
+        ])
+    }
+
+    func testVSplit3x1StacksPanelsVertically() {
+        let result = layout(.vSplit3x1)
+
+        XCTAssertEqual(result.rect1, CGRect(x: 0, y: 0, width: 400, height: 92))
+        XCTAssertEqual(result.rect2, CGRect(x: 0, y: 104, width: 400, height: 92))
+        XCTAssertEqual(result.rect3, CGRect(x: 0, y: 208, width: 400, height: 92))
+        XCTAssertEqual(result.dividers, [
+            .horizontal(CGRect(x: 0, y: 92, width: 400, height: 12)),
+            .horizontal(CGRect(x: 0, y: 196, width: 400, height: 12))
+        ])
+    }
+
+    func testFullscreenSlotKeepsOnlySelectedPanelVisible() {
+        let result = layout(.vSplit3x1, fullscreenSlot: 2)
+
+        XCTAssertEqual(result.rect1, .zero)
+        XCTAssertEqual(result.rect2, CGRect(x: 0, y: 0, width: 400, height: 300))
+        XCTAssertEqual(result.rect3, .zero)
+        XCTAssertTrue(result.dividers.isEmpty)
+    }
+
+    private func layout(_ screenLayout: MPRScreenLayout,
+                        fullscreenSlot: Int? = nil) -> MPRViewportGridLayout {
+        MPRViewportGridLayoutCalculator.layout(for: screenLayout,
+                                               totalWidth: 400,
+                                               totalHeight: 300,
+                                               verticalSplit: 0.5,
+                                               horizontalSplit: 0.5,
+                                               fullscreenSlot: fullscreenSlot)
+    }
+}
+
 // MARK: - WindowLevelShift range extension
 
 final class WindowLevelShiftRangeExtensionTests: XCTestCase {
@@ -289,6 +346,26 @@ final class ClinicalSlabConfigurationTests: XCTestCase {
         let config = ClinicalSlabConfiguration(thickness: Int.max)
         XCTAssertEqual(config.thickness, Int.max)
         XCTAssertEqual(config.steps, Int.max)
+    }
+}
+
+// MARK: - MPRSlabBlendOption
+
+final class MPRSlabBlendOptionTests: XCTestCase {
+
+    func testDisplayNamesMatchPanelLabels() {
+        XCTAssertEqual(MPRSlabBlendOption.mean.displayName, "Mean")
+        XCTAssertEqual(MPRSlabBlendOption.minIP.displayName, "minIP")
+        XCTAssertEqual(MPRSlabBlendOption.mip.displayName, "MIP")
+    }
+
+    func testBlendOptionsMapToMPRBlendModes() {
+        XCTAssertEqual(MPRSlabBlendOption.mean.volumetricBlendMode, .mean)
+        XCTAssertEqual(MPRSlabBlendOption.mean.volumetricBlendMode.coreBlend, .average)
+        XCTAssertEqual(MPRSlabBlendOption.minIP.volumetricBlendMode, .minip)
+        XCTAssertEqual(MPRSlabBlendOption.minIP.volumetricBlendMode.coreBlend, .minimum)
+        XCTAssertEqual(MPRSlabBlendOption.mip.volumetricBlendMode, .mip)
+        XCTAssertEqual(MPRSlabBlendOption.mip.volumetricBlendMode.coreBlend, .maximum)
     }
 }
 

@@ -364,6 +364,50 @@ final class VolumeViewportControllerAdapterTests: XCTestCase {
         _ = try await waitForRenderedTexture(controller)
     }
 
+    func testVolumeRenderQualitySettingsDrivePreviewAndFinalSampleCounts() async throws {
+        let device = try requireMetalDevice()
+        let controller = try makeController(device: device)
+        let settings = VolumeRenderQualitySettings(renderResolution: .high,
+                                                   interactingResolution: .low,
+                                                   depthResolution: .medium,
+                                                   iterations: .medium,
+                                                   shadowMode: .soft)
+
+        await controller.setVolumeRenderQualitySettings(settings)
+        XCTAssertEqual(controller.debugVolumeRenderQualitySettings, settings.sanitized)
+        XCTAssertEqual(controller.debugSamplingStep, 768)
+
+        await controller.beginAdaptiveSamplingInteraction()
+        XCTAssertEqual(controller.renderQualityState, .interacting)
+        XCTAssertEqual(controller.debugSamplingStep, 256)
+
+        let updated = VolumeRenderQualitySettings(renderResolution: .fantastic,
+                                                  interactingResolution: .medium,
+                                                  depthResolution: .fantastic,
+                                                  iterations: .medium,
+                                                  shadowMode: .hard)
+        await controller.setVolumeRenderQualitySettings(updated)
+
+        XCTAssertEqual(controller.renderQualityState, .interacting)
+        XCTAssertEqual(controller.debugSamplingStep, 512)
+    }
+
+    func testVolumeRenderRequestCarriesQualitySettings() async throws {
+        let device = try requireMetalDevice()
+        let controller = try makeController(device: device)
+        let dataset = makeSyntheticDataset()
+        let settings = VolumeRenderQualitySettings(renderResolution: .medium,
+                                                   interactingResolution: .low,
+                                                   depthResolution: .low,
+                                                   iterations: .high,
+                                                   shadowMode: .off)
+
+        await controller.setVolumeRenderQualitySettings(settings)
+        let request = controller.makeVolumeRenderRequest(dataset: dataset, method: .dvr)
+
+        XCTAssertEqual(request.renderQualitySettings, settings.sanitized)
+    }
+
     func testQualityTelemetrySeparatesPreviewAndFinalVolumeRenders() async throws {
         let device = try requireMetalDevice()
         let controller = try makeController(device: device)

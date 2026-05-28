@@ -173,7 +173,38 @@ final class GateUniformTests: XCTestCase {
         XCTAssertEqual(uniforms.gateHuMax, 400)
     }
 
-    private func makeRequest() -> VolumeRenderRequest {
+    func testRenderQualitySettingsPopulateLightingUniforms() async throws {
+        try await adapter.send(.setWindow(min: -1024, max: 1023))
+        let settings = VolumeRenderQualitySettings(renderResolution: .high,
+                                                   interactingResolution: .medium,
+                                                   depthResolution: .low,
+                                                   iterations: .medium,
+                                                   shadowMode: .soft,
+                                                   directionalLightIntensity: 1.5,
+                                                   ambientLightIntensity: 0.4)
+
+        let params = try await adapter.buildRenderingParameters(for: makeRequest(renderQualitySettings: settings))
+
+        XCTAssertEqual(params.material.isLightingOn, 1)
+        XCTAssertEqual(params.light, 1.5, accuracy: 1e-6)
+        XCTAssertEqual(params.shade, 0.4, accuracy: 1e-6)
+        XCTAssertEqual(params.scale, 2.0, accuracy: 1e-6)
+    }
+
+    func testShadowOffDisablesCurrentLightingPlaceholder() async throws {
+        try await adapter.send(.setWindow(min: -1024, max: 1023))
+        let settings = VolumeRenderQualitySettings(shadowMode: .off)
+
+        let uniforms = try await adapter.buildVolumeUniforms(for: makeRequest(renderQualitySettings: settings))
+
+        XCTAssertEqual(uniforms.isLightingOn, 0)
+    }
+
+    func testHardAndSoftShadowKernelPathsPendingUntilShadowPassExists() throws {
+        throw XCTSkip("Pending: hard and soft modes are carried through uniforms, but both still use the current gradient-lighting shader path until a shadow pass exists.")
+    }
+
+    private func makeRequest(renderQualitySettings: VolumeRenderQualitySettings = .default) -> VolumeRenderRequest {
         let dataset = VolumeDatasetTestFactory.makeTestDataset(
             dimensions: VolumeDimensions(width: 4, height: 4, depth: 4),
             pixelFormat: .int16Signed
@@ -201,7 +232,8 @@ final class GateUniformTests: XCTestCase {
             ),
             samplingDistance: 1 / 256,
             compositing: .frontToBack,
-            quality: .interactive
+            quality: .interactive,
+            renderQualitySettings: renderQualitySettings
         )
     }
 }

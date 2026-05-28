@@ -320,6 +320,8 @@ extension ClinicalViewportGridController {
             logClinicalInteractionDebug("Using MPR presentation transform viewport=\(viewportName(for: frame.viewportID)) orientation=\(transform?.orientation.rawValue ?? 0) flipHorizontal=\(transform?.flipHorizontal == true) flipVertical=\(transform?.flipVertical == true)")
             let duration = try surface.present(mprFrame: mprFrame,
                                                window: windowLevel.range,
+                                               invert: isMPRWindowInverted,
+                                               colormap: mprColormapTexture,
                                                labelmapOverlays: frame.labelmapOverlays,
                                                transform: transform,
                                                viewportTransform: viewportAxesByID[frame.viewportID].map { viewportTransform(for: $0) } ?? .identity,

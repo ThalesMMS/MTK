@@ -35,9 +35,45 @@ public struct ClinicalViewerSurface: View {
                         ? { snapshot in AnyView(ClinicalViewportDebugOverlay(snapshot: snapshot)) }
                         : nil,
                     interactionMode: coordinator.interactionMode,
+                    screenLayout: coordinator.selectedMPRScreenLayout,
+                    showsAnnotations: coordinator.isMPRAnnotationsVisible,
+                    showsCrosshair: coordinator.isMPRCrosshairVisible,
                     showsCompactChrome: false
                 )
                 .accessibilityIdentifier("MTKClinicalViewerGrid")
+                .accessibilityValue(coordinator.selectedMPRScreenLayout.title)
+            } else if coordinator.mode == .stack2D, let viewport = coordinator.stack2DViewport {
+                ZStack {
+                    Color.black
+                    MetalViewportContainer(surface: viewport.metalSurface) {
+                        ZStack {
+                            Clinical2DViewportOverlay(state: twoDOverlayState(for: viewport))
+                                .allowsHitTesting(false)
+                            Clinical2DInteractionOverlay(
+                                surface: viewport.metalSurface,
+                                tool: coordinator.twoDTool,
+                                axis: viewport.axis,
+                                sliceIndex: coordinator.twoDSliceIndex,
+                                roiKind: coordinator.twoDROIKind,
+                                transform: coordinator.twoDTransform,
+                                router: Clinical2DInteractionRouter(
+                                    scrollDragPixelsPerStep: coordinator.twoDScrollSettings.dragPixelsPerStep
+                                ),
+                                handlers: twoDInteractionHandlers
+                            )
+                            if coordinator.twoDTool == .scroll,
+                               coordinator.twoDScrollSettings.showsOnScreenControls {
+                                twoDScrollControls
+                            }
+                        }
+                    }
+                    Color.clear
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityIdentifier("MTKClinicalViewer2D")
+                        .accessibilityLabel("2D viewport")
+                        .accessibilityValue(viewport.axis.clinicalDisplayName)
+                        .allowsHitTesting(false)
+                }
             } else if let message = coordinator.errorMessage {
                 messageView(message)
             } else {
@@ -79,6 +115,130 @@ public struct ClinicalViewerSurface: View {
                 .multilineTextAlignment(.center)
                 .padding(20)
         }
+    }
+
+    private func twoDOverlayState(for viewport: StackViewport) -> Clinical2DViewportOverlayState {
+        Clinical2DViewportOverlayState(
+            axis: viewport.axis,
+            subjectName: coordinator.dataset?.imageData.clinicalMetadata?.patientName,
+            seriesTitle: coordinator.dataset?.imageData.clinicalMetadata?.seriesDescription,
+            imageSize: twoDImageSize(for: viewport),
+            windowLevel: coordinator.twoDWindowLevel,
+            sliceIndex: coordinator.twoDSliceIndex,
+            sliceCount: coordinator.twoDSliceCount,
+            zoom: coordinator.twoDTransform.zoom,
+            pan: coordinator.twoDTransform.pan,
+            angleDegrees: coordinator.twoDTransform.rotationRadians * 180.0 / .pi,
+            isFlippedHorizontally: coordinator.twoDTransform.isFlippedHorizontally,
+            isFlippedVertically: coordinator.twoDTransform.isFlippedVertically,
+            slabThicknessMillimeters: twoDSliceThicknessMillimeters(for: viewport),
+            locationMillimeters: twoDLocationMillimeters(for: viewport),
+            activeTool: coordinator.twoDTool,
+            roiKind: coordinator.twoDROIKind,
+            roiAnnotations: coordinator.twoDROIAnnotations,
+            showsCrosshair: coordinator.isTwoDSyncEnabled || coordinator.twoDTool == .reslice,
+            hudSettings: coordinator.twoDHUDSettings
+        )
+    }
+
+    private var twoDInteractionHandlers: Clinical2DInteractionHandlers {
+        Clinical2DInteractionHandlers(
+            beginInteraction: { _ in
+                coordinator.beginTwoDInteraction()
+            },
+            endInteraction: { _ in
+                coordinator.endTwoDInteraction()
+            },
+            scrollSlices: { steps in
+                coordinator.scrollTwoD(by: steps)
+            },
+            adjustWindowLevel: { delta in
+                coordinator.adjustTwoDWindowLevel(screenDelta: delta)
+            },
+            rotate: { radians in
+                coordinator.rotateTwoD(byRadians: radians)
+            },
+            pan: { deltaNormalized in
+                coordinator.panTwoD(deltaNormalized: deltaNormalized)
+            },
+            zoom: { factor, anchor in
+                coordinator.zoomTwoD(factor: factor, anchor: anchor)
+            },
+            commitROI: { interaction in
+                coordinator.handleTwoDROIInteraction(interaction)
+            }
+        )
+    }
+
+    private var twoDScrollControls: some View {
+        VStack {
+            Spacer()
+            HStack(spacing: 10) {
+                Button {
+                    coordinator.scrollTwoD(by: -1)
+                } label: {
+                    Image(systemName: "chevron.up")
+                        .frame(width: 36, height: 32)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Previous image")
+                .accessibilityIdentifier("Clinical2DScrollPreviousButton")
+
+                Button {
+                    coordinator.scrollTwoD(by: 1)
+                } label: {
+                    Image(systemName: "chevron.down")
+                        .frame(width: 36, height: 32)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Next image")
+                .accessibilityIdentifier("Clinical2DScrollNextButton")
+            }
+            .font(.callout.weight(.semibold))
+            .foregroundStyle(.white)
+            .padding(8)
+            .background(.black.opacity(0.62), in: Capsule())
+            .overlay {
+                Capsule()
+                    .strokeBorder(Color.white.opacity(0.16), lineWidth: 1)
+            }
+            .padding(.bottom, 16)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("Clinical2DScrollControls")
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private func twoDImageSize(for viewport: StackViewport) -> MPRImageAnnotationSize? {
+        guard let dimensions = viewport.state.dataset?.dimensions else { return nil }
+        switch viewport.axis {
+        case .axial:
+            return MPRImageAnnotationSize(width: dimensions.width, height: dimensions.height)
+        case .coronal:
+            return MPRImageAnnotationSize(width: dimensions.width, height: dimensions.depth)
+        case .sagittal:
+            return MPRImageAnnotationSize(width: dimensions.height, height: dimensions.depth)
+        }
+    }
+
+    private func twoDSliceThicknessMillimeters(for viewport: StackViewport) -> Double? {
+        guard let spacing = viewport.state.dataset?.spacing else { return nil }
+        switch viewport.axis {
+        case .axial:
+            return spacing.z
+        case .coronal:
+            return spacing.y
+        case .sagittal:
+            return spacing.x
+        }
+    }
+
+    private func twoDLocationMillimeters(for viewport: StackViewport) -> Double? {
+        guard let thickness = twoDSliceThicknessMillimeters(for: viewport),
+              viewport.sliceCount > 0 else {
+            return nil
+        }
+        return Double(viewport.sliceIndex) * thickness
     }
 }
 

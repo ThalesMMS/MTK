@@ -30,10 +30,18 @@ public final class ClinicalViewportGridController: ObservableObject {
     public let sagittalSurface: MetalViewportSurface
     public let volumeSurface: MetalViewportSurface
 
+    private let device: any MTLDevice
+
     @Published public internal(set) var windowLevel = WindowLevelShift(window: 400, level: 40)
     @Published public internal(set) var slabThickness: Double = 3
     @Published public internal(set) var activeMPRAxis: MTKCore.Axis = .axial
     @Published public internal(set) var mprInteractionTool: ClinicalMPRInteractionTool = .crosshair
+    @Published public internal(set) var mprSlabBlendMode: MPRSlabBlendOption = .mean
+    @Published public internal(set) var mprWindowPreset: MPRWindowPreset = .default
+    @Published public internal(set) var mprCLUTPreset: Volume3DCLUTPreset = .defaultPreset
+    @Published public internal(set) var isMPRWindowInverted = false
+    @Published public internal(set) var mprROIKind: ViewerROIKind = .distance
+    @Published public internal(set) var mprROIAnnotations: [ViewerROIAnnotation] = []
     @Published public internal(set) var normalizedPositions: [MTKCore.Axis: Float] = ClinicalViewportGridController.centeredNormalizedPositions
     @Published public internal(set) var crosshairOffsets: [MTKCore.Axis: CGPoint] = ClinicalViewportGridController.centeredCrosshairOffsets
     @Published public internal(set) var mprCursorVoxel = SIMD3<Float>(repeating: 0)
@@ -51,6 +59,7 @@ public final class ClinicalViewportGridController: ObservableObject {
     @Published public internal(set) var latestTimingSnapshot = ClinicalViewportTimingSnapshot()
     @Published public internal(set) var debugSnapshots: [ViewportID: ClinicalViewportDebugSnapshot] = [:]
     @Published public internal(set) var adaptiveSamplingEnabled: Bool = true
+    @Published public internal(set) var volumeRenderQualitySettings: VolumeRenderQualitySettings = .default
     @Published public internal(set) var crosshairAngles: [MTKCore.Axis: Double] = [
         .axial: 0.0,
         .coronal: 0.0,
@@ -82,6 +91,8 @@ public final class ClinicalViewportGridController: ObservableObject {
     var currentDataset: VolumeDataset?
     var lastTransferFunction: TransferFunction?
     var currentVolumeTransferFunction: VolumeTransferFunction?
+    var mprColormapTexture: (any MTLTexture)?
+    var mprROIStore = ViewerROIStore()
     var mprPlaneRotationsByAxis: [MTKCore.Axis: simd_quatf] = [:]
     var displayTransformsByAxis: [MTKCore.Axis: MPRDisplayTransform] = [:]
     var viewportAxesByID: [ViewportID: MTKCore.Axis] = [:]
@@ -118,6 +129,7 @@ public final class ClinicalViewportGridController: ObservableObject {
         }
 
         let engine = try await MTKRenderingEngine(device: resolvedDevice)
+        self.device = resolvedDevice
         self.engine = engine
 
         var createdViewportIDs: [ViewportID] = []
@@ -203,6 +215,8 @@ public final class ClinicalViewportGridController: ObservableObject {
                              measureRenderTime: true,
                              measurePresentTime: true)
         )
+        qualityScheduler.applyVolumeRenderQualitySettings(volumeRenderQualitySettings)
+        baseSamplingStep = qualityScheduler.baseSamplingStep
 
         configureSurfaceCallbacks()
         qualityStateCancellable = qualityScheduler.$state
@@ -258,6 +272,8 @@ public final class ClinicalViewportGridController: ObservableObject {
         displayTransformsByAxis.removeAll()
         activeMPRAxis = .axial
         mprInteractionTool = .crosshair
+        mprSlabBlendMode = .mean
+        resetMPRROIAnnotations()
         normalizedPositions = Self.centeredNormalizedPositions
         crosshairOffsets = Self.centeredCrosshairOffsets
         mprCursorVoxel = SIMD3<Float>(repeating: 0)
@@ -404,6 +420,93 @@ public final class ClinicalViewportGridController: ObservableObject {
         await setMPRWindowLevel(window: nextWindow, level: nextLevel)
     }
 
+    public func applyMPRWindowPreset(_ preset: MPRWindowPreset) async {
+        if let quickPreset = preset.quickPreset {
+            let windowPreset = quickPreset.windowLevelPreset
+            await setMPRWindowLevel(window: windowPreset.window,
+                                    level: windowPreset.level,
+                                    selectedPreset: preset)
+            return
+        }
+
+        switch preset {
+        case .default:
+            let range = currentDataset?.recommendedWindow ??
+                currentDataset?.intensityRange ??
+                WindowLevelShift(window: 400, level: 40).range
+            await setMPRWindowLevel(range: range, selectedPreset: .default)
+        case .other:
+            mprWindowPreset = .other
+        case .abdomen, .bone, .brain, .lungs:
+            break
+        }
+    }
+
+    public func setMPRCLUTPreset(_ preset: Volume3DCLUTPreset) {
+        guard mprCLUTPreset != preset else { return }
+        mprCLUTPreset = preset
+        mprColormapTexture = makeMPRColormapTexture(for: preset)
+        scheduleMPRRenderAll()
+    }
+
+    public func setMPRWindowInverted(_ inverted: Bool) {
+        guard isMPRWindowInverted != inverted else { return }
+        isMPRWindowInverted = inverted
+        scheduleMPRRenderAll()
+    }
+
+    private func makeMPRColormapTexture(for preset: Volume3DCLUTPreset) -> (any MTLTexture)? {
+        guard case .generatedPalette(let colors) = preset.source,
+              !colors.isEmpty else {
+            return nil
+        }
+
+        let width = 256
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba32Float,
+                                                                  width: width,
+                                                                  height: 1,
+                                                                  mipmapped: false)
+        descriptor.usage = [.shaderRead]
+        descriptor.storageMode = .shared
+        guard let texture = device.makeTexture(descriptor: descriptor) else { return nil }
+        texture.label = "MPR.CLUT.\(preset.id)"
+
+        let table = (0..<width).map { index -> SIMD4<Float> in
+            let fraction = Float(index) / Float(width - 1)
+            return Self.interpolatedColor(fraction: fraction, colors: colors)
+        }
+        table.withUnsafeBytes { pointer in
+            guard let baseAddress = pointer.baseAddress else { return }
+            texture.replace(region: MTLRegionMake2D(0, 0, width, 1),
+                            mipmapLevel: 0,
+                            withBytes: baseAddress,
+                            bytesPerRow: MemoryLayout<SIMD4<Float>>.stride * width)
+        }
+        return texture
+    }
+
+    private static func interpolatedColor(fraction: Float,
+                                          colors: [TransferFunction.RGBAColor]) -> SIMD4<Float> {
+        guard let first = colors.first else { return SIMD4<Float>(1, 1, 1, 1) }
+        guard colors.count > 1 else {
+            return SIMD4<Float>(first.r, first.g, first.b, first.a)
+        }
+
+        let clampedFraction = min(max(fraction, 0), 1)
+        let scaledIndex = clampedFraction * Float(colors.count - 1)
+        let leftIndex = min(max(Int(floor(scaledIndex)), 0), colors.count - 1)
+        let rightIndex = min(leftIndex + 1, colors.count - 1)
+        let t = scaledIndex - Float(leftIndex)
+        let left = colors[leftIndex]
+        let right = colors[rightIndex]
+        return SIMD4<Float>(
+            left.r * (1 - t) + right.r * t,
+            left.g * (1 - t) + right.g * t,
+            left.b * (1 - t) + right.b * t,
+            left.a * (1 - t) + right.a * t
+        )
+    }
+
     public func setAdaptiveSampling(_ enabled: Bool) async {
         guard adaptiveSamplingEnabled != enabled else { return }
         adaptiveSamplingEnabled = enabled
@@ -415,6 +518,19 @@ public final class ClinicalViewportGridController: ObservableObject {
             scheduleMPRRenderAll()
         } catch {
             logger.error("Failed to reconfigure after toggling adaptive sampling", error: error)
+        }
+    }
+
+    public func setVolumeRenderQualitySettings(_ settings: VolumeRenderQualitySettings) async {
+        let sanitized = settings.sanitized
+        volumeRenderQualitySettings = sanitized
+        qualityScheduler.applyVolumeRenderQualitySettings(sanitized)
+        baseSamplingStep = qualityScheduler.baseSamplingStep
+        guard datasetApplied else { return }
+        do {
+            try await configureVolumeRenderQuality()
+        } catch {
+            recordError(error, for: volumeViewportID)
         }
     }
 
@@ -510,8 +626,14 @@ public final class ClinicalViewportGridController: ObservableObject {
 
             let initialWindow = dataset.recommendedWindow ?? dataset.intensityRange
             windowLevel = WindowLevelShift(range: initialWindow)
+            mprWindowPreset = .default
+            mprCLUTPreset = .defaultPreset
+            isMPRWindowInverted = false
+            mprColormapTexture = nil
+            resetMPRROIAnnotations()
             activeMPRAxis = .axial
             mprInteractionTool = .crosshair
+            mprSlabBlendMode = .mean
             mprViewportTransforms = Self.defaultMPRViewportTransforms
             normalizedPositions = Self.centeredNormalizedPositions
             crosshairAngles = [.axial: 0, .coronal: 0, .sagittal: 0]
@@ -551,6 +673,8 @@ public final class ClinicalViewportGridController: ObservableObject {
             currentDataset = nil
             currentVolumeTransferFunction = nil
             displayTransformsByAxis.removeAll()
+            mprSlabBlendMode = .mean
+            resetMPRROIAnnotations()
             viewportTimings.removeAll()
             latestTimingSnapshot = ClinicalViewportTimingSnapshot()
             committedMPRWindowRange = nil
@@ -742,6 +866,12 @@ public final class ClinicalViewportGridController: ObservableObject {
     ///   - level: Desired window level (center).
     /// - Discussion: If the resolved window/level equals the controller's current `windowLevel`, no commit is performed.
     public func setMPRWindowLevel(window: Double, level: Double) async {
+        await setMPRWindowLevel(window: window, level: level, selectedPreset: .other)
+    }
+
+    private func setMPRWindowLevel(window: Double,
+                                   level: Double,
+                                   selectedPreset: MPRWindowPreset?) async {
         guard window.isFinite, level.isFinite else { return }
         let resolvedWindow = max(window, 1)
         let lower = level - resolvedWindow / 2
@@ -753,7 +883,16 @@ public final class ClinicalViewportGridController: ObservableObject {
         let clampedLower = min(max(lower.rounded(), int32Min), int32Max)
         let clampedUpper = min(max(upper.rounded(), int32Min), int32Max)
         let resolvedRange = Int32(clampedLower)...Int32(clampedUpper)
-        let resolved = WindowLevelShift(range: min(resolvedRange.lowerBound, resolvedRange.upperBound)...max(resolvedRange.lowerBound, resolvedRange.upperBound))
+        await setMPRWindowLevel(range: min(resolvedRange.lowerBound, resolvedRange.upperBound)...max(resolvedRange.lowerBound, resolvedRange.upperBound),
+                                selectedPreset: selectedPreset)
+    }
+
+    private func setMPRWindowLevel(range: ClosedRange<Int32>,
+                                   selectedPreset: MPRWindowPreset?) async {
+        let resolved = WindowLevelShift(range: range)
+        if let selectedPreset {
+            mprWindowPreset = selectedPreset
+        }
         guard resolved != windowLevel else { return }
         windowLevel = resolved
         await commitWindowLevel()
@@ -825,6 +964,20 @@ public final class ClinicalViewportGridController: ObservableObject {
         slabThickness = nextThickness
         do {
             try await configureMPRSlabResolved(configuration: resolved)
+        } catch {
+            for viewport in mprViewportIDs {
+                recordError(error, for: viewport)
+            }
+            return
+        }
+        scheduleMPRRenderAll()
+    }
+
+    public func setMPRSlabBlendMode(_ blendMode: MPRSlabBlendOption) async {
+        guard blendMode != mprSlabBlendMode else { return }
+        mprSlabBlendMode = blendMode
+        do {
+            try await configureMPRSlabResolved()
         } catch {
             for viewport in mprViewportIDs {
                 recordError(error, for: viewport)

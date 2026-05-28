@@ -134,6 +134,21 @@ public protocol MedicalViewport: AnyObject {
 }
 
 /// Volume-backed stack viewport for predictable slice scrolling.
+public struct StackViewportWindowPresentation: Equatable, Sendable {
+    public var isInverted: Bool
+    public var clut: Clinical2DCLUT
+
+    public init(isInverted: Bool = false,
+                clut: Clinical2DCLUT = .grayscale) {
+        self.isInverted = isInverted
+        self.clut = clut
+    }
+
+    public var effectiveInversion: Bool {
+        isInverted != clut.invertsBaseLuminance
+    }
+}
+
 @MainActor
 public final class StackViewport: ObservableObject, MedicalViewport {
     public let id: ViewportID
@@ -142,6 +157,8 @@ public final class StackViewport: ObservableObject, MedicalViewport {
     @Published public private(set) var state: MedicalViewportState
     @Published public private(set) var sliceIndex: Int
     @Published public private(set) var sliceCount: Int = 0
+    @Published public private(set) var windowPresentation = StackViewportWindowPresentation()
+    @Published public private(set) var viewportTransform = Viewer2DTransform.identity
 
     public var surface: any ViewportPresenting { metalSurface }
     public var viewportType: MedicalViewportType { .stack(axis: axis) }
@@ -209,8 +226,42 @@ public final class StackViewport: ObservableObject, MedicalViewport {
         refreshState()
     }
 
+    public func setWindowPresentation(isInverted: Bool,
+                                      clut: Clinical2DCLUT) {
+        windowPresentation = StackViewportWindowPresentation(isInverted: isInverted,
+                                                            clut: clut)
+        controller.setMPRPresentation(invert: windowPresentation.effectiveInversion)
+        refreshState()
+    }
+
+    public func setViewportTransform(_ transform: Viewer2DTransform) {
+        let sanitized = Self.sanitizedViewportTransform(transform)
+        viewportTransform = sanitized
+        var presentationTransform = MPRViewportTransform(
+            zoom: Float(sanitized.zoom),
+            pan: SIMD2<Float>(Float(sanitized.pan.x), Float(sanitized.pan.y))
+        )
+        presentationTransform.rotationRadians = Float(sanitized.rotationRadians)
+        controller.setMPRViewportTransform(
+            presentationTransform,
+            flipHorizontal: sanitized.isFlippedHorizontally,
+            flipVertical: sanitized.isFlippedVertically
+        )
+        refreshState()
+    }
+
     public func resetCamera() async {
         await controller.resetCamera()
+        refreshState()
+    }
+
+    public func beginAdaptiveSamplingInteraction() async {
+        await controller.beginAdaptiveSamplingInteraction()
+        refreshState()
+    }
+
+    public func endAdaptiveSamplingInteraction() async {
+        await controller.endAdaptiveSamplingInteraction()
         refreshState()
     }
 
@@ -261,6 +312,20 @@ public final class StackViewport: ObservableObject, MedicalViewport {
             windowLevel: controller.windowLevelState,
             slice: slice,
             presentation: MedicalViewportPresentationState(surface: controller.viewportSurface)
+        )
+    }
+
+    private static func sanitizedViewportTransform(_ transform: Viewer2DTransform) -> Viewer2DTransform {
+        let zoom = transform.zoom.isFinite ? max(transform.zoom, 0.01) : 1
+        let panX = transform.pan.x.isFinite ? transform.pan.x : 0
+        let panY = transform.pan.y.isFinite ? transform.pan.y : 0
+        let rotation = transform.rotationRadians.isFinite ? transform.rotationRadians : 0
+        return Viewer2DTransform(
+            zoom: zoom,
+            pan: SIMD2<Double>(panX, panY),
+            rotationRadians: rotation,
+            isFlippedHorizontally: transform.isFlippedHorizontally,
+            isFlippedVertically: transform.isFlippedVertically
         )
     }
 }
@@ -478,6 +543,7 @@ public final class VolumeViewport3D: ObservableObject, MedicalViewport {
     @Published public private(set) var method: VolumetricRenderMethod
     @Published public private(set) var clipping: VolumeClippingState = .disabled
     @Published public private(set) var volumeLayers: [MTKCore.VolumeLayer] = []
+    @Published public private(set) var volumeRenderQualitySettings: VolumeRenderQualitySettings
 
     public var surface: any ViewportPresenting { metalSurface }
     public var viewportType: MedicalViewportType { .volume3D }
@@ -496,6 +562,7 @@ public final class VolumeViewport3D: ObservableObject, MedicalViewport {
         self.method = method
         self.controller = controller
         self.metalSurface = controller.viewportSurface
+        self.volumeRenderQualitySettings = controller.volumeRenderQualitySettings
         self.state = Self.makeState(id: id,
                                     method: method,
                                     controller: controller,
@@ -574,6 +641,11 @@ public final class VolumeViewport3D: ObservableObject, MedicalViewport {
         refreshState()
     }
 
+    public func setPrimaryVolumeDatasetOverride(_ dataset: VolumeDataset?) async {
+        await controller.setPrimaryVolumeDatasetOverride(dataset)
+        refreshState()
+    }
+
     public func setVolumeLayerVisibility(id: String, isVisible: Bool) async {
         if let index = volumeLayers.firstIndex(where: { $0.id == id }) {
             volumeLayers[index].isVisible = isVisible
@@ -620,6 +692,16 @@ public final class VolumeViewport3D: ObservableObject, MedicalViewport {
 
     public func resetCamera() async {
         await controller.resetCamera()
+        refreshState()
+    }
+
+    public func resetCameraRotation() async {
+        await controller.resetCameraRotation()
+        refreshState()
+    }
+
+    public func setCameraOrientation(_ orientation: Volume3DAnatomicalOrientation) async {
+        await controller.setCameraOrientation(orientation)
         refreshState()
     }
 
@@ -683,6 +765,12 @@ public final class VolumeViewport3D: ObservableObject, MedicalViewport {
         refreshState()
     }
 
+    public func setVolumeRenderQualitySettings(_ settings: VolumeRenderQualitySettings) async {
+        await controller.setVolumeRenderQualitySettings(settings)
+        volumeRenderQualitySettings = controller.volumeRenderQualitySettings
+        refreshState()
+    }
+
     public func renderSnapshotFrame() async throws -> VolumeRenderFrame {
         try await controller.renderVolumeSnapshotFrame()
     }
@@ -728,12 +816,19 @@ public final class VolumeViewport3D: ObservableObject, MedicalViewport {
         controller.nativeCameraInteractionDiagnostics()
     }
 
+    public func pickVolume(screenPoint: CGPoint,
+                           dataset pickDataset: VolumeDataset? = nil) throws -> VolumePickResult {
+        try controller.pickVolume(screenPoint: screenPoint,
+                                  dataset: pickDataset)
+    }
+
     @_spi(Testing)
     public var debugSamplingStep: Float {
         controller.debugSamplingStep
     }
 
     private func refreshState() {
+        volumeRenderQualitySettings = controller.volumeRenderQualitySettings
         state = Self.makeState(id: id,
                                method: method,
                                controller: controller,
@@ -782,12 +877,19 @@ public final class ClinicalViewportSession: ObservableObject {
     public var normalizedPositions: [MTKCore.Axis: Float] { controller.normalizedPositions }
     public var mprViewportTransforms: [MTKCore.Axis: MPRViewportTransform] { controller.mprViewportTransforms }
     public var windowLevel: WindowLevelShift { controller.windowLevel }
+    public var mprWindowPreset: MPRWindowPreset { controller.mprWindowPreset }
+    public var mprCLUTPreset: Volume3DCLUTPreset { controller.mprCLUTPreset }
+    public var isMPRWindowInverted: Bool { controller.isMPRWindowInverted }
+    public var mprROIKind: ViewerROIKind { controller.mprROIKind }
+    public var mprROIAnnotations: [ViewerROIAnnotation] { controller.mprROIAnnotations }
+    public var mprSlabBlendMode: MPRSlabBlendOption { controller.mprSlabBlendMode }
     public var slabThickness: Double { controller.slabThickness }
     public var volumeLayers: [MTKCore.VolumeLayer] { controller.volumeLayers }
     public var surfaceMeshLayers: [SurfaceMeshLayer] { controller.surfaceMeshLayers }
     public var latestTimingSnapshot: ClinicalViewportTimingSnapshot { controller.latestTimingSnapshot }
     public var lastRenderError: (any Error)? { controller.lastRenderErrors.values.first ?? controller.lastRenderError }
     public var adaptiveSamplingEnabled: Bool { controller.adaptiveSamplingEnabled }
+    public var volumeRenderQualitySettings: VolumeRenderQualitySettings { controller.volumeRenderQualitySettings }
     public var crosshairAngles: [MTKCore.Axis: Double] { controller.crosshairAngles }
 
     public init(controller: ClinicalViewportGridController) {
@@ -871,8 +973,24 @@ public final class ClinicalViewportSession: ObservableObject {
         await controller.setMPRWindowLevel(window: window, level: level)
     }
 
+    public func applyMPRWindowPreset(_ preset: MPRWindowPreset) async {
+        await controller.applyMPRWindowPreset(preset)
+    }
+
+    public func setMPRCLUTPreset(_ preset: Volume3DCLUTPreset) {
+        controller.setMPRCLUTPreset(preset)
+    }
+
+    public func setMPRWindowInverted(_ inverted: Bool) {
+        controller.setMPRWindowInverted(inverted)
+    }
+
     public func setMPRSlabThickness(_ thickness: Double) async {
         await controller.setMPRSlabThickness(thickness)
+    }
+
+    public func setMPRSlabBlendMode(_ blendMode: MPRSlabBlendOption) async {
+        await controller.setMPRSlabBlendMode(blendMode)
     }
 
     public func setActiveMPRAxis(_ axis: MTKCore.Axis) {
@@ -881,6 +999,18 @@ public final class ClinicalViewportSession: ObservableObject {
 
     public func setMPRInteractionTool(_ tool: ClinicalMPRInteractionTool) {
         controller.setMPRInteractionTool(tool)
+    }
+
+    public func setMPRROIKind(_ kind: ViewerROIKind, activateTool: Bool = true) {
+        controller.setMPRROIKind(kind, activateTool: activateTool)
+    }
+
+    public func deleteMPRROIsInActiveView() {
+        controller.deleteMPRROIsInActiveView()
+    }
+
+    public func deleteAllMPRROIs() {
+        controller.deleteAllMPRROIs()
     }
 
     public func scrollSlice(axis: MTKCore.Axis, deltaNormalized: Float) async {
@@ -913,6 +1043,10 @@ public final class ClinicalViewportSession: ObservableObject {
 
     public func setAdaptiveSampling(_ enabled: Bool) async {
         await controller.setAdaptiveSampling(enabled)
+    }
+
+    public func setVolumeRenderQualitySettings(_ settings: VolumeRenderQualitySettings) async {
+        await controller.setVolumeRenderQualitySettings(settings)
     }
 
     public func pick(in viewport: ViewportID,

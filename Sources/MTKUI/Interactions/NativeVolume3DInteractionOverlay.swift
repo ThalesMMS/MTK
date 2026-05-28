@@ -8,6 +8,8 @@ public enum NativeVolume3DInteractionMode: String, CaseIterable, Identifiable, S
     case orbit
     case pan
     case transferFunction
+    case crop
+    case brush
 
     public var id: String { rawValue }
 
@@ -19,6 +21,21 @@ public enum NativeVolume3DInteractionMode: String, CaseIterable, Identifiable, S
             return "Pan"
         case .transferFunction:
             return "Transfer Function"
+        case .crop:
+            return "Crop"
+        case .brush:
+            return "Brush"
+        }
+    }
+}
+
+private extension NativeVolume3DInteractionMode {
+    var allowsNativeCameraGestures: Bool {
+        switch self {
+        case .orbit, .pan, .transferFunction:
+            return true
+        case .crop, .brush:
+            return false
         }
     }
 }
@@ -57,16 +74,23 @@ public struct NativeVolume3DInteraction {
                         await viewport.adjustTransferFunctionShift(screenDelta: SIMD2<Float>(Float(delta.width), Float(delta.height)))
                     }
                     return true
+                case .crop:
+                    return false
+                case .brush:
+                    return false
                 }
             },
             twoFingerPan: { delta in
-                viewport.applyNativePanDelta(delta)
+                guard interactionMode.allowsNativeCameraGestures else { return false }
+                return viewport.applyNativePanDelta(delta)
             },
             pinch: { scale in
-                viewport.applyNativeZoomScale(Float(scale))
+                guard interactionMode.allowsNativeCameraGestures else { return false }
+                return viewport.applyNativeZoomScale(Float(scale))
             },
             rotation: { radians in
-                viewport.applyNativeRollRadians(Float(radians))
+                guard interactionMode.allowsNativeCameraGestures else { return false }
+                return viewport.applyNativeRollRadians(Float(radians))
             },
             frame: {
                 viewport.flushNativeCameraInteractionRender()
@@ -121,16 +145,23 @@ public struct NativeVolume3DInteraction {
                         await controller.adjustTransferFunctionShift(screenDelta: delta)
                     }
                     return true
+                case .crop:
+                    return false
+                case .brush:
+                    return false
                 }
             },
             twoFingerPan: { delta in
-                controller.panVolumeCameraInteractively(screenDelta: delta)
+                guard interactionMode.allowsNativeCameraGestures else { return false }
+                return controller.panVolumeCameraInteractively(screenDelta: delta)
             },
             pinch: { scale in
-                controller.zoomVolumeCameraInteractively(scale: Float(scale))
+                guard interactionMode.allowsNativeCameraGestures else { return false }
+                return controller.zoomVolumeCameraInteractively(scale: Float(scale))
             },
             rotation: { radians in
-                controller.tiltVolumeCameraInteractively(roll: Float(radians), pitch: 0)
+                guard interactionMode.allowsNativeCameraGestures else { return false }
+                return controller.tiltVolumeCameraInteractively(roll: Float(radians), pitch: 0)
             },
             frame: {
                 controller.flushVolumeCameraInteractionRender()

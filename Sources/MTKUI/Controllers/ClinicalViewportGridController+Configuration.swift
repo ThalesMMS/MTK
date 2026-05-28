@@ -158,7 +158,8 @@ extension ClinicalViewportGridController {
         for viewport in mprViewportIDs {
             try await engine.configure(viewport,
                                        slabThickness: resolved.thickness,
-                                       slabSteps: resolved.steps)
+                                       slabSteps: resolved.steps,
+                                       blend: mprSlabBlendMode.volumetricBlendMode.coreBlend)
         }
     }
 
@@ -227,7 +228,8 @@ extension ClinicalViewportGridController {
         }
         try await engine.configure(volumeViewportID,
                                    samplingDistance: 1 / samplingStep,
-                                   quality: qualityTier)
+                                   quality: qualityTier,
+                                   renderQualitySettings: volumeRenderQualitySettings)
     }
 
     /// Applies the public crop/clip state to the 3D volume viewport only.

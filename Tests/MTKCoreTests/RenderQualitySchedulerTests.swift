@@ -85,4 +85,38 @@ final class RenderQualitySchedulerTests: XCTestCase {
         XCTAssertEqual(scheduler.currentSlabSteps, 7)
         XCTAssertEqual(scheduler.currentParameters.qualityTier, .production)
     }
+
+    func testApplyingVolumeRenderQualitySettingsMapsFinalAndInteractiveSampling() {
+        let scheduler = RenderQualityScheduler(baseSamplingStep: 512,
+                                               interactionFactor: 0.5)
+        let settings = VolumeRenderQualitySettings(renderResolution: .high,
+                                                   interactingResolution: .low,
+                                                   depthResolution: .high,
+                                                   iterations: .medium)
+
+        scheduler.applyVolumeRenderQualitySettings(settings)
+
+        XCTAssertEqual(scheduler.baseSamplingStep, 768)
+        XCTAssertEqual(scheduler.interactionFactor, Float(1.0 / 3.0), accuracy: 0.0001)
+
+        scheduler.beginInteraction()
+        XCTAssertEqual(scheduler.currentParameters.volumeSamplingStep, 256, accuracy: 0.0001)
+        XCTAssertEqual(scheduler.currentParameters.qualityTier, .preview)
+    }
+
+    func testApplyingVolumeRenderQualitySettingsDuringInteractionKeepsPreviewState() {
+        let scheduler = RenderQualityScheduler(baseSamplingStep: 512,
+                                               interactionFactor: 0.5)
+        scheduler.beginInteraction()
+        let settings = VolumeRenderQualitySettings(renderResolution: .fantastic,
+                                                   interactingResolution: .medium,
+                                                   depthResolution: .high,
+                                                   iterations: .medium)
+
+        scheduler.applyVolumeRenderQualitySettings(settings)
+
+        XCTAssertEqual(scheduler.state, .interacting)
+        XCTAssertEqual(scheduler.currentParameters.qualityTier, .preview)
+        XCTAssertEqual(scheduler.currentParameters.volumeSamplingStep, 512, accuracy: 0.0001)
+    }
 }

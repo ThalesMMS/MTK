@@ -97,6 +97,8 @@ public enum ClinicalMPRInteractionTool: String, CaseIterable, Identifiable, Send
     case slice
     case pan
     case windowLevel
+    case rotation
+    case roi
 
     public var id: String { rawValue }
 
@@ -110,6 +112,10 @@ public enum ClinicalMPRInteractionTool: String, CaseIterable, Identifiable, Send
             return "Pan"
         case .windowLevel:
             return "W/L"
+        case .rotation:
+            return "Rotation"
+        case .roi:
+            return "ROI"
         }
     }
 }
@@ -149,6 +155,36 @@ public struct ClinicalSlabConfiguration: Equatable, Sendable {
             return value == Int.max ? value - 1 : value + 1
         }
         return value
+    }
+}
+
+public enum MPRSlabBlendOption: String, CaseIterable, Identifiable, Sendable {
+    case mean
+    case minIP
+    case mip
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .mean:
+            return "Mean"
+        case .minIP:
+            return "minIP"
+        case .mip:
+            return "MIP"
+        }
+    }
+
+    public var volumetricBlendMode: VolumetricMPRBlendMode {
+        switch self {
+        case .mean:
+            return .mean
+        case .minIP:
+            return .minip
+        case .mip:
+            return .mip
+        }
     }
 }
 

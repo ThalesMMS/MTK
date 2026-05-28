@@ -17,6 +17,8 @@ public final class Logger: @unchecked Sendable, LoggerProtocol {
         ProcessInfo.processInfo.environment["MTK_INTERACTION_LOGGING"] == "1"
     nonisolated(unsafe) public static var mprInteractionLoggingEnabled =
         ProcessInfo.processInfo.environment["MTK_MPR_INTERACTION_LOGGING"] == "1"
+    nonisolated(unsafe) public static var twoDInteractionLoggingEnabled =
+        ProcessInfo.processInfo.environment["MTK_2D_INTERACTION_LOGGING"] == "1"
 
     public init(subsystem: String = "com.mtk.ui", category: String) {
         self.logger = os.Logger(subsystem: subsystem, category: category)
@@ -69,6 +71,9 @@ public final class Logger: @unchecked Sendable, LoggerProtocol {
         }
         if message.contains("[MTKMPRInteraction]") {
             return Logger.mprInteractionLoggingEnabled
+        }
+        if message.contains("[MTK2DInteraction]") {
+            return Logger.twoDInteractionLoggingEnabled || Logger.interactionLoggingEnabled
         }
         guard Logger.interactionLoggingEnabled else { return false }
         return message.contains("[MTK3DInteraction]")

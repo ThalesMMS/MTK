@@ -91,6 +91,7 @@ public protocol VolumeViewportControlling: AnyObject {
     func setRenderMethod(_ method: VolumetricRenderMethod) async
     func setLighting(enabled: Bool) async
     func setSamplingStep(_ step: Float) async
+    func setVolumeRenderQualitySettings(_ settings: VolumeRenderQualitySettings) async
     func setProjectionsUseTransferFunction(_ enabled: Bool) async
     func setProjectionDensityGate(floor: Float, ceil: Float) async
     func setProjectionHuGate(enabled: Bool, min: Int32, max: Int32) async

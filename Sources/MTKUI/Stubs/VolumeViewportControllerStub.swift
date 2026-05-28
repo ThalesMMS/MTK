@@ -153,6 +153,8 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
 
     public func setSamplingStep(_ step: Float) async { _ = step }
 
+    public func setVolumeRenderQualitySettings(_ settings: VolumeRenderQualitySettings) async { _ = settings }
+
     public func setProjectionsUseTransferFunction(_ enabled: Bool) async { _ = enabled }
 
     public func setProjectionDensityGate(floor: Float, ceil: Float) async {

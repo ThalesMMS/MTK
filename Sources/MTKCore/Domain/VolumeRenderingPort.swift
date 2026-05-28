@@ -57,6 +57,7 @@ public struct VolumeRenderRequest: Sendable, Equatable {
     public var compositing: Compositing
     public var quality: Quality
     public var clipping: VolumeClippingState
+    public var renderQualitySettings: VolumeRenderQualitySettings
     public var layers: [VolumeLayer]
 
     public init(dataset: VolumeDataset,
@@ -67,6 +68,7 @@ public struct VolumeRenderRequest: Sendable, Equatable {
                 compositing: Compositing,
                 quality: Quality,
                 clipping: VolumeClippingState = .disabled,
+                renderQualitySettings: VolumeRenderQualitySettings = .default,
                 layers: [VolumeLayer]? = nil) {
         self.dataset = dataset
         self.transferFunction = transferFunction
@@ -76,6 +78,7 @@ public struct VolumeRenderRequest: Sendable, Equatable {
         self.compositing = compositing
         self.quality = quality
         self.clipping = clipping
+        self.renderQualitySettings = renderQualitySettings.sanitized
         self.layers = layers ?? [
             VolumeLayer(id: Self.primaryVolumeLayerID,
                         dataset: dataset,
