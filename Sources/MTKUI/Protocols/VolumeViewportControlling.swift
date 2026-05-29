@@ -67,8 +67,11 @@ public protocol VolumeViewportControlling: AnyObject {
     var surface: any ViewportPresenting { get }
     var transferFunctionDomain: ClosedRange<Float>? { get }
     var renderQualityState: RenderQualityState { get }
+    var progressiveVolumeState: ProgressiveVolumeStreamState { get }
 
     func applyDataset(_ dataset: VolumeDataset) async
+    func recordProgressiveVolumeUpdate(_ update: ProgressiveVolumeDatasetUpdate) async
+    func recordProgressiveVolumeStreamCancellation() async
     func setDisplayConfiguration(_ configuration: VolumeViewportController.DisplayConfiguration) async
     func metadata() -> (dimension: SIMD3<Int32>, resolution: SIMD3<Float>)?
 

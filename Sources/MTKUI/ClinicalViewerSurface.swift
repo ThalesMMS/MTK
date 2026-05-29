@@ -118,10 +118,12 @@ public struct ClinicalViewerSurface: View {
     }
 
     private func twoDOverlayState(for viewport: StackViewport) -> Clinical2DViewportOverlayState {
-        Clinical2DViewportOverlayState(
+        let metadata = coordinator.dataset?.imageData.clinicalMetadata
+        return Clinical2DViewportOverlayState(
             axis: viewport.axis,
-            subjectName: coordinator.dataset?.imageData.clinicalMetadata?.patientName,
-            seriesTitle: coordinator.dataset?.imageData.clinicalMetadata?.seriesDescription,
+            subjectName: metadata?.patientName,
+            studyTitle: metadata?.studyDescription,
+            seriesTitle: metadata?.seriesDescription,
             imageSize: twoDImageSize(for: viewport),
             windowLevel: coordinator.twoDWindowLevel,
             sliceIndex: coordinator.twoDSliceIndex,
@@ -137,7 +139,9 @@ public struct ClinicalViewerSurface: View {
             roiKind: coordinator.twoDROIKind,
             roiAnnotations: coordinator.twoDROIAnnotations,
             showsCrosshair: coordinator.isTwoDSyncEnabled || coordinator.twoDTool == .reslice,
-            hudSettings: coordinator.twoDHUDSettings
+            hudSettings: coordinator.twoDHUDSettings,
+            metadataSample: twoDMetadataSample(for: viewport),
+            metadataOverlaySettings: coordinator.twoDMetadataOverlaySettings
         )
     }
 
@@ -239,6 +243,53 @@ public struct ClinicalViewerSurface: View {
             return nil
         }
         return Double(viewport.sliceIndex) * thickness
+    }
+
+    private func twoDMetadataSample(for viewport: StackViewport) -> ClinicalViewportMetadataSample? {
+        guard let dataset = coordinator.dataset else { return nil }
+        let dimensions = dataset.dimensions
+        let sliceIndex = min(max(viewport.sliceIndex, 0), max(viewport.sliceCount - 1, 0))
+        let voxel: SIMD3<Int32>
+        switch viewport.axis {
+        case .axial:
+            voxel = SIMD3<Int32>(
+                Int32(max(dimensions.width - 1, 0) / 2),
+                Int32(max(dimensions.height - 1, 0) / 2),
+                Int32(sliceIndex)
+            )
+        case .coronal:
+            voxel = SIMD3<Int32>(
+                Int32(max(dimensions.width - 1, 0) / 2),
+                Int32(sliceIndex),
+                Int32(max(dimensions.depth - 1, 0) / 2)
+            )
+        case .sagittal:
+            voxel = SIMD3<Int32>(
+                Int32(sliceIndex),
+                Int32(max(dimensions.height - 1, 0) / 2),
+                Int32(max(dimensions.depth - 1, 0) / 2)
+            )
+        }
+
+        guard let intensity = try? VolumePicking.sampleIntensity(in: dataset, atVoxelIndex: voxel) else {
+            return nil
+        }
+        let worldPoint = VolumePicking.worldPoint(
+            forVoxelIndex: SIMD3<Float>(Float(voxel.x), Float(voxel.y), Float(voxel.z)),
+            in: dataset
+        )
+        let scalarSamples = (try? VolumePicking.sampleScalarVolumes(in: coordinator.volumeLayers,
+                                                                    atBaseWorldPoint: worldPoint)) ?? []
+        let doseSamples = coordinator.rtDoseOverlays.compactMap { overlay -> RTDoseSample? in
+            guard overlay.volumeLayer.isVisible,
+                  overlay.volumeLayer.clampedOpacity > 0 else {
+                return nil
+            }
+            return try? overlay.sampleDose(atBaseWorldPoint: worldPoint)
+        }
+        return ClinicalViewportMetadataSample(intensity: intensity,
+                                              scalarSamples: scalarSamples,
+                                              doseSamples: doseSamples)
     }
 }
 

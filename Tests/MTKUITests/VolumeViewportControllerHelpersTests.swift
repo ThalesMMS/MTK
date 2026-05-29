@@ -556,6 +556,27 @@ final class VolumeViewportControllerMPRTests: XCTestCase {
         XCTAssertEqual(controller.clampedIndex(for: .x, index: 1000), 9)
         XCTAssertEqual(controller.clampedIndex(for: .x, index: 5), 5)
     }
+
+    func testMPRPresentationTransformAppliesClinicalResliceOrientationAndUserFlips() async throws {
+        let controller = try makeController()
+        let dataset = makeDataset(width: 5, height: 7, depth: 9)
+        await controller.applyDataset(dataset)
+        await controller.setDisplayConfiguration(.mpr(axis: .x, index: 2, blend: .single, slab: nil))
+
+        let sagittal = controller.mprPresentationTransform(for: .x)
+        XCTAssertEqual(sagittal.labels.leading, "A")
+        XCTAssertEqual(sagittal.labels.trailing, "P")
+        XCTAssertEqual(sagittal.labels.top, "S")
+        XCTAssertEqual(sagittal.labels.bottom, "I")
+        XCTAssertFalse(sagittal.presentationFlipHorizontal)
+        XCTAssertTrue(sagittal.presentationFlipVertical)
+
+        controller.setMPRViewportTransform(.identity, flipHorizontal: true)
+
+        let flippedSagittal = controller.mprPresentationTransform(for: .x)
+        XCTAssertTrue(flippedSagittal.presentationFlipHorizontal)
+        XCTAssertTrue(flippedSagittal.presentationFlipVertical)
+    }
 }
 
 // MARK: - MPRVolumeTextureCache

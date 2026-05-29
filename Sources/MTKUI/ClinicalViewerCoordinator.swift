@@ -86,7 +86,9 @@ public final class ClinicalViewerCoordinator: ObservableObject {
     @Published public private(set) var twoDSyncState = ViewerSyncState.default
     @Published public var twoDScrollSettings = TwoDScrollSettings.default
     @Published public var twoDHUDSettings = TwoDHUDSettings.default
+    @Published public var twoDMetadataOverlaySettings = ClinicalViewportMetadataOverlaySettings.default
     @Published public var twoDResliceAxis: MTKCore.Axis = .axial
+    @Published public private(set) var keyImageNavigationState = KeyImageNavigationState()
     private var preferredTwoDSyncLocation = ViewerSyncState.default.syncLocation
     @Published public var volumeOpacityScale: Double = 1.0
     @Published public var errorMessage: String?
@@ -119,6 +121,13 @@ public final class ClinicalViewerCoordinator: ObservableObject {
     @Published public private(set) var hudUploadTimeMilliseconds: Double?
     @Published public private(set) var hudMemoryBytes: Int?
     @Published public private(set) var lastSnapshotMetrics: SnapshotMetrics?
+    @Published public private(set) var rtDoseOverlays: [RTDoseVolumeOverlay] = []
+    @Published public private(set) var rtStructureContourOverlays: [RTStructureContourOverlay] = []
+    @Published public private(set) var rtStructureContourConfiguration = RTStructureContourOverlayConfiguration.default
+    @Published public private(set) var mprPresentationStates: [MTKCore.Axis: MPRPresentationState] = [:]
+    @Published public private(set) var structuredReportViewerState: StructuredReportViewerState?
+    @Published public private(set) var hangingProtocolResolvedLayout: HangingProtocolResolvedLayout?
+    @Published public private(set) var hangingProtocolSlotAssignments: [HangingProtocolResolvedViewport] = []
 
     private var clinicalViewportSessionTask: Task<ClinicalViewportSession?, Never>?
     private var volumeViewport3DTask: Task<VolumeViewport3D?, Never>?
@@ -127,6 +136,9 @@ public final class ClinicalViewerCoordinator: ObservableObject {
     private var clinicalSessionCancellable: AnyCancellable?
     private var currentVolumeLayers: [VolumeLayer] = []
     private var currentSurfaceMeshLayers: [SurfaceMeshLayer] = []
+    private var currentRTDoseLayerIDs = Set<String>()
+    private var hangingProtocolDefinition: HangingProtocolDefinition?
+    private var hangingProtocolContext: HangingProtocolContext?
     private var volumeBrushMaskedDataset: VolumeDataset?
     private var activeTwoDInteractionCount = 0
     private var twoDROIStore = ViewerROIStore()
@@ -203,6 +215,14 @@ public final class ClinicalViewerCoordinator: ObservableObject {
         currentSurfaceMeshLayers
     }
 
+    public var quantitativeScalarLegends: [QuantitativeScalarLayerLegend] {
+        currentVolumeLayers.compactMap(\.quantitativeLegend)
+    }
+
+    public var volumeBrushEditedDataset: VolumeDataset? {
+        volumeBrushMaskedDataset
+    }
+
     public func ensureActiveViewport() {
         switch mode {
         case .single3D:
@@ -251,6 +271,7 @@ public final class ClinicalViewerCoordinator: ObservableObject {
                     await viewport.applyDataset(dataset)
                 }
                 await self.applyCurrentConfiguration(to: viewport)
+                await viewport.setVolumeLayers(self.currentVolumeLayers)
                 self.sync2DState(from: viewport)
                 self.errorMessage = nil
             }
@@ -375,6 +396,7 @@ public final class ClinicalViewerCoordinator: ObservableObject {
                     await viewport.applyDataset(dataset)
                 }
                 await self.applyCurrentConfiguration(to: viewport)
+                await viewport.setVolumeLayers(self.currentVolumeLayers)
                 self.stack2DViewport = viewport
                 self.sync2DState(from: viewport)
                 self.errorMessage = nil
@@ -618,6 +640,7 @@ public final class ClinicalViewerCoordinator: ObservableObject {
     public func setTwoDSliceIndex(_ index: Int) {
         let upperBound = twoDSliceCount > 0 ? twoDSliceCount - 1 : Int.max
         twoDSliceIndex = min(max(index, 0), upperBound)
+        syncKeyImageSelectionForCurrentSlice()
         publishTwoDROIAnnotations()
         guard let stack2DViewport else { return }
         Task { @MainActor [weak self, weak stack2DViewport] in
@@ -625,6 +648,54 @@ public final class ClinicalViewerCoordinator: ObservableObject {
             await stack2DViewport.setSliceIndex(self.twoDSliceIndex)
             self.sync2DState(from: stack2DViewport)
         }
+    }
+
+    public var hasResolvedKeyImages: Bool {
+        keyImageNavigationState.hasResolvedImages
+    }
+
+    public var isKeyImageFilterEnabled: Bool {
+        keyImageNavigationState.isFilterEnabled
+    }
+
+    public func applyKeyImageNavigationState(_ state: KeyImageNavigationState) {
+        keyImageNavigationState = state
+        syncKeyImageSelectionForCurrentSlice()
+    }
+
+    public func setKeyImageFilterEnabled(_ enabled: Bool) {
+        var next = keyImageNavigationState
+        next.setFilterEnabled(enabled)
+        keyImageNavigationState = next
+        if enabled, let image = next.selectedImage ?? next.resolvedImages.first {
+            setTwoDSliceIndex(image.sliceIndex)
+        }
+    }
+
+    @discardableResult
+    public func navigateToNextKeyImage() -> ResolvedKeyImage? {
+        navigateKeyImages(by: 1)
+    }
+
+    @discardableResult
+    public func navigateToPreviousKeyImage() -> ResolvedKeyImage? {
+        navigateKeyImages(by: -1)
+    }
+
+    @discardableResult
+    public func navigateKeyImages(by offset: Int) -> ResolvedKeyImage? {
+        guard offset != 0, keyImageNavigationState.hasResolvedImages else {
+            return keyImageNavigationState.selectedImage
+        }
+        var next = keyImageNavigationState
+        let image = next.selectRelative(toSliceIndex: twoDSliceIndex,
+                                        offset: offset,
+                                        wrapping: twoDScrollSettings.loopThroughImages)
+        keyImageNavigationState = next
+        if let image {
+            setTwoDSliceIndex(image.sliceIndex)
+        }
+        return image
     }
 
     public func setTwoDWindowLevel(window: Double, level: Double) {
@@ -727,6 +798,10 @@ public final class ClinicalViewerCoordinator: ObservableObject {
     public func scrollTwoD(by steps: Int) {
         guard steps != 0 else { return }
         twoDTool = .scroll
+        if keyImageNavigationState.isFilterEnabled, keyImageNavigationState.hasResolvedImages {
+            navigateKeyImages(by: steps)
+            return
+        }
         let target: Int
         if twoDSliceCount > 0, twoDScrollSettings.loopThroughImages {
             target = Self.wrappedTwoDSliceIndex(twoDSliceIndex + steps, count: twoDSliceCount)
@@ -768,6 +843,10 @@ public final class ClinicalViewerCoordinator: ObservableObject {
 
     public func set2DHUDSettings(_ settings: TwoDHUDSettings) {
         twoDHUDSettings = settings
+    }
+
+    public func set2DMetadataOverlaySettings(_ settings: ClinicalViewportMetadataOverlaySettings) {
+        twoDMetadataOverlaySettings = settings
     }
 
     public func scroll2D(by delta: Int) {
@@ -837,9 +916,9 @@ public final class ClinicalViewerCoordinator: ObservableObject {
     public func handleTwoDROIInteraction(_ interaction: Clinical2DROIInteraction) {
         guard interaction.axis == twoDAxis else { return }
         twoDTool = .roi
-        let points = Self.twoDROIPoints(kind: interaction.kind,
-                                        start: interaction.startImagePoint,
-                                        end: interaction.endImagePoint)
+        let points = ViewerROIPointFactory.points(kind: interaction.kind,
+                                                  start: interaction.startImagePoint,
+                                                  end: interaction.endImagePoint)
         guard !points.isEmpty else { return }
         let annotation = ViewerROIAnnotation(
             kind: interaction.kind,
@@ -1251,8 +1330,123 @@ public final class ClinicalViewerCoordinator: ObservableObject {
     }
 
     public func clearLayers() async {
+        rtDoseOverlays = []
+        currentRTDoseLayerIDs.removeAll()
+        if let session = clinicalViewportSession {
+            await session.setRTDoseOverlays([])
+        }
         await setVolumeLayers([])
         await setSurfaceMeshLayers([])
+    }
+
+    public func setRTDoseOverlays(_ overlays: [RTDoseVolumeOverlay]) async {
+        let previousDoseLayerIDs = currentRTDoseLayerIDs
+        let newDoseLayerIDs = Set(overlays.map(\.volumeLayer.id))
+        rtDoseOverlays = overlays
+        currentRTDoseLayerIDs = newDoseLayerIDs
+        currentVolumeLayers = currentVolumeLayers.filter { layer in
+            !previousDoseLayerIDs.contains(layer.id) && !newDoseLayerIDs.contains(layer.id)
+        } + overlays.map(\.volumeLayer)
+
+        if let session = clinicalViewportSession {
+            await session.setRTDoseOverlays(overlays)
+        }
+        guard let viewport = await activeViewportReady() else { return }
+        await setVolumeLayers(currentVolumeLayers, on: viewport)
+    }
+
+    public func setRTDoseOverlayOpacity(id: String, opacity: Float) async {
+        guard let index = rtDoseOverlays.firstIndex(where: { $0.id == id || $0.volumeLayer.id == id }) else {
+            return
+        }
+        var overlays = rtDoseOverlays
+        overlays[index] = overlays[index].settingOpacity(opacity)
+        await setRTDoseOverlays(overlays)
+    }
+
+    public func setRTDoseColorLookupTable(id: String,
+                                          colorLookupTable: RTDoseColorLookupTable) async {
+        guard let index = rtDoseOverlays.firstIndex(where: { $0.id == id || $0.volumeLayer.id == id }) else {
+            return
+        }
+        var overlays = rtDoseOverlays
+        overlays[index] = overlays[index].settingColorLookupTable(colorLookupTable)
+        await setRTDoseOverlays(overlays)
+    }
+
+    public func setRTStructureContourOverlays(_ overlays: [RTStructureContourOverlay]) {
+        rtStructureContourOverlays = overlays
+        clinicalViewportSession?.setRTStructureContourOverlays(overlays)
+        publishTwoDROIAnnotations()
+        syncMPRState(from: clinicalViewportSession)
+    }
+
+    public func setRTStructureContourConfiguration(_ configuration: RTStructureContourOverlayConfiguration) {
+        rtStructureContourConfiguration = configuration
+        clinicalViewportSession?.setRTStructureContourConfiguration(configuration)
+        publishTwoDROIAnnotations()
+        syncMPRState(from: clinicalViewportSession)
+    }
+
+    public func setRTStructureContourSliceTolerance(_ tolerance: Double) {
+        var configuration = rtStructureContourConfiguration
+        configuration.sliceToleranceMillimeters = tolerance.isFinite ? max(tolerance, 0) : 1
+        setRTStructureContourConfiguration(configuration)
+    }
+
+    public func applyMPRPresentationState(_ presentationState: MPRPresentationState,
+                                          to axis: MTKCore.Axis) async {
+        mprPresentationStates[axis] = presentationState
+        if let session = await sessionReady() {
+            await session.applyMPRPresentationState(presentationState, to: axis)
+            syncMPRState(from: session)
+        }
+    }
+
+    public func clearMPRPresentationState(for axis: MTKCore.Axis) {
+        mprPresentationStates.removeValue(forKey: axis)
+        clinicalViewportSession?.clearMPRPresentationState(for: axis)
+        syncMPRState(from: clinicalViewportSession)
+    }
+
+    public func applyStructuredReportViewerState(_ state: StructuredReportViewerState?) {
+        structuredReportViewerState = state
+        clinicalViewportSession?.applyStructuredReportViewerState(state)
+    }
+
+    public func selectStructuredReportFinding(id: CADFindingOverlayItem.ID?) {
+        guard var state = structuredReportViewerState else { return }
+        state.selectFinding(id: id)
+        applyStructuredReportViewerState(state)
+    }
+
+    @discardableResult
+    public func applyHangingProtocol(_ definition: HangingProtocolDefinition,
+                                     context: HangingProtocolContext? = nil) async -> HangingProtocolResolvedLayout? {
+        hangingProtocolDefinition = definition
+        hangingProtocolContext = context
+        guard let session = await sessionReady() else {
+            hangingProtocolResolvedLayout = nil
+            hangingProtocolSlotAssignments = []
+            return nil
+        }
+        let resolved = await session.applyHangingProtocol(definition, context: context)
+        hangingProtocolResolvedLayout = resolved
+        hangingProtocolSlotAssignments = resolved?.viewports ?? []
+        if let resolved {
+            selectedMPRScreenLayout = resolved.screenLayout
+        }
+        syncMPRState(from: session)
+        return resolved
+    }
+
+    public func clearHangingProtocol() {
+        hangingProtocolDefinition = nil
+        hangingProtocolContext = nil
+        hangingProtocolResolvedLayout = nil
+        hangingProtocolSlotAssignments = []
+        clinicalViewportSession?.clearHangingProtocol()
+        syncMPRState(from: clinicalViewportSession)
     }
 
     public func setVolumeLayerVisibility(id: String, isVisible: Bool) async {
@@ -1589,6 +1783,9 @@ public final class ClinicalViewerCoordinator: ObservableObject {
         mprSlabBlendMode = session.mprSlabBlendMode
         mprSlabThickness = session.slabThickness
         mprViewportTransforms = session.mprViewportTransforms
+        rtDoseOverlays = session.rtDoseOverlays
+        rtStructureContourOverlays = session.rtStructureContourOverlays
+        rtStructureContourConfiguration = session.rtStructureContourConfiguration
         adaptiveSamplingEnabled = session.adaptiveSamplingEnabled
     }
 
@@ -1598,7 +1795,15 @@ public final class ClinicalViewerCoordinator: ObservableObject {
         twoDResliceAxis = viewport.axis
         twoDSliceIndex = viewport.sliceIndex
         twoDSliceCount = viewport.sliceCount
+        syncKeyImageSelectionForCurrentSlice()
         publishTwoDROIAnnotations()
+    }
+
+    private func syncKeyImageSelectionForCurrentSlice() {
+        guard keyImageNavigationState.hasResolvedImages else { return }
+        var next = keyImageNavigationState
+        guard next.selectImage(containingSliceIndex: twoDSliceIndex) != nil else { return }
+        keyImageNavigationState = next
     }
 
     private func currentTwoDNormalizedSlicePosition(default defaultValue: Float) -> Float {
@@ -1644,9 +1849,22 @@ public final class ClinicalViewerCoordinator: ObservableObject {
     }
 
     private func publishTwoDROIAnnotations() {
-        twoDROIAnnotations = twoDROIStore.annotations(axis: twoDAxis,
-                                                      sliceIndex: twoDSliceIndex,
-                                                      seriesIdentifier: currentTwoDSeriesIdentifier)
+        let manualAnnotations = twoDROIStore.annotations(axis: twoDAxis,
+                                                         sliceIndex: twoDSliceIndex,
+                                                         seriesIdentifier: currentTwoDSeriesIdentifier)
+        let rtAnnotations: [ViewerROIAnnotation]
+        if let dataset {
+            rtAnnotations = RTStructureContourOverlayProjector.annotations(
+                for: rtStructureContourOverlays,
+                dataset: dataset,
+                axis: twoDAxis,
+                sliceIndex: twoDSliceIndex,
+                configuration: rtStructureContourConfiguration
+            )
+        } else {
+            rtAnnotations = []
+        }
+        twoDROIAnnotations = manualAnnotations + rtAnnotations
     }
 
     private func twoDMeasurement(kind: ViewerROIKind,
@@ -1657,45 +1875,6 @@ public final class ClinicalViewerCoordinator: ObservableObject {
                                                    normalizedImagePoints: points,
                                                    dimensions: dataset?.dimensions,
                                                    spacing: dataset?.spacing)
-    }
-
-    private static func twoDROIPoints(kind: ViewerROIKind,
-                                      start: CGPoint,
-                                      end: CGPoint) -> [CGPoint] {
-        switch kind {
-        case .distance, .arrow, .curvedLine, .scribble:
-            return [start, end]
-        case .point, .text:
-            return [end]
-        case .angle:
-            return [CGPoint(x: end.x, y: start.y), start, end]
-        case .cobbAngle:
-            return [
-                start,
-                CGPoint(x: end.x, y: start.y),
-                CGPoint(x: start.x, y: end.y),
-                end
-            ]
-        case .area, .closedPath:
-            return [
-                start,
-                CGPoint(x: end.x, y: start.y),
-                end,
-                CGPoint(x: start.x, y: end.y)
-            ]
-        case .ctr:
-            let left = min(start.x, end.x)
-            let right = max(start.x, end.x)
-            let y = (start.y + end.y) * 0.5
-            let centerX = (left + right) * 0.5
-            let cardiacHalfWidth = (right - left) * 0.25
-            return [
-                CGPoint(x: left, y: y),
-                CGPoint(x: right, y: y),
-                CGPoint(x: centerX - cardiacHalfWidth, y: y),
-                CGPoint(x: centerX + cardiacHalfWidth, y: y)
-            ]
-        }
     }
 
     private static func twoDSeriesIdentifier(for dataset: VolumeDataset?) -> String? {
@@ -1817,6 +1996,10 @@ public final class ClinicalViewerCoordinator: ObservableObject {
         await session.setMPRSlabThickness(mprSlabThickness)
         session.setMPRROIKind(mprROIKind, activateTool: false)
         session.setMPRInteractionTool(mprInteractionTool)
+        await session.setRTDoseOverlays(rtDoseOverlays)
+        session.setRTStructureContourConfiguration(rtStructureContourConfiguration)
+        session.setRTStructureContourOverlays(rtStructureContourOverlays)
+        session.applyStructuredReportViewerState(structuredReportViewerState)
         session.setActiveMPRAxis(activeMPRAxis)
         session.setMPRCLUTPreset(mprCLUTPreset)
         session.setMPRWindowInverted(isMPRWindowInverted)
@@ -1824,6 +2007,18 @@ public final class ClinicalViewerCoordinator: ObservableObject {
             await session.setMPRWindowLevel(window: mprWindow, level: mprLevel)
         } else {
             await session.applyMPRWindowPreset(mprWindowPreset)
+        }
+        for (axis, presentationState) in mprPresentationStates {
+            await session.applyMPRPresentationState(presentationState, to: axis)
+        }
+        if let hangingProtocolDefinition {
+            let resolved = await session.applyHangingProtocol(hangingProtocolDefinition,
+                                                              context: hangingProtocolContext)
+            hangingProtocolResolvedLayout = resolved
+            hangingProtocolSlotAssignments = resolved?.viewports ?? []
+            if let resolved {
+                selectedMPRScreenLayout = resolved.screenLayout
+            }
         }
         syncMPRState(from: session)
     }
@@ -1953,8 +2148,8 @@ public final class ClinicalViewerCoordinator: ObservableObject {
             await volumeViewport.setVolumeLayers(layers)
         case .clinical(let session):
             await session.setVolumeLayers(layers)
-        case .stack2D:
-            break
+        case .stack2D(let viewport):
+            await viewport.setVolumeLayers(layers)
         }
     }
 
@@ -1982,8 +2177,8 @@ public final class ClinicalViewerCoordinator: ObservableObject {
             await volumeViewport.setVolumeLayerVisibility(id: id, isVisible: isVisible)
         case .clinical(let session):
             await session.setVolumeLayerVisibility(id: id, isVisible: isVisible)
-        case .stack2D:
-            break
+        case .stack2D(let viewport):
+            await viewport.setVolumeLayerVisibility(id: id, isVisible: isVisible)
         }
     }
 
@@ -1998,8 +2193,8 @@ public final class ClinicalViewerCoordinator: ObservableObject {
             await volumeViewport.setVolumeLayerOpacity(id: id, opacity: opacity)
         case .clinical(let session):
             await session.setVolumeLayerOpacity(id: id, opacity: opacity)
-        case .stack2D:
-            break
+        case .stack2D(let viewport):
+            await viewport.setVolumeLayerOpacity(id: id, opacity: opacity)
         }
     }
 
@@ -2014,8 +2209,8 @@ public final class ClinicalViewerCoordinator: ObservableObject {
             await volumeViewport.setVolumeLayerBlendMode(id: id, blendMode: blendMode)
         case .clinical(let session):
             await session.setVolumeLayerBlendMode(id: id, blendMode: blendMode)
-        case .stack2D:
-            break
+        case .stack2D(let viewport):
+            await viewport.setVolumeLayerBlendMode(id: id, blendMode: blendMode)
         }
     }
 

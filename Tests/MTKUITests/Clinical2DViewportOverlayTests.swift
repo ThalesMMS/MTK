@@ -36,6 +36,7 @@ final class Clinical2DViewportOverlayTests: XCTestCase {
         let state = Clinical2DViewportOverlayState(
             axis: .axial,
             subjectName: "Sample^Subject",
+            studyTitle: "  CT   Chest  ",
             seriesTitle: "  CT   Abdomen Venous  ",
             windowLevel: WindowLevelShift(window: 400, level: 40),
             sliceIndex: 0,
@@ -48,6 +49,7 @@ final class Clinical2DViewportOverlayTests: XCTestCase {
         )
 
         XCTAssertTrue(state.topLeadingLines.contains("Sample Subject"))
+        XCTAssertTrue(state.topTrailingLines.contains("Study: CT Chest"))
         XCTAssertTrue(state.topTrailingLines.contains("CT Abdomen Venous"))
         XCTAssertFalse((state.topLeadingLines + state.topTrailingLines).contains { ClinicalDisplayTextSanitizer.containsBlockedViewerText($0) })
     }
@@ -56,6 +58,7 @@ final class Clinical2DViewportOverlayTests: XCTestCase {
         let state = Clinical2DViewportOverlayState(
             axis: .axial,
             subjectName: nil,
+            studyTitle: "0010,0010 Patient Name",
             seriesTitle: "Patient ID 123456",
             windowLevel: WindowLevelShift(window: 400, level: 40),
             sliceIndex: 0,
@@ -68,7 +71,54 @@ final class Clinical2DViewportOverlayTests: XCTestCase {
         )
 
         XCTAssertFalse(state.topLeadingLines.contains("Unknown"))
+        XCTAssertFalse(state.topTrailingLines.contains("0010,0010 Patient Name"))
         XCTAssertFalse(state.topTrailingLines.contains("Patient ID 123456"))
+    }
+
+    func testMetadataSampleDisplaysPixelSUVAndDoseWhenPresent() {
+        let state = Clinical2DViewportOverlayState(
+            axis: .axial,
+            windowLevel: WindowLevelShift(window: 400, level: 40),
+            sliceIndex: 0,
+            sliceCount: 1,
+            zoom: 1,
+            angleDegrees: 0,
+            activeTool: .scroll,
+            roiKind: .distance,
+            showsCrosshair: false,
+            metadataSample: makeMetadataSample()
+        )
+
+        XCTAssertEqual(state.bottomTrailingLines, [
+            "Pixel: 42",
+            "SUV: 4.25 SUV body weight",
+            "Dose: 2.00 GY"
+        ])
+    }
+
+    func testMetadataOverlaySettingsCanHideValuesPerViewportState() {
+        let visible = makeState(axis: .axial, metadataSample: makeMetadataSample())
+        let hidden = makeState(
+            axis: .axial,
+            metadataSample: makeMetadataSample(),
+            metadataOverlaySettings: ClinicalViewportMetadataOverlaySettings(
+                showsPixelValue: false,
+                showsQuantitativeValues: false,
+                showsDoseValues: false
+            )
+        )
+        let disabled = makeState(
+            axis: .axial,
+            metadataSample: makeMetadataSample(),
+            metadataOverlaySettings: ClinicalViewportMetadataOverlaySettings(isVisible: false)
+        )
+
+        XCTAssertTrue(visible.bottomTrailingLines.contains("Pixel: 42"))
+        XCTAssertEqual(hidden.bottomTrailingLines, [])
+        XCTAssertEqual(disabled.topLeadingLines, [])
+        XCTAssertEqual(disabled.topTrailingLines, [])
+        XCTAssertEqual(disabled.bottomLeadingLines, [])
+        XCTAssertEqual(disabled.bottomTrailingLines, [])
     }
 
     func testOverlayStateUsesPlaneSpecificOrientationLabels() {
@@ -117,7 +167,9 @@ final class Clinical2DViewportOverlayTests: XCTestCase {
         XCTAssertEqual(doubleMirrored.crosshairAngleDegrees, 30)
     }
 
-    private func makeState(axis: MTKCore.Axis) -> Clinical2DViewportOverlayState {
+    private func makeState(axis: MTKCore.Axis,
+                           metadataSample: ClinicalViewportMetadataSample? = nil,
+                           metadataOverlaySettings: ClinicalViewportMetadataOverlaySettings = .default) -> Clinical2DViewportOverlayState {
         Clinical2DViewportOverlayState(
             axis: axis,
             windowLevel: WindowLevelShift(window: 400, level: 40),
@@ -127,7 +179,40 @@ final class Clinical2DViewportOverlayTests: XCTestCase {
             angleDegrees: 0,
             activeTool: .scroll,
             roiKind: .distance,
-            showsCrosshair: false
+            showsCrosshair: false,
+            metadataSample: metadataSample,
+            metadataOverlaySettings: metadataOverlaySettings
         )
+    }
+
+    private func makeMetadataSample() -> ClinicalViewportMetadataSample {
+        let voxel = VoxelIndex(index: SIMD3<Int32>(0, 0, 0),
+                               continuousIndex: SIMD3<Float>(0, 0, 0))
+        let intensity = VolumeIntensitySample(storedScalar: 42,
+                                              modalityValue: 42,
+                                              hounsfieldUnits: 42)
+        let quantitativeValue = QuantitativeScalarValue(
+            value: 4.25,
+            units: QuantitativeCodedConcept(codeValue: "SUVbw",
+                                            codingSchemeDesignator: "UCUM",
+                                            codeMeaning: "SUV body weight"),
+            quantityDefinitions: [],
+            physicalRange: 0...15,
+            legendTitle: "SUV"
+        )
+        let scalarSample = VolumeScalarSample(layerID: "pet",
+                                              voxel: voxel,
+                                              intensity: intensity,
+                                              quantitativeValue: quantitativeValue)
+        let doseSample = RTDoseSample(layerID: "dose",
+                                      doseValue: 2,
+                                      doseUnits: "GY",
+                                      storedScalar: 200,
+                                      voxel: voxel,
+                                      baseWorldPoint: SIMD3<Float>(0, 0, 0),
+                                      doseWorldPoint: SIMD3<Float>(0, 0, 0))
+        return ClinicalViewportMetadataSample(intensity: intensity,
+                                              scalarSamples: [scalarSample],
+                                              doseSamples: [doseSample])
     }
 }

@@ -20,6 +20,7 @@ MTKUI controllers coordinate synchronized viewports over shared GPU resources ow
 - **Interactive Overlays**: Medical imaging overlays for window/level, slab thickness, orientation markers, and crosshairs
 - **Gesture Handling**: Unified gesture system for camera rotation, pan, zoom, and MPR slice navigation
 - **Viewport Coordination**: Singleton coordinator manages controller lifecycle and state synchronization across surfaces
+- **Progressive Volume Updates**: Public viewports can apply streamed `ProgressiveVolumeDatasetUpdate` values so previews can refine to final datasets without blocking the main UI workflow
 
 ## Topics
 
@@ -195,7 +196,7 @@ struct Volume3DView: View {
 
 ### 3D Volume Fusion
 
-Use ``VolumeLayer`` scalar content when a 3D viewport needs an already registered secondary volume, such as CT plus PET-like uptake. Layers are configured through ``VolumeViewport3D/setVolumeLayers(_:)`` or ``ClinicalViewportSession/setVolumeLayers(_:)`` and can be adjusted with per-layer visibility, opacity, and blend mode controls.
+Use ``VolumeLayer`` scalar content when a 3D viewport needs an already registered secondary volume, such as CT plus PET uptake. Layers are configured through ``VolumeViewport3D/setVolumeLayers(_:)`` or ``ClinicalViewportSession/setVolumeLayers(_:)`` and can be adjusted with per-layer visibility, opacity, and blend mode controls.
 
 ```swift
 let petLayer = VolumeLayer(

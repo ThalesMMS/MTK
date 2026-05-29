@@ -42,6 +42,12 @@ public final class ClinicalViewportGridController: ObservableObject {
     @Published public internal(set) var isMPRWindowInverted = false
     @Published public internal(set) var mprROIKind: ViewerROIKind = .distance
     @Published public internal(set) var mprROIAnnotations: [ViewerROIAnnotation] = []
+    @Published public internal(set) var mprPresentationStates: [MTKCore.Axis: MPRPresentationState] = [:]
+    @Published public internal(set) var structuredReportViewerState: StructuredReportViewerState?
+    @Published public internal(set) var hangingProtocolDefinition: HangingProtocolDefinition?
+    @Published public internal(set) var hangingProtocolContext: HangingProtocolContext?
+    @Published public internal(set) var hangingProtocolResolvedLayout: HangingProtocolResolvedLayout?
+    @Published public internal(set) var hangingProtocolSlotAssignments: [HangingProtocolResolvedViewport] = []
     @Published public internal(set) var normalizedPositions: [MTKCore.Axis: Float] = ClinicalViewportGridController.centeredNormalizedPositions
     @Published public internal(set) var crosshairOffsets: [MTKCore.Axis: CGPoint] = ClinicalViewportGridController.centeredCrosshairOffsets
     @Published public internal(set) var mprCursorVoxel = SIMD3<Float>(repeating: 0)
@@ -50,6 +56,10 @@ public final class ClinicalViewportGridController: ObservableObject {
     @Published public internal(set) var sharedResourceHandle: VolumeResourceHandle?
     @Published public internal(set) var volumeLayers: [MTKCore.VolumeLayer] = []
     @Published public internal(set) var surfaceMeshLayers: [SurfaceMeshLayer] = []
+    @Published public internal(set) var rtDoseOverlays: [RTDoseVolumeOverlay] = []
+    @Published public internal(set) var rtStructureContourOverlays: [RTStructureContourOverlay] = []
+    @Published public internal(set) var rtStructureContourConfiguration = RTStructureContourOverlayConfiguration.default
+    @Published public internal(set) var metadataOverlaySettingsByViewport: [ViewportID: ClinicalViewportMetadataOverlaySettings] = [:]
     @Published public internal(set) var datasetApplied = false
     @Published public internal(set) var renderQualityState: RenderQualityState = .settled
     @Published public internal(set) var lastRenderErrors: [ViewportID: any Error] = [:]
@@ -93,6 +103,7 @@ public final class ClinicalViewportGridController: ObservableObject {
     var currentVolumeTransferFunction: VolumeTransferFunction?
     var mprColormapTexture: (any MTLTexture)?
     var mprROIStore = ViewerROIStore()
+    var rtDoseVolumeLayerIDs = Set<String>()
     var mprPlaneRotationsByAxis: [MTKCore.Axis: simd_quatf] = [:]
     var displayTransformsByAxis: [MTKCore.Axis: MPRDisplayTransform] = [:]
     var viewportAxesByID: [ViewportID: MTKCore.Axis] = [:]
@@ -281,6 +292,10 @@ public final class ClinicalViewportGridController: ObservableObject {
         crosshairAngles = [.axial: 0, .coronal: 0, .sagittal: 0]
         mprPlaneRotationsByAxis.removeAll()
         mprViewportTransforms = Self.defaultMPRViewportTransforms
+        hangingProtocolDefinition = nil
+        hangingProtocolContext = nil
+        hangingProtocolResolvedLayout = nil
+        hangingProtocolSlotAssignments = []
         datasetApplied = false
         lastRenderErrors.removeAll()
         lastRenderError = nil
@@ -664,7 +679,12 @@ public final class ClinicalViewportGridController: ObservableObject {
 #if DEBUG
             await logResourceSharingDiagnostics()
 #endif
-            scheduleMPRRenderAll()
+            if let hangingProtocolDefinition {
+                _ = await applyHangingProtocol(hangingProtocolDefinition,
+                                               context: hangingProtocolContext)
+            } else {
+                scheduleMPRRenderAll()
+            }
         } catch {
             if uploadedVolume {
                 await engine.clearVolume(for: allViewportIDs)
@@ -678,6 +698,8 @@ public final class ClinicalViewportGridController: ObservableObject {
             viewportTimings.removeAll()
             latestTimingSnapshot = ClinicalViewportTimingSnapshot()
             committedMPRWindowRange = nil
+            hangingProtocolResolvedLayout = nil
+            hangingProtocolSlotAssignments = []
             datasetApplied = false
             lastRenderErrors.removeAll()
             lastRenderError = nil
@@ -796,7 +818,7 @@ public final class ClinicalViewportGridController: ObservableObject {
         await commitVolumeLayers()
     }
 
-    private func commitVolumeLayers() async {
+    func commitVolumeLayers() async {
         do {
             try await engine.configure(allViewportIDs, volumeLayers: volumeLayers)
             clearError(for: volumeViewportID)

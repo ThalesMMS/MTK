@@ -100,6 +100,12 @@ final class ClinicalBenchmarkReportTests: XCTestCase {
         XCTAssertEqual(ct.totalCPUTimeMilliseconds, 10.0, accuracy: 0.0001)
         XCTAssertEqual(ct.totalGPUTimeMilliseconds, 3.0)
         XCTAssertEqual(ct.peakMemoryBytes, 524_288)
+        XCTAssertEqual(ct.stageMeasurements.map(\.stage), [.mprReslice, .textureUpload])
+        XCTAssertEqual(ct.stageMeasurements.first { $0.stage == .textureUpload }?.sampleCount, 1)
+        XCTAssertEqual(ct.stageMeasurements.first { $0.stage == .textureUpload }?.cpuTimeMilliseconds, 7.5)
+        XCTAssertEqual(ct.stageMeasurements.first { $0.stage == .textureUpload }?.gpuTimeMilliseconds, 3.0)
+        XCTAssertEqual(ct.stageMeasurements.first { $0.stage == .textureUpload }?.peakMemoryBytes, 524_288)
+        XCTAssertEqual(ct.stageMeasurements.first { $0.stage == .mprReslice }?.cpuTimeMilliseconds, 2.5)
         XCTAssertEqual(ct.peakVolumeTextureCount, 1)
         XCTAssertEqual(ct.peakOutputTexturePoolSize, 1)
         XCTAssertEqual(ct.observedViewportTypes, ["mpr.axial", "volume3D"])
@@ -128,7 +134,70 @@ final class ClinicalBenchmarkReportTests: XCTestCase {
         XCTAssertTrue(csv.contains("volume-surface-segmentation"))
         XCTAssertTrue(csv.contains("Unit Test GPU"))
         XCTAssertTrue(csv.contains("one shared volume texture"))
+        XCTAssertTrue(csv.contains("stageBreakdown"))
+        XCTAssertTrue(csv.contains("textureUpload:samples=1"))
         XCTAssertTrue(csv.contains("ci-scaled"))
+    }
+
+    func testPerformanceBudgetManifestCoversClinicalRenderingStages() throws {
+        let manifest = try loadPerformanceBudgetManifest()
+        let stages = Set(manifest.scenarios.flatMap { scenario in
+            scenario.budgets.map(\.stage)
+        })
+        let requiredStages: Set<String> = [
+            "decode",
+            "volumeAssembly",
+            "gpuUpload",
+            "mprRender",
+            "volumeRender",
+            "snapshot",
+            "peakMemory"
+        ]
+
+        XCTAssertEqual(Set(manifest.requiredStages), requiredStages)
+        XCTAssertTrue(stages.isSuperset(of: requiredStages))
+        XCTAssertEqual(Set(manifest.buildConfigurations), ["debug", "release"])
+
+        let mtkScenario = try XCTUnwrap(manifest.scenarios.first { $0.component == "MTK" })
+        let mtkStages = Set(mtkScenario.budgets.map(\.stage))
+        XCTAssertTrue(mtkStages.isSuperset(of: ["gpuUpload", "mprRender", "volumeRender", "snapshot", "peakMemory"]))
+        XCTAssertEqual(mtkScenario.benchmarkMode, "clinical-render")
+        XCTAssertTrue(mtkScenario.fixturePolicy.contains("local"))
+
+        let environmentFields = Set(manifest.comparisonProfile.requiredResultEnvironmentFields)
+        XCTAssertTrue(environmentFields.isSuperset(of: [
+            "deviceName",
+            "osVersion",
+            "architecture",
+            "modelIdentifier",
+            "buildConfiguration",
+            "benchmarkMode",
+            "fixtureID"
+        ]))
+    }
+
+    func testProfilingStagesMapToPerformanceBudgetStages() {
+        let mapping: [ProfilingStage: String] = [
+            .dicomParse: "decode",
+            .huConversion: "volumeAssembly",
+            .textureUpload: "gpuUpload",
+            .mprReslice: "mprRender",
+            .volumeRaycast: "volumeRender",
+            .snapshotReadback: "snapshot",
+            .memorySnapshot: "peakMemory"
+        ]
+
+        for stage in [
+            ProfilingStage.dicomParse,
+            .huConversion,
+            .textureUpload,
+            .mprReslice,
+            .volumeRaycast,
+            .snapshotReadback,
+            .memorySnapshot
+        ] {
+            XCTAssertNotNil(mapping[stage], "Missing performance budget mapping for \(stage.rawValue)")
+        }
     }
 
     private func makeEnvironment() -> ProfilingEnvironment {
@@ -173,4 +242,49 @@ final class ClinicalBenchmarkReportTests: XCTestCase {
     private func fixedDate(_ offset: TimeInterval) -> Date {
         Date(timeIntervalSince1970: 1_800_000_000 + offset)
     }
+
+    private func loadPerformanceBudgetManifest(callerFile: String = #filePath) throws -> TestPerformanceBudgetManifest {
+        let root = try findRepositoryRoot(callerFile: callerFile)
+        let url = root.appendingPathComponent("Roadmap/ClinicalPerformanceBudgetManifest.json")
+        let data = try Data(contentsOf: url)
+        return try JSONDecoder().decode(TestPerformanceBudgetManifest.self, from: data)
+    }
+
+    private func findRepositoryRoot(callerFile: String) throws -> URL {
+        var directory = URL(fileURLWithPath: callerFile).deletingLastPathComponent()
+        let fileManager = FileManager.default
+
+        while directory.path != "/" {
+            if fileManager.fileExists(atPath: directory.appendingPathComponent("ISSUE-ORDER.txt").path) {
+                return directory
+            }
+            directory.deleteLastPathComponent()
+        }
+
+        throw NSError(domain: "ClinicalBenchmarkReportTests",
+                      code: 1,
+                      userInfo: [NSLocalizedDescriptionKey: "Could not locate repository root"])
+    }
+}
+
+private struct TestPerformanceBudgetManifest: Decodable {
+    var requiredStages: [String]
+    var buildConfigurations: [String]
+    var comparisonProfile: TestPerformanceBudgetComparisonProfile
+    var scenarios: [TestPerformanceBudgetScenario]
+}
+
+private struct TestPerformanceBudgetComparisonProfile: Decodable {
+    var requiredResultEnvironmentFields: [String]
+}
+
+private struct TestPerformanceBudgetScenario: Decodable {
+    var component: String
+    var fixturePolicy: String
+    var benchmarkMode: String
+    var budgets: [TestPerformanceBudgetEntry]
+}
+
+private struct TestPerformanceBudgetEntry: Decodable {
+    var stage: String
 }

@@ -58,7 +58,10 @@ public struct Clinical2DHUDOverlay: View {
             HStack(alignment: .bottom) {
                 annotationBlock(lines: state.bottomLeadingLines, alignment: .leading)
                 Spacer(minLength: 16)
-                axisBadge
+                VStack(alignment: .trailing, spacing: 6) {
+                    annotationBlock(lines: state.bottomTrailingLines, alignment: .trailing)
+                    axisBadge
+                }
             }
         }
         .padding(12)

@@ -20,21 +20,10 @@ extension ClinicalViewportGridController {
         let kind = mprROIKind
         guard kind.isImplementedInMPRFirstDelivery else { return nil }
 
-        let points: [CGPoint]
-        let text: String?
-        switch kind {
-        case .distance, .arrow:
-            points = [startImagePoint, endImagePoint]
-            text = nil
-        case .point:
-            points = [endImagePoint]
-            text = nil
-        case .text:
-            points = [endImagePoint]
-            text = "Annotation"
-        case .angle, .cobbAngle, .area, .closedPath, .curvedLine, .scribble, .ctr:
-            return nil
-        }
+        let points = ViewerROIPointFactory.points(kind: kind,
+                                                  start: startImagePoint,
+                                                  end: endImagePoint)
+        let text = kind == .text ? "Annotation" : nil
 
         let annotation = ViewerROIAnnotation(
             kind: kind,
@@ -47,6 +36,14 @@ extension ClinicalViewportGridController {
         mprROIStore.add(annotation)
         publishMPRROIAnnotations()
         return annotation
+    }
+
+    public func labelmapVolumeSummary(layerID: String,
+                                      label: UInt16? = nil) throws -> ViewerROILabelmapVolumeSummary {
+        guard let layer = volumeLayers.first(where: { $0.id == layerID }) else {
+            throw ViewerROILabelmapVolumeError.missingLabelmap(layerID)
+        }
+        return try ViewerROILabelmapVolumeCalculator.summary(in: layer, label: label)
     }
 
     @discardableResult
@@ -70,6 +67,7 @@ extension ClinicalViewportGridController {
 
     public func mprROIAnnotations(for axis: MTKCore.Axis) -> [ViewerROIAnnotation] {
         mprROIStore.annotations(axis: axis, sliceIndex: currentMPRSliceIndex(for: axis))
+            + rtStructureROIAnnotations(for: axis)
     }
 
     public func deleteMPRROIsInActiveView() {
@@ -84,6 +82,22 @@ extension ClinicalViewportGridController {
     public func deleteAllMPRROIs() {
         mprROIStore.deleteAll()
         publishMPRROIAnnotations()
+    }
+
+    public func setRTStructureContourOverlays(_ overlays: [RTStructureContourOverlay]) {
+        rtStructureContourOverlays = overlays
+        publishMPRROIAnnotations()
+    }
+
+    public func setRTStructureContourConfiguration(_ configuration: RTStructureContourOverlayConfiguration) {
+        rtStructureContourConfiguration = configuration
+        publishMPRROIAnnotations()
+    }
+
+    public func setRTStructureContourSliceTolerance(_ tolerance: Double) {
+        var configuration = rtStructureContourConfiguration
+        configuration.sliceToleranceMillimeters = tolerance.isFinite ? max(tolerance, 0) : 1
+        setRTStructureContourConfiguration(configuration)
     }
 
     public func normalizedMPRImagePoint(for axis: MTKCore.Axis,
@@ -123,7 +137,7 @@ extension ClinicalViewportGridController {
         publishMPRROIAnnotations()
     }
 
-    private func currentMPRSliceIndex(for axis: MTKCore.Axis) -> Int? {
+    func currentMPRSliceIndex(for axis: MTKCore.Axis) -> Int? {
         guard let count = sliceCount(for: axis), count > 0 else { return nil }
         let normalized = normalizedPositions[axis] ?? 0.5
         return Int((clampNormalized(normalized) * Float(max(count - 1, 0))).rounded())
@@ -132,24 +146,31 @@ extension ClinicalViewportGridController {
     private func measurement(for kind: ViewerROIKind,
                              axis: MTKCore.Axis,
                              points: [CGPoint]) -> ViewerROIMeasurement? {
-        guard kind == .distance else { return nil }
-        if let plane = currentMPRPlane(for: axis),
+        if kind == .distance,
+           let plane = currentMPRPlane(for: axis),
            let millimeters = ViewerROIMeasurementCalculator.distanceMillimeters(
             normalizedImagePoints: points,
             plane: plane
            ) {
             return .distanceMillimeters(millimeters)
         }
-        guard let dataset = currentDataset,
-              let millimeters = ViewerROIMeasurementCalculator.distanceMillimeters(
+        guard let dataset = currentDataset else {
+            return nil
+        }
+        if kind == .distance,
+           let millimeters = ViewerROIMeasurementCalculator.distanceMillimeters(
                 axis: axis,
                 normalizedImagePoints: points,
                 dimensions: dataset.dimensions,
                 spacing: dataset.spacing
-              ) else {
-            return nil
+              ) {
+            return .distanceMillimeters(millimeters)
         }
-        return .distanceMillimeters(millimeters)
+        return ViewerROIMeasurementCalculator.measurement(kind: kind,
+                                                          axis: axis,
+                                                          normalizedImagePoints: points,
+                                                          dimensions: dataset.dimensions,
+                                                          spacing: dataset.spacing)
     }
 
     private func sanitizedROIText(_ text: String?) -> String? {
@@ -157,7 +178,22 @@ extension ClinicalViewportGridController {
         return ClinicalDisplayTextSanitizer.safeSeriesTitle(text) ?? "Annotation"
     }
 
-    private func publishMPRROIAnnotations() {
+    func publishMPRROIAnnotations() {
         mprROIAnnotations = mprROIStore.annotations
+            + MTKCore.Axis.allCases.flatMap { rtStructureROIAnnotations(for: $0) }
+    }
+
+    private func rtStructureROIAnnotations(for axis: MTKCore.Axis) -> [ViewerROIAnnotation] {
+        guard let sliceIndex = currentMPRSliceIndex(for: axis),
+              let plane = currentMPRPlane(for: axis) else {
+            return []
+        }
+        return RTStructureContourOverlayProjector.annotations(
+            for: rtStructureContourOverlays,
+            axis: axis,
+            sliceIndex: sliceIndex,
+            plane: plane,
+            configuration: rtStructureContourConfiguration
+        )
     }
 }

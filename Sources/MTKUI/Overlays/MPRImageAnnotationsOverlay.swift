@@ -19,45 +19,82 @@ public struct MPRImageAnnotationSize: Equatable, Sendable {
 public struct MPRImageAnnotationsOverlayState: Equatable, Sendable {
     public var panelNumber: Int
     public var axis: MTKCore.Axis
+    public var subjectName: String?
+    public var studyTitle: String?
+    public var seriesTitle: String?
     public var imageSize: MPRImageAnnotationSize?
     public var windowLevel: WindowLevelShift
     public var slabThickness: Double
     public var zoom: Float
     public var angleDegrees: Double
+    public var metadataSample: ClinicalViewportMetadataSample?
+    public var metadataOverlaySettings: ClinicalViewportMetadataOverlaySettings
 
     public init(panelNumber: Int,
                 axis: MTKCore.Axis,
+                subjectName: String? = nil,
+                studyTitle: String? = nil,
+                seriesTitle: String? = nil,
                 imageSize: MPRImageAnnotationSize? = nil,
                 windowLevel: WindowLevelShift,
                 slabThickness: Double,
                 zoom: Float,
-                angleDegrees: Double) {
+                angleDegrees: Double,
+                metadataSample: ClinicalViewportMetadataSample? = nil,
+                metadataOverlaySettings: ClinicalViewportMetadataOverlaySettings = .default) {
         self.panelNumber = max(panelNumber, 1)
         self.axis = axis
+        self.subjectName = ClinicalDisplayTextSanitizer.safeSubjectName(subjectName)
+        self.studyTitle = ClinicalDisplayTextSanitizer.safeStudyTitle(studyTitle)
+        self.seriesTitle = ClinicalDisplayTextSanitizer.safeSeriesTitle(seriesTitle)
         self.imageSize = imageSize
         self.windowLevel = WindowLevelShift(window: windowLevel.window.isFinite ? windowLevel.window : 0,
                                             level: windowLevel.level.isFinite ? windowLevel.level : 0)
         self.slabThickness = slabThickness.isFinite ? max(slabThickness, 0) : 0
         self.zoom = zoom.isFinite ? max(zoom, 0) : 0
         self.angleDegrees = angleDegrees.isFinite ? angleDegrees : 0
+        self.metadataSample = metadataSample
+        self.metadataOverlaySettings = metadataOverlaySettings
     }
 
     public var topLines: [String] {
-        var lines = ["Panel \(panelNumber)"]
-        if let imageSize {
-            lines.append("Image size: \(imageSize.displayText)")
+        guard metadataOverlaySettings.isVisible else { return [] }
+
+        var lines: [String] = []
+        if metadataOverlaySettings.showsSubjectName, let subjectName {
+            lines.append(subjectName)
         }
-        lines.append("WW: \(formatted(windowLevel.window)) WL: \(formatted(windowLevel.level))")
-        lines.append("Orientation: \(axisDisplayName)")
+        if metadataOverlaySettings.showsStudyTitle, let studyTitle {
+            lines.append("Study: \(studyTitle)")
+        }
+        if metadataOverlaySettings.showsSeriesTitle, let seriesTitle {
+            lines.append(seriesTitle)
+        }
+
+        if metadataOverlaySettings.showsTechnicalText {
+            lines.append("Panel \(panelNumber)")
+            if let imageSize {
+                lines.append("Image size: \(imageSize.displayText)")
+            }
+            lines.append("WW: \(formatted(windowLevel.window)) WL: \(formatted(windowLevel.level))")
+            lines.append("Orientation: \(axisDisplayName)")
+        }
         return lines
     }
 
     public var bottomLines: [String] {
-        [
-            "Thickness: \(formatted(slabThickness)) mm",
-            "Zoom: \(formatted(Double(zoom * 100)))%",
-            "Angle: \(formatted(angleDegrees)) deg"
-        ]
+        guard metadataOverlaySettings.isVisible else { return [] }
+
+        var lines: [String] = []
+        if metadataOverlaySettings.showsTechnicalText {
+            lines.append(contentsOf: [
+                "Thickness: \(formatted(slabThickness)) mm",
+                "Zoom: \(formatted(Double(zoom * 100)))%",
+                "Angle: \(formatted(angleDegrees)) deg"
+            ])
+        }
+        lines.append(contentsOf: metadataSample?.displayLines(settings: metadataOverlaySettings) ?? [])
+        return lines
     }
 
     public var displayLines: [String] {
@@ -115,18 +152,21 @@ public struct MPRImageAnnotationsOverlay: View {
         .accessibilityIdentifier("MPRImageAnnotationsOverlay.\(state.axisIdentifier)")
     }
 
+    @ViewBuilder
     private func annotationBlock(lines: [String]) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            ForEach(lines, id: \.self) { line in
-                Text(line)
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(style.overlayForeground)
-                    .lineLimit(1)
-                    .shadow(color: .black.opacity(0.85), radius: 2, x: 0, y: 1)
+        if !lines.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(lines, id: \.self) { line in
+                    Text(line)
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(style.overlayForeground)
+                        .lineLimit(1)
+                        .shadow(color: .black.opacity(0.85), radius: 2, x: 0, y: 1)
+                }
             }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .background(style.overlayBackground, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 4)
-        .background(style.overlayBackground, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
     }
 }

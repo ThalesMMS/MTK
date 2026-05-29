@@ -85,6 +85,36 @@ final class Clinical2DInteractionRouterTests: XCTestCase {
                        .none)
     }
 
+    func testScrollDragAccumulatesSubStepMovement() {
+        var residual: CGFloat = 0
+
+        var resolution = router.scrollDragResolution(deltaY: 4, residualPixels: residual)
+        XCTAssertEqual(resolution.steps, 0)
+        XCTAssertEqual(resolution.residualPixels, 4, accuracy: 0.0001)
+
+        residual = resolution.residualPixels
+        resolution = router.scrollDragResolution(deltaY: 4, residualPixels: residual)
+        XCTAssertEqual(resolution.steps, 0)
+        XCTAssertEqual(resolution.residualPixels, 8, accuracy: 0.0001)
+
+        residual = resolution.residualPixels
+        resolution = router.scrollDragResolution(deltaY: 4, residualPixels: residual)
+        XCTAssertEqual(resolution.steps, 1)
+        XCTAssertEqual(resolution.residualPixels, 2, accuracy: 0.0001)
+    }
+
+    func testScrollDragMomentumUsesPredictedEndTranslation() {
+        XCTAssertEqual(router.scrollMomentumSteps(translationY: 24,
+                                                  predictedEndTranslationY: 84),
+                       2)
+        XCTAssertEqual(router.scrollMomentumSteps(translationY: -24,
+                                                  predictedEndTranslationY: -84),
+                       -2)
+        XCTAssertEqual(router.scrollMomentumSteps(translationY: 24,
+                                                  predictedEndTranslationY: 28),
+                       0)
+    }
+
     func testPinchRoutesToZoomExceptWhenROICapturesMultiTouch() {
         XCTAssertEqual(router.routeMagnification(factor: 1.25,
                                                  anchor: CGPoint(x: 0.4, y: 0.6),

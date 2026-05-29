@@ -118,6 +118,23 @@ public struct VolumeLabelSample: Sendable, Equatable {
     }
 }
 
+public struct VolumeScalarSample: Sendable, Equatable {
+    public var layerID: String
+    public var voxel: VoxelIndex
+    public var intensity: VolumeIntensitySample
+    public var quantitativeValue: QuantitativeScalarValue?
+
+    public init(layerID: String,
+                voxel: VoxelIndex,
+                intensity: VolumeIntensitySample,
+                quantitativeValue: QuantitativeScalarValue? = nil) {
+        self.layerID = layerID
+        self.voxel = voxel
+        self.intensity = intensity
+        self.quantitativeValue = quantitativeValue
+    }
+}
+
 public struct VolumePickResult: Sendable, Equatable {
     public enum HitKind: Sendable, Equatable {
         case mprPlane(MPRPlaneAxis)
@@ -131,6 +148,7 @@ public struct VolumePickResult: Sendable, Equatable {
     public var textureCoordinate: SIMD3<Float>
     public var intensity: VolumeIntensitySample
     public var label: VolumeLabelSample?
+    public var scalarSamples: [VolumeScalarSample]
     public var worldRay: WorldRay?
 
     public init(hitKind: HitKind,
@@ -140,6 +158,7 @@ public struct VolumePickResult: Sendable, Equatable {
                 textureCoordinate: SIMD3<Float>,
                 intensity: VolumeIntensitySample,
                 label: VolumeLabelSample? = nil,
+                scalarSamples: [VolumeScalarSample] = [],
                 worldRay: WorldRay? = nil) {
         self.hitKind = hitKind
         self.viewportPoint = viewportPoint
@@ -148,6 +167,7 @@ public struct VolumePickResult: Sendable, Equatable {
         self.textureCoordinate = textureCoordinate
         self.intensity = intensity
         self.label = label
+        self.scalarSamples = scalarSamples
         self.worldRay = worldRay
     }
 }
@@ -336,6 +356,36 @@ public enum VolumePicking {
         return nil
     }
 
+    public static func sampleScalarVolumes(in layers: [VolumeLayer],
+                                           atBaseWorldPoint worldPoint: SIMD3<Float>) throws -> [VolumeScalarSample] {
+        var samples: [VolumeScalarSample] = []
+        for layer in layers where layer.isVisible && layer.clampedOpacity > 0 {
+            guard let scalarVolume = layer.scalarVolume else { continue }
+            do {
+                let layerWorldPoint = layer.baseWorldToLayerWorld.transformPoint(worldPoint)
+                let layerVoxel = try voxelIndex(forWorldPoint: layerWorldPoint,
+                                                in: scalarVolume.dataset)
+                let intensity = try sampleIntensity(in: scalarVolume.dataset,
+                                                    atVoxelIndex: layerVoxel.index)
+                let linear = linearIndex(layerVoxel.index,
+                                         dimensions: scalarVolume.dataset.dimensions)
+                let quantitativeValue = scalarVolume.quantitativeMapping?.sample(
+                    storedScalar: intensity.storedScalar,
+                    linearIndex: linear
+                )
+                samples.append(
+                    VolumeScalarSample(layerID: layer.id,
+                                       voxel: layerVoxel,
+                                       intensity: intensity,
+                                       quantitativeValue: quantitativeValue)
+                )
+            } catch VolumePickError.outsideVolume {
+                continue
+            }
+        }
+        return samples
+    }
+
     public static func pickMPR(screenPoint: CGPoint,
                                viewportSize: CGSize,
                                dataset: VolumeDataset,
@@ -366,13 +416,16 @@ public enum VolumePicking {
                                             atVoxelIndex: voxel.index)
         let label = try sampleLabel(in: layers,
                                     atBaseWorldPoint: worldPoint)
+        let scalarSamples = try sampleScalarVolumes(in: layers,
+                                                    atBaseWorldPoint: worldPoint)
         return VolumePickResult(hitKind: .mprPlane(axis),
                                 viewportPoint: viewport,
                                 worldPoint: worldPoint,
                                 voxel: voxel,
                                 textureCoordinate: textureCoordinate,
                                 intensity: intensity,
-                                label: label)
+                                label: label,
+                                scalarSamples: scalarSamples)
     }
 
     public static func worldRay(screenPoint: CGPoint,
@@ -513,6 +566,8 @@ public enum VolumePicking {
                 let worldPoint = dataset.imageData.indexToWorld.transformPoint(continuousIndex)
                 let label = try sampleLabel(in: layers,
                                             atBaseWorldPoint: worldPoint)
+                let scalarSamples = try sampleScalarVolumes(in: layers,
+                                                            atBaseWorldPoint: worldPoint)
                 return VolumePickResult(hitKind: .volumeVisibleSample,
                                         viewportPoint: viewport,
                                         worldPoint: worldPoint,
@@ -520,6 +575,7 @@ public enum VolumePicking {
                                         textureCoordinate: textureCoordinate,
                                         intensity: intensity,
                                         label: label,
+                                        scalarSamples: scalarSamples,
                                         worldRay: ray)
             }
 

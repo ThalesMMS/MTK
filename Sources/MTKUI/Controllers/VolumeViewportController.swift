@@ -105,6 +105,7 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     public var windowLevelState: VolumetricWindowLevelState { statePublisher.windowLevelState }
     public var adaptiveSamplingEnabled: Bool { statePublisher.adaptiveSamplingEnabled }
     public var renderQualityState: RenderQualityState { statePublisher.qualityState }
+    @Published public internal(set) var progressiveVolumeState: ProgressiveVolumeStreamState = .idle
     @Published public internal(set) var datasetApplied = false
     @Published public internal(set) var datasetIntensityRange: ClosedRange<Int32>?
     @Published public internal(set) var volumeClipping: VolumeClippingState = .disabled
@@ -153,6 +154,7 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     var mprHuWindow: ClosedRange<Int32>?
     var mprPresentationInvert = false
     var mprPresentationColormap: (any MTLTexture)?
+    var mprPresentationShutter: MPRPresentationShutter?
     var mprViewportTransform = MPRViewportTransform.identity
     var mprPresentationFlipHorizontal = false
     var mprPresentationFlipVertical = false
@@ -291,6 +293,7 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     public func applyDataset(_ dataset: VolumeDataset) async {
         guard self.dataset != dataset || datasetApplied == false else { return }
         self.dataset = dataset
+        progressiveVolumeState = .idle
         primaryVolumeDatasetOverride = nil
         datasetIntensityRange = dataset.intensityRange
         mprVolumeTextureCache.invalidate()
@@ -327,6 +330,16 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
         } else {
             scheduleRender()
         }
+    }
+
+    public func recordProgressiveVolumeUpdate(_ update: ProgressiveVolumeDatasetUpdate) async {
+        progressiveVolumeState = update.layer.isFinal
+            ? .complete(layer: update.layer)
+            : .streaming(layer: update.layer)
+    }
+
+    public func recordProgressiveVolumeStreamCancellation() async {
+        progressiveVolumeState = .cancelled(layer: progressiveVolumeState.currentLayer)
     }
 
     /// Updates the controller's active display configuration (volume or MPR) and applies the corresponding controller state changes.
@@ -727,13 +740,16 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     ///
     /// This does not invalidate the cached MPR slice texture because the raw intensity frame is unchanged.
     public func setMPRPresentation(invert: Bool,
-                                   colormap: (any MTLTexture)? = nil) {
+                                   colormap: (any MTLTexture)? = nil,
+                                   shutter: MPRPresentationShutter? = nil) {
         guard mprPresentationInvert != invert
-            || !Self.sameTexture(mprPresentationColormap, colormap) else {
+            || !Self.sameTexture(mprPresentationColormap, colormap)
+            || mprPresentationShutter != shutter else {
             return
         }
         mprPresentationInvert = invert
         mprPresentationColormap = colormap
+        mprPresentationShutter = shutter
         if volumeLayers.isEmpty, presentCachedMPRFrameIfPossible() {
             return
         }

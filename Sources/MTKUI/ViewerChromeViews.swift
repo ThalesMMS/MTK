@@ -106,12 +106,12 @@ private struct ViewerToolbarToolButton: View {
     let tool: ViewerToolDescriptor
     let onTap: (ViewerToolDescriptor) -> Void
     let onLongPress: (ViewerToolDescriptor) -> Void
-    @State private var didTriggerLongPress = false
+    @State private var suppressTapAfterLongPress = false
+    @State private var longPressSuppressionResetTask: Task<Void, Never>?
 
     var body: some View {
         Button {
-            guard !didTriggerLongPress else {
-                didTriggerLongPress = false
+            guard !consumeLongPressTapSuppression() else {
                 return
             }
             onTap(tool)
@@ -136,17 +136,15 @@ private struct ViewerToolbarToolButton: View {
         .buttonStyle(.plain)
         .disabled(!tool.isEnabled)
         .simultaneousGesture(
-            LongPressGesture(minimumDuration: 0.35)
+            LongPressGesture(minimumDuration: 0.35, maximumDistance: 24)
                 .onEnded { _ in
-                    guard tool.isEnabled else { return }
-                    didTriggerLongPress = true
-                    onLongPress(tool)
-                    Task { @MainActor in
-                        try? await Task.sleep(nanoseconds: 150_000_000)
-                        didTriggerLongPress = false
-                    }
+                    handleToolLongPress()
                 }
         )
+        .onDisappear {
+            longPressSuppressionResetTask?.cancel()
+            longPressSuppressionResetTask = nil
+        }
         .accessibilityLabel(tool.title)
         .accessibilityValue(toolAccessibilityValue)
         .accessibilityIdentifier(tool.accessibilityIdentifier ?? "ViewerTool.\(tool.id.rawValue)")
@@ -156,6 +154,38 @@ private struct ViewerToolbarToolButton: View {
             onTap(tool)
         }
         .help(tool.disabledMessage ?? tool.title)
+    }
+
+    private func handleToolLongPress() {
+        guard tool.isEnabled else { return }
+        longPressSuppressionResetTask?.cancel()
+        longPressSuppressionResetTask = nil
+        suppressTapAfterLongPress = true
+        onLongPress(tool)
+        scheduleLongPressSuppressionResetIfNeeded(after: 2_000_000_000)
+    }
+
+    private func consumeLongPressTapSuppression() -> Bool {
+        guard suppressTapAfterLongPress else { return false }
+        suppressTapAfterLongPress = false
+        longPressSuppressionResetTask?.cancel()
+        longPressSuppressionResetTask = nil
+        return true
+    }
+
+    private func scheduleLongPressSuppressionResetIfNeeded(after delay: UInt64) {
+        guard suppressTapAfterLongPress else { return }
+        longPressSuppressionResetTask?.cancel()
+        let task = Task { @MainActor in
+            do {
+                try await Task.sleep(nanoseconds: delay)
+            } catch {
+                return
+            }
+            suppressTapAfterLongPress = false
+            longPressSuppressionResetTask = nil
+        }
+        longPressSuppressionResetTask = task
     }
 
     private var toolAccessibilityValue: String {

@@ -264,6 +264,7 @@ extension VolumeViewportController {
                                                 blend: blend,
                                                 slab: slab)
                 let labelmapOverlays = try await mprLabelmapOverlays(for: frame)
+                let scalarOverlays = try await mprScalarOverlays(for: frame)
                 let presentationGeneration = renderGeneration
                 guard canPresentRender(generation: generation,
                                        currentGeneration: presentationGeneration,
@@ -275,14 +276,16 @@ extension VolumeViewportController {
                 let frameReadyMilliseconds = mtkPerfMilliseconds(from: perfStartedAt)
                 let progressBeforePresent = viewportSurface.presentationProgressSnapshot()
                 logInteractionDebug("[MTK3DInteraction] controller.present.begin generation=\(generation) current=\(renderGeneration) display=mpr submitted=\(progressBeforePresent.submitted) completed=\(progressBeforePresent.completed) failed=\(progressBeforePresent.failed) terminal=\(progressBeforePresent.terminal) presentInFlight=\(progressBeforePresent.inFlight) texture=\(frame.texture.width)x\(frame.texture.height) pixelFormat=\(frame.texture.pixelFormat)")
+                let transform = mprPresentationTransform(for: axis)
                 let presentDuration = try viewportSurface.present(mprFrame: frame,
                                                                   window: resolvedMPRWindow(for: dataset),
                                                                   invert: mprPresentationInvert,
                                                                   colormap: mprPresentationColormap,
                                                                   labelmapOverlays: labelmapOverlays,
+                                                                  scalarOverlays: scalarOverlays,
+                                                                  transform: transform,
                                                                   viewportTransform: mprViewportTransform,
-                                                                  flipHorizontal: mprPresentationFlipHorizontal,
-                                                                  flipVertical: mprPresentationFlipVertical,
+                                                                  shutter: mprPresentationShutter,
                                                                   presentationToken: generation)
                 closePresentationGate(token: generation,
                                       frameIndex: nil,
@@ -291,7 +294,7 @@ extension VolumeViewportController {
                 let totalMilliseconds = mtkPerfMilliseconds(from: perfStartedAt)
                 lastRenderError = nil
                 logPerformanceInfo(
-                    "[MTKPerf] controller.mpr.complete generation=\(generation) current=\(renderGeneration) stalePresented=\(generation != renderGeneration) axis=\(axis) planeIndex=\(index) blend=\(blend.coreBlend) totalMs=\(mtkPerfFormat(totalMilliseconds)) frameReadyMs=\(mtkPerfFormat(frameReadyMilliseconds)) presentCallMs=\(mtkPerfFormat(presentDuration * 1000.0)) texture=\(frame.texture.width)x\(frame.texture.height) overlays=\(labelmapOverlays.count) state=\(telemetryQualityState) submittedBefore=\(progressBeforePresent.submitted) completedBefore=\(progressBeforePresent.completed) submittedAfter=\(progressAfterPresent.submitted) completedAfter=\(progressAfterPresent.completed)"
+                    "[MTKPerf] controller.mpr.complete generation=\(generation) current=\(renderGeneration) stalePresented=\(generation != renderGeneration) axis=\(axis) planeIndex=\(index) blend=\(blend.coreBlend) totalMs=\(mtkPerfFormat(totalMilliseconds)) frameReadyMs=\(mtkPerfFormat(frameReadyMilliseconds)) presentCallMs=\(mtkPerfFormat(presentDuration * 1000.0)) texture=\(frame.texture.width)x\(frame.texture.height) labelmapOverlays=\(labelmapOverlays.count) scalarOverlays=\(scalarOverlays.count) state=\(telemetryQualityState) submittedBefore=\(progressBeforePresent.submitted) completedBefore=\(progressBeforePresent.completed) submittedAfter=\(progressAfterPresent.submitted) completedAfter=\(progressAfterPresent.completed)"
                 )
                 RenderingTelemetry.mprRenderCompleted(duration: Date().timeIntervalSince(started),
                                                       blend: blend.coreBlend,

@@ -64,6 +64,8 @@ For application code, prefer the stable public wrappers: `VolumeDataset`/`ImageD
 ## Segmentation surfaces
 MTKCore exposes a minimal `SurfaceMesh` contract with vertices, normals, indices, coordinate space, bounds, and segment metadata. `MarchingCubesExtractor` provides deterministic CPU extraction from `LabelmapVolume` labels or scalar `VolumeDataset` thresholds. Extracted labelmap meshes carry the same label/segment id that MPR labelmap overlays use. Extracted meshes default to `.worldMillimeters` coordinates through the source volume affine; `.textureNormalized` is available for callers that need texture-space geometry.
 
+`MTKDicomBridge` can convert parsed DICOM SEG objects into `VolumeLayer` labelmaps aligned to a base `VolumeDataset`, preserving segment labels for MPR and 3D overlay review.
+
 The v1 render path is `labelmap 3D -> SurfaceMesh -> SurfaceMeshLayer -> volume3D viewport`. `MetalSurfaceMeshRenderer` draws indexed triangles into the existing Metal output texture after volume raycasting. Opaque surfaces write mesh-local depth first, semi-transparent surfaces render afterward with stable layer-level back-to-front ordering, and volume crop/clip settings are applied to the surface fragments. True raycast-volume depth occlusion, smoothing, decimation, topology repair, advanced materials, and GPU extraction remain out of scope for this version.
 
 ## Multi-volume fusion

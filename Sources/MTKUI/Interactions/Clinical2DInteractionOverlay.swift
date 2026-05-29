@@ -42,6 +42,16 @@ public enum Clinical2DGestureRoute: Equatable, Sendable {
     case roi(Clinical2DROIInteraction)
 }
 
+public struct Clinical2DScrollDragResolution: Equatable, Sendable {
+    public var steps: Int
+    public var residualPixels: CGFloat
+
+    public init(steps: Int, residualPixels: CGFloat) {
+        self.steps = steps
+        self.residualPixels = residualPixels
+    }
+}
+
 public struct Clinical2DInteractionRouter: Sendable {
     public var scrollDragPixelsPerStep: CGFloat
 
@@ -67,7 +77,7 @@ public struct Clinical2DInteractionRouter: Sendable {
 
         switch tool {
         case .scroll:
-            let steps = dragScrollSteps(deltaY: delta.height)
+            let steps = scrollDragResolution(deltaY: delta.height).steps
             return steps == 0 ? .none : .scrollSlices(steps)
         case .windowLevel:
             guard abs(delta.width) >= 0.5 || abs(delta.height) >= 0.5 else { return .none }
@@ -116,6 +126,36 @@ public struct Clinical2DInteractionRouter: Sendable {
         let steps = MPRScrollStepMapper.steps(deltaY: deltaY,
                                               hasPreciseScrollingDeltas: hasPreciseScrollingDeltas)
         return steps == 0 ? .none : .scrollSlices(steps)
+    }
+
+    public func scrollDragResolution(deltaY: CGFloat,
+                                     residualPixels: CGFloat = 0) -> Clinical2DScrollDragResolution {
+        guard deltaY.isFinite,
+              residualPixels.isFinite else {
+            return Clinical2DScrollDragResolution(steps: 0, residualPixels: 0)
+        }
+
+        let totalPixels = deltaY + residualPixels
+        let steps = dragScrollSteps(deltaY: totalPixels)
+        let consumedPixels = CGFloat(steps) * scrollDragPixelsPerStep
+        return Clinical2DScrollDragResolution(steps: steps,
+                                              residualPixels: totalPixels - consumedPixels)
+    }
+
+    public func scrollMomentumSteps(translationY: CGFloat,
+                                    predictedEndTranslationY: CGFloat) -> Int {
+        guard translationY.isFinite,
+              predictedEndTranslationY.isFinite else {
+            return 0
+        }
+
+        let projectedDelta = predictedEndTranslationY - translationY
+        guard abs(projectedDelta) >= scrollDragPixelsPerStep else { return 0 }
+
+        let dampedDelta = projectedDelta * 0.45
+        let maximumDelta = scrollDragPixelsPerStep * 8
+        let clampedDelta = min(max(dampedDelta, -maximumDelta), maximumDelta)
+        return dragScrollSteps(deltaY: clampedDelta)
     }
 
     public func routeMagnification(factor: CGFloat,
@@ -284,8 +324,10 @@ public struct Clinical2DInteractionOverlay: View {
 
     @State private var activeInteractions = Set<Clinical2DInteractionKind>()
     @State private var lastDragTranslation = CGSize.zero
+    @State private var scrollDragResidualPixels: CGFloat = 0
     @State private var lastMagnification: CGFloat = 1
     @State private var lastRotationRadians: CGFloat = 0
+    @State private var scrollMomentumTask: Task<Void, Never>?
     @State private var dragResetTask: Task<Void, Never>?
     @State private var pinchResetTask: Task<Void, Never>?
     @State private var rotationResetTask: Task<Void, Never>?
@@ -343,29 +385,69 @@ public struct Clinical2DInteractionOverlay: View {
                 lastDragTranslation = value.translation
                 let previousLocation = CGPoint(x: value.location.x - delta.width,
                                                y: value.location.y - delta.height)
-                apply(router.routeDrag(tool: tool,
-                                       axis: axis,
-                                       roiKind: roiKind,
-                                       sliceIndex: sliceIndex,
-                                       viewportSize: size,
-                                       transform: transform,
-                                       delta: delta,
-                                       startLocation: value.startLocation,
-                                       previousLocation: previousLocation,
-                                       currentLocation: value.location))
+                if tool == .scroll {
+                    scrollMomentumTask?.cancel()
+                    scrollMomentumTask = nil
+                    let resolution = router.scrollDragResolution(deltaY: delta.height,
+                                                                 residualPixels: scrollDragResidualPixels)
+                    scrollDragResidualPixels = resolution.residualPixels
+                    apply(resolution.steps == 0 ? .none : .scrollSlices(resolution.steps))
+                } else {
+                    apply(router.routeDrag(tool: tool,
+                                           axis: axis,
+                                           roiKind: roiKind,
+                                           sliceIndex: sliceIndex,
+                                           viewportSize: size,
+                                           transform: transform,
+                                           delta: delta,
+                                           startLocation: value.startLocation,
+                                           previousLocation: previousLocation,
+                                           currentLocation: value.location))
+                }
             }
             .onEnded { value in
-                apply(router.routeCompletedDrag(tool: tool,
-                                                axis: axis,
-                                                roiKind: roiKind,
-                                                sliceIndex: sliceIndex,
-                                                viewportSize: size,
-                                                transform: transform,
-                                                startLocation: value.startLocation,
-                                                endLocation: value.location))
+                if tool == .scroll {
+                    let momentumSteps = router.scrollMomentumSteps(translationY: value.translation.height,
+                                                                   predictedEndTranslationY: value.predictedEndTranslation.height)
+                    scheduleScrollMomentum(steps: momentumSteps)
+                    scrollDragResidualPixels = 0
+                } else {
+                    apply(router.routeCompletedDrag(tool: tool,
+                                                    axis: axis,
+                                                    roiKind: roiKind,
+                                                    sliceIndex: sliceIndex,
+                                                    viewportSize: size,
+                                                    transform: transform,
+                                                    startLocation: value.startLocation,
+                                                    endLocation: value.location))
+                }
                 lastDragTranslation = .zero
                 endInteraction(.drag)
+        }
+    }
+
+    private func scheduleScrollMomentum(steps: Int) {
+        scrollMomentumTask?.cancel()
+        guard steps != 0 else {
+            scrollMomentumTask = nil
+            return
+        }
+
+        let direction = steps > 0 ? 1 : -1
+        let stepCount = min(abs(steps), 8)
+        let task = Task { @MainActor in
+            for index in 0..<stepCount {
+                do {
+                    let delay = 18_000_000 + UInt64(index) * 14_000_000
+                    try await Task.sleep(nanoseconds: delay)
+                } catch {
+                    return
+                }
+                apply(.scrollSlices(direction))
             }
+            scrollMomentumTask = nil
+        }
+        scrollMomentumTask = task
     }
 
     private var magnificationGesture: some Gesture {
@@ -468,10 +550,13 @@ public struct Clinical2DInteractionOverlay: View {
         dragResetTask?.cancel()
         pinchResetTask?.cancel()
         rotationResetTask?.cancel()
+        scrollMomentumTask?.cancel()
         dragResetTask = nil
         pinchResetTask = nil
         rotationResetTask = nil
+        scrollMomentumTask = nil
         lastDragTranslation = .zero
+        scrollDragResidualPixels = 0
         lastMagnification = 1
         lastRotationRadians = 0
         let active = activeInteractions

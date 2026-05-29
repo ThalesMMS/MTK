@@ -51,6 +51,7 @@ public struct ClinicalBenchmarkMeasurement: Codable, Equatable, Sendable {
     public var totalCPUTimeMilliseconds: Double
     public var totalGPUTimeMilliseconds: Double?
     public var peakMemoryBytes: Int?
+    public var stageMeasurements: [ClinicalBenchmarkStageMeasurement]
     public var peakVolumeTextureCount: Int?
     public var peakTransferTextureCount: Int?
     public var peakOutputTexturePoolSize: Int?
@@ -65,6 +66,7 @@ public struct ClinicalBenchmarkMeasurement: Codable, Equatable, Sendable {
                 totalCPUTimeMilliseconds: Double = 0,
                 totalGPUTimeMilliseconds: Double? = nil,
                 peakMemoryBytes: Int? = nil,
+                stageMeasurements: [ClinicalBenchmarkStageMeasurement] = [],
                 peakVolumeTextureCount: Int? = nil,
                 peakTransferTextureCount: Int? = nil,
                 peakOutputTexturePoolSize: Int? = nil,
@@ -78,6 +80,7 @@ public struct ClinicalBenchmarkMeasurement: Codable, Equatable, Sendable {
         self.totalCPUTimeMilliseconds = totalCPUTimeMilliseconds
         self.totalGPUTimeMilliseconds = totalGPUTimeMilliseconds
         self.peakMemoryBytes = peakMemoryBytes
+        self.stageMeasurements = stageMeasurements
         self.peakVolumeTextureCount = peakVolumeTextureCount
         self.peakTransferTextureCount = peakTransferTextureCount
         self.peakOutputTexturePoolSize = peakOutputTexturePoolSize
@@ -85,6 +88,62 @@ public struct ClinicalBenchmarkMeasurement: Codable, Equatable, Sendable {
         self.surfaceLayerCount = surfaceLayerCount
         self.observedViewportTypes = observedViewportTypes
         self.observedRenderModes = observedRenderModes
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case scenarioID
+        case status
+        case sampleCount
+        case totalCPUTimeMilliseconds
+        case totalGPUTimeMilliseconds
+        case peakMemoryBytes
+        case stageMeasurements
+        case peakVolumeTextureCount
+        case peakTransferTextureCount
+        case peakOutputTexturePoolSize
+        case volumeLayerCount
+        case surfaceLayerCount
+        case observedViewportTypes
+        case observedRenderModes
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.scenarioID = try container.decode(String.self, forKey: .scenarioID)
+        self.status = try container.decode(ClinicalBenchmarkMeasurementStatus.self, forKey: .status)
+        self.sampleCount = try container.decode(Int.self, forKey: .sampleCount)
+        self.totalCPUTimeMilliseconds = try container.decode(Double.self, forKey: .totalCPUTimeMilliseconds)
+        self.totalGPUTimeMilliseconds = try container.decodeIfPresent(Double.self, forKey: .totalGPUTimeMilliseconds)
+        self.peakMemoryBytes = try container.decodeIfPresent(Int.self, forKey: .peakMemoryBytes)
+        self.stageMeasurements = try container.decodeIfPresent([ClinicalBenchmarkStageMeasurement].self,
+                                                               forKey: .stageMeasurements) ?? []
+        self.peakVolumeTextureCount = try container.decodeIfPresent(Int.self, forKey: .peakVolumeTextureCount)
+        self.peakTransferTextureCount = try container.decodeIfPresent(Int.self, forKey: .peakTransferTextureCount)
+        self.peakOutputTexturePoolSize = try container.decodeIfPresent(Int.self, forKey: .peakOutputTexturePoolSize)
+        self.volumeLayerCount = try container.decodeIfPresent(Int.self, forKey: .volumeLayerCount)
+        self.surfaceLayerCount = try container.decodeIfPresent(Int.self, forKey: .surfaceLayerCount)
+        self.observedViewportTypes = try container.decode([String].self, forKey: .observedViewportTypes)
+        self.observedRenderModes = try container.decode([String].self, forKey: .observedRenderModes)
+    }
+}
+
+public struct ClinicalBenchmarkStageMeasurement: Codable, Equatable, Sendable {
+    public var stage: ProfilingStage
+    public var sampleCount: Int
+    public var cpuTimeMilliseconds: Double
+    public var gpuTimeMilliseconds: Double?
+    public var peakMemoryBytes: Int?
+
+    public init(stage: ProfilingStage,
+                sampleCount: Int,
+                cpuTimeMilliseconds: Double,
+                gpuTimeMilliseconds: Double? = nil,
+                peakMemoryBytes: Int? = nil) {
+        self.stage = stage
+        self.sampleCount = sampleCount
+        self.cpuTimeMilliseconds = cpuTimeMilliseconds
+        self.gpuTimeMilliseconds = gpuTimeMilliseconds
+        self.peakMemoryBytes = peakMemoryBytes
     }
 }
 
@@ -131,6 +190,7 @@ public extension ClinicalBenchmarkReport {
         "deviceName",
         "osVersion",
         "gpuFamily",
+        "stageBreakdown",
         "metadata"
     ]
 
@@ -188,6 +248,7 @@ public extension ClinicalBenchmarkReport {
                 environment.deviceName,
                 environment.osVersion,
                 environment.gpuFamily,
+                Self.format(stageMeasurements: measurement.stageMeasurements),
                 Self.format(metadata: metadata)
             ]
             return values.map(Self.escapeCSV).joined(separator: ",")
@@ -209,6 +270,14 @@ public extension ClinicalBenchmarkReport {
             }.joined(separator: ";")
         }
         return string
+    }
+
+    private static func format(stageMeasurements: [ClinicalBenchmarkStageMeasurement]) -> String {
+        stageMeasurements.map { measurement in
+            let gpu = measurement.gpuTimeMilliseconds.map { "gpu=\(format($0))" } ?? "gpu="
+            let memory = measurement.peakMemoryBytes.map { "mem=\($0)" } ?? "mem="
+            return "\(measurement.stage.rawValue):samples=\(measurement.sampleCount);cpu=\(format(measurement.cpuTimeMilliseconds));\(gpu);\(memory)"
+        }.joined(separator: "|")
     }
 
     private static func escapeCSV(_ value: String) -> String {
@@ -364,6 +433,7 @@ public enum ClinicalBenchmarkSuite {
             totalCPUTimeMilliseconds: samples.map(\.cpuTimeMilliseconds).reduce(0, +),
             totalGPUTimeMilliseconds: samples.contains { $0.gpuTimeMilliseconds != nil } ? totalGPU : nil,
             peakMemoryBytes: samples.compactMap(\.memoryEstimateBytes).max(),
+            stageMeasurements: stageMeasurements(for: samples),
             peakVolumeTextureCount: maxMetadataInteger("volumeTextureCount", in: samples),
             peakTransferTextureCount: maxMetadataInteger("transferTextureCount", in: samples),
             peakOutputTexturePoolSize: maxMetadataInteger("outputTexturePoolSize", in: samples),
@@ -372,6 +442,21 @@ public enum ClinicalBenchmarkSuite {
             observedViewportTypes: sortedUnique(samples.map(\.viewportContext.viewportType)),
             observedRenderModes: sortedUnique(samples.map(\.viewportContext.renderMode))
         )
+    }
+
+    private static func stageMeasurements(for samples: [ProfilingSample]) -> [ClinicalBenchmarkStageMeasurement] {
+        Dictionary(grouping: samples, by: \.stageType)
+            .map { stage, stageSamples in
+                let totalGPU = stageSamples.compactMap(\.gpuTimeMilliseconds).reduce(0, +)
+                return ClinicalBenchmarkStageMeasurement(
+                    stage: stage,
+                    sampleCount: stageSamples.count,
+                    cpuTimeMilliseconds: stageSamples.map(\.cpuTimeMilliseconds).reduce(0, +),
+                    gpuTimeMilliseconds: stageSamples.contains { $0.gpuTimeMilliseconds != nil } ? totalGPU : nil,
+                    peakMemoryBytes: stageSamples.compactMap(\.memoryEstimateBytes).max()
+                )
+            }
+            .sorted { $0.stage.rawValue < $1.stage.rawValue }
     }
 
     private static func maxMetadataInteger(_ key: String,

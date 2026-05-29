@@ -10,6 +10,10 @@ public enum ClinicalDisplayTextSanitizer {
         return title
     }
 
+    public static func safeStudyTitle(_ rawValue: String?) -> String? {
+        safeSeriesTitle(rawValue)
+    }
+
     public static func chromeTitle(_ rawValue: String?,
                                    fallback: String = "Clinical Viewer") -> String {
         safeSeriesTitle(rawValue) ?? fallback

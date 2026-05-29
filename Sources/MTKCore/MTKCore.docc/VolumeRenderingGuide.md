@@ -33,7 +33,7 @@ V1 limits: no smoothing, decimation, topology repair, advanced materials, GPU ex
 
 ### Multi-Volume Clinical Fusion
 
-MTKCore supports an initial 3D scalar-volume fusion path for workflows such as CT plus PET-like heat maps, registered MR sequences, dose maps over CT, or prior/current comparisons. A ``VolumeRenderRequest`` now carries a `layers` stack. The existing single-volume initializer remains source-compatible and is mapped to one primary scalar ``VolumeLayer`` using the request dataset and transfer function.
+MTKCore supports an initial 3D scalar-volume fusion path for workflows such as CT plus PET uptake heat maps, registered MR sequences, dose maps over CT, or prior/current comparisons. A ``VolumeRenderRequest`` now carries a `layers` stack. The existing single-volume initializer remains source-compatible and is mapped to one primary scalar ``VolumeLayer`` using the request dataset and transfer function.
 
 Each scalar layer supplies its own ``VolumeDataset``, ``VolumeTransferFunction``, opacity, visibility, and blend mode. V1 blend modes are:
 

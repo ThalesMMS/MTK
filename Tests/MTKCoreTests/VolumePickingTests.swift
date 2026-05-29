@@ -359,6 +359,43 @@ final class VolumePickingTests: XCTestCase {
         XCTAssertNil(sample)
     }
 
+    func testMPRPickingReturnsVisibleScalarLayerSamples() throws {
+        let base = makeSignedPhantom(dimensions: VolumeDimensions(width: 2, height: 2, depth: 1))
+        let scalarDataset = makeUnsignedDataset(values: [5, 9, 0, 0],
+                                                dimensions: base.dimensions)
+        let scalarLayer = VolumeLayer(
+            id: "dose",
+            dataset: scalarDataset,
+            transferFunction: .defaultGrayscale(for: scalarDataset),
+            opacity: 0.5
+        )
+        let targetWorld = VolumePicking.worldPoint(forVoxelIndex: SIMD3<Float>(1, 0, 0),
+                                                   in: base)
+        let plane = MPRPlaneGeometryFactory.makePlane(for: base,
+                                                      axis: .z,
+                                                      slicePosition: 0)
+        let screen = try VolumePicking.screenPoint(forWorldPoint: targetWorld,
+                                                   dataset: base,
+                                                   plane: plane,
+                                                   displayTransform: .identity,
+                                                   outputAspect: .fill,
+                                                   viewportSize: CGSize(width: 100, height: 100))
+
+        let pick = try VolumePicking.pickMPR(screenPoint: screen.screenPoint,
+                                             viewportSize: screen.viewportSize,
+                                             dataset: base,
+                                             plane: plane,
+                                             displayTransform: .identity,
+                                             outputAspect: .fill,
+                                             axis: .z,
+                                             layers: [scalarLayer])
+
+        XCTAssertEqual(pick.scalarSamples.count, 1)
+        XCTAssertEqual(pick.scalarSamples.first?.layerID, "dose")
+        XCTAssertEqual(pick.scalarSamples.first?.voxel.index, SIMD3<Int32>(1, 0, 0))
+        XCTAssertEqual(pick.scalarSamples.first?.intensity.storedScalar, 9)
+    }
+
     func testVolume3DPickReturnsFirstVisibleRenderedSample() throws {
         let dimensions = VolumeDimensions(width: 4, height: 4, depth: 4)
         let dataset = makeSignedDataset(

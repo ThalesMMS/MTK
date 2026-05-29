@@ -39,6 +39,7 @@ package struct RenderFrame {
     package var metadata: FrameMetadata
     package var mprFrame: MPRTextureFrame?
     package var labelmapOverlays: [MPRLabelmapOverlay]
+    package var scalarOverlays: [MPRScalarVolumeOverlay]
     package var outputTextureLease: OutputTextureLease?
 
     package var hasPooledTexture: Bool {
@@ -51,6 +52,7 @@ package struct RenderFrame {
                 metadata: FrameMetadata,
                 mprFrame: MPRTextureFrame? = nil,
                 labelmapOverlays: [MPRLabelmapOverlay] = [],
+                scalarOverlays: [MPRScalarVolumeOverlay] = [],
                 outputTextureLease: OutputTextureLease? = nil) {
         self.texture = texture
         self.viewportID = viewportID
@@ -58,6 +60,7 @@ package struct RenderFrame {
         self.metadata = metadata
         self.mprFrame = mprFrame
         self.labelmapOverlays = labelmapOverlays
+        self.scalarOverlays = scalarOverlays
         self.outputTextureLease = outputTextureLease
     }
 }

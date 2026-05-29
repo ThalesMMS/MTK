@@ -30,6 +30,18 @@ struct MPRPresentationUniforms {
     float imageOriginY;
     float imageWidth;
     float imageHeight;
+    int shutterMode;
+    int _pad4;
+    int _pad5;
+    int _pad6;
+    float shutterMinX;
+    float shutterMinY;
+    float shutterMaxX;
+    float shutterMaxY;
+    float shutterCenterX;
+    float shutterCenterY;
+    float shutterRadius;
+    float _pad7;
 };
 
 struct MPRLabelmapOverlayUniforms {
@@ -51,6 +63,33 @@ struct MPRLabelmapOverlayUniforms {
     float _pad4;
     float _pad5;
     float _pad6;
+    float imageOriginX;
+    float imageOriginY;
+    float imageWidth;
+    float imageHeight;
+};
+
+struct MPRScalarOverlayUniforms {
+    float opacity;
+    float intensityMin;
+    float intensityMax;
+    int blendMode;
+    float3 originTexture;
+    float _pad0;
+    float3 axisUTexture;
+    float _pad1;
+    float3 axisVTexture;
+    float _pad2;
+    int flipHorizontal;
+    int flipVertical;
+    float viewportZoom;
+    float viewportPanX;
+    float viewportPanY;
+    float viewportRotationCos;
+    float viewportRotationSin;
+    float _pad3;
+    float _pad4;
+    float _pad5;
     float imageOriginX;
     float imageOriginY;
     float imageWidth;
@@ -86,6 +125,21 @@ inline float2 inverseViewportTransform(float2 outputUV,
 inline bool isInUnitSquare(float2 position) {
     constexpr float epsilon = 1e-5f;
     return all(position >= -epsilon) && all(position <= 1.0f + epsilon);
+}
+
+inline bool passesPresentationShutter(float2 sourceUV,
+                                      constant MPRPresentationUniforms& uniforms) {
+    if (uniforms.shutterMode == 1) {
+        return sourceUV.x >= uniforms.shutterMinX
+            && sourceUV.x <= uniforms.shutterMaxX
+            && sourceUV.y >= uniforms.shutterMinY
+            && sourceUV.y <= uniforms.shutterMaxY;
+    }
+    if (uniforms.shutterMode == 2) {
+        float2 delta = sourceUV - float2(uniforms.shutterCenterX, uniforms.shutterCenterY);
+        return length(delta) <= max(uniforms.shutterRadius, 0.0f);
+    }
+    return true;
 }
 
 inline float2 imageCoordinates(float2 outputUV,
@@ -157,6 +211,21 @@ inline float2 sourceCoordinates(uint2 outputGid,
                              float2(uniforms.imageWidth, uniforms.imageHeight));
 }
 
+inline float2 sourceCoordinates(uint2 outputGid,
+                                uint width,
+                                uint height,
+                                constant MPRScalarOverlayUniforms& uniforms) {
+    return sourceCoordinates(normalizedCoordinates(outputGid, width, height),
+                             uniforms.flipHorizontal,
+                             uniforms.flipVertical,
+                             uniforms.viewportZoom,
+                             float2(uniforms.viewportPanX, uniforms.viewportPanY),
+                             uniforms.viewportRotationCos,
+                             uniforms.viewportRotationSin,
+                             float2(uniforms.imageOriginX, uniforms.imageOriginY),
+                             float2(uniforms.imageWidth, uniforms.imageHeight));
+}
+
 inline uint2 nearestPixel(float2 uv, uint width, uint height) {
     return uint2(uint(round(clamp(uv.x, 0.0f, 1.0f) * float(max(width, 1u) - 1u))),
                  uint(round(clamp(uv.y, 0.0f, 1.0f) * float(max(height, 1u) - 1u))));
@@ -178,6 +247,45 @@ inline float4 presentationColor(float normalized,
 inline bool isInUnitCube(float3 position) {
     return all(position >= 0.0f) && all(position <= 1.0f);
 }
+
+inline float normalizedScalarOverlayValue(int value,
+                                          constant MPRScalarOverlayUniforms& uniforms) {
+    float lower = uniforms.intensityMin;
+    float upper = uniforms.intensityMax;
+    if (upper <= lower) {
+        return 0.0f;
+    }
+    return clamp((float(value) - lower) / (upper - lower), 0.0f, 1.0f);
+}
+
+inline float4 compositeScalarOverlay(float4 base,
+                                     int storedValue,
+                                     texture2d<float, access::sample> colorLUTTexture,
+                                     constant MPRScalarOverlayUniforms& uniforms) {
+    float opacity = clamp(uniforms.opacity, 0.0f, 1.0f);
+    if (opacity <= 0.0f) {
+        return base;
+    }
+
+    constexpr sampler lutSampler(coord::normalized,
+                                 address::clamp_to_edge,
+                                 filter::linear);
+    float normalized = normalizedScalarOverlayValue(storedValue, uniforms);
+    float4 overlay = colorLUTTexture.sample(lutSampler, float2(normalized, 0.5f));
+    float alpha = clamp(overlay.a * opacity, 0.0f, 1.0f);
+    if (alpha <= 0.0f) {
+        return base;
+    }
+
+    float3 rgb;
+    if (uniforms.blendMode == 1) {
+        rgb = min(base.rgb + overlay.rgb * alpha, float3(1.0f));
+    } else {
+        rgb = mix(base.rgb, overlay.rgb, alpha);
+    }
+    float outAlpha = base.a + alpha * (1.0f - base.a);
+    return float4(rgb, outAlpha);
+}
 }
 
 kernel void mprPresentation(texture2d<short, access::read> inputTexture      [[texture(0)]],
@@ -194,6 +302,10 @@ kernel void mprPresentation(texture2d<short, access::read> inputTexture      [[t
                                         outputTexture.get_height(),
                                         uniforms);
     if (!isInUnitSquare(sourceUV)) {
+        outputTexture.write(float4(0.0f, 0.0f, 0.0f, 1.0f), gid);
+        return;
+    }
+    if (!passesPresentationShutter(sourceUV, uniforms)) {
         outputTexture.write(float4(0.0f, 0.0f, 0.0f, 1.0f), gid);
         return;
     }
@@ -270,6 +382,74 @@ kernel void mprCompositeLabelmapOverlay(texture2d<float, access::read> inputText
     outputTexture.write(float4(rgb, outAlpha), gid);
 }
 
+kernel void mprCompositeScalarOverlay(texture2d<float, access::read> inputTexture       [[texture(0)]],
+                                      texture2d<float, access::write> outputTexture     [[texture(1)]],
+                                      texture3d<short, access::sample> scalarTexture    [[texture(2)]],
+                                      texture2d<float, access::sample> colorLUTTexture  [[texture(3)]],
+                                      constant MPRScalarOverlayUniforms& uniforms       [[buffer(0)]],
+                                      uint2 gid                                         [[thread_position_in_grid]]) {
+    uint width = outputTexture.get_width();
+    uint height = outputTexture.get_height();
+    if (gid.x >= width || gid.y >= height) {
+        return;
+    }
+
+    float4 base = inputTexture.read(gid);
+    float2 sampleUV = sourceCoordinates(gid, width, height, uniforms);
+    if (!isInUnitSquare(sampleUV)) {
+        outputTexture.write(base, gid);
+        return;
+    }
+
+    float3 scalarPosition = uniforms.originTexture
+                          + sampleUV.x * uniforms.axisUTexture
+                          + sampleUV.y * uniforms.axisVTexture;
+    if (!isInUnitCube(scalarPosition)) {
+        outputTexture.write(base, gid);
+        return;
+    }
+
+    constexpr sampler scalarSampler(coord::normalized,
+                                    address::clamp_to_edge,
+                                    filter::nearest);
+    int storedValue = int(scalarTexture.sample(scalarSampler, scalarPosition).r);
+    outputTexture.write(compositeScalarOverlay(base, storedValue, colorLUTTexture, uniforms), gid);
+}
+
+kernel void mprCompositeScalarOverlayUnsigned(texture2d<float, access::read> inputTexture       [[texture(0)]],
+                                              texture2d<float, access::write> outputTexture     [[texture(1)]],
+                                              texture3d<ushort, access::sample> scalarTexture   [[texture(2)]],
+                                              texture2d<float, access::sample> colorLUTTexture  [[texture(3)]],
+                                              constant MPRScalarOverlayUniforms& uniforms       [[buffer(0)]],
+                                              uint2 gid                                         [[thread_position_in_grid]]) {
+    uint width = outputTexture.get_width();
+    uint height = outputTexture.get_height();
+    if (gid.x >= width || gid.y >= height) {
+        return;
+    }
+
+    float4 base = inputTexture.read(gid);
+    float2 sampleUV = sourceCoordinates(gid, width, height, uniforms);
+    if (!isInUnitSquare(sampleUV)) {
+        outputTexture.write(base, gid);
+        return;
+    }
+
+    float3 scalarPosition = uniforms.originTexture
+                          + sampleUV.x * uniforms.axisUTexture
+                          + sampleUV.y * uniforms.axisVTexture;
+    if (!isInUnitCube(scalarPosition)) {
+        outputTexture.write(base, gid);
+        return;
+    }
+
+    constexpr sampler scalarSampler(coord::normalized,
+                                    address::clamp_to_edge,
+                                    filter::nearest);
+    int storedValue = int(scalarTexture.sample(scalarSampler, scalarPosition).r);
+    outputTexture.write(compositeScalarOverlay(base, storedValue, colorLUTTexture, uniforms), gid);
+}
+
 kernel void mprPresentationUnsigned(texture2d<ushort, access::read> inputTexture  [[texture(0)]],
                                     texture2d<float, access::write> outputTexture [[texture(1)]],
                                     texture2d<float, access::sample> colormapTexture [[texture(2)]],
@@ -284,6 +464,10 @@ kernel void mprPresentationUnsigned(texture2d<ushort, access::read> inputTexture
                                         outputTexture.get_height(),
                                         uniforms);
     if (!isInUnitSquare(sourceUV)) {
+        outputTexture.write(float4(0.0f, 0.0f, 0.0f, 1.0f), gid);
+        return;
+    }
+    if (!passesPresentationShutter(sourceUV, uniforms)) {
         outputTexture.write(float4(0.0f, 0.0f, 0.0f, 1.0f), gid);
         return;
     }

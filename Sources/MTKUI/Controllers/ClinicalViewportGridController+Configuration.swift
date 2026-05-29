@@ -11,7 +11,7 @@ import MTKCore
 import simd
 
 extension ClinicalViewportGridController {
-    /// Attach drawable-size-change and presentation-failure callbacks to each displayed MPR surface.
+    /// Attach drawable-size-change and presentation-failure callbacks to displayed viewport surfaces.
     ///
     /// For axial, coronal, and sagittal surfaces:
     /// - Sets a drawable-size-change callback that resizes the engine for the corresponding viewport, rebuilds crosshair offsets, and schedules a render; on failure, records the error for that viewport.
@@ -20,7 +20,8 @@ extension ClinicalViewportGridController {
         let pairs: [(ViewportID, MetalViewportSurface)] = [
             (axialViewportID, axialSurface),
             (coronalViewportID, coronalSurface),
-            (sagittalViewportID, sagittalSurface)
+            (sagittalViewportID, sagittalSurface),
+            (volumeViewportID, volumeSurface)
         ]
 
         for (viewportID, surface) in pairs {
@@ -29,8 +30,12 @@ extension ClinicalViewportGridController {
                     guard let self else { return }
                     do {
                         try await self.engine.resize(viewportID, to: size)
-                        self.rebuildAllCrosshairOffsets()
-                        self.scheduleRender(for: viewportID)
+                        if viewportID != self.volumeViewportID {
+                            self.rebuildAllCrosshairOffsets()
+                            self.scheduleRender(for: viewportID)
+                        } else {
+                            await self.prepareDisplayedVolumeViewport()
+                        }
                     } catch {
                         self.recordError(error, for: viewportID)
                     }
@@ -41,9 +46,15 @@ extension ClinicalViewportGridController {
                     guard let self else { return }
                     do {
                         try await self.engine.resize(viewportID, to: size)
-                        self.rebuildAllCrosshairOffsets()
+                        if viewportID != self.volumeViewportID {
+                            self.rebuildAllCrosshairOffsets()
+                        } else {
+                            await self.prepareDisplayedVolumeViewport()
+                        }
                         self.logClinicalInteractionInfo("[MTKMPRInteraction] surface.ready viewport=\(self.viewportName(for: viewportID)) drawable=\(Int(size.width))x\(Int(size.height)) datasetApplied=\(self.datasetApplied)")
-                        self.scheduleRender(for: viewportID)
+                        if viewportID != self.volumeViewportID {
+                            self.scheduleRender(for: viewportID)
+                        }
                     } catch {
                         self.recordError(error, for: viewportID)
                     }

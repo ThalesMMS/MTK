@@ -38,6 +38,7 @@ final class ClinicalViewerCoordinatorTests: XCTestCase {
         XCTAssertFalse(coordinator.isTwoDSyncEnabled)
         XCTAssertEqual(coordinator.twoDScrollSettings, .default)
         XCTAssertEqual(coordinator.twoDHUDSettings, .default)
+        XCTAssertEqual(coordinator.twoDMetadataOverlaySettings, .default)
         XCTAssertEqual(coordinator.twoDResliceAxis, .axial)
         XCTAssertFalse(coordinator.canUseTwoDReslice)
         XCTAssertEqual(coordinator.twoDResliceDisabledMessage, "No dataset loaded.")
@@ -143,6 +144,10 @@ final class ClinicalViewerCoordinatorTests: XCTestCase {
         coordinator.setTwoDSyncOption(.transforms, enabled: false)
         XCTAssertFalse(coordinator.twoDSyncState.syncTransforms)
         XCTAssertTrue(coordinator.twoDSyncState.syncWindowLevel)
+
+        let metadataSettings = ClinicalViewportMetadataOverlaySettings(isVisible: false)
+        coordinator.set2DMetadataOverlaySettings(metadataSettings)
+        XCTAssertEqual(coordinator.twoDMetadataOverlaySettings, metadataSettings)
 
         coordinator.setTwoDAxis(.coronal)
         XCTAssertEqual(coordinator.twoDAxis, .axial)
@@ -577,6 +582,37 @@ final class ClinicalViewerCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.volumeLayers.first?.blendMode, .sourceOver)
     }
 
+    func testLayerControlsUpdateActiveStackViewport() async throws {
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("Metal unavailable in this environment.")
+        }
+        let coordinator = ClinicalViewerCoordinator()
+        defer { coordinator.shutdownActiveViewports() }
+        let dataset = makeDataset(dimensions: VolumeDimensions(width: 4, height: 4, depth: 4))
+        let layer = try makeLabelmapLayer(id: "stack-seg", dimensions: dataset.dimensions)
+
+        coordinator.setMode(.stack2D)
+        try await coordinator.applyDataset(dataset)
+        try await waitUntil("stack viewport ready") {
+            coordinator.stack2DViewport != nil
+        }
+        await coordinator.setVolumeLayers([layer])
+        await coordinator.setVolumeLayerVisibility(id: layer.id, isVisible: false)
+        await coordinator.setVolumeLayerOpacity(id: layer.id, opacity: 0.25)
+        await coordinator.setVolumeLayerBlendMode(id: layer.id, blendMode: .additive)
+
+        let stackLayers = try XCTUnwrap(coordinator.stack2DViewport?.volumeLayers)
+        XCTAssertEqual(stackLayers.count, 1)
+        XCTAssertEqual(stackLayers.first?.id, "stack-seg")
+        XCTAssertEqual(stackLayers.first?.labelmap?.dataset.dimensions, dataset.dimensions)
+        XCTAssertEqual(stackLayers.first?.isVisible, false)
+        XCTAssertEqual(stackLayers.first?.opacity, 0.25)
+        XCTAssertEqual(stackLayers.first?.blendMode, .additive)
+        XCTAssertEqual(coordinator.volumeLayers.first?.isVisible, false)
+        XCTAssertEqual(coordinator.volumeLayers.first?.opacity, 0.25)
+        XCTAssertEqual(coordinator.volumeLayers.first?.blendMode, .additive)
+    }
+
     func testModeSwitchCreatesSingleViewportWhenMetalIsAvailable() async throws {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal unavailable in this environment.")
@@ -817,4 +853,26 @@ private func makeTransferFunction() -> VolumeTransferFunction {
             .init(intensity: 1, colour: SIMD4<Float>(1, 1, 1, 1))
         ]
     )
+}
+
+private func makeLabelmapLayer(id: String,
+                               dimensions: VolumeDimensions) throws -> VolumeLayer {
+    var values = [UInt16](repeating: 0, count: dimensions.voxelCount)
+    if !values.isEmpty {
+        values[values.count / 2] = 1
+    }
+    let dataset = VolumeDataset(
+        data: values.withUnsafeBytes { Data($0) },
+        dimensions: dimensions,
+        spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+        pixelFormat: .int16Unsigned,
+        intensityRange: 0...1
+    )
+    let labelmap = try LabelmapVolume(
+        dataset: dataset,
+        segments: [LabelmapSegment(label: 1, name: "Mask", color: SIMD4<Float>(1, 0, 0, 1))]
+    )
+    return VolumeLayer(id: id,
+                       labelmap: labelmap,
+                       opacity: 0.6)
 }

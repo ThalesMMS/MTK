@@ -424,6 +424,7 @@ package actor MTKRenderingEngine {
         let isRaycastFrame: Bool
         let mprFrame: MPRTextureFrame?
         let labelmapOverlays: [MPRLabelmapOverlay]
+        let scalarOverlays: [MPRScalarVolumeOverlay]
         logger.info("Rendering viewport viewportID=\(String(describing: viewport)) route=\(route.profilingName) viewportType=\(route.viewportType.profilingName) viewportLabel=\(state.descriptor.label ?? "nil") viewportSize=\(Int(state.currentSize.width))x\(Int(state.currentSize.height)) pipeline=\(route.passPipelineName)")
 
         guard let primaryPass = route.primaryPass else {
@@ -435,6 +436,7 @@ package actor MTKRenderingEngine {
             isRaycastFrame = true
             mprFrame = nil
             labelmapOverlays = []
+            scalarOverlays = []
             let volumeFrame: RenderPassDispatcher.VolumeRenderFrameResult
             do {
                 defer {
@@ -466,6 +468,7 @@ package actor MTKRenderingEngine {
             )
             mprFrame = mprResult.frame
             labelmapOverlays = mprResult.labelmapOverlays
+            scalarOverlays = mprResult.scalarOverlays
             texture = mprResult.frame.texture
             outputTextureLease = nil
 
@@ -498,6 +501,7 @@ package actor MTKRenderingEngine {
             texture: texture,
             mprFrame: mprFrame,
             labelmapOverlays: labelmapOverlays,
+            scalarOverlays: scalarOverlays,
             outputTextureLease: outputTextureLease,
             renderDuration: renderDuration,
             raycastDuration: isRaycastFrame ? renderDuration : nil,

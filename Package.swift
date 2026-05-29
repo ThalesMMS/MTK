@@ -32,7 +32,7 @@ let package = Package(
         )
     ],
     dependencies: [
-        .package(url: "https://github.com/ThalesMMS/DICOM-Decoder.git", from: "1.1.4"),
+        .package(url: "https://github.com/ThalesMMS/DICOM-Decoder.git", from: "1.2.0"),
         .package(url: "https://github.com/apple/swift-docc-plugin", from: "1.4.6")
     ],
     targets: [
@@ -57,6 +57,7 @@ let package = Package(
             name: "MTKDicomBridge",
             dependencies: [
                 "MTKCore",
+                "MTKUI",
                 .product(name: "DicomCore", package: "DICOM-Decoder")
             ],
             path: "Sources/MTKDicomBridge"
@@ -93,6 +94,7 @@ let package = Package(
             dependencies: [
                 "MTKCore",
                 "MTKDicomBridge",
+                "MTKUI",
                 .product(name: "DicomCore", package: "DICOM-Decoder")
             ],
             path: "Tests/MTKDicomBridgeTests"

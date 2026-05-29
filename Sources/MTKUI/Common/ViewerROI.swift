@@ -3,17 +3,19 @@ import Foundation
 import MTKCore
 import simd
 
-public enum ViewerROIKind: String, CaseIterable, Identifiable, Sendable {
+public enum ViewerROIKind: String, CaseIterable, Codable, Identifiable, Sendable {
     case distance
     case angle
     case cobbAngle
     case point
     case area
+    case ellipse
     case closedPath
     case curvedLine
     case text
     case arrow
     case scribble
+    case volume
     case ctr
 
     public var id: String { rawValue }
@@ -30,6 +32,8 @@ public enum ViewerROIKind: String, CaseIterable, Identifiable, Sendable {
             return "point"
         case .area:
             return "area"
+        case .ellipse:
+            return "ellipse"
         case .closedPath:
             return "closed-path"
         case .curvedLine:
@@ -40,6 +44,8 @@ public enum ViewerROIKind: String, CaseIterable, Identifiable, Sendable {
             return "arrow"
         case .scribble:
             return "scribble"
+        case .volume:
+            return "volume"
         case .ctr:
             return "ctr"
         }
@@ -57,8 +63,10 @@ public enum ViewerROIKind: String, CaseIterable, Identifiable, Sendable {
             return "Point"
         case .area:
             return "Area"
+        case .ellipse:
+            return "Ellipse"
         case .closedPath:
-            return "Closed Path"
+            return "Polygon"
         case .curvedLine:
             return "Curved Line"
         case .text:
@@ -66,7 +74,9 @@ public enum ViewerROIKind: String, CaseIterable, Identifiable, Sendable {
         case .arrow:
             return "Arrow"
         case .scribble:
-            return "Scribble"
+            return "Freehand"
+        case .volume:
+            return "Volume"
         case .ctr:
             return "CTR"
         }
@@ -84,6 +94,8 @@ public enum ViewerROIKind: String, CaseIterable, Identifiable, Sendable {
             return "circle"
         case .area:
             return "circle.dotted"
+        case .ellipse:
+            return "oval"
         case .closedPath:
             return "skew"
         case .curvedLine:
@@ -94,19 +106,91 @@ public enum ViewerROIKind: String, CaseIterable, Identifiable, Sendable {
             return "arrow.up.right"
         case .scribble:
             return "scribble"
+        case .volume:
+            return "cube"
         case .ctr:
             return "heart.rectangle"
         }
     }
 
     public var isImplementedInMPRFirstDelivery: Bool {
+        true
+    }
+
+    public var measurementModel: ViewerROIMeasurementModel {
         switch self {
-        case .distance, .point, .text, .arrow:
-            return true
-        case .angle, .cobbAngle, .area, .closedPath, .curvedLine, .scribble, .ctr:
-            return false
+        case .distance:
+            return .distance
+        case .angle, .cobbAngle:
+            return .angle
+        case .point:
+            return .point
+        case .area:
+            return .area
+        case .ellipse:
+            return .ellipse
+        case .closedPath:
+            return .polygon
+        case .curvedLine:
+            return .polyline
+        case .text:
+            return .text
+        case .arrow:
+            return .arrow
+        case .scribble:
+            return .freehand
+        case .volume:
+            return .volume
+        case .ctr:
+            return .ratio
         }
     }
+
+    public var defaultMeasurementUnit: ViewerROIMeasurementUnit {
+        switch self {
+        case .distance, .curvedLine, .scribble:
+            return .millimeters
+        case .angle, .cobbAngle:
+            return .degrees
+        case .area, .ellipse, .closedPath:
+            return .squareMillimeters
+        case .volume:
+            return .cubicMillimeters
+        case .ctr:
+            return .unitless
+        case .point, .text, .arrow:
+            return .none
+        }
+    }
+}
+
+public enum ViewerROIMeasurementModel: String, Codable, Equatable, Sendable {
+    case none
+    case point
+    case distance
+    case angle
+    case area
+    case ellipse
+    case polygon
+    case polyline
+    case freehand
+    case text
+    case arrow
+    case ratio
+    case volume
+    case quantitative
+}
+
+public enum ViewerROIMeasurementUnit: String, Codable, Equatable, Sendable {
+    case none
+    case millimeters
+    case pixels
+    case degrees
+    case squareMillimeters
+    case squarePixels
+    case cubicMillimeters
+    case unitless
+    case quantitative
 }
 
 public enum ViewerROIMeasurement: Equatable, Sendable {
@@ -118,6 +202,7 @@ public enum ViewerROIMeasurement: Equatable, Sendable {
     case lengthMillimeters(Double)
     case lengthPixels(Double)
     case ratio(Double)
+    case volumeCubicMillimeters(Double)
 
     public var displayText: String {
         switch self {
@@ -137,6 +222,59 @@ public enum ViewerROIMeasurement: Equatable, Sendable {
             return String(format: "%.1f px", pixels)
         case .ratio(let ratio):
             return String(format: "CTR %.2f", ratio)
+        case .volumeCubicMillimeters(let cubicMillimeters):
+            return String(format: "%.1f mm3", cubicMillimeters)
+        }
+    }
+
+    public var model: ViewerROIMeasurementModel {
+        switch self {
+        case .distanceMillimeters, .distancePixels:
+            return .distance
+        case .angleDegrees:
+            return .angle
+        case .areaSquareMillimeters, .areaPixels:
+            return .area
+        case .lengthMillimeters, .lengthPixels:
+            return .polyline
+        case .ratio:
+            return .ratio
+        case .volumeCubicMillimeters:
+            return .volume
+        }
+    }
+
+    public var unit: ViewerROIMeasurementUnit {
+        switch self {
+        case .distanceMillimeters, .lengthMillimeters:
+            return .millimeters
+        case .distancePixels, .lengthPixels:
+            return .pixels
+        case .angleDegrees:
+            return .degrees
+        case .areaSquareMillimeters:
+            return .squareMillimeters
+        case .areaPixels:
+            return .squarePixels
+        case .ratio:
+            return .unitless
+        case .volumeCubicMillimeters:
+            return .cubicMillimeters
+        }
+    }
+
+    public var primaryValue: Double {
+        switch self {
+        case .distanceMillimeters(let value),
+             .distancePixels(let value),
+             .angleDegrees(let value),
+             .areaSquareMillimeters(let value),
+             .areaPixels(let value),
+             .lengthMillimeters(let value),
+             .lengthPixels(let value),
+             .ratio(let value),
+             .volumeCubicMillimeters(let value):
+            return value
         }
     }
 
@@ -145,13 +283,13 @@ public enum ViewerROIMeasurement: Equatable, Sendable {
         case .distanceMillimeters(let millimeters):
             return millimeters
         case .distancePixels, .angleDegrees, .areaSquareMillimeters, .areaPixels,
-             .lengthMillimeters, .lengthPixels, .ratio:
+             .lengthMillimeters, .lengthPixels, .ratio, .volumeCubicMillimeters:
             return nil
         }
     }
 }
 
-public struct ViewerROIColor: Equatable, Sendable {
+public struct ViewerROIColor: Codable, Equatable, Sendable {
     public var red: Double
     public var green: Double
     public var blue: Double
@@ -173,7 +311,7 @@ public struct ViewerROIColor: Equatable, Sendable {
     }
 }
 
-public struct ViewerROIStyle: Equatable, Sendable {
+public struct ViewerROIStyle: Codable, Equatable, Sendable {
     public var strokeColor: ViewerROIColor
     public var textColor: ViewerROIColor
     public var labelBackgroundColor: ViewerROIColor
@@ -218,9 +356,21 @@ public struct ViewerROIAnnotation: Identifiable, Equatable, Sendable {
         self.sliceIndex = sliceIndex
         self.seriesIdentifier = seriesIdentifier
         self.normalizedImagePoints = normalizedImagePoints.map(Self.clampedPoint)
-        self.text = text
+        self.text = ClinicalDisplayTextSanitizer.safeSeriesTitle(text)
         self.measurement = measurement
         self.style = style
+    }
+
+    public var measurementModel: ViewerROIMeasurementModel {
+        kind.measurementModel
+    }
+
+    public var measurementUnit: ViewerROIMeasurementUnit {
+        measurement?.unit ?? kind.defaultMeasurementUnit
+    }
+
+    public var persistentState: ViewerROIPersistentState {
+        ViewerROIPersistentState(annotation: self)
     }
 
     fileprivate static func clampedPoint(_ point: CGPoint) -> CGPoint {
@@ -230,6 +380,117 @@ public struct ViewerROIAnnotation: Identifiable, Equatable, Sendable {
     private static func clamp(_ value: CGFloat) -> CGFloat {
         guard value.isFinite else { return 0 }
         return min(max(value, 0), 1)
+    }
+}
+
+public struct ViewerROIPersistentPoint: Codable, Equatable, Sendable {
+    public var x: Double
+    public var y: Double
+
+    public init(x: Double, y: Double) {
+        self.x = x.isFinite ? min(max(x, 0), 1) : 0
+        self.y = y.isFinite ? min(max(y, 0), 1) : 0
+    }
+
+    public init(_ point: CGPoint) {
+        self.init(x: Double(point.x), y: Double(point.y))
+    }
+
+    public var cgPoint: CGPoint {
+        CGPoint(x: x, y: y)
+    }
+}
+
+public struct ViewerROIPersistentMeasurement: Codable, Equatable, Sendable {
+    public var model: ViewerROIMeasurementModel
+    public var unit: ViewerROIMeasurementUnit
+    public var value: Double
+    public var displayText: String
+
+    public init(model: ViewerROIMeasurementModel,
+                unit: ViewerROIMeasurementUnit,
+                value: Double,
+                displayText: String) {
+        self.model = model
+        self.unit = unit
+        self.value = value.isFinite ? value : 0
+        self.displayText = displayText
+    }
+
+    public init(_ measurement: ViewerROIMeasurement) {
+        self.init(model: measurement.model,
+                  unit: measurement.unit,
+                  value: measurement.primaryValue,
+                  displayText: measurement.displayText)
+    }
+}
+
+public struct ViewerROIPersistentState: Codable, Equatable, Sendable {
+    public var id: UUID
+    public var kind: ViewerROIKind
+    public var axis: String
+    public var sliceIndex: Int?
+    public var seriesIdentifier: String?
+    public var normalizedImagePoints: [ViewerROIPersistentPoint]
+    public var text: String?
+    public var measurementModel: ViewerROIMeasurementModel
+    public var measurementUnit: ViewerROIMeasurementUnit
+    public var measurement: ViewerROIPersistentMeasurement?
+    public var style: ViewerROIStyle
+
+    public init(annotation: ViewerROIAnnotation) {
+        self.id = annotation.id
+        self.kind = annotation.kind
+        self.axis = annotation.axis.persistentIdentifier
+        self.sliceIndex = annotation.sliceIndex
+        self.seriesIdentifier = annotation.seriesIdentifier
+        self.normalizedImagePoints = annotation.normalizedImagePoints.map(ViewerROIPersistentPoint.init)
+        self.text = annotation.text
+        self.measurementModel = annotation.measurementModel
+        self.measurementUnit = annotation.measurementUnit
+        self.measurement = annotation.measurement.map(ViewerROIPersistentMeasurement.init)
+        self.style = annotation.style
+    }
+}
+
+public enum ViewerROIPointFactory {
+    public static func points(kind: ViewerROIKind,
+                              start: CGPoint,
+                              end: CGPoint) -> [CGPoint] {
+        switch kind {
+        case .distance, .arrow, .curvedLine, .scribble:
+            return [start, end]
+        case .point, .text:
+            return [end]
+        case .angle:
+            return [CGPoint(x: end.x, y: start.y), start, end]
+        case .cobbAngle:
+            return [
+                start,
+                CGPoint(x: end.x, y: start.y),
+                CGPoint(x: start.x, y: end.y),
+                end
+            ]
+        case .area, .ellipse, .closedPath, .volume:
+            return [
+                start,
+                CGPoint(x: end.x, y: start.y),
+                end,
+                CGPoint(x: start.x, y: end.y)
+            ]
+        case .ctr:
+            let left = min(start.x, end.x)
+            let right = max(start.x, end.x)
+            let y = (start.y + end.y) * 0.5
+            let centerX = (left + right) * 0.5
+            let cardiacHalfWidth = (right - left) * 0.25
+            return [
+                CGPoint(x: left, y: y),
+                CGPoint(x: right, y: y),
+                CGPoint(x: centerX - cardiacHalfWidth, y: y),
+                CGPoint(x: centerX + cardiacHalfWidth, y: y)
+            ]
+        }
     }
 }
 
@@ -385,7 +646,37 @@ public enum ViewerROIMeasurementCalculator {
                 return nil
             }
             return .areaPixels(pixels)
+        case .ellipse:
+            if let dimensions, let spacing,
+               let squareMillimeters = ellipseAreaSquareMillimeters(axis: axis,
+                                                                    normalizedImagePoints: points,
+                                                                    dimensions: dimensions,
+                                                                    spacing: spacing) {
+                return .areaSquareMillimeters(squareMillimeters)
+            }
+            guard let dimensions,
+                  let pixels = ellipseAreaPixels(axis: axis,
+                                                 normalizedImagePoints: points,
+                                                 dimensions: dimensions) else {
+                return nil
+            }
+            return .areaPixels(pixels)
         case .curvedLine:
+            if let dimensions, let spacing,
+               let millimeters = polylineLengthMillimeters(axis: axis,
+                                                           normalizedImagePoints: points,
+                                                           dimensions: dimensions,
+                                                           spacing: spacing) {
+                return .lengthMillimeters(millimeters)
+            }
+            guard let dimensions,
+                  let pixels = polylineLengthPixels(axis: axis,
+                                                    normalizedImagePoints: points,
+                                                    dimensions: dimensions) else {
+                return nil
+            }
+            return .lengthPixels(pixels)
+        case .scribble:
             if let dimensions, let spacing,
                let millimeters = polylineLengthMillimeters(axis: axis,
                                                            normalizedImagePoints: points,
@@ -405,7 +696,7 @@ public enum ViewerROIMeasurementCalculator {
                             normalizedImagePoints: points,
                             dimensions: dimensions,
                             spacing: spacing).map(ViewerROIMeasurement.ratio)
-        case .point, .text, .arrow, .scribble:
+        case .volume, .point, .text, .arrow:
             return nil
         }
     }
@@ -504,6 +795,32 @@ public enum ViewerROIMeasurementCalculator {
                     y: CGFloat(Double(point.y) * Double(max(size.height - 1, 0))))
         }
         return finiteArea(points: scaled)
+    }
+
+    public static func ellipseAreaSquareMillimeters(axis: MTKCore.Axis,
+                                                    normalizedImagePoints points: [CGPoint],
+                                                    dimensions: VolumeDimensions,
+                                                    spacing: VolumeSpacing) -> Double? {
+        guard let size = boundingSize(axis: axis,
+                                      normalizedImagePoints: points,
+                                      dimensions: dimensions,
+                                      spacing: spacing) else {
+            return nil
+        }
+        let area = Double.pi * size.width * size.height * 0.25
+        return area.isFinite ? area : nil
+    }
+
+    public static func ellipseAreaPixels(axis: MTKCore.Axis,
+                                         normalizedImagePoints points: [CGPoint],
+                                         dimensions: VolumeDimensions) -> Double? {
+        guard let size = boundingSizePixels(axis: axis,
+                                           normalizedImagePoints: points,
+                                           dimensions: dimensions) else {
+            return nil
+        }
+        let area = Double.pi * size.width * size.height * 0.25
+        return area.isFinite ? area : nil
     }
 
     public static func polylineLengthMillimeters(axis: MTKCore.Axis,
@@ -607,6 +924,47 @@ public enum ViewerROIMeasurementCalculator {
         return area.isFinite ? area : nil
     }
 
+    private static func boundingSize(axis: MTKCore.Axis,
+                                     normalizedImagePoints points: [CGPoint],
+                                     dimensions: VolumeDimensions,
+                                     spacing: VolumeSpacing) -> (width: Double, height: Double)? {
+        guard let bounds = normalizedBounds(points) else { return nil }
+        let size = imageSize(axis: axis, dimensions: dimensions)
+        let spacing = imageSpacing(axis: axis, spacing: spacing)
+        let width = Double(bounds.width) * Double(max(size.width - 1, 0)) * spacing.u
+        let height = Double(bounds.height) * Double(max(size.height - 1, 0)) * spacing.v
+        guard width > 0, height > 0 else { return nil }
+        return (width, height)
+    }
+
+    private static func boundingSizePixels(axis: MTKCore.Axis,
+                                           normalizedImagePoints points: [CGPoint],
+                                           dimensions: VolumeDimensions) -> (width: Double, height: Double)? {
+        guard let bounds = normalizedBounds(points) else { return nil }
+        let size = imageSize(axis: axis, dimensions: dimensions)
+        let width = Double(bounds.width) * Double(max(size.width - 1, 0))
+        let height = Double(bounds.height) * Double(max(size.height - 1, 0))
+        guard width > 0, height > 0 else { return nil }
+        return (width, height)
+    }
+
+    private static func normalizedBounds(_ points: [CGPoint]) -> CGRect? {
+        guard let first = points.first else { return nil }
+        var minX = first.x
+        var maxX = first.x
+        var minY = first.y
+        var maxY = first.y
+        for point in points.dropFirst() {
+            minX = min(minX, point.x)
+            maxX = max(maxX, point.x)
+            minY = min(minY, point.y)
+            maxY = max(maxY, point.y)
+        }
+        let rect = CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+        guard rect.width.isFinite, rect.height.isFinite else { return nil }
+        return rect
+    }
+
     private static func imageSize(axis: MTKCore.Axis,
                                   dimensions: VolumeDimensions) -> (width: Int, height: Int) {
         switch axis {
@@ -628,6 +986,101 @@ public enum ViewerROIMeasurementCalculator {
             return (spacing.x, spacing.z)
         case .sagittal:
             return (spacing.y, spacing.z)
+        }
+    }
+}
+
+public struct ViewerROILabelmapVolumeSummary: Equatable, Sendable {
+    public var layerID: String
+    public var label: UInt16?
+    public var segmentName: String?
+    public var voxelCount: Int
+    public var volumeCubicMillimeters: Double
+
+    public init(layerID: String,
+                label: UInt16?,
+                segmentName: String?,
+                voxelCount: Int,
+                volumeCubicMillimeters: Double) {
+        self.layerID = layerID
+        self.label = label
+        self.segmentName = segmentName
+        self.voxelCount = voxelCount
+        self.volumeCubicMillimeters = volumeCubicMillimeters.isFinite ? volumeCubicMillimeters : 0
+    }
+
+    public var measurement: ViewerROIMeasurement {
+        .volumeCubicMillimeters(volumeCubicMillimeters)
+    }
+}
+
+public enum ViewerROILabelmapVolumeError: Error, Equatable, LocalizedError {
+    case missingLabelmap(String)
+    case malformedLabelmap(String)
+    case invalidSpacing(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .missingLabelmap(let id):
+            return "ROI layer \(id) does not contain a labelmap volume."
+        case .malformedLabelmap(let id):
+            return "ROI layer \(id) has malformed labelmap data."
+        case .invalidSpacing(let id):
+            return "ROI layer \(id) has invalid voxel spacing."
+        }
+    }
+}
+
+public enum ViewerROILabelmapVolumeCalculator {
+    public static func summary(in layer: VolumeLayer,
+                               label: UInt16? = nil) throws -> ViewerROILabelmapVolumeSummary {
+        guard let labelmap = layer.labelmap else {
+            throw ViewerROILabelmapVolumeError.missingLabelmap(layer.id)
+        }
+        guard labelmap.dataset.pixelFormat == .int16Unsigned,
+              labelmap.dataset.data.count >= labelmap.dataset.dimensions.voxelCount * MemoryLayout<UInt16>.size else {
+            throw ViewerROILabelmapVolumeError.malformedLabelmap(layer.id)
+        }
+        let spacing = labelmap.dataset.spacing
+        let voxelVolume = spacing.x * spacing.y * spacing.z
+        guard voxelVolume.isFinite, voxelVolume > 0 else {
+            throw ViewerROILabelmapVolumeError.invalidSpacing(layer.id)
+        }
+
+        var voxelCount = 0
+        for linearIndex in 0..<labelmap.dataset.dimensions.voxelCount {
+            let storedLabel = readUInt16LittleEndian(labelmap.dataset.data, atLinearIndex: linearIndex)
+            guard storedLabel > 0,
+                  label == nil || storedLabel == label else {
+                continue
+            }
+            voxelCount += 1
+        }
+        let segmentName = label.flatMap { labelmap.segmentsByLabel[$0]?.name }
+        return ViewerROILabelmapVolumeSummary(layerID: layer.id,
+                                              label: label,
+                                              segmentName: segmentName,
+                                              voxelCount: voxelCount,
+                                              volumeCubicMillimeters: Double(voxelCount) * voxelVolume)
+    }
+
+    private static func readUInt16LittleEndian(_ data: Data, atLinearIndex linearIndex: Int) -> UInt16 {
+        let byteOffset = linearIndex * MemoryLayout<UInt16>.size
+        let low = UInt16(data[byteOffset])
+        let high = UInt16(data[byteOffset + 1]) << 8
+        return low | high
+    }
+}
+
+private extension MTKCore.Axis {
+    var persistentIdentifier: String {
+        switch self {
+        case .axial:
+            return "axial"
+        case .coronal:
+            return "coronal"
+        case .sagittal:
+            return "sagittal"
         }
     }
 }

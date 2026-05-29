@@ -323,8 +323,10 @@ extension ClinicalViewportGridController {
                                                invert: isMPRWindowInverted,
                                                colormap: mprColormapTexture,
                                                labelmapOverlays: frame.labelmapOverlays,
+                                               scalarOverlays: frame.scalarOverlays,
                                                transform: transform,
                                                viewportTransform: viewportAxesByID[frame.viewportID].map { viewportTransform(for: $0) } ?? .identity,
+                                               shutter: viewportAxesByID[frame.viewportID].flatMap { mprPresentationStates[$0]?.shutter },
                                                presentationToken: generation)
             if let generation {
                 closePresentationGate(for: frame.viewportID,

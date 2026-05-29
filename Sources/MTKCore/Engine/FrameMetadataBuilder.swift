@@ -23,6 +23,7 @@ struct FrameMetadataBuilder {
         let texture: any MTLTexture
         let mprFrame: MPRTextureFrame?
         let labelmapOverlays: [MPRLabelmapOverlay]
+        let scalarOverlays: [MPRScalarVolumeOverlay]
         let outputTextureLease: OutputTextureLease?
         let renderDuration: CFAbsoluteTime?
         let raycastDuration: CFAbsoluteTime?
@@ -50,6 +51,7 @@ struct FrameMetadataBuilder {
             metadata: metadata,
             mprFrame: inputs.mprFrame,
             labelmapOverlays: inputs.labelmapOverlays,
+            scalarOverlays: inputs.scalarOverlays,
             outputTextureLease: inputs.outputTextureLease
         )
     }

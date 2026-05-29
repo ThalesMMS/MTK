@@ -5,6 +5,7 @@ import SwiftUI
 public struct Clinical2DViewportOverlayState: Equatable, Sendable {
     public var axis: MTKCore.Axis
     public var subjectName: String?
+    public var studyTitle: String?
     public var seriesTitle: String?
     public var imageSize: MPRImageAnnotationSize?
     public var windowLevel: WindowLevelShift
@@ -22,9 +23,12 @@ public struct Clinical2DViewportOverlayState: Equatable, Sendable {
     public var roiAnnotations: [ViewerROIAnnotation]
     public var showsCrosshair: Bool
     public var hudSettings: TwoDHUDSettings
+    public var metadataSample: ClinicalViewportMetadataSample?
+    public var metadataOverlaySettings: ClinicalViewportMetadataOverlaySettings
 
     public init(axis: MTKCore.Axis,
                 subjectName: String? = nil,
+                studyTitle: String? = nil,
                 seriesTitle: String? = nil,
                 imageSize: MPRImageAnnotationSize? = nil,
                 windowLevel: WindowLevelShift,
@@ -41,9 +45,12 @@ public struct Clinical2DViewportOverlayState: Equatable, Sendable {
                 roiKind: ViewerROIKind,
                 roiAnnotations: [ViewerROIAnnotation] = [],
                 showsCrosshair: Bool,
-                hudSettings: TwoDHUDSettings = .default) {
+                hudSettings: TwoDHUDSettings = .default,
+                metadataSample: ClinicalViewportMetadataSample? = nil,
+                metadataOverlaySettings: ClinicalViewportMetadataOverlaySettings = .default) {
         self.axis = axis
         self.subjectName = ClinicalDisplayTextSanitizer.safeSubjectName(subjectName)
+        self.studyTitle = ClinicalDisplayTextSanitizer.safeStudyTitle(studyTitle)
         self.seriesTitle = ClinicalDisplayTextSanitizer.safeSeriesTitle(seriesTitle)
         self.imageSize = imageSize
         self.windowLevel = WindowLevelShift(window: windowLevel.window.isFinite ? windowLevel.window : 0,
@@ -65,14 +72,20 @@ public struct Clinical2DViewportOverlayState: Equatable, Sendable {
         self.roiAnnotations = roiAnnotations
         self.showsCrosshair = showsCrosshair
         self.hudSettings = hudSettings
+        self.metadataSample = metadataSample
+        self.metadataOverlaySettings = metadataOverlaySettings
     }
 
     public var topLeadingLines: [String] {
+        guard metadataOverlaySettings.isVisible else { return [] }
         var lines: [String] = []
-        if hudSettings.showsSubjectName, let subjectName {
+        if hudSettings.showsSubjectName,
+           metadataOverlaySettings.showsSubjectName,
+           let subjectName {
             lines.append(subjectName)
         }
-        guard hudSettings.showsTechnicalText else { return lines }
+        guard hudSettings.showsTechnicalText,
+              metadataOverlaySettings.showsTechnicalText else { return lines }
         if let imageSize {
             lines.append("Image size: \(imageSize.displayText)")
         }
@@ -81,11 +94,18 @@ public struct Clinical2DViewportOverlayState: Equatable, Sendable {
     }
 
     public var topTrailingLines: [String] {
+        guard metadataOverlaySettings.isVisible else { return [] }
         var lines: [String] = []
-        if hudSettings.showsSeriesTitle, let seriesTitle {
+        if metadataOverlaySettings.showsStudyTitle, let studyTitle {
+            lines.append("Study: \(studyTitle)")
+        }
+        if hudSettings.showsSeriesTitle,
+           metadataOverlaySettings.showsSeriesTitle,
+           let seriesTitle {
             lines.append(seriesTitle)
         }
-        guard hudSettings.showsTechnicalText else { return lines }
+        guard hudSettings.showsTechnicalText,
+              metadataOverlaySettings.showsTechnicalText else { return lines }
         lines.append("Axis: \(axis.clinicalDisplayName)")
         lines.append("Tool: \(activeTool.title)")
         lines.append("ROI: \(roiKind.displayName)")
@@ -93,7 +113,9 @@ public struct Clinical2DViewportOverlayState: Equatable, Sendable {
     }
 
     public var bottomLeadingLines: [String] {
-        guard hudSettings.showsTechnicalText else { return [] }
+        guard metadataOverlaySettings.isVisible,
+              hudSettings.showsTechnicalText,
+              metadataOverlaySettings.showsTechnicalText else { return [] }
         var lines = [
             "Zoom: \(formatted(zoom * 100))%",
             "Angle: \(formatted(angleDegrees)) deg",
@@ -106,6 +128,10 @@ public struct Clinical2DViewportOverlayState: Equatable, Sendable {
             lines.append("Location: \(formatted(locationMillimeters, fractionDigits: 2)) mm")
         }
         return lines
+    }
+
+    public var bottomTrailingLines: [String] {
+        metadataSample?.displayLines(settings: metadataOverlaySettings) ?? []
     }
 
     public var axisIdentifier: String {
@@ -248,19 +274,28 @@ private struct Clinical2DROILayer: View {
             if let point = annotation.normalizedImagePoints.first {
                 pointMarker(at: viewportPoint(for: point, size: size), annotation: annotation)
             }
-        case .area, .closedPath:
+        case .area, .closedPath, .volume:
             if annotation.normalizedImagePoints.count >= 3 {
                 let points = annotation.normalizedImagePoints.map { viewportPoint(for: $0, size: size) }
                 polygon(points: points, annotation: annotation)
-                label(annotation.measurement?.displayText ?? annotation.kind.displayName, annotation: annotation)
+                label(annotation.text ?? annotation.measurement?.displayText ?? annotation.kind.displayName,
+                      annotation: annotation)
+                    .position(labelPoint(points: points))
+            }
+        case .ellipse:
+            if annotation.normalizedImagePoints.count >= 2 {
+                let points = annotation.normalizedImagePoints.map { viewportPoint(for: $0, size: size) }
+                ellipse(points: points, annotation: annotation)
+                label(annotation.text ?? annotation.measurement?.displayText ?? annotation.kind.displayName,
+                      annotation: annotation)
                     .position(labelPoint(points: points))
             }
         case .curvedLine, .scribble:
             if annotation.normalizedImagePoints.count >= 2 {
                 let points = annotation.normalizedImagePoints.map { viewportPoint(for: $0, size: size) }
                 polyline(points: points, annotation: annotation)
-                if let measurement = annotation.measurement {
-                    label(measurement.displayText, annotation: annotation)
+                if let text = annotation.text ?? annotation.measurement?.displayText {
+                    label(text, annotation: annotation)
                         .position(labelPoint(points: points, yOffset: -12))
                 }
             }
@@ -344,6 +379,16 @@ private struct Clinical2DROILayer: View {
                 style: StrokeStyle(lineWidth: annotation.style.lineWidth, lineCap: .round, lineJoin: .round))
     }
 
+    private func ellipse(points: [CGPoint],
+                         annotation: ViewerROIAnnotation) -> some View {
+        let rect = boundingRect(points: points)
+        return Ellipse()
+            .stroke(Color(viewerROIColor: annotation.style.strokeColor),
+                    style: StrokeStyle(lineWidth: annotation.style.lineWidth, lineCap: .round, lineJoin: .round))
+            .frame(width: rect.width, height: rect.height)
+            .position(x: rect.midX, y: rect.midY)
+    }
+
     private func arrow(from start: CGPoint,
                        to end: CGPoint,
                        annotation: ViewerROIAnnotation) -> some View {
@@ -391,6 +436,21 @@ private struct Clinical2DROILayer: View {
         let x = points.reduce(0) { $0 + $1.x } / CGFloat(points.count)
         let y = points.reduce(0) { $0 + $1.y } / CGFloat(points.count) + yOffset
         return CGPoint(x: x, y: y)
+    }
+
+    private func boundingRect(points: [CGPoint]) -> CGRect {
+        guard let first = points.first else { return .zero }
+        var minX = first.x
+        var maxX = first.x
+        var minY = first.y
+        var maxY = first.y
+        for point in points.dropFirst() {
+            minX = min(minX, point.x)
+            maxX = max(maxX, point.x)
+            minY = min(minY, point.y)
+            maxY = max(maxY, point.y)
+        }
+        return CGRect(x: minX, y: minY, width: max(maxX - minX, 1), height: max(maxY - minY, 1))
     }
 }
 

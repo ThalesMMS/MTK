@@ -15,6 +15,7 @@ import OSLog
 public final class ArgumentEncoderManager {
     private let device: MTLDevice
     private let debugOptions: VolumeRenderingDebugOptions
+    private let stateLock = NSRecursiveLock()
 
     private var argumentEncoder: MTLArgumentEncoder!
     public private(set) var argumentBuffer: MTLBuffer!
@@ -142,6 +143,9 @@ public final class ArgumentEncoderManager {
     }
 
     public func encodeTexture(_ texture: MTLTexture, argumentIndex: ArgumentIndex) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+
         let index = argumentIndex.rawValue
 
         let identity = ObjectIdentifier(texture as AnyObject)
@@ -162,6 +166,9 @@ public final class ArgumentEncoderManager {
     }
 
     public func encodeTexture(_ texture: MTLTexture?, argumentIndex: ArgumentIndex) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+
         guard let texture else {
             let index = argumentIndex.rawValue
             if needsUpdate[index] == true || textures[index] != nil {
@@ -181,6 +188,9 @@ public final class ArgumentEncoderManager {
     }
 
     public func encodeSampler(filter: MTLSamplerMinMagFilter) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+
         if sampler == nil {
             if debugOptions.isDebugMode {
                 print("arg sampler index:\(ArgumentIndex.sampler.rawValue), \(String(describing: type(of: sampler))), created")
@@ -208,6 +218,9 @@ public final class ArgumentEncoderManager {
     }
 
     public func encode<T>(_ value: inout T, argumentIndex: ArgumentIndex, capacity: Int = 1) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+
         let index = argumentIndex.rawValue
         let size = MemoryLayout<T>.stride * capacity
 
@@ -253,6 +266,9 @@ public final class ArgumentEncoderManager {
     }
 
     public func encodeArray(_ value: [SIMD3<Float>], argumentIndex: ArgumentIndex, capacity: Int = 1) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+
         let index = argumentIndex.rawValue
         let size = MemoryLayout<SIMD3<Float>>.stride * capacity
 
@@ -282,6 +298,9 @@ public final class ArgumentEncoderManager {
     }
 
     public func encode(_ buffer: MTLBuffer?, argumentIndex: ArgumentIndex) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+
         let index = argumentIndex.rawValue
 
         if needsUpdate[index] == true {
@@ -297,6 +316,9 @@ public final class ArgumentEncoderManager {
     }
 
     public func encodeOutputTexture(width: Int, height: Int) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+
         let index = ArgumentIndex.outputTexture.rawValue
 
         currentOutputWidth = width
@@ -339,6 +361,9 @@ public final class ArgumentEncoderManager {
     }
 
     public func setOutputTexture(_ texture: MTLTexture) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+
         let index = ArgumentIndex.outputTexture.rawValue
 
         outputTexture = texture
@@ -393,6 +418,9 @@ public final class ArgumentEncoderManager {
     }
 
     func makeReadbackTexture(drawingViewSize: Int) -> MTLTexture? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+
         // StorageModePolicy.md: debug readback textures are separate CPU-visible resources.
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: outputPixelFormat,
@@ -415,6 +443,9 @@ public final class ArgumentEncoderManager {
     }
 
     public func markAsNeedsUpdate(argumentIndex: ArgumentIndex) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+
         needsUpdate[argumentIndex.rawValue] = true
         if debugOptions.isDebugMode {
             print("arg buffer index:\(argumentIndex.rawValue) markes as Needs Updata")
@@ -422,6 +453,9 @@ public final class ArgumentEncoderManager {
     }
 
     func registerResources(on encoder: MTLComputeCommandEncoder) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+
         for (index, texture) in textureObjects {
             switch ArgumentIndex(rawValue: index) {
             case .mainTexture, .transferTextureCh1, .transferTextureCh2, .transferTextureCh3, .transferTextureCh4, .accelerationTexture:
@@ -451,16 +485,25 @@ public final class ArgumentEncoderManager {
     }
 
     func getBuffer(argumentIndex: ArgumentIndex) -> MTLBuffer? {
-        buffers[argumentIndex.rawValue]
+        stateLock.lock()
+        defer { stateLock.unlock() }
+
+        return buffers[argumentIndex.rawValue]
     }
 
 #if DEBUG
     public func debugNeedsUpdateState(for argumentIndex: ArgumentIndex) -> Bool? {
-        needsUpdate[argumentIndex.rawValue]
+        stateLock.lock()
+        defer { stateLock.unlock() }
+
+        return needsUpdate[argumentIndex.rawValue]
     }
 
     public func debugBoundBuffer(for argumentIndex: ArgumentIndex) -> MTLBuffer? {
-        buffers[argumentIndex.rawValue]
+        stateLock.lock()
+        defer { stateLock.unlock() }
+
+        return buffers[argumentIndex.rawValue]
     }
 #endif
 

@@ -232,7 +232,7 @@ public struct Viewer2DTransform: Equatable, Sendable {
     }
 }
 
-public enum MPRScreenLayout: String, CaseIterable, Identifiable, Sendable {
+public enum MPRScreenLayout: String, Codable, CaseIterable, Identifiable, Sendable {
     case hSplit2x1
     case hSplit1x2
     case vSplit3x1

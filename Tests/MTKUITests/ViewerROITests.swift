@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 import MTKCore
 @testable import MTKUI
 import XCTest
@@ -123,7 +124,7 @@ final class ViewerROITests: XCTestCase {
         XCTAssertEqual(distance, 50, accuracy: 0.001)
     }
 
-    func testAngleAreaPolylineAndCTRMeasurements() throws {
+    func testAngleAreaEllipsePolylineAndCTRMeasurements() throws {
         let dimensions = VolumeDimensions(width: 101, height: 101, depth: 21)
         let spacing = VolumeSpacing(x: 0.5, y: 2, z: 3)
 
@@ -155,6 +156,17 @@ final class ViewerROITests: XCTestCase {
             dimensions: dimensions,
             spacing: spacing
         ))
+        let ellipse = try XCTUnwrap(ViewerROIMeasurementCalculator.ellipseAreaSquareMillimeters(
+            axis: .axial,
+            normalizedImagePoints: [
+                CGPoint(x: 0, y: 0),
+                CGPoint(x: 1, y: 0),
+                CGPoint(x: 1, y: 1),
+                CGPoint(x: 0, y: 1)
+            ],
+            dimensions: dimensions,
+            spacing: spacing
+        ))
         let ratio = try XCTUnwrap(ViewerROIMeasurementCalculator.ctrRatio(
             axis: .axial,
             normalizedImagePoints: [
@@ -170,7 +182,65 @@ final class ViewerROITests: XCTestCase {
         XCTAssertEqual(angle, 90, accuracy: 0.001)
         XCTAssertEqual(area, 10_000, accuracy: 0.001)
         XCTAssertEqual(length, 250, accuracy: 0.001)
+        XCTAssertEqual(ellipse, Double.pi * 2_500, accuracy: 0.001)
         XCTAssertEqual(ratio, 0.5, accuracy: 0.001)
+    }
+
+    func testROIAnnotationsExposeMeasurementModelUnitAndPersistentState() throws {
+        let annotation = ViewerROIAnnotation(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000031")!,
+            kind: .ellipse,
+            axis: .coronal,
+            sliceIndex: 4,
+            seriesIdentifier: "series-a",
+            normalizedImagePoints: ViewerROIPointFactory.points(
+                kind: .ellipse,
+                start: CGPoint(x: 0.1, y: 0.2),
+                end: CGPoint(x: 0.7, y: 0.8)
+            ),
+            text: "  My ROI  ",
+            measurement: .areaSquareMillimeters(42)
+        )
+
+        XCTAssertEqual(annotation.measurementModel, .ellipse)
+        XCTAssertEqual(annotation.measurementUnit, .squareMillimeters)
+        XCTAssertEqual(annotation.text, "My ROI")
+
+        let state = annotation.persistentState
+        XCTAssertEqual(state.kind, .ellipse)
+        XCTAssertEqual(state.axis, "coronal")
+        XCTAssertEqual(state.measurementModel, .ellipse)
+        XCTAssertEqual(state.measurementUnit, .squareMillimeters)
+        XCTAssertEqual(state.measurement?.displayText, "42.0 mm2")
+        XCTAssertNoThrow(try JSONEncoder().encode(state))
+    }
+
+    func testLabelmapVolumeMeasurementCountsRequestedSegment() throws {
+        let dimensions = VolumeDimensions(width: 2, height: 2, depth: 1)
+        let dataset = VolumeDataset(
+            data: Data([1, 0, 2, 0, 0, 0, 2, 0]),
+            dimensions: dimensions,
+            spacing: VolumeSpacing(x: 2, y: 3, z: 4),
+            pixelFormat: .int16Unsigned,
+            intensityRange: 0...2
+        )
+        let labelmap = try LabelmapVolume(
+            dataset: dataset,
+            segments: [
+                LabelmapSegment(label: 1, name: "Background", color: SIMD4<Float>(0, 0, 1, 1)),
+                LabelmapSegment(label: 2, name: "Target", color: SIMD4<Float>(1, 0, 0, 1))
+            ]
+        )
+        let layer = VolumeLayer(id: "roi-layer", labelmap: labelmap)
+
+        let summary = try ViewerROILabelmapVolumeCalculator.summary(in: layer, label: 2)
+
+        XCTAssertEqual(summary.layerID, "roi-layer")
+        XCTAssertEqual(summary.label, 2)
+        XCTAssertEqual(summary.segmentName, "Target")
+        XCTAssertEqual(summary.voxelCount, 2)
+        XCTAssertEqual(summary.volumeCubicMillimeters, 48, accuracy: 0.001)
+        XCTAssertEqual(summary.measurement.displayText, "48.0 mm3")
     }
 
     private func makeAnnotation(id: UUID = UUID(),

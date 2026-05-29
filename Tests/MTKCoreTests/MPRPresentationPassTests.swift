@@ -201,6 +201,36 @@ final class MPRPresentationPassTests: XCTestCase {
         XCTAssertEqual(try MPRTestHelpers.readInputValues(Int16.self, from: input), values)
     }
 
+    func test_rectangularShutterMasksOutsideRegionInPresentationPass() throws {
+        let values = [Int16](repeating: 100, count: 9)
+        let input = try MPRTestHelpers.makeSignedTexture(values, width: 3, height: 3, device: device)
+        let drawable = try MPRTestMetalDrawable(device: device, width: 3, height: 3)
+        let frame = MPRTestHelpers.makeFrame(texture: input,
+                                             pixelFormat: .int16Signed,
+                                             intensityRange: 0...100)
+        var pass = try MPRPresentationPass(device: device,
+                                           commandQueue: commandQueue,
+                                           library: library)
+
+        try pass.present(frame: frame,
+                         window: 0...100,
+                         to: drawable,
+                         shutter: .rectangular(
+                            min: SIMD2<Float>(0.5, 0.5),
+                            max: SIMD2<Float>(0.5, 0.5)
+                         ))
+        try MPRTestHelpers.waitForQueue(commandQueue)
+
+        XCTAssertEqual(try MPRTestHelpers.readGrayBytes(from: drawable.texture),
+                       [
+                           0, 0, 0,
+                           0, 255, 0,
+                           0, 0, 0
+                       ],
+                       accuracy: 1)
+        XCTAssertEqual(try MPRTestHelpers.readInputValues(Int16.self, from: input), values)
+    }
+
     func test_colormapTextureColorsWindowedOutput() throws {
         let values: [UInt16] = [0, 100]
         let input = try MPRTestHelpers.makeUnsignedTexture(values, width: 2, height: 1, device: device)
@@ -424,6 +454,51 @@ final class MPRPresentationPassTests: XCTestCase {
                            0, 0, 0, 255,
                            0, 0, 128, 255,
                            0, 64, 0, 255,
+                           0, 0, 0, 255
+                       ],
+                       accuracy: 1)
+    }
+
+    func test_scalarOverlayCompositesColorwashWithOpacity() throws {
+        let input = try MPRTestHelpers.makeUnsignedTexture([0, 0, 0, 0], width: 2, height: 2, device: device)
+        let drawable = try MPRTestMetalDrawable(device: device, width: 2, height: 2)
+        let frame = MPRTestHelpers.makeFrame(texture: input,
+                                             pixelFormat: .int16Unsigned,
+                                             intensityRange: 0...100)
+        let scalarTexture = try makeLabelmapTexture([0, 200, 200, 0],
+                                                    width: 2,
+                                                    height: 2,
+                                                    depth: 1)
+        let lutTexture = try MPRTestHelpers.makeColormapTexture([
+            SIMD4<Float>(0, 0, 0, 0),
+            SIMD4<Float>(1, 0, 0, 1)
+        ], device: device)
+        let overlay = MPRScalarVolumeOverlay(
+            scalarTexture: scalarTexture,
+            colorLUTTexture: lutTexture,
+            pixelFormat: .int16Unsigned,
+            opacity: 0.5,
+            blendMode: .sourceOver,
+            intensityRange: 0...200,
+            originTexture: SIMD3<Float>(0.25, 0.25, 0.5),
+            axisUTexture: SIMD3<Float>(0.5, 0, 0),
+            axisVTexture: SIMD3<Float>(0, 0.5, 0)
+        )
+        var pass = try MPRPresentationPass(device: device,
+                                           commandQueue: commandQueue,
+                                           library: library)
+
+        try pass.present(frame: frame,
+                         window: 0...100,
+                         to: drawable,
+                         scalarOverlays: [overlay])
+        try MPRTestHelpers.waitForQueue(commandQueue)
+
+        XCTAssertEqual(try MPRTestHelpers.readBGRAByteArrays(from: drawable.texture).flatMap { $0 },
+                       [
+                           0, 0, 0, 255,
+                           0, 0, 128, 255,
+                           0, 0, 128, 255,
                            0, 0, 0, 255
                        ],
                        accuracy: 1)

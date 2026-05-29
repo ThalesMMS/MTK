@@ -22,6 +22,7 @@ struct RenderPassDispatcher {
     struct MPRFrameResult {
         let frame: MPRTextureFrame
         let labelmapOverlays: [MPRLabelmapOverlay]
+        let scalarOverlays: [MPRScalarVolumeOverlay]
     }
 
     private let device: any MTLDevice
@@ -291,14 +292,21 @@ struct RenderPassDispatcher {
         )
 
         if let cached = await mprFrameCache.cachedFrame(for: viewport, matching: signature) {
-            let overlays = try await volumeLayerResourceCache.makeMPRLabelmapOverlays(
+            let labelmapOverlays = try await volumeLayerResourceCache.makeMPRLabelmapOverlays(
+                for: state.volumeLayers,
+                baseFrame: cached,
+                device: device,
+                commandQueue: commandQueue
+            )
+            let scalarOverlays = try await volumeLayerResourceCache.makeMPRScalarOverlays(
                 for: state.volumeLayers,
                 baseFrame: cached,
                 device: device,
                 commandQueue: commandQueue
             )
             return MPRFrameResult(frame: cached,
-                                  labelmapOverlays: overlays)
+                                  labelmapOverlays: labelmapOverlays,
+                                  scalarOverlays: scalarOverlays)
         }
 
         let resliceStartedAt = CFAbsoluteTimeGetCurrent()
@@ -328,14 +336,21 @@ struct RenderPassDispatcher {
         )
 
         await mprFrameCache.store(frame, for: viewport, signature: signature)
-        let overlays = try await volumeLayerResourceCache.makeMPRLabelmapOverlays(
+        let labelmapOverlays = try await volumeLayerResourceCache.makeMPRLabelmapOverlays(
+            for: state.volumeLayers,
+            baseFrame: frame,
+            device: device,
+            commandQueue: commandQueue
+        )
+        let scalarOverlays = try await volumeLayerResourceCache.makeMPRScalarOverlays(
             for: state.volumeLayers,
             baseFrame: frame,
             device: device,
             commandQueue: commandQueue
         )
         return MPRFrameResult(frame: frame,
-                              labelmapOverlays: overlays)
+                              labelmapOverlays: labelmapOverlays,
+                              scalarOverlays: scalarOverlays)
     }
 }
 

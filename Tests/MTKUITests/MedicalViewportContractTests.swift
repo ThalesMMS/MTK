@@ -47,6 +47,25 @@ final class MedicalViewportContractTests: XCTestCase {
         XCTAssertEqual(viewport.viewportTransform, transform)
     }
 
+    func testStackViewportAppliesLabelmapVolumeLayers() async throws {
+        try requireMetalDevice()
+        let viewport = try StackViewport(axis: .axial)
+        let dataset = makeDataset(dimensions: VolumeDimensions(width: 4, height: 4, depth: 4))
+        let layer = try makeLabelmapLayer(id: "stack-segmentation", dimensions: dataset.dimensions)
+
+        await viewport.applyDataset(dataset)
+        await viewport.setVolumeLayers([layer])
+        await viewport.setVolumeLayerOpacity(id: layer.id, opacity: 0.25)
+        await viewport.setVolumeLayerBlendMode(id: layer.id, blendMode: .additive)
+        await viewport.setVolumeLayerVisibility(id: layer.id, isVisible: false)
+
+        XCTAssertEqual(viewport.volumeLayers.count, 1)
+        XCTAssertEqual(viewport.volumeLayers.first?.labelmap?.dataset.dimensions, dataset.dimensions)
+        XCTAssertEqual(viewport.volumeLayers.first?.opacity, 0.25)
+        XCTAssertEqual(viewport.volumeLayers.first?.blendMode, .additive)
+        XCTAssertEqual(viewport.volumeLayers.first?.isVisible, false)
+    }
+
     func testVolumeViewportSwitchesBetweenMPRAndProjectionContracts() async throws {
         try requireMetalDevice()
         let viewport = try VolumeViewport(axis: .coronal, normalizedSlicePosition: 0.25)
@@ -107,6 +126,43 @@ final class MedicalViewportContractTests: XCTestCase {
         XCTAssertTrue(viewport.state.presentation.isMetalBacked)
     }
 
+    func testVolumeViewport3DAppliesProgressiveDatasetUpdates() async throws {
+        try requireMetalDevice()
+        let viewport = try VolumeViewport3D()
+        let preview = makeDataset(dimensions: VolumeDimensions(width: 4, height: 5, depth: 6))
+        let final = makeDataset(dimensions: VolumeDimensions(width: 5, height: 5, depth: 6))
+        let updates = AsyncThrowingStream<ProgressiveVolumeDatasetUpdate, Error> { continuation in
+            continuation.yield(
+                ProgressiveVolumeDatasetUpdate(
+                    layer: ProgressiveVolumeLayer(index: 0,
+                                                  totalLayerCount: 2,
+                                                  quality: .preview,
+                                                  fractionComplete: 0.5,
+                                                  isFinal: false),
+                    dataset: preview
+                )
+            )
+            continuation.yield(
+                ProgressiveVolumeDatasetUpdate(
+                    layer: ProgressiveVolumeLayer(index: 1,
+                                                  totalLayerCount: 2,
+                                                  quality: .final,
+                                                  fractionComplete: 1.0,
+                                                  isFinal: true),
+                    dataset: final
+                )
+            )
+            continuation.finish()
+        }
+
+        try await viewport.applyProgressiveDatasetUpdates(updates)
+
+        XCTAssertEqual(viewport.state.dataset?.dimensions, final.dimensions)
+        XCTAssertEqual(viewport.progressiveVolumeState.phase, .complete)
+        XCTAssertEqual(viewport.state.progressiveVolumeState.currentLayer?.index, 1)
+        XCTAssertEqual(viewport.renderMode, .volume3D(method: .dvr))
+    }
+
     func testVolumeViewport3DAppliesScalarVolumeLayers() async throws {
         try requireMetalDevice()
         let viewport = try VolumeViewport3D()
@@ -165,6 +221,30 @@ final class MedicalViewportContractTests: XCTestCase {
         XCTAssertEqual(session.surfaceMeshLayers.first?.opacity, 0.25)
     }
 
+    func testClinicalViewportSessionTogglesSegmentationBetweenLabelmapAndSurfaceLayer() async throws {
+        try requireMetalDevice()
+        let dimensions = VolumeDimensions(width: 4, height: 4, depth: 4)
+        let session = try await ClinicalViewportSession.make(dataset: makeDataset(dimensions: dimensions))
+        let labelmapLayer = try makeLabelmapLayer(id: "segmentation-labelmap", dimensions: dimensions)
+        let surfaceLayer = makeSurfaceMeshLayer()
+
+        await session.setVolumeLayers([labelmapLayer])
+        await session.setSurfaceMeshLayers([])
+
+        XCTAssertEqual(session.volumeLayers.map(\.id), ["segmentation-labelmap"])
+        XCTAssertTrue(session.surfaceMeshLayers.isEmpty)
+
+        await session.setVolumeLayers([])
+        await session.setSurfaceMeshLayers([surfaceLayer])
+        await session.setSurfaceMeshLayerVisibility(id: surfaceLayer.id, isVisible: false)
+
+        XCTAssertTrue(session.volumeLayers.isEmpty)
+        XCTAssertEqual(session.surfaceMeshLayers.map(\.id), [surfaceLayer.id])
+        XCTAssertEqual(session.surfaceMeshLayers.first?.isVisible, false)
+
+        await session.controller.shutdown()
+    }
+
     func testClinicalViewportSessionAppliesScalarVolumeLayerControls() async throws {
         try requireMetalDevice()
         let baseDataset = makeDataset(dimensions: VolumeDimensions(width: 4, height: 5, depth: 6))
@@ -183,6 +263,65 @@ final class MedicalViewportContractTests: XCTestCase {
         XCTAssertEqual(session.volumeLayers.first?.blendMode, .additive)
         XCTAssertEqual(session.volumeLayers.first?.isVisible, false)
         XCTAssertNil(session.lastRenderError)
+
+        await session.controller.shutdown()
+    }
+
+    func testClinicalViewportSessionExposesQuantitativeScalarLegend() async throws {
+        try requireMetalDevice()
+        let baseDataset = makeDataset(dimensions: VolumeDimensions(width: 4, height: 5, depth: 6))
+        let scalarDataset = makeDataset(dimensions: VolumeDimensions(width: 4, height: 5, depth: 6))
+        let session = try await ClinicalViewportSession.make(dataset: baseDataset)
+        let mapping = QuantitativeScalarMapping(
+            units: QuantitativeCodedConcept(codeValue: "SUVbw",
+                                            codingSchemeDesignator: "UCUM",
+                                            codeMeaning: "SUV body weight"),
+            quantityDefinitions: [
+                QuantitativeQuantityDefinition(
+                    conceptCode: QuantitativeCodedConcept(codeValue: "126400",
+                                                          codingSchemeDesignator: "DCM",
+                                                          codeMeaning: "Standardized Uptake Value")
+                )
+            ],
+            physicalRange: 0...12,
+            storedValueRange: scalarDataset.intensityRange,
+            legendTitle: "SUV"
+        )
+        let scalarVolume = ScalarVolumeLayer(
+            dataset: scalarDataset,
+            transferFunction: .defaultGrayscale(for: scalarDataset),
+            quantitativeMapping: mapping
+        )
+        let layer = VolumeLayer(id: "suv-layer", scalarVolume: scalarVolume)
+
+        await session.setVolumeLayers([layer])
+
+        XCTAssertEqual(session.quantitativeScalarLegends.count, 1)
+        XCTAssertEqual(session.quantitativeScalarLegends[0].layerID, "suv-layer")
+        XCTAssertEqual(session.quantitativeScalarLegends[0].title, "SUV")
+        XCTAssertEqual(session.quantitativeScalarLegends[0].unitsLabel, "SUV body weight")
+        XCTAssertEqual(session.quantitativeScalarLegends[0].physicalRange.upperBound, 12)
+
+        await session.controller.shutdown()
+    }
+
+    func testClinicalViewportSessionAppliesRTDoseOverlaysAsVolumeLayers() async throws {
+        try requireMetalDevice()
+        let baseDataset = makeDataset(dimensions: VolumeDimensions(width: 4, height: 5, depth: 6))
+        let doseDataset = makeDataset(dimensions: VolumeDimensions(width: 4, height: 5, depth: 6))
+        let session = try await ClinicalViewportSession.make(dataset: baseDataset)
+        let overlay = RTDoseVolumeOverlay(id: "plan-dose",
+                                          dataset: doseDataset,
+                                          doseUnits: "GY",
+                                          doseGridScaling: 0.01,
+                                          opacity: 0.4)
+
+        await session.setRTDoseOverlays([overlay])
+        await session.setRTDoseOverlayOpacity(id: "plan-dose", opacity: 0.25)
+
+        XCTAssertEqual(session.rtDoseOverlays.count, 1)
+        XCTAssertEqual(session.volumeLayers.map(\.id), ["plan-dose"])
+        XCTAssertEqual(session.volumeLayers.first?.opacity, 0.25)
 
         await session.controller.shutdown()
     }
@@ -241,5 +380,26 @@ final class MedicalViewportContractTests: XCTestCase {
                     transferFunction: .defaultGrayscale(for: dataset),
                     opacity: 0.6,
                     blendMode: .sourceOver)
+    }
+
+    private func makeLabelmapLayer(id: String, dimensions: VolumeDimensions) throws -> VolumeLayer {
+        var values = [UInt16](repeating: 0, count: dimensions.voxelCount)
+        if !values.isEmpty {
+            values[values.count / 2] = 1
+        }
+        let dataset = VolumeDataset(
+            data: values.withUnsafeBytes { Data($0) },
+            dimensions: dimensions,
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+            pixelFormat: .int16Unsigned,
+            intensityRange: 0...1
+        )
+        let labelmap = try LabelmapVolume(
+            dataset: dataset,
+            segments: [LabelmapSegment(label: 1, name: "Mask", color: SIMD4<Float>(1, 0, 0, 1))]
+        )
+        return VolumeLayer(id: id,
+                           labelmap: labelmap,
+                           opacity: 0.6)
     }
 }

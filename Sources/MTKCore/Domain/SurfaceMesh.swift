@@ -17,6 +17,7 @@ public enum SurfaceMeshMetadataKey {
     public static let source = "source"
     public static let label = "label"
     public static let labelmapLabel = "labelmapLabel"
+    public static let roiNumber = "roiNumber"
     public static let segmentID = "segmentID"
     public static let segmentName = "segmentName"
     public static let threshold = "threshold"
@@ -24,6 +25,7 @@ public enum SurfaceMeshMetadataKey {
 
 public enum SurfaceMeshMetadataSource {
     public static let labelmap = "labelmap"
+    public static let rtStructure = "rtStructure"
     public static let scalarThreshold = "scalarThreshold"
 }
 

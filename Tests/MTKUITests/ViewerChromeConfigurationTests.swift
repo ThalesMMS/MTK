@@ -172,11 +172,13 @@ final class ViewerChromeConfigurationTests: XCTestCase {
             "Cobb Angle",
             "Point",
             "Area",
-            "Closed Path",
+            "Ellipse",
+            "Polygon",
             "Curved Line",
             "Text",
             "Arrow",
-            "Scribble",
+            "Freehand",
+            "Volume",
             "CTR",
             "Delete ROIs in View",
             "Delete All ROIs in Series"
@@ -193,7 +195,7 @@ final class ViewerChromeConfigurationTests: XCTestCase {
         XCTAssertEqual(kindItems.map(\.action), ViewerROIKind.allCases.map { .setMPRROIKind($0) })
         XCTAssertEqual(kindItems.map(\.isEnabled), ViewerROIKind.allCases.map(\.isImplementedInMPRFirstDelivery))
         XCTAssertTrue(try XCTUnwrap(items.first { $0.id == "mpr-roi-arrow" }).isSelected)
-        XCTAssertFalse(try XCTUnwrap(items.first { $0.id == "mpr-roi-angle" }).isEnabled)
+        XCTAssertTrue(try XCTUnwrap(items.first { $0.id == "mpr-roi-angle" }).isEnabled)
         XCTAssertEqual(try XCTUnwrap(items.first { $0.id == "mpr-roi-delete-view" }).action,
                        .deleteMPRROIsInView)
         XCTAssertEqual(try XCTUnwrap(items.first { $0.id == "mpr-roi-delete-series" }).action,
@@ -413,11 +415,13 @@ final class ViewerChromeConfigurationTests: XCTestCase {
             "2d-roi-cobb-angle",
             "2d-roi-point",
             "2d-roi-area",
+            "2d-roi-ellipse",
             "2d-roi-closed-path",
             "2d-roi-curved-line",
             "2d-roi-text",
             "2d-roi-arrow",
             "2d-roi-scribble",
+            "2d-roi-volume",
             "2d-roi-ctr",
             "2d-roi-delete-view",
             "2d-roi-delete-series"

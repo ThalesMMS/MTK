@@ -129,6 +129,47 @@ final class VolumeLayerTests: XCTestCase {
         XCTAssertNil(layer.labelmap)
     }
 
+    func test_labelmapSegmentControlsUpdateVisibilityAndOpacity() throws {
+        let labelmap = try makeLabelmap(segments: [
+            LabelmapSegment(label: 1, name: "Tumor", color: SIMD4<Float>(1, 0, 0, 1)),
+            LabelmapSegment(label: 2, name: "Organ", color: SIMD4<Float>(0, 1, 0, 1))
+        ])
+        var layer = VolumeLayer(id: "segmentation", labelmap: labelmap)
+
+        layer.setLabelmapSegmentVisibility(label: 1, isVisible: false)
+        let opacityAdjusted = layer.settingLabelmapSegmentOpacity(label: 2, opacity: 0.35)
+        let colors = LabelmapColorLUTBuilder.colors(for: try XCTUnwrap(opacityAdjusted.labelmap))
+
+        XCTAssertFalse(try XCTUnwrap(opacityAdjusted.labelmap?.segments.first { $0.label == 1 }).isVisible)
+        XCTAssertEqual(try XCTUnwrap(opacityAdjusted.labelmap?.segments.first { $0.label == 2 }).color.w,
+                       0.35,
+                       accuracy: 1e-6)
+        XCTAssertEqual(colors[1], SIMD4<Float>(0, 0, 0, 0))
+        XCTAssertEqual(colors[2], SIMD4<Float>(0, 1, 0, 0.35))
+    }
+
+    func test_labelmapSegmentControlsIgnoreScalarLayersAndMissingLabels() throws {
+        let dataset = VolumeDatasetTestFactory.makeTestDataset(pixelFormat: .int16Signed)
+        let transferFunction = VolumeTransferFunction.defaultGrayscale(for: dataset)
+        var scalarLayer = VolumeLayer(id: "pet",
+                                      dataset: dataset,
+                                      transferFunction: transferFunction,
+                                      opacity: 0.6)
+        let labelmap = try makeLabelmap(segments: [
+            LabelmapSegment(label: 1, color: SIMD4<Float>(1, 0, 0, 1))
+        ])
+        let labelLayer = VolumeLayer(id: "segmentation", labelmap: labelmap)
+
+        scalarLayer.setLabelmapSegmentOpacity(label: 1, opacity: 0.25)
+        let unchangedLabelLayer = labelLayer
+            .settingLabelmapSegmentVisibility(label: 7, isVisible: false)
+            .settingLabelmapSegmentOpacity(label: 7, opacity: 0.25)
+
+        XCTAssertEqual(scalarLayer.scalarVolume?.dataset, dataset)
+        XCTAssertNil(scalarLayer.labelmap)
+        XCTAssertEqual(unchangedLabelLayer, labelLayer)
+    }
+
     func test_volumeRenderRequestDefaultsToSinglePrimaryScalarLayer() throws {
         let dataset = VolumeDatasetTestFactory.makeTestDataset(pixelFormat: .int16Signed)
         let transferFunction = VolumeTransferFunction.defaultGrayscale(for: dataset)

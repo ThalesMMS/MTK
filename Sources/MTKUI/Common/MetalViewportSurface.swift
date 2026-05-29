@@ -453,11 +453,13 @@ public final class MetalViewportSurface: ViewportPresenting {
                         invert: Bool = false,
                         colormap: (any MTLTexture)? = nil,
                         labelmapOverlays: [MPRLabelmapOverlay] = [],
+                        scalarOverlays: [MPRScalarVolumeOverlay] = [],
                         transform: MPRDisplayTransform? = nil,
                         viewportTransform: MPRViewportTransform = .identity,
                         flipHorizontal: Bool = false,
                         flipVertical: Bool = false,
                         bitShift: Int32 = 0,
+                        shutter: MPRPresentationShutter? = nil,
                         presentationToken: UInt64? = nil) throws -> CFAbsoluteTime {
         guard Self.sameDevice(mprFrame.texture.device, commandQueue.device) else {
             throw MetalViewportSurfaceError.textureDeviceMismatch
@@ -496,6 +498,8 @@ public final class MetalViewportSurface: ViewportPresenting {
                                                            bitShift: bitShift,
                                                            viewportTransform: viewportTransform,
                                                            labelmapOverlays: labelmapOverlays,
+                                                           scalarOverlays: scalarOverlays,
+                                                           shutter: shutter,
                                                            onCommandBufferFailure: self.makeMPRPresentationFailureHandler(presentationToken: presentationToken),
                                                            onCommandBufferCompleted: self.makePresentationCompletionHandler(presentationToken: presentationToken))
             self.mprPresentationPass = mprPresentationPass

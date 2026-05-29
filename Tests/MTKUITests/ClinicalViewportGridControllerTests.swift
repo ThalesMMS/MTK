@@ -229,6 +229,120 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         XCTAssertEqual(controller.slabThickness, initialSlab, accuracy: 0.0001)
     }
 
+    func testApplyMPRPresentationStateUpdatesWindowShutterAndAnnotations() async throws {
+        let controller = try await makeController()
+        let presentationState = MPRPresentationState(
+            id: "pr-1",
+            window: 0...100,
+            invert: true,
+            viewportTransform: MPRViewportTransform(rotationRadians: .pi / 2),
+            flipHorizontal: true,
+            shutter: .rectangular(min: SIMD2<Float>(0.25, 0.25),
+                                  max: SIMD2<Float>(0.75, 0.75)),
+            graphicAnnotations: [
+                MPRPresentationGraphicAnnotation(
+                    id: "annotation-1",
+                    kind: .polyline,
+                    axis: .axial,
+                    normalizedImagePoints: [SIMD2<Float>(0.1, 0.2), SIMD2<Float>(0.8, 0.7)],
+                    layerName: "AI"
+                )
+            ]
+        )
+
+        await controller.applyMPRPresentationState(presentationState, to: .axial)
+
+        XCTAssertEqual(controller.windowLevel.range, 0...100)
+        XCTAssertTrue(controller.isMPRWindowInverted)
+        XCTAssertEqual(controller.viewportTransform(for: .axial).rotationRadians, .pi / 2, accuracy: 0.0001)
+        XCTAssertEqual(controller.mprPresentationStates[.axial]?.shutter, presentationState.shutter)
+        XCTAssertEqual(controller.mprROIAnnotations(for: .axial).count, 1)
+        XCTAssertEqual(controller.mprROIAnnotations(for: .axial).first?.seriesIdentifier, "pr-1")
+    }
+
+    func testRTStructureContourOverlaysAppearInMPRAnnotationsWithConfigurableTolerance() async throws {
+        let controller = try await makeController()
+        try await controller.applyDataset(makeDataset())
+        let overlay = RTStructureContourOverlay(
+            id: "rt-overlay",
+            contours: [
+                RTStructureContour(
+                    roiNumber: 3,
+                    label: "Target",
+                    geometricType: "CLOSED_PLANAR",
+                    patientPoints: [
+                        SIMD3<Double>(1, 1, 2),
+                        SIMD3<Double>(3, 1, 2),
+                        SIMD3<Double>(3, 3, 2),
+                        SIMD3<Double>(1, 3, 2)
+                    ]
+                )
+            ]
+        )
+
+        controller.setRTStructureContourOverlays([overlay])
+        controller.setRTStructureContourSliceTolerance(0.1)
+        await controller.setMPRSlicePosition(axis: .axial, normalizedPosition: 2.0 / 3.0)
+
+        var annotations = controller.mprROIAnnotations(for: .axial)
+        XCTAssertEqual(annotations.count, 1)
+        XCTAssertEqual(annotations[0].kind, .closedPath)
+        XCTAssertEqual(annotations[0].text, "Target")
+
+        await controller.setMPRSlicePosition(axis: .axial, normalizedPosition: 1)
+        XCTAssertTrue(controller.mprROIAnnotations(for: .axial).isEmpty)
+
+        controller.setRTStructureContourSliceTolerance(1.1)
+        annotations = controller.mprROIAnnotations(for: .axial)
+        XCTAssertEqual(annotations.count, 1)
+    }
+
+    func testMPRAdvancedROIAnnotationsUseNativeMeasurementContract() async throws {
+        let controller = try await makeController()
+        try await controller.applyDataset(makeDataset())
+
+        let angle = try XCTUnwrap(controller.addMPRROIAnnotation(
+            kind: .angle,
+            axis: .axial,
+            normalizedImagePoints: [
+                CGPoint(x: 1, y: 0),
+                CGPoint(x: 0, y: 0),
+                CGPoint(x: 0, y: 1)
+            ]
+        ))
+        let ellipse = try XCTUnwrap(controller.addMPRROIAnnotation(
+            kind: .ellipse,
+            axis: .axial,
+            normalizedImagePoints: ViewerROIPointFactory.points(
+                kind: .ellipse,
+                start: CGPoint(x: 0, y: 0),
+                end: CGPoint(x: 1, y: 1)
+            )
+        ))
+        let freehand = try XCTUnwrap(controller.addMPRROIAnnotation(
+            kind: .scribble,
+            axis: .axial,
+            normalizedImagePoints: [CGPoint(x: 0, y: 0), CGPoint(x: 1, y: 0)]
+        ))
+
+        XCTAssertEqual(angle.measurementModel, .angle)
+        XCTAssertEqual(angle.measurementUnit, .degrees)
+        XCTAssertEqual(try XCTUnwrap(angle.measurement?.primaryValue), 90, accuracy: 0.001)
+        XCTAssertEqual(ellipse.measurementModel, .ellipse)
+        XCTAssertEqual(ellipse.measurementUnit, .squareMillimeters)
+        XCTAssertEqual(try XCTUnwrap(ellipse.measurement?.primaryValue), Double.pi * 2.25, accuracy: 0.001)
+        XCTAssertEqual(freehand.measurementModel, .freehand)
+        XCTAssertEqual(freehand.measurementUnit, .millimeters)
+        XCTAssertEqual(try XCTUnwrap(freehand.measurement?.primaryValue), 3, accuracy: 0.001)
+
+        await controller.setVolumeLayers([try makeLabelmapLayer()])
+        let volume = try controller.labelmapVolumeSummary(layerID: "ui-grid-layer", label: 1)
+
+        XCTAssertEqual(volume.voxelCount, 64)
+        XCTAssertEqual(volume.measurement.unit, .cubicMillimeters)
+        XCTAssertEqual(volume.volumeCubicMillimeters, 64, accuracy: 0.001)
+    }
+
 #if DEBUG
     func testWindowLevelCommitIgnoresHiddenVolumeWindowFailure() async throws {
         let controller = try await makeController()
@@ -570,6 +684,40 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         XCTAssertEqual(pick.voxel.index, SIMD3<Int32>(1, 2, 2))
         XCTAssertEqual(pick.intensity.storedScalar, 221)
         XCTAssertEqual(pick.label?.label, 9)
+    }
+
+    func testClinicalSessionPickAndROIStatisticsExposeQuantitativeScalarValues() async throws {
+        let controller = try await makeController()
+        setSurfaceSize(controller.axialSurface, size: CGSize(width: 100, height: 100))
+        let dataset = makePickingDataset(dimensions: VolumeDimensions(width: 4, height: 4, depth: 4))
+        let target = SIMD3<Int32>(1, 2, 2)
+        try await controller.applyDataset(dataset)
+        await controller.setSlicePosition(axis: .axial, normalizedPosition: 2.0 / 3.0)
+        await controller.setVolumeLayers([
+            makeQuantitativeScalarLayer(id: "pet-suv", baseDataset: dataset),
+            try makeTargetLabelmapLayer(label: 9, target: target, baseDataset: dataset)
+        ])
+
+        let session = ClinicalViewportSession(controller: controller)
+        let targetUV = SIMD2<Float>(1.0 / 3.0, 2.0 / 3.0)
+        let screenPoint = controller.displayTransform(for: .axial).screenCoordinates(forTexture: targetUV)
+        let viewportSize = controller.drawableSize(for: .axial)
+        let pick = try session.pick(
+            in: controller.axialViewportID,
+            screenPoint: CGPoint(x: CGFloat(screenPoint.x) * viewportSize.width,
+                                 y: CGFloat(screenPoint.y) * viewportSize.height)
+        )
+
+        let scalarSample = try XCTUnwrap(pick.scalarSamples.first { $0.layerID == "pet-suv" })
+        XCTAssertEqual(try XCTUnwrap(scalarSample.quantitativeValue).value, 22.1, accuracy: 1e-6)
+
+        let statistics = try controller.quantitativeScalarStatistics(layerID: "pet-suv",
+                                                                     roiLayerID: "target-label",
+                                                                     label: 9)
+        XCTAssertEqual(statistics.sampleCount, 1)
+        XCTAssertEqual(statistics.meanValue, 22.1, accuracy: 1e-6)
+        XCTAssertEqual(statistics.unitsLabel, "SUV body weight")
+        XCTAssertEqual(statistics.legendTitle, "SUV")
     }
 
     func testDicomGeometryCrosshairClicksSynchronizePerpendicularMPRAxes() async throws {
@@ -1003,8 +1151,40 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
             "Orientation: Axial",
             "Thickness: 7 mm",
             "Zoom: 200%",
-            "Angle: 15 deg"
+            "Angle: 15 deg",
+            "Pixel: 0"
         ])
+    }
+
+    func testMPRMetadataOverlaySettingsAreScopedPerViewport() async throws {
+        let controller = try await makeController()
+        try await controller.applyDataset(makeDataset())
+
+        controller.setMetadataOverlaySettings(
+            ClinicalViewportMetadataOverlaySettings(isVisible: false),
+            for: .axial
+        )
+
+        let axial = controller.mprImageAnnotationsOverlayState(slotIndex: 0, axis: .axial)
+        let coronal = controller.mprImageAnnotationsOverlayState(slotIndex: 1, axis: .coronal)
+
+        XCTAssertEqual(axial.displayLines, [])
+        XCTAssertTrue(coronal.displayLines.contains("Panel 2"))
+    }
+
+    func testClinicalSessionExposesMetadataOverlaySettings() async throws {
+        let controller = try await makeController()
+        let session = ClinicalViewportSession(controller: controller)
+        let settings = ClinicalViewportMetadataOverlaySettings(
+            showsSubjectName: false,
+            showsDoseValues: false
+        )
+
+        session.setMetadataOverlaySettings(settings, for: .sagittal)
+
+        XCTAssertEqual(session.metadataOverlaySettings(for: session.sagittalViewportID), settings)
+        XCTAssertEqual(session.metadataOverlaySettings(for: session.axialViewportID), .default)
+        XCTAssertEqual(session.metadataOverlaySettingsByViewport[session.sagittalViewportID], settings)
     }
 
     func testAdaptiveInteractionUpdatesMPRQualityWithoutChangingHiddenVolumeQuality() async throws {
@@ -1312,9 +1492,56 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
 
     func testClinicalViewportGridCanBeConstructed() async throws {
         let controller = try await makeController()
+        let definition = makeHangingProtocolDefinition()
+        let context = HangingProtocolContext(
+            current: HangingProtocolStudyDescriptor(id: "current",
+                                                    role: .current,
+                                                    modality: "CT",
+                                                    anatomy: "Chest"),
+            priors: [
+                HangingProtocolStudyDescriptor(id: "prior",
+                                               role: .prior,
+                                               modality: "CT",
+                                               anatomy: "Chest")
+            ]
+        )
 
         _ = ClinicalViewportGrid(controller: controller)
         _ = ClinicalViewportGrid(dataset: makeDataset())
+        _ = ClinicalViewportGrid(controller: controller,
+                                 hangingProtocolDefinition: definition,
+                                 hangingProtocolContext: context)
+    }
+
+    func testApplyHangingProtocolMapsViewportSlots() async throws {
+        let controller = try await makeController()
+        let definition = makeHangingProtocolDefinition()
+        let context = HangingProtocolContext(
+            current: HangingProtocolStudyDescriptor(id: "current",
+                                                    role: .current,
+                                                    modality: "CT",
+                                                    anatomy: "CT Chest"),
+            priors: [
+                HangingProtocolStudyDescriptor(id: "prior",
+                                               role: .prior,
+                                               modality: "CT",
+                                               anatomy: "Chest")
+            ]
+        )
+
+        let resolvedLayout = await controller.applyHangingProtocol(definition,
+                                                                   context: context)
+        let resolved = try XCTUnwrap(resolvedLayout)
+
+        XCTAssertEqual(controller.hangingProtocolResolvedLayout, resolved)
+        XCTAssertEqual(controller.hangingProtocolResolvedLayout?.screenLayout, .hSplit2x1)
+        XCTAssertEqual(controller.hangingProtocolSlotAssignments.map(\.content), [
+            .stack2D(.axial),
+            .stack2D(.axial),
+            .volume3D
+        ])
+        XCTAssertEqual(controller.hangingProtocolSlotAssignments.map(\.studyRole), [.current, .prior, .current])
+        XCTAssertEqual(controller.hangingProtocolViewportContent(for: 2), .stack2D(.axial))
     }
 
     private func makeController() async throws -> ClinicalViewportGridController {
@@ -1346,6 +1573,47 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
             pixelFormat: .int16Signed,
             intensityRange: (-1024)...3071,
             recommendedWindow: (-100)...300
+        )
+    }
+
+    private func makeHangingProtocolDefinition() -> HangingProtocolDefinition {
+        HangingProtocolDefinition(
+            id: "ct-chest-follow-up",
+            displayName: "CT Chest Follow-up",
+            displaySets: [
+                HangingProtocolDisplaySetDefinition(
+                    id: "current",
+                    role: .current,
+                    filter: HangingProtocolStudyFilter(modalities: ["CT"], anatomies: ["Chest"])
+                ),
+                HangingProtocolDisplaySetDefinition(
+                    id: "prior",
+                    role: .prior,
+                    filter: HangingProtocolStudyFilter(modalities: ["CT"], anatomies: ["Chest"])
+                )
+            ],
+            rules: [
+                HangingProtocolRule(
+                    id: "ct-chest-current-prior",
+                    priority: 10,
+                    currentFilter: HangingProtocolStudyFilter(modalities: ["CT"], anatomies: ["Chest"]),
+                    requiredPriorFilter: HangingProtocolStudyFilter(modalities: ["CT"], anatomies: ["Chest"]),
+                    layout: HangingProtocolLayoutDefinition(
+                        screenLayout: .hSplit2x1,
+                        viewports: [
+                            HangingProtocolViewportDefinition(slot: 1,
+                                                              displaySetID: "current",
+                                                              content: .stack2D(.axial)),
+                            HangingProtocolViewportDefinition(slot: 2,
+                                                              displaySetID: "prior",
+                                                              content: .stack2D(.axial)),
+                            HangingProtocolViewportDefinition(slot: 3,
+                                                              displaySetID: "current",
+                                                              content: .volume3D)
+                        ]
+                    )
+                )
+            ]
         )
     }
 
@@ -1441,6 +1709,50 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         return VolumeLayer(id: "target-label",
                            labelmap: labelmap,
                            opacity: 1)
+    }
+
+    private func makeQuantitativeScalarLayer(id: String,
+                                             baseDataset: VolumeDataset) -> VolumeLayer {
+        var values: [Int16] = []
+        values.reserveCapacity(baseDataset.dimensions.voxelCount)
+        var physicalValues: [Double] = []
+        physicalValues.reserveCapacity(baseDataset.dimensions.voxelCount)
+        for z in 0..<baseDataset.dimensions.depth {
+            for y in 0..<baseDataset.dimensions.height {
+                for x in 0..<baseDataset.dimensions.width {
+                    let stored = Int16(x + y * 10 + z * 100)
+                    values.append(stored)
+                    physicalValues.append(Double(stored) / 10.0)
+                }
+            }
+        }
+        let dataset = VolumeDataset(
+            data: values.withUnsafeBytes { Data($0) },
+            dimensions: baseDataset.dimensions,
+            spacing: baseDataset.spacing,
+            pixelFormat: .int16Signed,
+            intensityRange: 0...900,
+            orientation: baseDataset.orientation,
+            recommendedWindow: 0...900,
+            clinicalMetadata: ClinicalImageMetadata(modality: "PT",
+                                                    frameOfReferenceUID: baseDataset.imageData.clinicalMetadata?.frameOfReferenceUID)
+        )
+        let mapping = QuantitativeScalarMapping(
+            units: QuantitativeCodedConcept(codeValue: "g/ml{SUVbw}",
+                                            codingSchemeDesignator: "UCUM",
+                                            codeMeaning: "SUV body weight"),
+            physicalRange: 0...90,
+            storedValueRange: 0...900,
+            physicalValues: physicalValues,
+            legendTitle: "SUV"
+        )
+        let scalarVolume = ScalarVolumeLayer(dataset: dataset,
+                                             transferFunction: .defaultGrayscale(for: dataset),
+                                             quantitativeMapping: mapping)
+        return VolumeLayer(id: id,
+                           scalarVolume: scalarVolume,
+                           opacity: 0.5,
+                           blendMode: .additive)
     }
 
     private func makePickingDataset(dimensions: VolumeDimensions) -> VolumeDataset {

@@ -92,6 +92,7 @@ public struct MedicalViewportState: Equatable {
     public let viewportType: MedicalViewportType
     public let renderMode: MedicalViewportRenderMode
     public let dataset: MedicalViewportDatasetSummary?
+    public let progressiveVolumeState: ProgressiveVolumeStreamState
     public let camera: VolumetricCameraState
     public let windowLevel: VolumetricWindowLevelState
     public let slice: MedicalViewportSliceState?
@@ -102,6 +103,7 @@ public struct MedicalViewportState: Equatable {
                 viewportType: MedicalViewportType,
                 renderMode: MedicalViewportRenderMode,
                 dataset: MedicalViewportDatasetSummary? = nil,
+                progressiveVolumeState: ProgressiveVolumeStreamState = .idle,
                 camera: VolumetricCameraState = VolumetricCameraState(),
                 windowLevel: VolumetricWindowLevelState = VolumetricWindowLevelState(),
                 slice: MedicalViewportSliceState? = nil,
@@ -111,6 +113,7 @@ public struct MedicalViewportState: Equatable {
         self.viewportType = viewportType
         self.renderMode = renderMode
         self.dataset = dataset
+        self.progressiveVolumeState = progressiveVolumeState
         self.camera = camera
         self.windowLevel = windowLevel
         self.slice = slice
@@ -127,10 +130,31 @@ public protocol MedicalViewport: AnyObject {
     var renderMode: MedicalViewportRenderMode { get }
     var state: MedicalViewportState { get }
     var surface: any ViewportPresenting { get }
+    var progressiveVolumeState: ProgressiveVolumeStreamState { get }
 
     func applyDataset(_ dataset: VolumeDataset) async
+    func recordProgressiveVolumeUpdate(_ update: ProgressiveVolumeDatasetUpdate) async
+    func recordProgressiveVolumeStreamCancellation() async
+    func beginProgressivePreviewInteraction() async
+    func endProgressivePreviewInteraction() async
+    func forceProgressiveFinalRenderQuality() async
     func setWindowLevel(window: Double, level: Double) async
     func resetCamera() async
+}
+
+public extension MedicalViewport {
+    var progressiveVolumeState: ProgressiveVolumeStreamState {
+        state.progressiveVolumeState
+    }
+
+    func recordProgressiveVolumeUpdate(_ update: ProgressiveVolumeDatasetUpdate) async {
+        _ = update
+    }
+
+    func recordProgressiveVolumeStreamCancellation() async {}
+    func beginProgressivePreviewInteraction() async {}
+    func endProgressivePreviewInteraction() async {}
+    func forceProgressiveFinalRenderQuality() async {}
 }
 
 /// Volume-backed stack viewport for predictable slice scrolling.
@@ -159,10 +183,12 @@ public final class StackViewport: ObservableObject, MedicalViewport {
     @Published public private(set) var sliceCount: Int = 0
     @Published public private(set) var windowPresentation = StackViewportWindowPresentation()
     @Published public private(set) var viewportTransform = Viewer2DTransform.identity
+    @Published public private(set) var volumeLayers: [MTKCore.VolumeLayer] = []
 
     public var surface: any ViewportPresenting { metalSurface }
     public var viewportType: MedicalViewportType { .stack(axis: axis) }
     public var renderMode: MedicalViewportRenderMode { .stack }
+    public var progressiveVolumeState: ProgressiveVolumeStreamState { controller.progressiveVolumeState }
 
     private let controller: VolumeViewportController
     private var dataset: VolumeDataset?
@@ -192,6 +218,31 @@ public final class StackViewport: ObservableObject, MedicalViewport {
         sliceIndex = Self.clamp(sliceIndex, count: sliceCount)
         await controller.applyDataset(dataset)
         await configureController()
+        refreshState()
+    }
+
+    public func recordProgressiveVolumeUpdate(_ update: ProgressiveVolumeDatasetUpdate) async {
+        await controller.recordProgressiveVolumeUpdate(update)
+        refreshState()
+    }
+
+    public func recordProgressiveVolumeStreamCancellation() async {
+        await controller.recordProgressiveVolumeStreamCancellation()
+        refreshState()
+    }
+
+    public func beginProgressivePreviewInteraction() async {
+        await controller.beginAdaptiveSamplingInteraction()
+        refreshState()
+    }
+
+    public func endProgressivePreviewInteraction() async {
+        await controller.endAdaptiveSamplingInteraction()
+        refreshState()
+    }
+
+    public func forceProgressiveFinalRenderQuality() async {
+        await controller.forceFinalRenderQuality()
         refreshState()
     }
 
@@ -265,6 +316,36 @@ public final class StackViewport: ObservableObject, MedicalViewport {
         refreshState()
     }
 
+    public func setVolumeLayers(_ layers: [MTKCore.VolumeLayer]) async {
+        volumeLayers = layers
+        await controller.setVolumeLayers(layers)
+        refreshState()
+    }
+
+    public func setVolumeLayerVisibility(id: String, isVisible: Bool) async {
+        if let index = volumeLayers.firstIndex(where: { $0.id == id }) {
+            volumeLayers[index].isVisible = isVisible
+        }
+        await controller.setVolumeLayerVisibility(id: id, isVisible: isVisible)
+        refreshState()
+    }
+
+    public func setVolumeLayerOpacity(id: String, opacity: Float) async {
+        if let index = volumeLayers.firstIndex(where: { $0.id == id }) {
+            volumeLayers[index].opacity = opacity
+        }
+        await controller.setVolumeLayerOpacity(id: id, opacity: opacity)
+        refreshState()
+    }
+
+    public func setVolumeLayerBlendMode(id: String, blendMode: MTKCore.VolumeLayerBlendMode) async {
+        if let index = volumeLayers.firstIndex(where: { $0.id == id }) {
+            volumeLayers[index].blendMode = blendMode
+        }
+        await controller.setVolumeLayerBlendMode(id: id, blendMode: blendMode)
+        refreshState()
+    }
+
     private func configureController() async {
         guard sliceCount > 0 else { return }
         let controllerAxis = axis.controllerAxis
@@ -308,6 +389,7 @@ public final class StackViewport: ObservableObject, MedicalViewport {
             viewportType: .stack(axis: axis),
             renderMode: .stack,
             dataset: dataset.map(MedicalViewportDatasetSummary.init(dataset:)),
+            progressiveVolumeState: controller.progressiveVolumeState,
             camera: controller.cameraState,
             windowLevel: controller.windowLevelState,
             slice: slice,
@@ -356,6 +438,7 @@ public final class VolumeViewport: ObservableObject, MedicalViewport {
         }
         return .mpr(blend: blendMode)
     }
+    public var progressiveVolumeState: ProgressiveVolumeStreamState { controller.progressiveVolumeState }
 
     private let controller: VolumeViewportController
     private var dataset: VolumeDataset?
@@ -394,6 +477,31 @@ public final class VolumeViewport: ObservableObject, MedicalViewport {
         self.dataset = dataset
         await controller.applyDataset(dataset)
         await configureController()
+        refreshState()
+    }
+
+    public func recordProgressiveVolumeUpdate(_ update: ProgressiveVolumeDatasetUpdate) async {
+        await controller.recordProgressiveVolumeUpdate(update)
+        refreshState()
+    }
+
+    public func recordProgressiveVolumeStreamCancellation() async {
+        await controller.recordProgressiveVolumeStreamCancellation()
+        refreshState()
+    }
+
+    public func beginProgressivePreviewInteraction() async {
+        await controller.beginAdaptiveSamplingInteraction()
+        refreshState()
+    }
+
+    public func endProgressivePreviewInteraction() async {
+        await controller.endAdaptiveSamplingInteraction()
+        refreshState()
+    }
+
+    public func forceProgressiveFinalRenderQuality() async {
+        await controller.forceFinalRenderQuality()
         refreshState()
     }
 
@@ -525,6 +633,7 @@ public final class VolumeViewport: ObservableObject, MedicalViewport {
             viewportType: viewportType,
             renderMode: renderMode,
             dataset: dataset.map(MedicalViewportDatasetSummary.init(dataset:)),
+            progressiveVolumeState: controller.progressiveVolumeState,
             camera: controller.cameraState,
             windowLevel: controller.windowLevelState,
             slice: slice,
@@ -549,6 +658,10 @@ public final class VolumeViewport3D: ObservableObject, MedicalViewport {
     public var viewportType: MedicalViewportType { .volume3D }
     public var renderMode: MedicalViewportRenderMode { .volume3D(method: method) }
     public var adaptiveSamplingEnabled: Bool { controller.adaptiveSamplingEnabled }
+    public var progressiveVolumeState: ProgressiveVolumeStreamState { controller.progressiveVolumeState }
+    public var quantitativeScalarLegends: [QuantitativeScalarLayerLegend] {
+        volumeLayers.compactMap(\.quantitativeLegend)
+    }
 
     private let controller: VolumeViewportController
     private var dataset: VolumeDataset?
@@ -573,6 +686,31 @@ public final class VolumeViewport3D: ObservableObject, MedicalViewport {
         self.dataset = dataset
         await controller.applyDataset(dataset)
         await controller.setDisplayConfiguration(.volume(method: method))
+        refreshState()
+    }
+
+    public func recordProgressiveVolumeUpdate(_ update: ProgressiveVolumeDatasetUpdate) async {
+        await controller.recordProgressiveVolumeUpdate(update)
+        refreshState()
+    }
+
+    public func recordProgressiveVolumeStreamCancellation() async {
+        await controller.recordProgressiveVolumeStreamCancellation()
+        refreshState()
+    }
+
+    public func beginProgressivePreviewInteraction() async {
+        await controller.beginAdaptiveSamplingInteraction()
+        refreshState()
+    }
+
+    public func endProgressivePreviewInteraction() async {
+        await controller.endAdaptiveSamplingInteraction()
+        refreshState()
+    }
+
+    public func forceProgressiveFinalRenderQuality() async {
+        await controller.forceFinalRenderQuality()
         refreshState()
     }
 
@@ -846,6 +984,7 @@ public final class VolumeViewport3D: ObservableObject, MedicalViewport {
             viewportType: .volume3D,
             renderMode: .volume3D(method: method),
             dataset: dataset.map(MedicalViewportDatasetSummary.init(dataset:)),
+            progressiveVolumeState: controller.progressiveVolumeState,
             camera: controller.cameraState,
             windowLevel: controller.windowLevelState,
             slice: nil,
@@ -886,11 +1025,24 @@ public final class ClinicalViewportSession: ObservableObject {
     public var slabThickness: Double { controller.slabThickness }
     public var volumeLayers: [MTKCore.VolumeLayer] { controller.volumeLayers }
     public var surfaceMeshLayers: [SurfaceMeshLayer] { controller.surfaceMeshLayers }
+    public var quantitativeScalarLegends: [QuantitativeScalarLayerLegend] {
+        controller.volumeLayers.compactMap(\.quantitativeLegend)
+    }
+    public var rtDoseOverlays: [RTDoseVolumeOverlay] { controller.rtDoseOverlays }
+    public var rtStructureContourOverlays: [RTStructureContourOverlay] { controller.rtStructureContourOverlays }
+    public var rtStructureContourConfiguration: RTStructureContourOverlayConfiguration { controller.rtStructureContourConfiguration }
+    public var mprPresentationStates: [MTKCore.Axis: MPRPresentationState] { controller.mprPresentationStates }
+    public var structuredReportViewerState: StructuredReportViewerState? { controller.structuredReportViewerState }
+    public var metadataOverlaySettingsByViewport: [ViewportID: ClinicalViewportMetadataOverlaySettings] {
+        controller.metadataOverlaySettingsByViewport
+    }
     public var latestTimingSnapshot: ClinicalViewportTimingSnapshot { controller.latestTimingSnapshot }
     public var lastRenderError: (any Error)? { controller.lastRenderErrors.values.first ?? controller.lastRenderError }
     public var adaptiveSamplingEnabled: Bool { controller.adaptiveSamplingEnabled }
     public var volumeRenderQualitySettings: VolumeRenderQualitySettings { controller.volumeRenderQualitySettings }
     public var crosshairAngles: [MTKCore.Axis: Double] { controller.crosshairAngles }
+    public var hangingProtocolResolvedLayout: HangingProtocolResolvedLayout? { controller.hangingProtocolResolvedLayout }
+    public var hangingProtocolSlotAssignments: [HangingProtocolResolvedViewport] { controller.hangingProtocolSlotAssignments }
 
     public init(controller: ClinicalViewportGridController) {
         self.controller = controller
@@ -935,6 +1087,89 @@ public final class ClinicalViewportSession: ObservableObject {
 
     public func setSurfaceMeshLayers(_ layers: [SurfaceMeshLayer]) async {
         await controller.setSurfaceMeshLayers(layers)
+    }
+
+    public func setRTDoseOverlays(_ overlays: [RTDoseVolumeOverlay]) async {
+        await controller.setRTDoseOverlays(overlays)
+    }
+
+    public func setRTDoseOverlayOpacity(id: String, opacity: Float) async {
+        await controller.setRTDoseOverlayOpacity(id: id, opacity: opacity)
+    }
+
+    public func setRTDoseColorLookupTable(id: String,
+                                          colorLookupTable: RTDoseColorLookupTable) async {
+        await controller.setRTDoseColorLookupTable(id: id,
+                                                   colorLookupTable: colorLookupTable)
+    }
+
+    public func pickRTDose(in viewport: ViewportID,
+                           screenPoint: CGPoint) throws -> [RTDoseSample] {
+        try controller.pickRTDose(in: viewport, screenPoint: screenPoint)
+    }
+
+    public func doseStatistics(overlayID: String,
+                               roiLayerID: String,
+                               label: UInt16? = nil) throws -> RTDoseStatistics {
+        try controller.doseStatistics(overlayID: overlayID,
+                                      roiLayerID: roiLayerID,
+                                      label: label)
+    }
+
+    public func quantitativeScalarStatistics(layerID: String,
+                                             roiLayerID: String,
+                                             label: UInt16? = nil) throws -> QuantitativeScalarStatistics {
+        try controller.quantitativeScalarStatistics(layerID: layerID,
+                                                    roiLayerID: roiLayerID,
+                                                    label: label)
+    }
+
+    public func labelmapVolumeSummary(layerID: String,
+                                      label: UInt16? = nil) throws -> ViewerROILabelmapVolumeSummary {
+        try controller.labelmapVolumeSummary(layerID: layerID, label: label)
+    }
+
+    public func setRTStructureContourOverlays(_ overlays: [RTStructureContourOverlay]) {
+        controller.setRTStructureContourOverlays(overlays)
+    }
+
+    public func setRTStructureContourConfiguration(_ configuration: RTStructureContourOverlayConfiguration) {
+        controller.setRTStructureContourConfiguration(configuration)
+    }
+
+    public func setRTStructureContourSliceTolerance(_ tolerance: Double) {
+        controller.setRTStructureContourSliceTolerance(tolerance)
+    }
+
+    public func applyMPRPresentationState(_ presentationState: MPRPresentationState,
+                                          to axis: MTKCore.Axis) async {
+        await controller.applyMPRPresentationState(presentationState, to: axis)
+    }
+
+    public func clearMPRPresentationState(for axis: MTKCore.Axis) {
+        controller.clearMPRPresentationState(for: axis)
+    }
+
+    public func applyStructuredReportViewerState(_ state: StructuredReportViewerState?) {
+        controller.applyStructuredReportViewerState(state)
+    }
+
+    public func selectStructuredReportFinding(id: CADFindingOverlayItem.ID?) {
+        controller.selectStructuredReportFinding(id: id)
+    }
+
+    public func setMetadataOverlaySettings(_ settings: ClinicalViewportMetadataOverlaySettings,
+                                           for viewport: ViewportID) {
+        controller.setMetadataOverlaySettings(settings, for: viewport)
+    }
+
+    public func setMetadataOverlaySettings(_ settings: ClinicalViewportMetadataOverlaySettings,
+                                           for axis: MTKCore.Axis) {
+        controller.setMetadataOverlaySettings(settings, for: axis)
+    }
+
+    public func metadataOverlaySettings(for viewport: ViewportID) -> ClinicalViewportMetadataOverlaySettings {
+        controller.metadataOverlaySettings(for: viewport)
     }
 
     public func setVolumeLayerVisibility(id: String, isVisible: Bool) async {
@@ -1039,6 +1274,16 @@ public final class ClinicalViewportSession: ObservableObject {
 
     public func resetAllMPRViews() {
         controller.resetAllMPRViews()
+    }
+
+    @discardableResult
+    public func applyHangingProtocol(_ definition: HangingProtocolDefinition,
+                                     context: HangingProtocolContext? = nil) async -> HangingProtocolResolvedLayout? {
+        await controller.applyHangingProtocol(definition, context: context)
+    }
+
+    public func clearHangingProtocol() {
+        controller.clearHangingProtocol()
     }
 
     public func setAdaptiveSampling(_ enabled: Bool) async {

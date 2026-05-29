@@ -34,6 +34,8 @@ public struct ClinicalViewportGrid: View {
     private let showsAnnotations: Bool
     private let showsCrosshair: Bool
     private let showsCompactChrome: Bool
+    private let hangingProtocolDefinition: HangingProtocolDefinition?
+    private let hangingProtocolContext: HangingProtocolContext?
 
     /// Creates a clinical 2x2 viewport grid from the public viewport session contract.
     public init(session: ClinicalViewportSession,
@@ -43,6 +45,8 @@ public struct ClinicalViewportGrid: View {
                 showsAnnotations: Bool = true,
                 showsCrosshair: Bool = true,
                 showsCompactChrome: Bool = true,
+                hangingProtocolDefinition: HangingProtocolDefinition? = nil,
+                hangingProtocolContext: HangingProtocolContext? = nil,
                 style: any VolumetricUIStyle = DefaultVolumetricUIStyle()) {
         _store = StateObject(wrappedValue: ClinicalViewportGridControllerStore(session: session,
                                                                                dataset: nil))
@@ -53,6 +57,8 @@ public struct ClinicalViewportGrid: View {
         self.showsAnnotations = showsAnnotations
         self.showsCrosshair = showsCrosshair
         self.showsCompactChrome = showsCompactChrome
+        self.hangingProtocolDefinition = hangingProtocolDefinition
+        self.hangingProtocolContext = hangingProtocolContext
     }
 
     /// Creates a clinical 2x2 viewport grid.
@@ -69,6 +75,8 @@ public struct ClinicalViewportGrid: View {
                 showsAnnotations: Bool = true,
                 showsCrosshair: Bool = true,
                 showsCompactChrome: Bool = true,
+                hangingProtocolDefinition: HangingProtocolDefinition? = nil,
+                hangingProtocolContext: HangingProtocolContext? = nil,
                 style: any VolumetricUIStyle = DefaultVolumetricUIStyle()) {
         _store = StateObject(wrappedValue: ClinicalViewportGridControllerStore(controller: controller,
                                                                                dataset: dataset))
@@ -79,6 +87,8 @@ public struct ClinicalViewportGrid: View {
         self.showsAnnotations = showsAnnotations
         self.showsCrosshair = showsCrosshair
         self.showsCompactChrome = showsCompactChrome
+        self.hangingProtocolDefinition = hangingProtocolDefinition
+        self.hangingProtocolContext = hangingProtocolContext
     }
 
     public var body: some View {
@@ -105,6 +115,8 @@ public struct ClinicalViewportGrid: View {
         }
         .task {
             await store.prepare()
+            await store.applyHangingProtocolIfNeeded(definition: hangingProtocolDefinition,
+                                                     context: hangingProtocolContext)
         }
         .onDisappear {
             Task {
@@ -167,6 +179,14 @@ private final class ClinicalViewportGridControllerStore: ObservableObject {
         preparationTask = task
         await task.value
         preparationTask = nil
+    }
+
+    func applyHangingProtocolIfNeeded(definition: HangingProtocolDefinition?,
+                                      context: HangingProtocolContext?) async {
+        guard let definition,
+              let controller
+        else { return }
+        await controller.applyHangingProtocol(definition, context: context)
     }
 
     func shutdownIfOwned() async {
@@ -352,12 +372,26 @@ private struct ClinicalViewportGridContent: View {
             draftSlabThickness = newValue
         }
         .onChange(of: screenLayout) { _, _ in
-            schedulePostLayoutRender(axis: slot1Axis)
-            schedulePostLayoutRender(axis: slot2Axis)
-            schedulePostLayoutRender(axis: slot3Axis)
+            schedulePostLayoutRender(for: slotContent(slot: 1, fallbackAxis: slot1Axis))
+            schedulePostLayoutRender(for: slotContent(slot: 2, fallbackAxis: slot2Axis))
+            schedulePostLayoutRender(for: slotContent(slot: 3, fallbackAxis: slot3Axis))
         }
-        .accessibilityValue(screenLayout.title)
+        .accessibilityValue(effectiveScreenLayout.title)
         .accessibilityIdentifier("ClinicalViewportGrid")
+    }
+
+    private var effectiveScreenLayout: MPRScreenLayout {
+        controller.hangingProtocolResolvedLayout?.screenLayout ?? screenLayout
+    }
+
+    private var hasResolvedHangingProtocol: Bool {
+        controller.hangingProtocolResolvedLayout != nil
+    }
+
+    private func slotContent(slot: Int,
+                             fallbackAxis: MTKCore.Axis) -> HangingProtocolViewportContent {
+        controller.hangingProtocolViewportContent(for: slot) ??
+        .mpr(HangingProtocolImagePlane(axis: fallbackAxis))
     }
 
     private var isCompactPhonePortrait: Bool {
@@ -602,7 +636,8 @@ private struct ClinicalViewportGridContent: View {
     private func slotPane(slotIndex: Int,
                           axis: MTKCore.Axis,
                           surface: MetalViewportSurface,
-                          presentationPriority: Int = 0) -> some View {
+                          presentationPriority: Int = 0,
+                          showsAxisControls: Bool = true) -> some View {
         GeometryReader { proxy in
             let offset = controller.crosshairOffsets[axis] ?? .zero
             let angleDegrees = controller.crosshairAngles[axis] ?? 0.0
@@ -630,6 +665,10 @@ private struct ClinicalViewportGridContent: View {
                                                       axis: axis,
                                                       viewportSize: proxy.size)
                         }
+                        CADFindingOverlayView(
+                            findings: controller.cadFindingsForOverlay(axis: axis),
+                            selectedFindingID: controller.structuredReportViewerState?.selectedFindingID
+                        )
                         viewportOverlay?(controller.debugSnapshot(for: controller.viewportID(for: axis)))
                     }
                     .allowsHitTesting(false)
@@ -648,7 +687,9 @@ private struct ClinicalViewportGridContent: View {
                     surface.onScrollWheel = nil
                 }
 
-                paneControls(slotIndex: slotIndex, axis: axis)
+                if showsAxisControls {
+                    paneControls(slotIndex: slotIndex, axis: axis)
+                }
             }
         }
         .background(paneBackground)
@@ -695,7 +736,7 @@ private struct ClinicalViewportGridContent: View {
     }
 
     private func computeViewportLayout(totalWidth: CGFloat, totalHeight: CGFloat) -> MPRViewportGridLayout {
-        MPRViewportGridLayoutCalculator.layout(for: screenLayout,
+        MPRViewportGridLayoutCalculator.layout(for: effectiveScreenLayout,
                                                totalWidth: totalWidth,
                                                totalHeight: totalHeight,
                                                verticalSplit: verticalSplit,
@@ -704,18 +745,68 @@ private struct ClinicalViewportGridContent: View {
     }
 
     private func positionedSlot(slotIndex: Int,
-                                axis: MTKCore.Axis,
+                                fallbackAxis: MTKCore.Axis,
                                 rect: CGRect) -> some View {
         let isHidden = rect.width <= 0 || rect.height <= 0
         let isFullscreen = fullscreenSlot == slotIndex
-        return slotPane(slotIndex: slotIndex,
-                        axis: axis,
-                        surface: controller.surface(for: axis))
+        let content = slotContent(slot: slotIndex, fallbackAxis: fallbackAxis)
+        return slotView(slotIndex: slotIndex, content: content)
             .frame(width: max(rect.width, 0), height: max(rect.height, 0))
             .position(x: rect.midX, y: rect.midY)
             .opacity(isHidden ? 0 : 1)
             .allowsHitTesting(!isHidden)
             .zIndex(isFullscreen ? 1 : 0)
+    }
+
+    @ViewBuilder
+    private func slotView(slotIndex: Int,
+                          content: HangingProtocolViewportContent) -> some View {
+        switch content {
+        case .mpr(let plane), .stack2D(let plane):
+            let axis = plane.axis
+            slotPane(slotIndex: slotIndex,
+                     axis: axis,
+                     surface: controller.surface(for: axis),
+                     showsAxisControls: !hasResolvedHangingProtocol)
+        case .volume3D:
+            volumeSlotPane(slotIndex: slotIndex)
+        }
+    }
+
+    private func volumeSlotPane(slotIndex: Int) -> some View {
+        GeometryReader { _ in
+            Group {
+#if os(iOS)
+                MetalViewportContainer(
+                    surface: controller.volumeSurface,
+                    native3DInteraction: NativeVolume3DInteraction(controller: controller,
+                                                                   interactionMode: interactionMode)
+                ) {
+                    ZStack {
+                        viewportOverlay?(controller.debugSnapshot(for: controller.volumeViewportID))
+                    }
+                    .allowsHitTesting(false)
+                }
+#else
+                MetalViewportContainer(surface: controller.volumeSurface) {
+                    ZStack {
+                        viewportOverlay?(controller.debugSnapshot(for: controller.volumeViewportID))
+                    }
+                    .allowsHitTesting(false)
+                }
+#endif
+            }
+            .contentShape(Rectangle())
+            .onAppear {
+                schedulePostLayoutRender(for: .volume3D)
+            }
+            .onChange(of: controller.volumeViewportMode) { _, _ in
+                schedulePostLayoutRender(for: .volume3D)
+            }
+        }
+        .background(paneBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .accessibilityIdentifier("MTKClinicalVolumePane.\(slotIndex)")
     }
 
     private func viewportGrid() -> some View {
@@ -725,9 +816,9 @@ private struct ClinicalViewportGridContent: View {
             let layout = computeViewportLayout(totalWidth: totalWidth, totalHeight: totalHeight)
 
             ZStack(alignment: .topLeading) {
-                positionedSlot(slotIndex: 1, axis: slot1Axis, rect: layout.rect1)
-                positionedSlot(slotIndex: 2, axis: slot2Axis, rect: layout.rect2)
-                positionedSlot(slotIndex: 3, axis: slot3Axis, rect: layout.rect3)
+                positionedSlot(slotIndex: 1, fallbackAxis: slot1Axis, rect: layout.rect1)
+                positionedSlot(slotIndex: 2, fallbackAxis: slot2Axis, rect: layout.rect2)
+                positionedSlot(slotIndex: 3, fallbackAxis: slot3Axis, rect: layout.rect3)
 
                 if fullscreenSlot == nil {
                     ForEach(Array(layout.dividers.enumerated()), id: \.offset) { _, divider in
@@ -764,6 +855,23 @@ private struct ClinicalViewportGridContent: View {
                 return
             }
             await controller.refreshPresentationLayout(for: axis)
+        }
+    }
+
+    private func schedulePostLayoutRender(for content: HangingProtocolViewportContent) {
+        switch content {
+        case .mpr(let plane), .stack2D(let plane):
+            schedulePostLayoutRender(axis: plane.axis)
+        case .volume3D:
+            Task { @MainActor in
+                await Task.yield()
+                do {
+                    try await Task.sleep(nanoseconds: 50_000_000)
+                } catch {
+                    return
+                }
+                await controller.prepareDisplayedVolumeViewport()
+            }
         }
     }
 
@@ -973,13 +1081,11 @@ private struct ClinicalViewportGridContent: View {
             _ = controller.addMPRROIFromGesture(axis: axis,
                                                 startImagePoint: endPoint,
                                                 endImagePoint: endPoint)
-        case .distance, .arrow:
+        case .distance, .angle, .cobbAngle, .area, .ellipse, .closedPath, .curvedLine, .arrow, .scribble, .volume, .ctr:
             guard let startPoint else { return }
             _ = controller.addMPRROIFromGesture(axis: axis,
                                                 startImagePoint: startPoint,
                                                 endImagePoint: endPoint)
-        case .angle, .cobbAngle, .area, .closedPath, .curvedLine, .scribble, .ctr:
-            break
         }
     }
 
@@ -1069,6 +1175,21 @@ private struct ViewerROIOverlayView: View {
                 label(annotation.measurement?.displayText ?? "Distance", annotation: annotation)
                     .position(midpoint)
             }
+        case .angle:
+            if annotation.normalizedImagePoints.count >= 3 {
+                let points = annotation.normalizedImagePoints.prefix(3).map(pointMapper)
+                polyline(points: points, annotation: annotation)
+                label(annotation.measurement?.displayText ?? annotation.kind.displayName, annotation: annotation)
+                    .position(labelPoint(points: points, yOffset: -12))
+            }
+        case .cobbAngle:
+            if annotation.normalizedImagePoints.count >= 4 {
+                let points = annotation.normalizedImagePoints.prefix(4).map(pointMapper)
+                line(from: points[0], to: points[1], annotation: annotation)
+                line(from: points[2], to: points[3], annotation: annotation)
+                label(annotation.measurement?.displayText ?? annotation.kind.displayName, annotation: annotation)
+                    .position(labelPoint(points: points, yOffset: -12))
+            }
         case .point:
             if let point = annotation.normalizedImagePoints.first {
                 pointMarker(at: pointMapper(point), annotation: annotation)
@@ -1084,8 +1205,39 @@ private struct ViewerROIOverlayView: View {
                       to: pointMapper(annotation.normalizedImagePoints[1]),
                       annotation: annotation)
             }
-        case .angle, .cobbAngle, .area, .closedPath, .curvedLine, .scribble, .ctr:
-            EmptyView()
+        case .area, .closedPath, .volume:
+            if annotation.normalizedImagePoints.count >= 3 {
+                let points = annotation.normalizedImagePoints.map(pointMapper)
+                polygon(points: points, annotation: annotation)
+                label(annotation.text ?? annotation.measurement?.displayText ?? annotation.kind.displayName,
+                      annotation: annotation)
+                    .position(labelPoint(points: points))
+            }
+        case .ellipse:
+            if annotation.normalizedImagePoints.count >= 2 {
+                let points = annotation.normalizedImagePoints.map(pointMapper)
+                ellipse(points: points, annotation: annotation)
+                label(annotation.text ?? annotation.measurement?.displayText ?? annotation.kind.displayName,
+                      annotation: annotation)
+                    .position(labelPoint(points: points))
+            }
+        case .curvedLine, .scribble:
+            if annotation.normalizedImagePoints.count >= 2 {
+                let points = annotation.normalizedImagePoints.map(pointMapper)
+                polyline(points: points, annotation: annotation)
+                if let text = annotation.text ?? annotation.measurement?.displayText {
+                    label(text, annotation: annotation)
+                        .position(labelPoint(points: points, yOffset: -12))
+                }
+            }
+        case .ctr:
+            if annotation.normalizedImagePoints.count >= 4 {
+                let points = annotation.normalizedImagePoints.prefix(4).map(pointMapper)
+                line(from: points[0], to: points[1], annotation: annotation)
+                line(from: points[2], to: points[3], annotation: annotation)
+                label(annotation.measurement?.displayText ?? annotation.kind.displayName, annotation: annotation)
+                    .position(labelPoint(points: points, yOffset: -12))
+            }
         }
     }
 
@@ -1122,6 +1274,43 @@ private struct ViewerROIOverlayView: View {
                 style: StrokeStyle(lineWidth: annotation.style.lineWidth, lineCap: .round, lineJoin: .round))
     }
 
+    private func polyline(points: [CGPoint],
+                          annotation: ViewerROIAnnotation) -> some View {
+        Path { path in
+            guard let first = points.first else { return }
+            path.move(to: first)
+            for point in points.dropFirst() {
+                path.addLine(to: point)
+            }
+        }
+        .stroke(Color(viewerROIColor: annotation.style.strokeColor),
+                style: StrokeStyle(lineWidth: annotation.style.lineWidth, lineCap: .round, lineJoin: .round))
+    }
+
+    private func polygon(points: [CGPoint],
+                         annotation: ViewerROIAnnotation) -> some View {
+        Path { path in
+            guard let first = points.first else { return }
+            path.move(to: first)
+            for point in points.dropFirst() {
+                path.addLine(to: point)
+            }
+            path.closeSubpath()
+        }
+        .stroke(Color(viewerROIColor: annotation.style.strokeColor),
+                style: StrokeStyle(lineWidth: annotation.style.lineWidth, lineCap: .round, lineJoin: .round))
+    }
+
+    private func ellipse(points: [CGPoint],
+                         annotation: ViewerROIAnnotation) -> some View {
+        let rect = boundingRect(points: points)
+        return Ellipse()
+            .stroke(Color(viewerROIColor: annotation.style.strokeColor),
+                    style: StrokeStyle(lineWidth: annotation.style.lineWidth, lineCap: .round, lineJoin: .round))
+            .frame(width: rect.width, height: rect.height)
+            .position(x: rect.midX, y: rect.midY)
+    }
+
     private func pointMarker(at point: CGPoint,
                              annotation: ViewerROIAnnotation) -> some View {
         Circle()
@@ -1141,6 +1330,29 @@ private struct ViewerROIOverlayView: View {
             .padding(.vertical, 3)
             .background(Color(viewerROIColor: annotation.style.labelBackgroundColor),
                         in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+    }
+
+    private func labelPoint(points: [CGPoint],
+                            yOffset: CGFloat = 0) -> CGPoint {
+        guard !points.isEmpty else { return .zero }
+        let x = points.reduce(0) { $0 + $1.x } / CGFloat(points.count)
+        let y = points.reduce(0) { $0 + $1.y } / CGFloat(points.count) + yOffset
+        return CGPoint(x: x, y: y)
+    }
+
+    private func boundingRect(points: [CGPoint]) -> CGRect {
+        guard let first = points.first else { return .zero }
+        var minX = first.x
+        var maxX = first.x
+        var minY = first.y
+        var maxY = first.y
+        for point in points.dropFirst() {
+            minX = min(minX, point.x)
+            maxX = max(maxX, point.x)
+            minY = min(minY, point.y)
+            maxY = max(maxY, point.y)
+        }
+        return CGRect(x: minX, y: minY, width: max(maxX - minX, 1), height: max(maxY - minY, 1))
     }
 }
 

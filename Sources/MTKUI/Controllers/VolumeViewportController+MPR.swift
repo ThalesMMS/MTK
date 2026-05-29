@@ -80,6 +80,13 @@ extension VolumeViewportController {
                                                                    commandQueue: commandQueue)
     }
 
+    func mprScalarOverlays(for frame: MPRTextureFrame) async throws -> [MPRScalarVolumeOverlay] {
+        try await volumeLayerResourceCache.makeMPRScalarOverlays(for: volumeLayers,
+                                                                 baseFrame: frame,
+                                                                 device: device,
+                                                                 commandQueue: commandQueue)
+    }
+
     /// Resolve the HU window range to use for MPR rendering.
     /// - Parameter dataset: The dataset whose intensityRange is used as the final fallback.
     /// - Returns: The selected HU window range: `mprHuWindow` if present; otherwise `huWindow.minHU...huWindow.maxHU` if `huWindow` is present; otherwise `dataset.intensityRange`.
@@ -105,13 +112,14 @@ extension VolumeViewportController {
         }
 
         do {
+            let transform = mprPresentationTransform(for: axis)
             try viewportSurface.present(mprFrame: frame,
                                         window: resolvedMPRWindow(for: dataset),
                                         invert: mprPresentationInvert,
                                         colormap: mprPresentationColormap,
+                                        transform: transform,
                                         viewportTransform: mprViewportTransform,
-                                        flipHorizontal: mprPresentationFlipHorizontal,
-                                        flipVertical: mprPresentationFlipVertical,
+                                        shutter: mprPresentationShutter,
                                         presentationToken: renderGeneration)
             return true
         } catch {
@@ -224,6 +232,13 @@ extension VolumeViewportController {
         let plane = makeDrawableSizedMprPlane(makeMprPlane(axis: axis, index: planeIndex))
         return MPRDisplayTransformFactory.makeTransform(for: plane,
                                                         axis: planeAxis)
+    }
+
+    func mprPresentationTransform(for axis: Axis) -> MPRDisplayTransform {
+        var transform = currentDisplayTransform(for: axis)
+        transform.flipHorizontal = transform.flipHorizontal != mprPresentationFlipHorizontal
+        transform.flipVertical = transform.flipVertical != mprPresentationFlipVertical
+        return transform
     }
 }
 

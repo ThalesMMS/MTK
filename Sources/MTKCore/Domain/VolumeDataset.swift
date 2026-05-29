@@ -212,6 +212,7 @@ public enum VolumePixelFormat: Sendable, Equatable {
 public struct ClinicalImageMetadata: Sendable, Equatable {
     public var patientName: String?
     public var modality: String?
+    public var studyDescription: String?
     public var seriesDescription: String?
     public var studyInstanceUID: String?
     public var seriesInstanceUID: String?
@@ -224,6 +225,7 @@ public struct ClinicalImageMetadata: Sendable, Equatable {
 
     public init(patientName: String? = nil,
                 modality: String? = nil,
+                studyDescription: String? = nil,
                 seriesDescription: String? = nil,
                 studyInstanceUID: String? = nil,
                 seriesInstanceUID: String? = nil,
@@ -235,6 +237,7 @@ public struct ClinicalImageMetadata: Sendable, Equatable {
                 windowWidth: Double? = nil) {
         self.patientName = patientName
         self.modality = modality
+        self.studyDescription = studyDescription
         self.seriesDescription = seriesDescription
         self.studyInstanceUID = studyInstanceUID
         self.seriesInstanceUID = seriesInstanceUID
