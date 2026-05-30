@@ -1317,6 +1317,34 @@ public final class ClinicalViewerCoordinator: ObservableObject {
         errorMessage = nil
     }
 
+    public func applyVolumeUpload<S: AsyncSequence>(
+        referenceDataset dataset: VolumeDataset,
+        uploadDescriptor: VolumeUploadDescriptor,
+        slices: S,
+        progress: VolumeUploadProgressHandler? = nil
+    ) async throws where S.Element == VolumeUploadSlice {
+        clearSnapshotMetrics()
+        self.dataset = dataset
+        publishTwoDROIAnnotations()
+        resolveDefaultTwoDWindowLevelIfNeeded()
+        resetCropClipState()
+        resetVolumeBrushMaskState()
+        if let volumeViewport3D {
+            await volumeViewport3D.setPrimaryVolumeDatasetOverride(nil)
+        }
+        ensureActiveViewport()
+        guard let viewport = await activeViewportReady() else {
+            throw activeViewportUnavailableError()
+        }
+        try await applyVolumeUpload(referenceDataset: dataset,
+                                    uploadDescriptor: uploadDescriptor,
+                                    slices: slices,
+                                    progress: progress,
+                                    to: viewport)
+        try await applyCurrentConfiguration(to: viewport)
+        errorMessage = nil
+    }
+
     public func setVolumeLayers(_ layers: [VolumeLayer]) async {
         currentVolumeLayers = layers
         guard let viewport = await activeViewportReady() else { return }
@@ -1961,6 +1989,33 @@ public final class ClinicalViewerCoordinator: ObservableObject {
             try await session.applyDataset(dataset)
         case .stack2D(let viewport):
             await viewport.applyDataset(dataset)
+            sync2DState(from: viewport)
+        }
+    }
+
+    private func applyVolumeUpload<S: AsyncSequence>(
+        referenceDataset dataset: VolumeDataset,
+        uploadDescriptor: VolumeUploadDescriptor,
+        slices: S,
+        progress: VolumeUploadProgressHandler?,
+        to viewport: ActiveClinicalViewerViewport
+    ) async throws where S.Element == VolumeUploadSlice {
+        switch viewport {
+        case .single3D(let volumeViewport):
+            try await volumeViewport.applyVolumeUpload(referenceDataset: dataset,
+                                                       uploadDescriptor: uploadDescriptor,
+                                                       slices: slices,
+                                                       progress: progress)
+        case .clinical(let session):
+            try await session.applyVolumeUpload(referenceDataset: dataset,
+                                                uploadDescriptor: uploadDescriptor,
+                                                slices: slices,
+                                                progress: progress)
+        case .stack2D(let viewport):
+            try await viewport.applyVolumeUpload(referenceDataset: dataset,
+                                                 uploadDescriptor: uploadDescriptor,
+                                                 slices: slices,
+                                                 progress: progress)
             sync2DState(from: viewport)
         }
     }

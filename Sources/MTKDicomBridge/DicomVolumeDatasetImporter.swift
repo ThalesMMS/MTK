@@ -155,10 +155,13 @@ public final class DicomVolumeDatasetImporter: VolumeDatasetImporting {
     public static func makeDataset(from volume: DicomSeriesVolume) throws -> VolumeDataset {
         let conversion = try makeModalityVoxels(
             rawVoxels: volume.voxels,
-            voxelCount: volume.width * volume.height * volume.depth,
+            width: volume.width,
+            height: volume.height,
+            depth: volume.depth,
             isSigned: volume.isSignedPixel,
-            slope: volume.rescaleSlope,
-            intercept: volume.rescaleIntercept
+            defaultSlope: volume.rescaleSlope,
+            defaultIntercept: volume.rescaleIntercept,
+            sliceRescaleParameters: volume.sliceRescaleParameters
         )
 
         return makeDataset(
@@ -229,15 +232,21 @@ public final class DicomVolumeDatasetImporter: VolumeDatasetImporting {
     }
 
     private static func makeModalityVoxels(rawVoxels: Data,
-                                           voxelCount: Int,
+                                           width: Int,
+                                           height: Int,
+                                           depth: Int,
                                            isSigned: Bool,
-                                           slope: Double,
-                                           intercept: Double) throws -> (data: Data, range: ClosedRange<Int32>) {
+                                           defaultSlope: Double,
+                                           defaultIntercept: Double,
+                                           sliceRescaleParameters: [DicomSliceRescaleParameters]) throws -> (data: Data, range: ClosedRange<Int32>) {
+        let voxelCount = width * height * depth
         let expectedBytes = voxelCount * MemoryLayout<Int16>.size
         guard rawVoxels.count == expectedBytes else {
             throw DICOMError.invalidPixelData(reason: "DICOM volume voxel buffer has \(rawVoxels.count) bytes; expected \(expectedBytes)")
         }
 
+        let sliceVoxelCount = width * height
+        let useSliceRescaleParameters = sliceRescaleParameters.count == depth
         var converted = Data(count: expectedBytes)
         var minimum = Int32.max
         var maximum = Int32.min
@@ -247,19 +256,37 @@ public final class DicomVolumeDatasetImporter: VolumeDatasetImporting {
                 let destination = destinationBuffer.bindMemory(to: Int16.self)
                 if isSigned {
                     let source = sourceBuffer.bindMemory(to: Int16.self)
-                    for index in 0..<voxelCount {
-                        let value = convertedModalityValue(raw: Double(source[index]), slope: slope, intercept: intercept)
-                        minimum = min(minimum, value.int32)
-                        maximum = max(maximum, value.int32)
-                        destination[index] = value.int16
+                    for slice in 0..<depth {
+                        let parameters = useSliceRescaleParameters
+                            ? sliceRescaleParameters[slice]
+                            : DicomSliceRescaleParameters(slope: defaultSlope, intercept: defaultIntercept)
+                        let base = slice * sliceVoxelCount
+                        for localIndex in 0..<sliceVoxelCount {
+                            let index = base + localIndex
+                            let value = convertedModalityValue(raw: Double(source[index]),
+                                                               slope: parameters.slope,
+                                                               intercept: parameters.intercept)
+                            minimum = min(minimum, value.int32)
+                            maximum = max(maximum, value.int32)
+                            destination[index] = value.int16
+                        }
                     }
                 } else {
                     let source = sourceBuffer.bindMemory(to: UInt16.self)
-                    for index in 0..<voxelCount {
-                        let value = convertedModalityValue(raw: Double(source[index]), slope: slope, intercept: intercept)
-                        minimum = min(minimum, value.int32)
-                        maximum = max(maximum, value.int32)
-                        destination[index] = value.int16
+                    for slice in 0..<depth {
+                        let parameters = useSliceRescaleParameters
+                            ? sliceRescaleParameters[slice]
+                            : DicomSliceRescaleParameters(slope: defaultSlope, intercept: defaultIntercept)
+                        let base = slice * sliceVoxelCount
+                        for localIndex in 0..<sliceVoxelCount {
+                            let index = base + localIndex
+                            let value = convertedModalityValue(raw: Double(source[index]),
+                                                               slope: parameters.slope,
+                                                               intercept: parameters.intercept)
+                            minimum = min(minimum, value.int32)
+                            maximum = max(maximum, value.int32)
+                            destination[index] = value.int16
+                        }
                     }
                 }
             }

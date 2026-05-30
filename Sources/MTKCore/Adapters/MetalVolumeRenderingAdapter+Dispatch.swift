@@ -269,9 +269,9 @@ extension MetalVolumeRenderingAdapter {
         return texture
     }
 
-    func renderTexture(using request: VolumeRenderRequest,
-                       volumeTexture: any MTLTexture,
-                       outputTexture: (any MTLTexture)? = nil) async throws -> VolumeRenderFrame {
+    public func renderTexture(using request: VolumeRenderRequest,
+                              volumeTexture: any MTLTexture,
+                              outputTexture: (any MTLTexture)? = nil) async throws -> VolumeRenderFrame {
         if diagnosticLoggingEnabled {
             logger.info("[DIAG] renderTexture called - viewport: \(request.viewportSize.width)x\(request.viewportSize.height), compositing: \(String(describing: request.compositing)), quality: \(String(describing: request.quality))")
         }

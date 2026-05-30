@@ -503,7 +503,13 @@ extension VolumeViewportController {
         let frame: VolumeRenderFrame
         if let adapter = volumeRenderer as? MetalVolumeRenderingAdapter {
             logInteractionDebug("[MTK3DInteraction] render.volume.texture.start backend=MetalVolumeRenderingAdapter quality=\(plan.request.quality) state=\(plan.qualityState) viewport=\(Int(plan.request.viewportSize.width))x\(Int(plan.request.viewportSize.height)) samplingDistance=\(mtkPerfFormat(Double(plan.request.samplingDistance)))")
-            frame = try await adapter.enqueueInteractiveFrame(using: plan.request)
+            if let preuploadedPrimaryVolumeTexture,
+               preuploadedPrimaryVolumeTexture.matches(dataset: plan.request.dataset) {
+                frame = try await adapter.renderTexture(using: plan.request,
+                                                        volumeTexture: preuploadedPrimaryVolumeTexture.texture)
+            } else {
+                frame = try await adapter.enqueueInteractiveFrame(using: plan.request)
+            }
         } else {
             logInteractionDebug("[MTK3DInteraction] render.volume.texture.start backend=\(String(describing: type(of: volumeRenderer))) quality=\(plan.request.quality) state=\(plan.qualityState) viewport=\(Int(plan.request.viewportSize.width))x\(Int(plan.request.viewportSize.height)) samplingDistance=\(mtkPerfFormat(Double(plan.request.samplingDistance)))")
             let texture = try await (volumeRenderer as any VolumeRenderingPort)

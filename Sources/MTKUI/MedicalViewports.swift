@@ -221,6 +221,23 @@ public final class StackViewport: ObservableObject, MedicalViewport {
         refreshState()
     }
 
+    public func applyVolumeUpload<S: AsyncSequence>(
+        referenceDataset dataset: VolumeDataset,
+        uploadDescriptor: VolumeUploadDescriptor,
+        slices: S,
+        progress: VolumeUploadProgressHandler? = nil
+    ) async throws where S.Element == VolumeUploadSlice {
+        self.dataset = dataset
+        sliceCount = Self.sliceCount(for: axis, in: dataset)
+        sliceIndex = Self.clamp(sliceIndex, count: sliceCount)
+        try await controller.applyVolumeUpload(referenceDataset: dataset,
+                                               uploadDescriptor: uploadDescriptor,
+                                               slices: slices,
+                                               progress: progress)
+        await configureController()
+        refreshState()
+    }
+
     public func recordProgressiveVolumeUpdate(_ update: ProgressiveVolumeDatasetUpdate) async {
         await controller.recordProgressiveVolumeUpdate(update)
         refreshState()
@@ -689,6 +706,21 @@ public final class VolumeViewport3D: ObservableObject, MedicalViewport {
         refreshState()
     }
 
+    public func applyVolumeUpload<S: AsyncSequence>(
+        referenceDataset dataset: VolumeDataset,
+        uploadDescriptor: VolumeUploadDescriptor,
+        slices: S,
+        progress: VolumeUploadProgressHandler? = nil
+    ) async throws where S.Element == VolumeUploadSlice {
+        self.dataset = dataset
+        try await controller.applyVolumeUpload(referenceDataset: dataset,
+                                               uploadDescriptor: uploadDescriptor,
+                                               slices: slices,
+                                               progress: progress)
+        await controller.setDisplayConfiguration(.volume(method: method))
+        refreshState()
+    }
+
     public func recordProgressiveVolumeUpdate(_ update: ProgressiveVolumeDatasetUpdate) async {
         await controller.recordProgressiveVolumeUpdate(update)
         refreshState()
@@ -1064,6 +1096,18 @@ public final class ClinicalViewportSession: ObservableObject {
 
     public func applyDataset(_ dataset: VolumeDataset) async throws {
         try await controller.applyDataset(dataset)
+    }
+
+    public func applyVolumeUpload<S: AsyncSequence>(
+        referenceDataset dataset: VolumeDataset,
+        uploadDescriptor: VolumeUploadDescriptor,
+        slices: S,
+        progress: VolumeUploadProgressHandler? = nil
+    ) async throws where S.Element == VolumeUploadSlice {
+        try await controller.applyVolumeUpload(referenceDataset: dataset,
+                                               uploadDescriptor: uploadDescriptor,
+                                               slices: slices,
+                                               progress: progress)
     }
 
     public func setTransferFunction(_ transferFunction: TransferFunction?) async throws {

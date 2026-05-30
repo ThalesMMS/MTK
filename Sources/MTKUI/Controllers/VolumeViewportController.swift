@@ -12,6 +12,37 @@ import Metal
 import MTKCore
 import simd
 
+struct PreuploadedPrimaryVolumeTexture {
+    let texture: any MTLTexture
+    let cacheKey: String?
+    let byteCount: Int
+    let dimensions: VolumeDimensions
+    let pixelFormat: VolumePixelFormat
+    let intensityRange: ClosedRange<Int32>
+
+    init(texture: any MTLTexture,
+         cacheKey: String?,
+         dataset: VolumeDataset) {
+        self.texture = texture
+        self.cacheKey = cacheKey
+        self.byteCount = dataset.data.count
+        self.dimensions = dataset.dimensions
+        self.pixelFormat = dataset.pixelFormat
+        self.intensityRange = dataset.intensityRange
+    }
+
+    var textureIdentifier: ObjectIdentifier {
+        ObjectIdentifier(texture as AnyObject)
+    }
+
+    func matches(dataset: VolumeDataset) -> Bool {
+        byteCount == dataset.data.count &&
+            dimensions == dataset.dimensions &&
+            pixelFormat == dataset.pixelFormat &&
+            intensityRange == dataset.intensityRange
+    }
+}
+
 /// Main MTKUI controller for presenting and interacting with a volumetric viewport.
 ///
 /// `VolumeViewportController` is the primary entry point for downstream apps integrating MTKUI.
@@ -134,6 +165,7 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     var lastStableSurfaceRenderSize: CGSize?
     var surfaceRenderDebounceNanoseconds: UInt64 = 80_000_000
     var stableSurfaceRenderScheduleCount = 0
+    var preuploadedPrimaryVolumeTexture: PreuploadedPrimaryVolumeTexture?
     var renderGeneration: UInt64 = 0
     var renderPending = false
     var renderInFlight = false
@@ -291,8 +323,36 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     /// marks the dataset as applied, ensures a default display configuration if none is set, and schedules a render.
     /// - Parameter dataset: The volume dataset to apply; replaces any previously applied dataset.
     public func applyDataset(_ dataset: VolumeDataset) async {
-        guard self.dataset != dataset || datasetApplied == false else { return }
+        await applyDataset(dataset, preuploadedTexture: nil)
+    }
+
+    public func applyVolumeUpload<S: AsyncSequence>(
+        referenceDataset dataset: VolumeDataset,
+        uploadDescriptor: VolumeUploadDescriptor,
+        slices: S,
+        progress: VolumeUploadProgressHandler? = nil
+    ) async throws where S.Element == VolumeUploadSlice {
+        let uploader = try ChunkedVolumeUploader(device: device, commandQueue: commandQueue)
+        let texture = try await uploader.upload(slices: slices,
+                                                descriptor: uploadDescriptor,
+                                                progress: progress)
+        texture.label = texture.label ?? "VolumeViewportController.ChunkedVolumeTexture3D"
+        let preuploadedTexture = PreuploadedPrimaryVolumeTexture(texture: texture,
+                                                                 cacheKey: uploadDescriptor.cacheKey,
+                                                                 dataset: dataset)
+        await applyDataset(dataset, preuploadedTexture: preuploadedTexture)
+    }
+
+    private func applyDataset(_ dataset: VolumeDataset,
+                              preuploadedTexture: PreuploadedPrimaryVolumeTexture?) async {
+        if datasetApplied,
+           let currentDataset = self.dataset,
+           Self.referencesSameDatasetStorage(currentDataset, dataset),
+           Self.referencesSamePreuploadedTexture(preuploadedPrimaryVolumeTexture, preuploadedTexture) {
+            return
+        }
         self.dataset = dataset
+        preuploadedPrimaryVolumeTexture = preuploadedTexture
         progressiveVolumeState = .idle
         primaryVolumeDatasetOverride = nil
         datasetIntensityRange = dataset.intensityRange
@@ -329,6 +389,34 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
                                               reason: "dataset")
         } else {
             scheduleRender()
+        }
+    }
+
+    private static func referencesSameDatasetStorage(_ lhs: VolumeDataset,
+                                                     _ rhs: VolumeDataset) -> Bool {
+        lhs.imageData == rhs.imageData &&
+            lhs.data.count == rhs.data.count &&
+            lhs.data.withUnsafeBytes { lhsBuffer in
+                rhs.data.withUnsafeBytes { rhsBuffer in
+                    lhsBuffer.baseAddress == rhsBuffer.baseAddress
+                }
+            }
+    }
+
+    private static func referencesSamePreuploadedTexture(_ lhs: PreuploadedPrimaryVolumeTexture?,
+                                                         _ rhs: PreuploadedPrimaryVolumeTexture?) -> Bool {
+        switch (lhs, rhs) {
+        case (nil, nil):
+            return true
+        case let (left?, right?):
+            return left.textureIdentifier == right.textureIdentifier &&
+                left.cacheKey == right.cacheKey &&
+                left.byteCount == right.byteCount &&
+                left.dimensions == right.dimensions &&
+                left.pixelFormat == right.pixelFormat &&
+                left.intensityRange == right.intensityRange
+        default:
+            return false
         }
     }
 

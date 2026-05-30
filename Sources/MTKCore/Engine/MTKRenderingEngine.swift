@@ -298,6 +298,70 @@ package actor MTKRenderingEngine {
     }
 
     @discardableResult
+    package func setVolume<S: AsyncSequence>(
+        uploadDescriptor: VolumeUploadDescriptor,
+        slices: S,
+        for viewports: [ViewportID],
+        progress: ChunkedVolumeUploader.ProgressHandler? = nil
+    ) async throws -> VolumeResourceHandle? where S.Element == VolumeUploadSlice {
+        var uniqueViewports: [ViewportID] = []
+        var seenViewports = Set<ViewportID>()
+        for viewport in viewports where seenViewports.insert(viewport).inserted {
+            uniqueViewports.append(viewport)
+        }
+
+        guard !uniqueViewports.isEmpty else {
+            return nil
+        }
+        for viewport in uniqueViewports {
+            guard self.viewports[viewport] != nil else {
+                throw EngineError.viewportNotFound(viewport)
+            }
+        }
+
+        let sharedHandle = try await resourceManager.acquireFromStream(
+            descriptor: uploadDescriptor,
+            slices: slices,
+            progress: progress
+        )
+        for _ in uniqueViewports.dropFirst() {
+            resourceManager.retain(handle: sharedHandle)
+        }
+        var didCommitSharedHandle = false
+        defer {
+            if !didCommitSharedHandle {
+                for _ in uniqueViewports {
+                    resourceManager.release(handle: sharedHandle)
+                }
+            }
+        }
+
+        var previousHandles: [VolumeResourceHandle] = []
+        var replacements: [(ViewportID, ViewportState)] = []
+        for viewport in uniqueViewports {
+            guard var state = self.viewports[viewport] else {
+                throw EngineError.viewportNotFound(viewport)
+            }
+            if let previousHandle = state.resourceHandle {
+                previousHandles.append(previousHandle)
+            }
+            state.resourceHandle = sharedHandle
+            replacements.append((viewport, state))
+        }
+
+        for (viewport, state) in replacements {
+            self.viewports[viewport] = state
+            await mprFrameCache.invalidate(viewport)
+        }
+
+        for handle in previousHandles {
+            resourceManager.release(handle: handle)
+        }
+        didCommitSharedHandle = true
+        return sharedHandle
+    }
+
+    @discardableResult
     package func setVolume(_ dataset: VolumeDataset,
                           for viewports: [ViewportID]) async throws -> VolumeResourceHandle? {
         var uniqueViewports: [ViewportID] = []

@@ -115,6 +115,39 @@ final class DicomBridgePackagingTests: XCTestCase {
         XCTAssertEqual(texture.depth, 3)
     }
 
+    func testDecoderOwnedVolumeAppliesPerSliceRescaleParameters() throws {
+        let rawVoxels = [UInt16]([
+            3000, 3000,
+            2600, 2600
+        ]).withUnsafeBytes { Data($0) }
+        let volume = DicomSeriesVolume(
+            voxels: rawVoxels,
+            width: 2,
+            height: 1,
+            depth: 2,
+            spacing: SIMD3<Double>(1, 1, 1),
+            orientation: matrix_identity_double3x3,
+            origin: .zero,
+            rescaleSlope: 1,
+            rescaleIntercept: -3000,
+            bitsAllocated: 16,
+            isSignedPixel: false,
+            patientName: "Window^Fixture",
+            seriesDescription: "Per-slice rescale",
+            modality: "CT",
+            sliceRescaleParameters: [
+                DicomSliceRescaleParameters(slope: 1, intercept: -3000),
+                DicomSliceRescaleParameters(slope: 1, intercept: -2600)
+            ]
+        )
+
+        let dataset = try DicomVolumeDatasetImporter.makeDataset(from: volume)
+
+        XCTAssertEqual(littleEndianInt16Values(dataset.data), [0, 0, 0, 0])
+        XCTAssertEqual(dataset.intensityRange, 0...0)
+        XCTAssertEqual(dataset.pixelFormat, .int16Signed)
+    }
+
     func testProgressiveDicomVolumeUpdatesMapToDatasetUpdates() async throws {
         let volumeUpdates = AsyncThrowingStream<DicomProgressiveVolumeBridgeUpdate, Error> { continuation in
             continuation.yield(makeProgressiveUpdate(index: 0, quality: .preview, fraction: 0.5, final: false, voxelValue: 10))

@@ -615,7 +615,32 @@ public final class ClinicalViewportGridController: ObservableObject {
     /// - Parameter dataset: The volume dataset to apply; becomes the controller's current dataset and is uploaded to the engine.
     /// - Throws: Any error returned by the engine or by the configuration steps (for example failures when setting the volume, configuring slices, slab, volume window, camera, or render quality).
     public func applyDataset(_ dataset: VolumeDataset) async throws {
-        guard self.currentDataset != dataset || datasetApplied == false else { return }
+        try await applyVolumeDataset(dataset) {
+            try await engine.setVolume(dataset, for: allViewportIDs)
+        }
+    }
+
+    public func applyVolumeUpload<S: AsyncSequence>(
+        referenceDataset dataset: VolumeDataset,
+        uploadDescriptor: VolumeUploadDescriptor,
+        slices: S,
+        progress: VolumeUploadProgressHandler? = nil
+    ) async throws where S.Element == VolumeUploadSlice {
+        try await applyVolumeDataset(dataset) {
+            try await engine.setVolume(uploadDescriptor: uploadDescriptor,
+                                       slices: slices,
+                                       for: allViewportIDs,
+                                       progress: progress)
+        }
+    }
+
+    private func applyVolumeDataset(_ dataset: VolumeDataset,
+                                    uploadVolume: () async throws -> VolumeResourceHandle?) async throws {
+        if datasetApplied,
+           let currentDataset,
+           Self.referencesSameDatasetStorage(currentDataset, dataset) {
+            return
+        }
         let runningRenderTasks = Array(renderTasks.values)
         runningRenderTasks.forEach { $0.cancel() }
         for task in runningRenderTasks {
@@ -631,7 +656,7 @@ public final class ClinicalViewportGridController: ObservableObject {
 
         var uploadedVolume = false
         do {
-            let handle = try await engine.setVolume(dataset, for: allViewportIDs)
+            let handle = try await uploadVolume()
             uploadedVolume = true
             sharedResourceHandle = handle
             currentDataset = dataset
@@ -705,6 +730,17 @@ public final class ClinicalViewportGridController: ObservableObject {
             lastRenderError = nil
             throw error
         }
+    }
+
+    private static func referencesSameDatasetStorage(_ lhs: VolumeDataset,
+                                                     _ rhs: VolumeDataset) -> Bool {
+        lhs.imageData == rhs.imageData &&
+            lhs.data.count == rhs.data.count &&
+            lhs.data.withUnsafeBytes { lhsBuffer in
+                rhs.data.withUnsafeBytes { rhsBuffer in
+                    lhsBuffer.baseAddress == rhsBuffer.baseAddress
+                }
+            }
     }
 
     /// Signals the start of an adaptive-sampling user interaction and applies the resulting render quality.

@@ -68,9 +68,13 @@ extension VolumeViewportController {
     /// - Returns: A Metal texture containing the dataset's volume data.
     /// - Throws: Any error produced by the texture cache or during Metal texture creation.
     func mprVolumeTexture(for dataset: VolumeDataset) async throws -> any MTLTexture {
-        try await mprVolumeTextureCache.texture(for: dataset,
-                                                device: device,
-                                                commandQueue: commandQueue)
+        if let preuploadedPrimaryVolumeTexture,
+           preuploadedPrimaryVolumeTexture.matches(dataset: dataset) {
+            return preuploadedPrimaryVolumeTexture.texture
+        }
+        return try await mprVolumeTextureCache.texture(for: dataset,
+                                                       device: device,
+                                                       commandQueue: commandQueue)
     }
 
     func mprLabelmapOverlays(for frame: MPRTextureFrame) async throws -> [MPRLabelmapOverlay] {
