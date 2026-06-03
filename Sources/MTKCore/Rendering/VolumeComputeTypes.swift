@@ -15,6 +15,7 @@ public enum ProjectionType: UInt32, Codable, Sendable {
 
 struct VolumeUniforms: Sizeable {
     var isLightingOn: Int32 = 1
+    var shadowMode: Int32 = 1
     var isBackwardOn: Int32 = 0
     var method: Int32 = 1
     var renderingQuality: Int32 = 512

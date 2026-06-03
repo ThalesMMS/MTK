@@ -117,6 +117,9 @@ build_metallib_for_sdk() {
     if [[ -n "$metal_target" ]]; then
       metal_args+=("-target" "$metal_target")
     fi
+    if [[ "$sdk" == "iphonesimulator" ]]; then
+      metal_args+=("-DMTK_MPR_INTEGER_TEXTURE_READ=1")
+    fi
     if [[ -n "$sdk_path" ]]; then
       "$metalc" "${metal_args[@]}" -isysroot "$sdk_path" -c "$metal_file" -o "$air"
     else

@@ -59,13 +59,13 @@ extension VolumeViewportController {
     func prewarmInteractiveOutputTexturesIfPossible(for size: CGSize,
                                                     reason: String) async {
         guard datasetApplied,
-              case .volume = currentDisplay ?? .volume(method: currentVolumeMethod),
-              let adapter = volumeRenderer as? MetalVolumeRenderingAdapter else {
+              case .volume = currentDisplay ?? .volume(method: currentVolumeMethod) else {
             return
         }
         let width = max(1, Int(size.width.rounded()))
         let height = max(1, Int(size.height.rounded()))
         do {
+            let adapter = try volumeRendererProvider.renderer()
             let ready = try await adapter.prewarmInteractiveOutputTextures(width: width,
                                                                            height: height,
                                                                            count: 3)
@@ -501,25 +501,14 @@ extension VolumeViewportController {
     func renderVolumeFrame(using plan: VolumeTextureRenderPlan) async throws -> VolumeRenderFrame {
         let startedAt = CFAbsoluteTimeGetCurrent()
         let frame: VolumeRenderFrame
-        if let adapter = volumeRenderer as? MetalVolumeRenderingAdapter {
-            logInteractionDebug("[MTK3DInteraction] render.volume.texture.start backend=MetalVolumeRenderingAdapter quality=\(plan.request.quality) state=\(plan.qualityState) viewport=\(Int(plan.request.viewportSize.width))x\(Int(plan.request.viewportSize.height)) samplingDistance=\(mtkPerfFormat(Double(plan.request.samplingDistance)))")
-            if let preuploadedPrimaryVolumeTexture,
-               preuploadedPrimaryVolumeTexture.matches(dataset: plan.request.dataset) {
-                frame = try await adapter.renderTexture(using: plan.request,
-                                                        volumeTexture: preuploadedPrimaryVolumeTexture.texture)
-            } else {
-                frame = try await adapter.enqueueInteractiveFrame(using: plan.request)
-            }
+        let adapter = try volumeRendererProvider.renderer()
+        logInteractionDebug("[MTK3DInteraction] render.volume.texture.start backend=MetalVolumeRenderingAdapter quality=\(plan.request.quality) state=\(plan.qualityState) viewport=\(Int(plan.request.viewportSize.width))x\(Int(plan.request.viewportSize.height)) samplingDistance=\(mtkPerfFormat(Double(plan.request.samplingDistance)))")
+        if let preuploadedPrimaryVolumeTexture,
+           preuploadedPrimaryVolumeTexture.matches(dataset: plan.request.dataset) {
+            frame = try await adapter.renderTexture(using: plan.request,
+                                                    volumeTexture: preuploadedPrimaryVolumeTexture.texture)
         } else {
-            logInteractionDebug("[MTK3DInteraction] render.volume.texture.start backend=\(String(describing: type(of: volumeRenderer))) quality=\(plan.request.quality) state=\(plan.qualityState) viewport=\(Int(plan.request.viewportSize.width))x\(Int(plan.request.viewportSize.height)) samplingDistance=\(mtkPerfFormat(Double(plan.request.samplingDistance)))")
-            let texture = try await (volumeRenderer as any VolumeRenderingPort)
-                .renderInteractiveTexture(using: plan.request)
-            frame = VolumeRenderFrame(
-                texture: texture,
-                metadata: VolumeRenderFrame.Metadata(request: plan.request,
-                                                     texture: texture,
-                                                     renderTime: mtkPerfMilliseconds(from: startedAt) / 1000.0)
-            )
+            frame = try await adapter.enqueueInteractiveFrame(using: plan.request)
         }
         let texture = frame.texture
         logPerformanceInfo("[MTK3DInteraction] render.volume.texture.enqueued frameIndex=\(describe(frame.metadata.debugFrameIndex)) slotID=\(describe(frame.outputTextureLease?.debugSlotID)) leaseID=\(frame.outputTextureLease?.leaseIdentifier.uuidString ?? "nil") textureID=\(objectIdentifier(texture as AnyObject)) texture=\(texture.width)x\(texture.height) pixelFormat=\(texture.pixelFormat) storage=\(texture.storageMode) elapsedMs=\(mtkPerfFormat(mtkPerfMilliseconds(from: startedAt))) quality=\(plan.request.quality) state=\(plan.qualityState)")
@@ -554,7 +543,7 @@ extension VolumeViewportController {
         let request = makeVolumeRenderRequest(dataset: dataset,
                                               method: method,
                                               forceFinalQuality: true)
-        let frame = try await (volumeRenderer as any VolumeRenderingPort).renderFrame(using: request)
+        let frame = try await volumeRendererProvider.renderer().renderFrame(using: request)
         return try await TextureSnapshotExporter().makeCGImage(from: frame)
     }
 
@@ -563,6 +552,7 @@ extension VolumeViewportController {
     ///   - dataset: The volume dataset whose intensity range is used as a fallback for HU gate bounds when no explicit HU window or projection gate values are available.
     /// - Throws: Any error thrown by the underlying `volumeRenderer` configuration calls.
     func applyVolumeRendererState(for dataset: VolumeDataset) async throws {
+        let volumeRenderer = try volumeRendererProvider.renderer()
         if let huWindow {
             try await volumeRenderer.setHuWindow(min: huWindow.minHU, max: huWindow.maxHU)
         }

@@ -14,6 +14,10 @@
 
 using namespace metal;
 
+#ifndef MTK_MPR_INTEGER_TEXTURE_READ
+#define MTK_MPR_INTEGER_TEXTURE_READ 0
+#endif
+
 struct MPRSlabUniforms {
     int voxelMinValue;
     int voxelMaxValue;
@@ -31,6 +35,51 @@ struct MPRSlabUniforms {
 };
 
 namespace {
+#if MTK_MPR_INTEGER_TEXTURE_READ
+inline uint nearestSampleIndex(float coordinate, uint count) {
+    uint maxIndex = max(count, 1u) - 1u;
+    float centeredIndex = coordinate * float(count) - 0.5f;
+    float roundedIndex = centeredIndex >= 0.0f
+        ? floor(centeredIndex + 0.5f)
+        : ceil(centeredIndex - 0.5f);
+    return uint(clamp(roundedIndex, 0.0f, float(maxIndex)));
+}
+
+inline uint3 nearestSampleIndex3D(texture3d<short, access::read> volume,
+                                  float3 position) {
+    return uint3(nearestSampleIndex(position.x, volume.get_width()),
+                 nearestSampleIndex(position.y, volume.get_height()),
+                 nearestSampleIndex(position.z, volume.get_depth()));
+}
+
+inline uint3 nearestSampleIndex3DUnsigned(texture3d<ushort, access::read> volume,
+                                          float3 position) {
+    return uint3(nearestSampleIndex(position.x, volume.get_width()),
+                 nearestSampleIndex(position.y, volume.get_height()),
+                 nearestSampleIndex(position.z, volume.get_depth()));
+}
+
+inline float sampleDensity01(texture3d<short, access::read> volume,
+                             float3 position,
+                             short minValue,
+                             short maxValue) {
+    short hu = volume.read(nearestSampleIndex3D(volume, position)).r;
+    return Util::normalize(hu, minValue, maxValue);
+}
+
+inline float sampleDensity01Unsigned(texture3d<ushort, access::read> volume,
+                                     float3 position,
+                                     uint minValue,
+                                     uint maxValue) {
+    ushort raw = volume.read(nearestSampleIndex3DUnsigned(volume, position)).r;
+    if (maxValue <= minValue) {
+        return 0.0f;
+    }
+
+    float range = float(maxValue - minValue);
+    return clamp((float(raw) - float(minValue)) / range, 0.0f, 1.0f);
+}
+#else
 inline float sampleDensity01(texture3d<short, access::sample> volume,
                              float3 position,
                              short minValue,
@@ -51,6 +100,7 @@ inline float sampleDensity01Unsigned(texture3d<ushort, access::sample> volume,
     float range = float(maxValue - minValue);
     return clamp((float(raw) - float(minValue)) / range, 0.0f, 1.0f);
 }
+#endif
 
 inline ushort denormalizeUnsigned(float density, uint minValue, uint maxValue) {
     float clampedDensity = clamp(density, 0.0f, 1.0f);
@@ -63,10 +113,17 @@ inline bool isInBounds(float3 position) {
 }
 }
 
+#if MTK_MPR_INTEGER_TEXTURE_READ
+kernel void computeMPRSlab(texture3d<short, access::read> volume     [[texture(0)]],
+                           texture2d<short, access::write> output    [[texture(1)]],
+                           constant MPRSlabUniforms& uniforms        [[buffer(0)]],
+                           uint2 gid                                 [[thread_position_in_grid]]) {
+#else
 kernel void computeMPRSlab(texture3d<short, access::sample> volume   [[texture(0)]],
                            texture2d<short, access::write> output    [[texture(1)]],
                            constant MPRSlabUniforms& uniforms        [[buffer(0)]],
                            uint2 gid                                 [[thread_position_in_grid]]) {
+#endif
 
     uint width = output.get_width();
     uint height = output.get_height();
@@ -144,10 +201,17 @@ kernel void computeMPRSlab(texture3d<short, access::sample> volume   [[texture(0
     output.write(short4(hu, hu, hu, 0), gid);
 }
 
+#if MTK_MPR_INTEGER_TEXTURE_READ
+kernel void computeMPRSlabUnsigned(texture3d<ushort, access::read> volume [[texture(0)]],
+                                   texture2d<ushort, access::write> output  [[texture(1)]],
+                                   constant MPRSlabUniforms& uniforms       [[buffer(0)]],
+                                   uint2 gid                                [[thread_position_in_grid]]) {
+#else
 kernel void computeMPRSlabUnsigned(texture3d<ushort, access::sample> volume [[texture(0)]],
                                    texture2d<ushort, access::write> output  [[texture(1)]],
                                    constant MPRSlabUniforms& uniforms       [[buffer(0)]],
                                    uint2 gid                                [[thread_position_in_grid]]) {
+#endif
 
     uint width = output.get_width();
     uint height = output.get_height();

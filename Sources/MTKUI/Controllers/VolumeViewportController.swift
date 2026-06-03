@@ -55,11 +55,27 @@ struct PreuploadedPrimaryVolumeTexture {
 /// code, or explicitly hop to the main actor.
 @MainActor
 public final class VolumeViewportController: VolumeViewportControlling, ObservableObject {
-    public enum Error: Swift.Error {
+    public enum Error: Swift.Error, LocalizedError {
         case metalUnavailable
         case datasetNotLoaded
         case transferFunctionUnavailable
         case presentationFailed
+        case volumeRendererUnavailable(reason: String)
+
+        public var errorDescription: String? {
+            switch self {
+            case .metalUnavailable:
+                return "Metal unavailable"
+            case .datasetNotLoaded:
+                return "Dataset not loaded"
+            case .transferFunctionUnavailable:
+                return "Transfer function unavailable"
+            case .presentationFailed:
+                return "Presentation failed"
+            case .volumeRendererUnavailable(let reason):
+                return "Volume renderer unavailable: \(reason)"
+            }
+        }
     }
 
     public enum Axis: Int, CaseIterable, Sendable {
@@ -151,7 +167,7 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
 
     let logger = Logger(category: "Volumetric.Controller")
 
-    let volumeRenderer: any VolumeRenderingPortExtended
+    let volumeRendererProvider: VolumeRendererProvider
     let mprRenderer: MetalMPRAdapter
     var surfaceMeshRenderer: MetalSurfaceMeshRenderer?
     let mprVolumeTextureCache: MPRVolumeTextureCache
@@ -233,7 +249,8 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
 
     init(device: (any MTLDevice)? = nil,
          surface: MetalViewportSurface? = nil,
-         mprVolumeTextureCache: MPRVolumeTextureCache?) throws {
+         mprVolumeTextureCache: MPRVolumeTextureCache?,
+         volumeRendererFactory: VolumeRendererProvider.Factory? = nil) throws {
         let resolvedDevice: any MTLDevice
         if let device {
             resolvedDevice = device
@@ -252,8 +269,9 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
                                                                    commandQueue: queue)
         self.mprVolumeTextureCache = mprVolumeTextureCache ?? MPRVolumeTextureCache()
         self.qualityScheduler = RenderQualityScheduler(baseSamplingStep: 512)
-        self.volumeRenderer = try MetalVolumeRenderingAdapter(device: resolvedDevice,
-                                                              commandQueue: queue)
+        self.volumeRendererProvider = VolumeRendererProvider(device: resolvedDevice,
+                                                             commandQueue: queue,
+                                                             factory: volumeRendererFactory)
         self.mprRenderer = try MetalMPRAdapter(device: resolvedDevice,
                                                commandQueue: queue)
         logInteractionDebug("[MTK3DInteraction] controller.init queue controllerQueueID=\(objectIdentifier(queue as AnyObject)) surfaceQueueID=\(objectIdentifier(viewportSurface.commandQueue as AnyObject)) sameSurfaceQueue=\(ObjectIdentifier(queue as AnyObject) == ObjectIdentifier(viewportSurface.commandQueue as AnyObject)) device=\(resolvedDevice.name)")
@@ -384,6 +402,7 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
                              up: SIMD3<Float>(0, 0, 1))
         }
         currentDisplay = currentDisplay ?? .volume(method: currentVolumeMethod)
+        synchronizeStateForCurrentDisplay()
         if viewportSurface.isPresentationSurfaceReady {
             scheduleRenderAfterSurfaceSettles(size: viewportSurface.drawablePixelSize,
                                               reason: "dataset")
@@ -438,13 +457,36 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
     /// - Parameters:
     ///   - configuration: The new display configuration to apply.
     public func setDisplayConfiguration(_ configuration: DisplayConfiguration) async {
-        guard datasetApplied else {
-            logger.warning("Attempted to configure display before dataset load")
-            return
-        }
         currentDisplay = configuration
         switch configuration {
         case let .volume(method):
+            currentVolumeMethod = method
+        case let .mpr(axis, index, blend, slab):
+            currentMprAxis = axis
+            currentMprBlend = blend
+            currentMprSlab = slab
+            qualityScheduler.setBaseSlabSteps((slab ?? SlabConfiguration(thickness: 1, steps: 1)).steps)
+            mprPlaneIndex = datasetApplied ? clampedIndex(for: axis, index: index) : max(0, index)
+            mprNormalizedPosition = datasetApplied ? normalizedPosition(for: axis, index: mprPlaneIndex) : 0.5
+            mprEuler = .zero
+            invalidateMPRCache(axis: axis.mprPlaneAxis)
+            if datasetApplied {
+                alignCameraToCurrentMprPlane()
+                statePublisher.recordSliceState(axis: axis, normalized: mprNormalizedPosition)
+            }
+        }
+        guard datasetApplied else {
+            logger.debug("Stored display configuration before dataset load")
+            return
+        }
+        scheduleRender()
+    }
+
+    private func synchronizeStateForCurrentDisplay() {
+        switch currentDisplay {
+        case .none:
+            return
+        case .volume(let method):
             currentVolumeMethod = method
         case let .mpr(axis, index, blend, slab):
             currentMprAxis = axis
@@ -458,7 +500,6 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
             alignCameraToCurrentMprPlane()
             statePublisher.recordSliceState(axis: axis, normalized: mprNormalizedPosition)
         }
-        scheduleRender()
     }
 
     /// Provide the current dataset's voxel dimensions and spacing as SIMD vectors.
@@ -672,7 +713,7 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
         volumeRenderQualitySettings = sanitized
         qualityScheduler.applyVolumeRenderQualitySettings(sanitized)
         baseSamplingStep = qualityScheduler.baseSamplingStep
-        lightingEnabled = sanitized.shadowMode.usesCurrentLightingPlaceholder
+        lightingEnabled = sanitized.shadowMode.isEnabled
         scheduleRender()
     }
 
@@ -1069,7 +1110,7 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
         let request = makeVolumeRenderRequest(dataset: dataset,
                                               method: method,
                                               forceFinalQuality: true)
-        return try await (volumeRenderer as any VolumeRenderingPort).renderFrame(using: request)
+        return try await volumeRendererProvider.renderer().renderFrame(using: request)
     }
 
     @_spi(Testing)

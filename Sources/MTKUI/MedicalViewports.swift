@@ -216,6 +216,7 @@ public final class StackViewport: ObservableObject, MedicalViewport {
         self.dataset = dataset
         sliceCount = Self.sliceCount(for: axis, in: dataset)
         sliceIndex = Self.clamp(sliceIndex, count: sliceCount)
+        await configureController()
         await controller.applyDataset(dataset)
         await configureController()
         refreshState()
@@ -230,6 +231,7 @@ public final class StackViewport: ObservableObject, MedicalViewport {
         self.dataset = dataset
         sliceCount = Self.sliceCount(for: axis, in: dataset)
         sliceIndex = Self.clamp(sliceIndex, count: sliceCount)
+        await configureController()
         try await controller.applyVolumeUpload(referenceDataset: dataset,
                                                uploadDescriptor: uploadDescriptor,
                                                slices: slices,
@@ -363,6 +365,32 @@ public final class StackViewport: ObservableObject, MedicalViewport {
         refreshState()
     }
 
+    /// Renders the active 2D stack slice into an export-ready BGRA texture.
+    ///
+    /// The returned frame reflects the current window/level, inversion, CLUT,
+    /// slice axis/index, zoom, pan, rotation, flips, and supported volume-layer
+    /// overlays.
+    public func renderSnapshotFrame() async throws -> VolumeRenderFrame {
+        guard dataset != nil else {
+            throw VolumeViewportController.Error.datasetNotLoaded
+        }
+        await configureController()
+        let snapshot = try await controller.renderMPRSnapshotTexture()
+        return VolumeRenderFrame(
+            texture: snapshot.texture,
+            metadata: VolumeRenderFrame.Metadata(
+                viewportSize: CGSize(width: snapshot.texture.width,
+                                     height: snapshot.texture.height),
+                viewportID: id,
+                samplingDistance: 1,
+                compositing: .frontToBack,
+                quality: .production,
+                pixelFormat: snapshot.texture.pixelFormat,
+                renderTime: snapshot.renderTime
+            )
+        )
+    }
+
     private func configureController() async {
         guard sliceCount > 0 else { return }
         let controllerAxis = axis.controllerAxis
@@ -492,6 +520,7 @@ public final class VolumeViewport: ObservableObject, MedicalViewport {
 
     public func applyDataset(_ dataset: VolumeDataset) async {
         self.dataset = dataset
+        await configureController()
         await controller.applyDataset(dataset)
         await configureController()
         refreshState()
@@ -1051,6 +1080,7 @@ public final class ClinicalViewportSession: ObservableObject {
     public var mprWindowPreset: MPRWindowPreset { controller.mprWindowPreset }
     public var mprCLUTPreset: Volume3DCLUTPreset { controller.mprCLUTPreset }
     public var isMPRWindowInverted: Bool { controller.isMPRWindowInverted }
+    public var canExportActiveMPRSnapshot: Bool { controller.canExportMPRSnapshot(axis: activeMPRAxis) }
     public var mprROIKind: ViewerROIKind { controller.mprROIKind }
     public var mprROIAnnotations: [ViewerROIAnnotation] { controller.mprROIAnnotations }
     public var mprSlabBlendMode: MPRSlabBlendOption { controller.mprSlabBlendMode }
@@ -1354,6 +1384,14 @@ public final class ClinicalViewportSession: ObservableObject {
 
     public func renderVolumeSnapshotFrame() async throws -> VolumeRenderFrame {
         try await controller.renderVolumeSnapshotFrame()
+    }
+
+    public func renderActiveMPRSnapshotFrame() async throws -> VolumeRenderFrame {
+        try await controller.renderMPRSnapshotFrame(axis: activeMPRAxis)
+    }
+
+    public func renderMPRSnapshotFrame(axis: MTKCore.Axis) async throws -> VolumeRenderFrame {
+        try await controller.renderMPRSnapshotFrame(axis: axis)
     }
 
     public func resourceMetrics() async -> GPUResourceMetrics {

@@ -71,9 +71,11 @@ extension MetalVolumeRenderingAdapter {
     func prepareTransferTexture(for transfer: VolumeTransferFunction,
                                 dataset: VolumeDataset,
                                 state: MetalState) async throws -> any MTLTexture {
+        let shift = extendedState.shift
         if let cache = state.transferCache,
            cache.transfer == transfer,
-           cache.intensityRange == dataset.intensityRange {
+           cache.intensityRange == dataset.intensityRange,
+           cache.shift == shift {
             return cache.texture
         }
 
@@ -90,6 +92,7 @@ extension MetalVolumeRenderingAdapter {
         texture.label = "VolumeCompute.Transfer"
         state.transferCache = MetalState.TransferCache(transfer: transfer,
                                                        intensityRange: dataset.intensityRange,
+                                                       shift: shift,
                                                        texture: texture)
         return texture
     }
@@ -99,7 +102,7 @@ extension MetalVolumeRenderingAdapter {
         var tf = TransferFunction()
         tf.minimumValue = Float(dataset.intensityRange.lowerBound)
         tf.maximumValue = Float(dataset.intensityRange.upperBound)
-        tf.shift = 0
+        tf.shift = extendedState.shift
         tf.colorSpace = .linear
         tf.gradientOpacity = transfer.gradientOpacity
         tf.colourPoints = try sanitizeColourPoints(transfer.colourPoints)

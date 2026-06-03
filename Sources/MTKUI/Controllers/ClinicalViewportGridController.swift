@@ -1474,6 +1474,75 @@ public final class ClinicalViewportGridController: ObservableObject {
         )
     }
 
+    public func canExportMPRSnapshot(axis: MTKCore.Axis) -> Bool {
+        guard datasetApplied else { return false }
+        let size = surface(for: axis).drawablePixelSize
+        return size.width > 0 && size.height > 0
+    }
+
+    public func renderMPRSnapshotFrame(axis: MTKCore.Axis) async throws -> VolumeRenderFrame {
+        guard datasetApplied else {
+            throw ClinicalViewportGridControllerError.noDatasetApplied
+        }
+
+        try await configureMPRSlabResolved()
+        try await configureSlice(axis: axis, window: windowLevel.range)
+        let viewport = viewportID(for: axis)
+        let frame = try await engine.render(viewport)
+        defer { frame.outputTextureLease?.release() }
+        try renderGraph.validateFrame(frame)
+        guard let mprFrame = frame.mprFrame,
+              let transform = presentationTransform(for: frame.viewportID, frame: mprFrame) else {
+            throw RenderGraphError.passProducedNoFrame(frame.viewportID, .mprReslice)
+        }
+
+        let surface = surface(for: axis)
+        let size = Self.mprSnapshotSize(from: surface.drawablePixelSize,
+                                        fallback: frame.metadata.viewportSize)
+        var presentationPass = try MPRPresentationPass(device: device,
+                                                       commandQueue: surface.commandQueue)
+        let startedAt = CFAbsoluteTimeGetCurrent()
+        let texture = try presentationPass.makeSnapshotTexture(
+            frame: mprFrame,
+            window: windowLevel.range,
+            transform: transform,
+            width: Int(size.width),
+            height: Int(size.height),
+            invert: isMPRWindowInverted,
+            colormap: mprColormapTexture,
+            viewportTransform: viewportTransform(for: axis),
+            labelmapOverlays: frame.labelmapOverlays,
+            scalarOverlays: frame.scalarOverlays,
+            shutter: mprPresentationStates[axis]?.shutter
+        )
+
+        return VolumeRenderFrame(
+            texture: texture,
+            metadata: VolumeRenderFrame.Metadata(
+                viewportSize: CGSize(width: CGFloat(texture.width),
+                                     height: CGFloat(texture.height)),
+                viewportID: viewport,
+                samplingDistance: 1,
+                compositing: .frontToBack,
+                quality: .production,
+                pixelFormat: texture.pixelFormat,
+                renderTime: CFAbsoluteTimeGetCurrent() - startedAt
+            )
+        )
+    }
+
+    private static func mprSnapshotSize(from drawableSize: CGSize,
+                                        fallback: CGSize) -> CGSize {
+        let width = drawableSize.width.isFinite && drawableSize.width > 0
+            ? drawableSize.width
+            : fallback.width
+        let height = drawableSize.height.isFinite && drawableSize.height > 0
+            ? drawableSize.height
+            : fallback.height
+        return CGSize(width: max(1, width.rounded(.toNearestOrAwayFromZero)),
+                      height: max(1, height.rounded(.toNearestOrAwayFromZero)))
+    }
+
     /// Fetches the current render generation counter for the given viewport.
     /// - Parameter viewport: The viewport identifier.
     /// - Returns: The render generation for `viewport`, or `0` if no generation is recorded.

@@ -47,6 +47,50 @@ final class MedicalViewportContractTests: XCTestCase {
         XCTAssertEqual(viewport.viewportTransform, transform)
     }
 
+    func testStackViewportSnapshotFrameExportsCurrent2DPresentation() async throws {
+        try requireMetalDevice()
+        let viewport = try StackViewport(axis: .axial)
+        viewport.metalSurface.view.frame = CGRect(x: 0, y: 0, width: 64, height: 64)
+        viewport.metalSurface.setContentScale(1)
+        let dataset = makeDataset(dimensions: VolumeDimensions(width: 8, height: 8, depth: 4))
+
+        await viewport.applyDataset(dataset)
+        await viewport.setSliceIndex(2)
+        await viewport.setWindowLevel(window: 600, level: -700)
+        viewport.setWindowPresentation(isInverted: true, clut: .grayscale)
+        viewport.setViewportTransform(
+            Viewer2DTransform(zoom: 1.25,
+                              pan: SIMD2<Double>(0.05, -0.05),
+                              rotationRadians: .pi / 2,
+                              isFlippedHorizontally: true,
+                              isFlippedVertically: false)
+        )
+
+        let frame = try await viewport.renderSnapshotFrame()
+        let image = try await TextureSnapshotExporter().makeCGImage(from: frame)
+
+        XCTAssertEqual(frame.metadata.viewportID, viewport.id)
+        XCTAssertEqual(frame.metadata.quality, .production)
+        XCTAssertEqual(frame.metadata.pixelFormat, .bgra8Unorm)
+        XCTAssertEqual(frame.texture.width, 64)
+        XCTAssertEqual(frame.texture.height, 64)
+        XCTAssertTrue(imageContainsVisiblePixels(image))
+    }
+
+    func testStackViewportSnapshotFrameReportsMissingDataset() async throws {
+        try requireMetalDevice()
+        let viewport = try StackViewport(axis: .axial)
+
+        do {
+            _ = try await viewport.renderSnapshotFrame()
+            XCTFail("Expected missing dataset error")
+        } catch VolumeViewportController.Error.datasetNotLoaded {
+            // Expected explicit failure mode.
+        } catch {
+            XCTFail("Expected datasetNotLoaded, got \(error)")
+        }
+    }
+
     func testStackViewportAppliesLabelmapVolumeLayers() async throws {
         try requireMetalDevice()
         let viewport = try StackViewport(axis: .axial)
@@ -401,5 +445,28 @@ final class MedicalViewportContractTests: XCTestCase {
         return VolumeLayer(id: id,
                            labelmap: labelmap,
                            opacity: 0.6)
+    }
+
+    private func imageContainsVisiblePixels(_ image: CGImage) -> Bool {
+        let width = image.width
+        let height = image.height
+        let bytesPerPixel = 4
+        let bytesPerRow = width * bytesPerPixel
+        var pixels = [UInt8](repeating: 0, count: bytesPerRow * height)
+
+        guard let context = CGContext(data: &pixels,
+                                      width: width,
+                                      height: height,
+                                      bitsPerComponent: 8,
+                                      bytesPerRow: bytesPerRow,
+                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+            return false
+        }
+
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return stride(from: 0, to: pixels.count, by: bytesPerPixel).contains { index in
+            pixels[index] > 0 || pixels[index + 1] > 0 || pixels[index + 2] > 0
+        }
     }
 }

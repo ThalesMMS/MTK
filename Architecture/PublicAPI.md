@@ -29,10 +29,19 @@ test-only access while the package is being hardened.
 - `VolumePixelFormat`
 - `ClinicalImageMetadata`
 - `VolumeDatasetFactory`
+- `VolumetricDimensions`
+- `VolumetricSpacing`
+- `VolumetricOrientation`
+- `VolumetricPixelFormat`
+- `VolumetricSeriesData`
+- `VolumetricSeriesDataProvider`
 
 Use these types to create or receive 3D image data before rendering. A
 downstream app should be able to construct a `VolumeDataset` manually without
 touching the renderer, resource manager, render graph, or DICOM loader.
+`Volumetric*` DTOs are the stable MTKCore handoff contract for app-side loaders
+that already decoded a scalar volume through GDCM, DICOM-Decoder, or another
+ingestion path.
 
 ### Clinical Geometry And Picking
 
@@ -112,11 +121,13 @@ of instantiating `MTKRenderingEngine`, `ViewportRenderGraph`,
 - `SurfaceMeshMetadataSource`
 - `SurfaceMeshLayer`
 - `SurfaceMeshMaterial`
+- `SurfaceMeshShading`
+- `SurfaceMeshProcessingOptions`
 
-The stable contract is intentionally narrow: configured layers, label metadata,
-surface mesh geometry and bounds, material color, opacity, visibility, and
-predictable v1 surface composition. Smoothing, advanced materials, GPU
-extraction, and true raycast-volume depth occlusion remain implementation or
+The stable contract covers configured layers, label metadata, surface mesh
+geometry and bounds, material color/shading, opacity, visibility, deterministic
+CPU mesh repair/smoothing/decimation, and predictable surface composition. GPU
+extraction and true raycast-volume depth occlusion remain implementation or
 experimental topics.
 
 ### DICOM Dataset Bridge
@@ -159,6 +170,9 @@ stable viewer contract yet:
 - `VolumeCropFilter`
 - `VolumeThresholdFilter`
 - `VolumeResampleFilter`
+- `VolumeBinaryMorphologyFilter`
+- `VolumeBinaryMorphologyOperation`
+- `VolumeIntensityNormalizationFilter`
 - `VolumeHistogramFilter`
 - `VolumeGradientHistogramFilter`
 - `MarchingCubesExtractor`

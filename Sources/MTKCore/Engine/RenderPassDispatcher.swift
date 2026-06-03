@@ -27,7 +27,7 @@ struct RenderPassDispatcher {
 
     private let device: any MTLDevice
     private let commandQueue: any MTLCommandQueue
-    private let volumeAdapter: MetalVolumeRenderingAdapter
+    private let volumeAdapterProvider: MetalVolumeRenderingAdapterProvider
     private let mprAdapter: MetalMPRAdapter
     private let surfaceMeshRendererProvider: SurfaceMeshRendererProvider
     private let volumeLayerCompositePassProvider: VolumeLayerCompositePassProvider
@@ -38,14 +38,14 @@ struct RenderPassDispatcher {
 
     init(device: any MTLDevice,
          commandQueue: any MTLCommandQueue,
-         volumeAdapter: MetalVolumeRenderingAdapter,
+         volumeAdapterProvider: MetalVolumeRenderingAdapterProvider,
          mprAdapter: MetalMPRAdapter,
          resourceManager: VolumeResourceManager,
          mprFrameCache: MPRFrameCache<ViewportID>,
          profiler: RenderProfiler) {
         self.device = device
         self.commandQueue = commandQueue
-        self.volumeAdapter = volumeAdapter
+        self.volumeAdapterProvider = volumeAdapterProvider
         self.mprAdapter = mprAdapter
         self.surfaceMeshRendererProvider = SurfaceMeshRendererProvider(device: device,
                                                                        commandQueue: commandQueue)
@@ -66,6 +66,7 @@ struct RenderPassDispatcher {
         let renderLayers = try makeRaycastLayers(state: state,
                                                  baseDataset: dataset,
                                                  baseVolumeTexture: volumeTexture)
+        let volumeAdapter = try await volumeAdapterProvider.adapter()
 
         let outputTextureLease = try resourceManager.acquireOutputTextureWithLease(
             width: viewport.width,
@@ -83,6 +84,7 @@ struct RenderPassDispatcher {
             _ = try await renderLayer(
                 renderLayers[0],
                 viewportSize: viewportSize,
+                volumeAdapter: volumeAdapter,
                 camera: state.camera,
                 samplingDistance: state.samplingDistance,
                 compositing: compositing,
@@ -104,6 +106,7 @@ struct RenderPassDispatcher {
                     _ = try await renderLayer(
                         layer,
                         viewportSize: viewportSize,
+                        volumeAdapter: volumeAdapter,
                         camera: state.camera,
                         samplingDistance: state.samplingDistance,
                         compositing: compositing,
@@ -205,6 +208,7 @@ struct RenderPassDispatcher {
 
     private func renderLayer(_ layer: RaycastLayer,
                              viewportSize: CGSize,
+                             volumeAdapter: MetalVolumeRenderingAdapter,
                              camera: Camera,
                              samplingDistance: Float,
                              compositing: VolumeRenderRequest.Compositing,

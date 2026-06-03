@@ -343,6 +343,23 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         XCTAssertEqual(volume.volumeCubicMillimeters, 64, accuracy: 0.001)
     }
 
+    func testMPRVolumeROIAnnotationIsDisabledUntilDrawnVolumeMeasurementExists() async throws {
+        let controller = try await makeController()
+        try await controller.applyDataset(makeDataset())
+
+        let annotation = controller.addMPRROIAnnotation(
+            kind: .volume,
+            axis: .axial,
+            normalizedImagePoints: [
+                CGPoint(x: 0.1, y: 0.1),
+                CGPoint(x: 0.8, y: 0.8)
+            ]
+        )
+
+        XCTAssertNil(annotation)
+        XCTAssertTrue(controller.mprROIAnnotations(for: .axial).isEmpty)
+    }
+
 #if DEBUG
     func testWindowLevelCommitIgnoresHiddenVolumeWindowFailure() async throws {
         let controller = try await makeController()
@@ -1423,6 +1440,32 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         XCTAssertGreaterThan(frame.texture.height, 0)
     }
 
+    func testMPRSnapshotFrameTargetsRequestedViewportForExplicitExport() async throws {
+        let controller = try await makeController()
+        setSnapshotSurfaceSizes(controller, size: CGSize(width: 64, height: 48))
+        try await controller.applyDataset(makeSyntheticDataset())
+        await controller.setMPRWindowLevel(window: 600, level: 80)
+        controller.setMPRWindowInverted(true)
+        controller.setMPRViewportTransform(
+            MPRViewportTransform(zoom: 1.25,
+                                 pan: SIMD2<Float>(0.08, -0.04),
+                                 rotationRadians: 0),
+            for: .coronal
+        )
+
+        XCTAssertTrue(controller.canExportMPRSnapshot(axis: .coronal))
+
+        let frame = try await controller.renderMPRSnapshotFrame(axis: .coronal)
+        let image = try await TextureSnapshotExporter().makeCGImage(from: frame)
+
+        XCTAssertEqual(frame.metadata.viewportID, controller.coronalViewportID)
+        XCTAssertEqual(frame.metadata.compositing, .frontToBack)
+        XCTAssertEqual(frame.metadata.quality, .production)
+        XCTAssertEqual(frame.texture.width, 64)
+        XCTAssertEqual(frame.texture.height, 48)
+        XCTAssertTrue(imageContainsVisiblePixels(image))
+    }
+
     func testVolumeSnapshotFrameReleasesPooledOutputTextureLease() async throws {
         let controller = try await makeController()
         try await controller.applyDataset(makeDataset())
@@ -1466,6 +1509,20 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
 
         do {
             _ = try await controller.renderVolumeSnapshotFrame()
+            XCTFail("Expected missing dataset error")
+        } catch ClinicalViewportGridControllerError.noDatasetApplied {
+            // Expected explicit failure mode.
+        } catch {
+            XCTFail("Expected noDatasetApplied, got \(error)")
+        }
+    }
+
+    func testMPRSnapshotFrameReportsMissingDatasetBeforeEngineRender() async throws {
+        let controller = try await makeController()
+
+        XCTAssertFalse(controller.canExportMPRSnapshot(axis: .axial))
+        do {
+            _ = try await controller.renderMPRSnapshotFrame(axis: .axial)
             XCTFail("Expected missing dataset error")
         } catch ClinicalViewportGridControllerError.noDatasetApplied {
             // Expected explicit failure mode.

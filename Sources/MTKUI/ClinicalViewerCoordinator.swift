@@ -164,8 +164,18 @@ public final class ClinicalViewerCoordinator: ObservableObject {
         case .clinical:
             return false
         case .stack2D:
+            return stack2DViewport != nil
+        }
+    }
+
+    public var canExportActiveMPRSnapshot: Bool {
+        guard dataset != nil,
+              !isExportingSnapshot,
+              mode == .clinical,
+              let session = clinicalViewportSession else {
             return false
         }
+        return session.canExportActiveMPRSnapshot
     }
 
     public var twoDWindowLevel: WindowLevelShift {
@@ -915,6 +925,7 @@ public final class ClinicalViewerCoordinator: ObservableObject {
 
     public func handleTwoDROIInteraction(_ interaction: Clinical2DROIInteraction) {
         guard interaction.axis == twoDAxis else { return }
+        guard interaction.kind.supportsDrawnAnnotationMeasurement else { return }
         twoDTool = .roi
         let points = ViewerROIPointFactory.points(kind: interaction.kind,
                                                   start: interaction.startImagePoint,
@@ -992,6 +1003,7 @@ public final class ClinicalViewerCoordinator: ObservableObject {
     }
 
     public func setTwoDROIKind(_ kind: ViewerROIKind) {
+        guard kind.supportsDrawnAnnotationMeasurement else { return }
         twoDROIKind = kind
         twoDTool = .roi
     }
@@ -1667,8 +1679,8 @@ public final class ClinicalViewerCoordinator: ObservableObject {
             return try await volumeViewport.renderSnapshotFrame()
         case .clinical(let session):
             return try await session.renderVolumeSnapshotFrame()
-        case .stack2D:
-            throw ClinicalViewerCoordinatorError.viewportUnavailable("2D snapshot export is not available yet.")
+        case .stack2D(let viewport):
+            return try await viewport.renderSnapshotFrame()
         }
     }
 
@@ -1710,6 +1722,44 @@ public final class ClinicalViewerCoordinator: ObservableObject {
             try FileManager.default.createDirectory(at: directory,
                                                     withIntermediateDirectories: true)
             let filename = "mtk-\(renderMethod.rawValue)-snapshot-\(UUID().uuidString).png"
+            let url = directory.appendingPathComponent(filename)
+            try await snapshotExporter.writePNG(from: frame, to: url)
+            defer { try? FileManager.default.removeItem(at: url) }
+
+            let data = try Data(contentsOf: url, options: .mappedIfSafe)
+            let export = ClinicalViewerSnapshotExport(
+                filename: url.deletingPathExtension().lastPathComponent,
+                data: data,
+                metrics: snapshotExporter.lastOperationMetrics()
+            )
+            lastSnapshotMetrics = export.metrics
+            scheduleSnapshotMetricsClear()
+            return export
+        } catch {
+            snapshotError = error.localizedDescription
+            throw error
+        }
+    }
+
+    public func exportActiveMPRSnapshotPNGData() async throws -> ClinicalViewerSnapshotExport {
+        guard !isExportingSnapshot else {
+            throw ClinicalViewerCoordinatorError.viewportUnavailable("MPR snapshot export is already in progress.")
+        }
+        guard mode == .clinical, let session = clinicalViewportSession else {
+            throw ClinicalViewerCoordinatorError.viewportUnavailable("No active MPR viewport is available.")
+        }
+        clearSnapshotMetrics()
+        isExportingSnapshot = true
+        snapshotError = nil
+        defer { isExportingSnapshot = false }
+
+        do {
+            let frame = try await session.renderActiveMPRSnapshotFrame()
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("MTKSnapshotExports", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory,
+                                                    withIntermediateDirectories: true)
+            let filename = "mtk-mpr-\(session.activeMPRAxis)-snapshot-\(UUID().uuidString).png"
             let url = directory.appendingPathComponent(filename)
             try await snapshotExporter.writePNG(from: frame, to: url)
             defer { try? FileManager.default.removeItem(at: url) }

@@ -82,6 +82,7 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
     var overrides = Overrides()
     internal var extendedState = ExtendedRenderingState()
     var currentPreset: VolumeRenderingPreset?
+    var currentPresetDatasetIdentity: DatasetIdentity.Content?
     var lastSnapshot: RenderSnapshot?
     private let metalState: MetalState
     var diagnosticLoggingEnabled: Bool = false
@@ -91,6 +92,7 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
         struct TransferCache {
             var transfer: VolumeTransferFunction
             var intensityRange: ClosedRange<Int32>
+            var shift: Float
             var texture: any MTLTexture
         }
 
@@ -281,7 +283,8 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
             logger.info("[DIAG] renderFrame called - viewport: \(request.viewportSize.width)x\(request.viewportSize.height), compositing: \(String(describing: request.compositing)), quality: \(String(describing: request.quality))")
         }
 
-        var effectiveRequest = request
+        let presetResolution = applyCurrentPresetIfNeeded(to: request)
+        var effectiveRequest = presetResolution.request
 
         if let compositing = overrides.compositing {
             effectiveRequest.compositing = compositing
@@ -330,7 +333,8 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
         )
         lastSnapshot = RenderSnapshot(dataset: request.dataset,
                                       metadata: resolvedFrame.metadata,
-                                      window: window)
+                                      window: window,
+                                      preset: presetResolution.preset)
         return resolvedFrame
     }
 
@@ -371,7 +375,8 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
                                         waitsForCompletion: Bool) async throws -> VolumeRenderFrame {
         try Task.checkCancellation()
 
-        var effectiveRequest = request
+        let presetResolution = applyCurrentPresetIfNeeded(to: request)
+        var effectiveRequest = presetResolution.request
 
         if let compositing = overrides.compositing {
             effectiveRequest.compositing = compositing
@@ -423,7 +428,8 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
         }
         lastSnapshot = RenderSnapshot(dataset: request.dataset,
                                       metadata: frame.metadata,
-                                      window: window)
+                                      window: window,
+                                      preset: presetResolution.preset)
         return frame
     }
 
@@ -447,16 +453,46 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
     ///
     /// - Returns: An array containing the applied preset (for compatibility with batch operations).
     ///
-    /// - Note: The preset is stored internally but currently does not automatically modify
-    ///   rendering parameters. Future implementations may apply preset-specific settings
-    ///   to transfer functions, windowing, and quality.
+    /// - Note: The preset becomes the active transfer function, compositing mode, and
+    ///   sampling distance for subsequent renders of the supplied dataset. Explicit
+    ///   ``send(_:)`` overrides still take precedence over preset compositing and
+    ///   sampling values.
     public func updatePreset(_ preset: VolumeRenderingPreset,
                              for dataset: VolumeDataset) async throws -> [VolumeRenderingPreset] {
         if diagnosticLoggingEnabled {
             logger.info("[DIAG] updatePreset called - preset: \(preset.name)")
         }
         currentPreset = preset
+        currentPresetDatasetIdentity = DatasetIdentity.Content(dataset: dataset)
         return [preset]
+    }
+
+    func applyCurrentPresetIfNeeded(to request: VolumeRenderRequest)
+        -> (request: VolumeRenderRequest, preset: VolumeRenderingPreset?) {
+        guard let preset = currentPreset,
+              let presetDatasetIdentity = currentPresetDatasetIdentity,
+              presetDatasetIdentity == DatasetIdentity.Content(dataset: request.dataset) else {
+            return (request, nil)
+        }
+
+        var effectiveRequest = request
+        effectiveRequest.transferFunction = preset.transferFunction
+        effectiveRequest.samplingDistance = preset.samplingDistance
+        effectiveRequest.compositing = preset.compositing
+        effectiveRequest.layers = request.layers.map { layer in
+            guard var scalarVolume = layer.scalarVolume,
+                  DatasetIdentity.Content(dataset: scalarVolume.dataset) == presetDatasetIdentity else {
+                return layer
+            }
+            scalarVolume.transferFunction = preset.transferFunction
+            return VolumeLayer(id: layer.id,
+                               scalarVolume: scalarVolume,
+                               opacity: layer.opacity,
+                               blendMode: layer.blendMode,
+                               baseWorldToLayerWorld: layer.baseWorldToLayerWorld,
+                               isVisible: layer.isVisible)
+        }
+        return (effectiveRequest, preset)
     }
 
     /// Calculates an intensity histogram for the given dataset.

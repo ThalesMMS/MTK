@@ -246,6 +246,9 @@ final class ClinicalBenchmarkReportTests: XCTestCase {
     private func loadPerformanceBudgetManifest(callerFile: String = #filePath) throws -> TestPerformanceBudgetManifest {
         let root = try findRepositoryRoot(callerFile: callerFile)
         let url = root.appendingPathComponent("Roadmap/ClinicalPerformanceBudgetManifest.json")
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw XCTSkip("Performance budget manifest is not present in this checkout")
+        }
         let data = try Data(contentsOf: url)
         return try JSONDecoder().decode(TestPerformanceBudgetManifest.self, from: data)
     }
@@ -255,7 +258,10 @@ final class ClinicalBenchmarkReportTests: XCTestCase {
         let fileManager = FileManager.default
 
         while directory.path != "/" {
-            if fileManager.fileExists(atPath: directory.appendingPathComponent("ISSUE-ORDER.txt").path) {
+            let packageManifest = directory.appendingPathComponent("Package.swift")
+            let coreSources = directory.appendingPathComponent("Sources/MTKCore")
+            if fileManager.fileExists(atPath: packageManifest.path),
+               fileManager.fileExists(atPath: coreSources.path) {
                 return directory
             }
             directory.deleteLastPathComponent()

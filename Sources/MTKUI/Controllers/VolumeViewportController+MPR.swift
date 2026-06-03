@@ -53,6 +53,42 @@ extension VolumeViewportController {
         return frame
     }
 
+    func renderMPRSnapshotTexture() async throws -> (texture: any MTLTexture, renderTime: CFAbsoluteTime) {
+        guard let dataset else {
+            throw Error.datasetNotLoaded
+        }
+        guard case let .mpr(axis, index, blend, slab) = currentDisplay else {
+            throw Error.presentationFailed
+        }
+
+        let startedAt = CFAbsoluteTimeGetCurrent()
+        let frame = try await renderMpr(dataset: dataset,
+                                        axis: axis,
+                                        index: index,
+                                        blend: blend,
+                                        slab: slab)
+        let labelmapOverlays = try await mprLabelmapOverlays(for: frame)
+        let scalarOverlays = try await mprScalarOverlays(for: frame)
+        let transform = mprPresentationTransform(for: axis)
+        let viewportSize = clampedViewportSize()
+        var presentationPass = try MPRPresentationPass(device: device,
+                                                       commandQueue: commandQueue)
+        let texture = try presentationPass.makeSnapshotTexture(
+            frame: frame,
+            window: resolvedMPRWindow(for: dataset),
+            transform: transform,
+            width: viewportSize.width,
+            height: viewportSize.height,
+            invert: mprPresentationInvert,
+            colormap: mprPresentationColormap,
+            viewportTransform: mprViewportTransform,
+            labelmapOverlays: labelmapOverlays,
+            scalarOverlays: scalarOverlays,
+            shutter: mprPresentationShutter
+        )
+        return (texture, CFAbsoluteTimeGetCurrent() - startedAt)
+    }
+
     /// Compute the drawable viewport size in pixels, rounding each dimension and ensuring a minimum of 1.
     /// - Returns: A tuple `(width: Int, height: Int)` containing the viewport's drawable pixel dimensions, rounded to the nearest integer and clamped to at least 1 for each dimension.
     func clampedViewportSize() -> (width: Int, height: Int) {

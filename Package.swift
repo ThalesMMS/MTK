@@ -10,10 +10,6 @@ let package = Package(
         .macOS(.v14)
     ],
     products: [
-        .executable(
-            name: "VolumeRendererComparison",
-            targets: ["VolumeRendererComparison"]
-        ),
         .library(
             name: "MTKCore",
             targets: ["MTKCore"]
@@ -23,16 +19,11 @@ let package = Package(
             targets: ["MTKUI"]
         ),
         .library(
-            name: "MTKDicomBridge",
-            targets: ["MTKDicomBridge"]
-        ),
-        .library(
             name: "MTKFixtures",
             targets: ["MTKFixtures"]
         )
     ],
     dependencies: [
-        .package(url: "https://github.com/ThalesMMS/DICOM-Decoder.git", from: "1.2.1"),
         .package(url: "https://github.com/apple/swift-docc-plugin", from: "1.4.6")
     ],
     targets: [
@@ -52,15 +43,6 @@ let package = Package(
                 "MTKCore"
             ],
             path: "Sources/MTKUI"
-        ),
-        .target(
-            name: "MTKDicomBridge",
-            dependencies: [
-                "MTKCore",
-                "MTKUI",
-                .product(name: "DicomCore", package: "DICOM-Decoder")
-            ],
-            path: "Sources/MTKDicomBridge"
         ),
         .target(
             name: "MTKFixtures",
@@ -90,34 +72,12 @@ let package = Package(
             path: "Tests/MTKUITests"
         ),
         .testTarget(
-            name: "MTKDicomBridgeTests",
-            dependencies: [
-                "MTKCore",
-                "MTKDicomBridge",
-                "MTKUI",
-                .product(name: "DicomCore", package: "DICOM-Decoder")
-            ],
-            path: "Tests/MTKDicomBridgeTests"
-        ),
-        .testTarget(
             name: "MTKFixturesTests",
             dependencies: [
                 "MTKCore",
                 "MTKFixtures"
             ],
             path: "Tests/MTKFixturesTests"
-        ),
-        .executableTarget(
-            name: "VolumeRendererComparison",
-            dependencies: [
-                "MTKCore",
-                "MTKDicomBridge",
-                .product(name: "DicomCore", package: "DICOM-Decoder")
-            ],
-            path: "Benchmarks/VolumeRendererComparison",
-            resources: [
-                .copy("ReferenceVolumeRayMarching.metal")
-            ]
-        ),
+        )
     ]
 )

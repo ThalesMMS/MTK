@@ -1,10 +1,53 @@
 import CoreGraphics
+import Foundation
 import simd
 import XCTest
 
 @_spi(Testing) @testable import MTKCore
 
 final class MTKRenderingEngineRenderTests: MTKRenderingEngineTestCase {
+    func test_renderMPR_doesNotResolveUnavailableVolumeRenderer() async throws {
+        let counter = VolumeAdapterFactoryCallCounter()
+        let failingEngine = try await makeEngineWithFailingVolumeAdapter(counter: counter)
+        let viewport = try await failingEngine.createViewport(
+            ViewportDescriptor(type: .mpr(axis: .axial),
+                               initialSize: CGSize(width: 32, height: 32))
+        )
+        try await failingEngine.setVolume(testDataset, for: viewport)
+
+        let frame = try await failingEngine.render(viewport)
+
+        XCTAssertEqual(frame.viewportID, viewport)
+        XCTAssertNotNil(frame.mprFrame)
+        XCTAssertNil(frame.outputTextureLease)
+        XCTAssertEqual(counter.value, 0)
+    }
+
+    func test_renderVolumeAndProjectionReportMemoizedUnavailableRendererWithoutOutputLease() async throws {
+        let counter = VolumeAdapterFactoryCallCounter()
+        let failingEngine = try await makeEngineWithFailingVolumeAdapter(counter: counter)
+        let volumeViewport = try await failingEngine.createViewport(
+            ViewportDescriptor(type: .volume3D,
+                               initialSize: CGSize(width: 32, height: 32))
+        )
+        let projectionViewport = try await failingEngine.createViewport(
+            ViewportDescriptor(type: .projection(mode: .mip),
+                               initialSize: CGSize(width: 32, height: 32))
+        )
+        try await failingEngine.setVolume(testDataset, for: [volumeViewport, projectionViewport])
+
+        try await assertVolumeRendererUnavailable(from: failingEngine, viewport: volumeViewport)
+        try await assertVolumeRendererUnavailable(from: failingEngine, viewport: projectionViewport)
+
+        XCTAssertEqual(counter.value, 1)
+        let inUseCount = await failingEngine.debugOutputPoolInUseCount
+        let acquiredCount = await failingEngine.debugOutputTextureLeaseAcquiredCount
+        let pendingCount = await failingEngine.debugOutputTextureLeasePendingCount
+        XCTAssertEqual(inUseCount, 0)
+        XCTAssertEqual(acquiredCount, 0)
+        XCTAssertEqual(pendingCount, 0)
+    }
+
     func test_renderVolume3D_returnsValidTexture() async throws {
         let viewportSize = CGSize(width: 40, height: 24)
         let viewport = try await engine.createViewport(
@@ -344,6 +387,49 @@ final class MTKRenderingEngineRenderTests: MTKRenderingEngineTestCase {
         return VolumeLayer(id: "engine-test-labelmap",
                            labelmap: labelmap,
                            opacity: opacity)
+    }
+}
+
+private extension MTKRenderingEngineRenderTests {
+    func makeEngineWithFailingVolumeAdapter(counter: VolumeAdapterFactoryCallCounter) async throws -> MTKRenderingEngine {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("Metal device unavailable on this test runner")
+        }
+        return try await MTKRenderingEngine(device: device) { _, _ in
+            counter.increment()
+            throw MetalVolumeRenderingAdapter.InitializationError.pipelineCreationFailed
+        }
+    }
+
+    func assertVolumeRendererUnavailable(from engine: MTKRenderingEngine,
+                                         viewport: ViewportID,
+                                         file: StaticString = #filePath,
+                                         line: UInt = #line) async throws {
+        do {
+            _ = try await engine.render(viewport)
+            XCTFail("Expected volumeRendererUnavailable", file: file, line: line)
+        } catch MTKRenderingEngine.EngineError.volumeRendererUnavailable(let reason) {
+            XCTAssertTrue(reason.contains("pipeline"), file: file, line: line)
+        } catch {
+            XCTFail("Expected volumeRendererUnavailable, got \(error)", file: file, line: line)
+        }
+    }
+}
+
+private final class VolumeAdapterFactoryCallCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage = 0
+
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+
+    func increment() {
+        lock.lock()
+        storage += 1
+        lock.unlock()
     }
 }
 

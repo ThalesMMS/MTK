@@ -68,6 +68,58 @@ final class MetalVolumeRenderingAdapterSPIPropertiesTests: XCTestCase {
         XCTAssertEqual(current?.name, "CT Bone")
     }
 
+    func testUpdatePresetAppliesEffectiveRenderParameters() async throws {
+        let request = makeRenderRequest()
+        let preset = makeTestPreset(name: "MIP Preset",
+                                    samplingDistance: 1.0 / 128.0,
+                                    compositing: .maximumIntensity)
+
+        _ = try await adapter.updatePreset(preset, for: request.dataset)
+        _ = try await adapter.renderFrame(using: request)
+
+        let snapshotOptional = await adapter.debugLastSnapshot
+        let snapshot = try XCTUnwrap(snapshotOptional)
+        XCTAssertEqual(snapshot.preset?.name, "MIP Preset")
+        XCTAssertEqual(snapshot.metadata.compositing, .maximumIntensity)
+        XCTAssertEqual(snapshot.metadata.samplingDistance, preset.samplingDistance, accuracy: 1e-6)
+    }
+
+    func testUpdatePresetAppliesTransferFunctionToSubsequentRenders() async throws {
+        let transparentRequest = makeTransparentRenderRequest()
+        let baselineFrame = try await adapter.renderFrame(using: transparentRequest)
+        let baselineImage = try await TextureSnapshotExporter().makeCGImage(from: baselineFrame)
+        XCTAssertFalse(VolumeRenderRegressionFixture.imageContainsVisiblePixels(baselineImage))
+
+        let preset = makeTestPreset(name: "Visible Preset",
+                                    transferFunction: makeVisibleTransferFunction(for: transparentRequest.dataset),
+                                    samplingDistance: transparentRequest.samplingDistance,
+                                    compositing: transparentRequest.compositing)
+
+        _ = try await adapter.updatePreset(preset, for: transparentRequest.dataset)
+        let frame = try await adapter.renderFrame(using: transparentRequest)
+        let image = try await TextureSnapshotExporter().makeCGImage(from: frame)
+
+        XCTAssertTrue(VolumeRenderRegressionFixture.imageContainsVisiblePixels(image))
+    }
+
+    func testExplicitOverridesTakePrecedenceOverPresetParameters() async throws {
+        let request = makeRenderRequest()
+        let preset = makeTestPreset(name: "Preset Defaults",
+                                    samplingDistance: 1.0 / 128.0,
+                                    compositing: .maximumIntensity)
+
+        _ = try await adapter.updatePreset(preset, for: request.dataset)
+        try await adapter.send(.setCompositing(.averageIntensity))
+        try await adapter.send(.setSamplingStep(1.0 / 64.0))
+        _ = try await adapter.renderFrame(using: request)
+
+        let snapshotOptional = await adapter.debugLastSnapshot
+        let snapshot = try XCTUnwrap(snapshotOptional)
+        XCTAssertEqual(snapshot.preset?.name, "Preset Defaults")
+        XCTAssertEqual(snapshot.metadata.compositing, .averageIntensity)
+        XCTAssertEqual(snapshot.metadata.samplingDistance, 1.0 / 64.0, accuracy: 1e-6)
+    }
+
     func testDebugLastSnapshotContainsCorrectWindowAfterRender() async throws {
         let window: ClosedRange<Int32> = -500...1500
         try await adapter.send(.setWindow(min: window.lowerBound, max: window.upperBound))
@@ -85,6 +137,95 @@ final class MetalVolumeRenderingAdapterSPIPropertiesTests: XCTestCase {
 
         XCTAssertTrue(VolumeRenderRegressionFixture.imageContainsVisiblePixels(image),
                       "pixel summary: \(summary)")
+    }
+
+    func testShiftChangesRenderedOutputAndTransferCache() async throws {
+        let request = makeShiftSensitiveRenderRequest()
+        let baselineFrame = try await adapter.renderFrame(using: request)
+        let baselineImage = try await TextureSnapshotExporter().makeCGImage(from: baselineFrame)
+        let baselineTransferTextureOptional = await adapter.debugTransferCacheTexture
+        let baselineTransferTexture = try XCTUnwrap(baselineTransferTextureOptional)
+
+        XCTAssertTrue(VolumeRenderRegressionFixture.imageContainsVisiblePixels(baselineImage))
+
+        try await adapter.setShift(1_000)
+        let shiftedFrame = try await adapter.renderFrame(using: request)
+        let shiftedImage = try await TextureSnapshotExporter().makeCGImage(from: shiftedFrame)
+        let shiftedSummary = try XCTUnwrap(VolumeRenderRegressionFixture.imagePixelSummary(shiftedImage))
+        let shiftedTransferTextureOptional = await adapter.debugTransferCacheTexture
+        let shiftedTransferTexture = try XCTUnwrap(shiftedTransferTextureOptional)
+
+        XCTAssertEqual(shiftedSummary.maxBlue, 0)
+        XCTAssertEqual(shiftedSummary.maxGreen, 0)
+        XCTAssertEqual(shiftedSummary.maxRed, 0)
+        XCTAssertNotEqual(ObjectIdentifier(baselineTransferTexture as AnyObject),
+                          ObjectIdentifier(shiftedTransferTexture as AnyObject))
+    }
+
+    func testToneCurveControlPointsChangeRenderedOutput() async throws {
+        let request = makeRenderRequest()
+        try await adapter.setToneCurveControlPoints([
+            SIMD2<Float>(0, 0),
+            SIMD2<Float>(1, 0)
+        ], forChannel: 0)
+
+        let darkFrame = try await adapter.renderFrame(using: request)
+        let darkImage = try await TextureSnapshotExporter().makeCGImage(from: darkFrame)
+        let darkSummary = try XCTUnwrap(VolumeRenderRegressionFixture.imagePixelSummary(darkImage))
+
+        XCTAssertEqual(darkSummary.maxBlue, 0)
+        XCTAssertEqual(darkSummary.maxGreen, 0)
+        XCTAssertEqual(darkSummary.maxRed, 0)
+
+        try await adapter.setToneCurveControlPoints([
+            SIMD2<Float>(0, 1),
+            SIMD2<Float>(1, 1)
+        ], forChannel: 0)
+
+        let visibleFrame = try await adapter.renderFrame(using: request)
+        let visibleImage = try await TextureSnapshotExporter().makeCGImage(from: visibleFrame)
+
+        XCTAssertTrue(VolumeRenderRegressionFixture.imageContainsVisiblePixels(visibleImage))
+    }
+
+    func testToneCurveGainChangesRenderedOutput() async throws {
+        let request = makeRenderRequest()
+        try await adapter.setToneCurveGain(0, forChannel: 0)
+
+        let darkFrame = try await adapter.renderFrame(using: request)
+        let darkImage = try await TextureSnapshotExporter().makeCGImage(from: darkFrame)
+        let darkSummary = try XCTUnwrap(VolumeRenderRegressionFixture.imagePixelSummary(darkImage))
+
+        XCTAssertEqual(darkSummary.maxBlue, 0)
+        XCTAssertEqual(darkSummary.maxGreen, 0)
+        XCTAssertEqual(darkSummary.maxRed, 0)
+
+        try await adapter.setToneCurveGain(1, forChannel: 0)
+
+        let visibleFrame = try await adapter.renderFrame(using: request)
+        let visibleImage = try await TextureSnapshotExporter().makeCGImage(from: visibleFrame)
+
+        XCTAssertTrue(VolumeRenderRegressionFixture.imageContainsVisiblePixels(visibleImage))
+    }
+
+    func testChannelIntensityControlsRenderedOutput() async throws {
+        let request = makeRenderRequest()
+        try await adapter.updateChannelIntensities([0, 0, 0, 0])
+
+        let darkFrame = try await adapter.renderFrame(using: request)
+        let darkImage = try await TextureSnapshotExporter().makeCGImage(from: darkFrame)
+        let darkSummary = try XCTUnwrap(VolumeRenderRegressionFixture.imagePixelSummary(darkImage))
+
+        XCTAssertEqual(darkSummary.maxBlue, 0)
+        XCTAssertEqual(darkSummary.maxGreen, 0)
+        XCTAssertEqual(darkSummary.maxRed, 0)
+
+        try await adapter.updateChannelIntensities([1, 0, 0, 0])
+
+        let visibleFrame = try await adapter.renderFrame(using: request)
+        let visibleImage = try await TextureSnapshotExporter().makeCGImage(from: visibleFrame)
+
+        XCTAssertTrue(VolumeRenderRegressionFixture.imageContainsVisiblePixels(visibleImage))
     }
 
     func testRenderFrameStandaloneOutputRemainsReadableAfterSubsequentRender() async throws {
@@ -250,16 +391,66 @@ final class MetalVolumeRenderingAdapterSPIPropertiesTests: XCTestCase {
         )
     }
 
-    private func makeTestPreset(name: String) -> VolumeRenderingPreset {
-        let transfer = VolumeTransferFunction(
+    private func makeShiftSensitiveRenderRequest() -> VolumeRenderRequest {
+        let dimensions = VolumeDimensions(width: 8, height: 8, depth: 8)
+        let values: [Int16] = Array(repeating: 500, count: dimensions.voxelCount)
+        let dataset = VolumeDataset(
+            data: values.withUnsafeBytes { Data($0) },
+            dimensions: dimensions,
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+            pixelFormat: .int16Signed,
+            intensityRange: 0...1_000,
+            recommendedWindow: 0...1_000
+        )
+        return VolumeRenderRequest(
+            dataset: dataset,
+            transferFunction: VolumeTransferFunction(
+                opacityPoints: [
+                    .init(intensity: 0, opacity: 0),
+                    .init(intensity: 1_000, opacity: 1)
+                ],
+                colourPoints: [
+                    .init(intensity: 0, colour: SIMD4<Float>(1, 1, 1, 1)),
+                    .init(intensity: 1_000, colour: SIMD4<Float>(1, 1, 1, 1))
+                ]
+            ),
+            viewportSize: VolumeRenderRegressionFixture.viewportSize,
+            camera: VolumeRenderRegressionFixture.camera(),
+            samplingDistance: VolumeRenderRegressionFixture.samplingDistance,
+            compositing: .frontToBack,
+            quality: .interactive
+        )
+    }
+
+    private func makeTestPreset(name: String,
+                                transferFunction: VolumeTransferFunction? = nil,
+                                samplingDistance: Float = 0.002,
+                                compositing: VolumeRenderRequest.Compositing = .frontToBack) -> VolumeRenderingPreset {
+        let transfer = transferFunction ?? VolumeTransferFunction(
             opacityPoints: [VolumeTransferFunction.OpacityControlPoint(intensity: 0, opacity: 1)],
-            colourPoints: [VolumeTransferFunction.ColourControlPoint(intensity: 0, colour: SIMD4<Float>(repeating: 1))]
+            colourPoints: [VolumeTransferFunction.ColourControlPoint(intensity: 0,
+                                                                     colour: SIMD4<Float>(repeating: 1))]
         )
         return VolumeRenderingPreset(
             name: name,
             transferFunction: transfer,
-            samplingDistance: 0.002,
-            compositing: .frontToBack
+            samplingDistance: samplingDistance,
+            compositing: compositing
+        )
+    }
+
+    private func makeVisibleTransferFunction(for dataset: VolumeDataset) -> VolumeTransferFunction {
+        let lower = Float(dataset.intensityRange.lowerBound)
+        let upper = Float(dataset.intensityRange.upperBound)
+        return VolumeTransferFunction(
+            opacityPoints: [
+                .init(intensity: lower, opacity: 1),
+                .init(intensity: upper, opacity: 1)
+            ],
+            colourPoints: [
+                .init(intensity: lower, colour: SIMD4<Float>(1, 1, 1, 1)),
+                .init(intensity: upper, colour: SIMD4<Float>(1, 1, 1, 1))
+            ]
         )
     }
 

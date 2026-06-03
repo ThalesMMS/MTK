@@ -7,6 +7,7 @@ using namespace metal;
 
 struct VolumeUniforms {
     int isLightingOn;
+    int shadowMode;
     int isBackwardOn;
     int method;
     int renderingQuality;

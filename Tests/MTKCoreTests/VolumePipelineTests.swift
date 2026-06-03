@@ -166,6 +166,153 @@ final class VolumePipelineTests: XCTestCase {
         }
     }
 
+    func testBinaryMorphologyDilatesAndErodesMasksWhilePreservingMetadata() async throws {
+        let imageData = ImageData3D(
+            dimensions: VolumeDimensions(width: 3, height: 3, depth: 1),
+            spacing: VolumeSpacing(x: 0.7, y: 0.8, z: 2),
+            origin: SIMD3<Float>(12, 14, 16),
+            direction: matrix_identity_float3x3,
+            pixelFormat: .int16Signed,
+            intensityRange: 0...1,
+            recommendedWindow: 0...1,
+            clinicalMetadata: ClinicalImageMetadata(modality: "SEG")
+        )
+        let centerMask = makeSignedDataset(values: [
+            0, 0, 0,
+            0, 1, 0,
+            0, 0, 0
+        ], imageData: imageData)
+
+        let dilated = try await VolumeBinaryMorphologyFilter(operation: .dilate).apply(to: centerMask)
+
+        XCTAssertEqual(signedValues(from: dilated), Array(repeating: 1, count: 9))
+        XCTAssertEqual(dilated.dimensions, centerMask.dimensions)
+        XCTAssertEqual(dilated.spacing, centerMask.spacing)
+        XCTAssertEqual(dilated.imageData.origin, centerMask.imageData.origin)
+        XCTAssertEqual(dilated.imageData.direction, centerMask.imageData.direction)
+        XCTAssertEqual(dilated.recommendedWindow, 0...1)
+        XCTAssertEqual(dilated.imageData.clinicalMetadata?.modality, "SEG")
+
+        let largerImageData = ImageData3D(
+            dimensions: VolumeDimensions(width: 5, height: 5, depth: 1),
+            spacing: imageData.spacing,
+            origin: imageData.origin,
+            direction: imageData.direction,
+            pixelFormat: .int16Signed,
+            intensityRange: 0...1,
+            recommendedWindow: imageData.recommendedWindow,
+            clinicalMetadata: imageData.clinicalMetadata
+        )
+        let blockMask = makeSignedDataset(values: [
+            0, 0, 0, 0, 0,
+            0, 1, 1, 1, 0,
+            0, 1, 1, 1, 0,
+            0, 1, 1, 1, 0,
+            0, 0, 0, 0, 0
+        ], imageData: largerImageData)
+        let eroded = try await VolumeBinaryMorphologyFilter(operation: .erode).apply(to: blockMask)
+
+        XCTAssertEqual(signedValues(from: eroded), [
+            0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0,
+            0, 0, 1, 0, 0,
+            0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0
+        ])
+        XCTAssertEqual(eroded.intensityRange, 0...1)
+    }
+
+    func testBinaryMorphologyOpenRemovesIsolatedVoxelAndRejectsInvalidRadius() async throws {
+        XCTAssertThrowsError(try VolumeBinaryMorphologyFilter(operation: .open, radius: 0)) { error in
+            XCTAssertEqual(error as? VolumePipelineError, .invalidKernelRadius)
+        }
+
+        let dataset = makeSignedDataset(values: [
+            1, 0, 0, 0, 0,
+            0, 0, 0, 0, 0,
+            0, 0, 1, 1, 1,
+            0, 0, 1, 1, 1,
+            0, 0, 1, 1, 1
+        ], dimensions: VolumeDimensions(width: 5, height: 5, depth: 1))
+
+        let opened = try await VolumeBinaryMorphologyFilter(operation: .open).apply(to: dataset)
+
+        XCTAssertEqual(signedValues(from: opened), [
+            0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0,
+            0, 0, 1, 1, 1,
+            0, 0, 1, 1, 1,
+            0, 0, 1, 1, 1
+        ])
+    }
+
+    func testIntensityNormalizationMapsScalarsWindowAndPreservesMetadata() async throws {
+        let imageData = ImageData3D(
+            dimensions: VolumeDimensions(width: 3, height: 1, depth: 1),
+            spacing: VolumeSpacing(x: 1.5, y: 2, z: 3),
+            origin: SIMD3<Float>(1, 2, 3),
+            direction: matrix_identity_float3x3,
+            pixelFormat: .int16Signed,
+            intensityRange: -10...10,
+            recommendedWindow: -5...5,
+            clinicalMetadata: ClinicalImageMetadata(modality: "CT")
+        )
+        let dataset = makeSignedDataset(values: [-10, 0, 10], imageData: imageData)
+        let filter = VolumeIntensityNormalizationFilter(sourceRange: -10...10, targetRange: 0...100)
+
+        let normalized = try await filter.apply(to: dataset)
+
+        XCTAssertEqual(signedValues(from: normalized), [0, 50, 100])
+        XCTAssertEqual(normalized.intensityRange, 0...100)
+        XCTAssertEqual(normalized.recommendedWindow, 25...75)
+        XCTAssertEqual(normalized.dimensions, dataset.dimensions)
+        XCTAssertEqual(normalized.spacing, dataset.spacing)
+        XCTAssertEqual(normalized.imageData.origin, dataset.imageData.origin)
+        XCTAssertEqual(normalized.imageData.direction, dataset.imageData.direction)
+        XCTAssertEqual(normalized.imageData.clinicalMetadata?.modality, "CT")
+    }
+
+    func testIntensityNormalizationRejectsInvalidRangesAndPixelValues() async throws {
+        let signed = makeSignedDataset(values: [1, 2],
+                                       dimensions: VolumeDimensions(width: 2, height: 1, depth: 1))
+        let invalidSource = VolumeIntensityNormalizationFilter(sourceRange: 1...1, targetRange: 0...10)
+
+        do {
+            _ = try await invalidSource.apply(to: signed)
+            XCTFail("Expected invalid source range to throw")
+        } catch {
+            XCTAssertEqual(error as? VolumePipelineError, .invalidIntensityRange)
+        }
+
+        let unsigned = makeUnsignedDataset(values: [0, 10],
+                                           dimensions: VolumeDimensions(width: 2, height: 1, depth: 1))
+        let invalidTarget = VolumeIntensityNormalizationFilter(sourceRange: 0...10, targetRange: -1...10)
+
+        do {
+            _ = try await invalidTarget.apply(to: unsigned)
+            XCTFail("Expected unsigned target range to throw")
+        } catch {
+            XCTAssertEqual(error as? VolumePipelineError,
+                           .scalarValueOutOfRange(value: -1, pixelFormat: .int16Unsigned))
+        }
+    }
+
+    func testAdvancedPipelineOperationsRunInDeclaredOrder() async throws {
+        let dataset = makeSignedDataset(values: [0, 5, 10],
+                                        dimensions: VolumeDimensions(width: 3, height: 1, depth: 1))
+        let pipeline = VolumePipeline(
+            source: VolumeDatasetSource(dataset),
+            filters: [
+                VolumeIntensityNormalizationFilter(sourceRange: 0...10, targetRange: 0...100),
+                VolumeThresholdFilter(range: 60...100, replacementValue: -1)
+            ]
+        )
+
+        let output = try await pipeline.dataset()
+
+        XCTAssertEqual(signedValues(from: output), [-1, -1, 100])
+    }
+
     func testGradientHistogramCountsUniformAndSpacingAwareRamps() async throws {
         let uniform = makeSignedDataset(values: Array(repeating: 5, count: 8),
                                         dimensions: VolumeDimensions(width: 2, height: 2, depth: 2))

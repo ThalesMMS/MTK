@@ -40,7 +40,7 @@ public extension VolumeRenderingPortExtended {
     
     func getCurrentToneCurveConfiguration(forChannel channel: Int) async throws -> ToneCurveConfiguration {
         let snapshot = try await getToneCurveSnapshot()
-        guard channel < snapshot.count else {
+        guard channel >= 0, channel < snapshot.count else {
             return .default
         }
         

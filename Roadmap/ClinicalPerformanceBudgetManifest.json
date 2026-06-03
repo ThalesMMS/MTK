@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "requiredStages": [
+    "decode",
+    "volumeAssembly",
+    "gpuUpload",
+    "mprRender",
+    "volumeRender",
+    "snapshot",
+    "peakMemory"
+  ],
+  "buildConfigurations": [
+    "debug",
+    "release"
+  ],
+  "comparisonProfile": {
+    "requiredResultEnvironmentFields": [
+      "deviceName",
+      "osVersion",
+      "architecture",
+      "modelIdentifier",
+      "buildConfiguration",
+      "benchmarkMode",
+      "fixtureID"
+    ]
+  },
+  "scenarios": [
+    {
+      "id": "mtk-clinical-rendering",
+      "component": "MTK",
+      "fixturePolicy": "committed synthetic fixtures plus optional local DICOM fixtures skipped when unavailable",
+      "benchmarkMode": "clinical-render",
+      "budgets": [
+        {
+          "stage": "gpuUpload"
+        },
+        {
+          "stage": "mprRender"
+        },
+        {
+          "stage": "volumeRender"
+        },
+        {
+          "stage": "snapshot"
+        },
+        {
+          "stage": "peakMemory"
+        }
+      ]
+    },
+    {
+      "id": "dicom-ingest-to-volume",
+      "component": "DICOM-Decoder",
+      "fixturePolicy": "committed non-PHI metadata fixtures only",
+      "benchmarkMode": "volume-ingest",
+      "budgets": [
+        {
+          "stage": "decode"
+        },
+        {
+          "stage": "volumeAssembly"
+        },
+        {
+          "stage": "peakMemory"
+        }
+      ]
+    }
+  ]
+}

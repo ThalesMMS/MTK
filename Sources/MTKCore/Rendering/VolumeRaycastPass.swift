@@ -40,10 +40,20 @@ struct VolumeRaycastPassClippingConfiguration: Sendable, Equatable {
     }
 }
 
+struct VolumeRaycastToneBuffers: @unchecked Sendable {
+    var channel1: (any MTLBuffer)?
+    var channel2: (any MTLBuffer)?
+    var channel3: (any MTLBuffer)?
+    var channel4: (any MTLBuffer)?
+
+    static let empty = VolumeRaycastToneBuffers()
+}
+
 struct VolumeRaycastPassInput: @unchecked Sendable {
     var volumeTexture: any MTLTexture
     var transferFunctionTexture: any MTLTexture
     var accelerationTexture: (any MTLTexture)?
+    var toneBuffers: VolumeRaycastToneBuffers
     var cameraUniforms: CameraUniforms
     var renderingParameters: VolumeRaycastPassRenderingParameters
     var clippingConfiguration: VolumeRaycastPassClippingConfiguration
@@ -59,6 +69,7 @@ struct VolumeRaycastPassInput: @unchecked Sendable {
     init(volumeTexture: any MTLTexture,
          transferFunctionTexture: any MTLTexture,
          accelerationTexture: (any MTLTexture)? = nil,
+         toneBuffers: VolumeRaycastToneBuffers = .empty,
          cameraUniforms: CameraUniforms,
          renderingParameters: VolumeRaycastPassRenderingParameters,
          shaderParameters: RenderingParameters,
@@ -73,6 +84,7 @@ struct VolumeRaycastPassInput: @unchecked Sendable {
         self.volumeTexture = volumeTexture
         self.transferFunctionTexture = transferFunctionTexture
         self.accelerationTexture = accelerationTexture
+        self.toneBuffers = toneBuffers
         self.cameraUniforms = cameraUniforms
         self.renderingParameters = renderingParameters
         self.clippingConfiguration = clippingConfiguration ?? VolumeRaycastPassClippingConfiguration(
@@ -546,10 +558,10 @@ final class VolumeRaycastPass: @unchecked Sendable {
         argumentManager.encode(&optionValue, argumentIndex: .optionValue)
         argumentManager.encode(&quaternion, argumentIndex: .quaternion)
         argumentManager.encode(&targetViewSize, argumentIndex: .targetViewSize)
-        argumentManager.encode(nil, argumentIndex: .toneBufferCh1)
-        argumentManager.encode(nil, argumentIndex: .toneBufferCh2)
-        argumentManager.encode(nil, argumentIndex: .toneBufferCh3)
-        argumentManager.encode(nil, argumentIndex: .toneBufferCh4)
+        argumentManager.encode(input.toneBuffers.channel1, argumentIndex: .toneBufferCh1)
+        argumentManager.encode(input.toneBuffers.channel2, argumentIndex: .toneBufferCh2)
+        argumentManager.encode(input.toneBuffers.channel3, argumentIndex: .toneBufferCh3)
+        argumentManager.encode(input.toneBuffers.channel4, argumentIndex: .toneBufferCh4)
 
         memcpy(cameraBuffer.contents(), &camera, CameraUniforms.stride)
     }

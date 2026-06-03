@@ -10,9 +10,12 @@
 import Foundation
 import simd
 
-/// Factory for creating VolumeDataset instances from volumetric series data.
-/// Manages type conversion and data transformation from upstream series types
-/// to MTK's standardized VolumeDataset format.
+/// Factory for creating VolumeDataset instances from MTKCore volumetric input DTOs.
+///
+/// MTKCore does not parse DICOM or own application-side loading. Apps that use
+/// GDCM, DICOM-Decoder, or another loader should map their decoded scalar volume
+/// into ``VolumetricSeriesData``/``VolumetricSeriesDataProvider`` or construct a
+/// ``VolumeDataset`` directly.
 public enum VolumeDatasetFactory {
 
     /// Creates a VolumeDataset from volumetric series data.
@@ -87,11 +90,13 @@ public enum VolumeDatasetFactory {
         )
     }
 
-    /// Convenience method for converting complete volumetric series data objects.
+    /// Convenience method for converting complete volumetric series data providers.
     ///
     /// This method provides a simpler interface when you have a complete
-    /// VolumetricSeriesData object and want to convert it without extracting
-    /// individual properties.
+    /// ``VolumetricSeriesDataProvider`` and want to convert it without extracting
+    /// individual properties. `VolumetricSeriesData` conforms to this contract,
+    /// and app-side adapters may conform when they already expose MTKCore DTO
+    /// fields.
     ///
     /// - Parameters:
     ///   - seriesData: The source volumetric series data object
@@ -103,7 +108,9 @@ public enum VolumeDatasetFactory {
     ///   let seriesData = await loadVolumetricSeries()
     ///   let dataset = VolumeDatasetFactory.makeVolumeDataset(from: seriesData)
     ///   ```
-    public static func makeVolumeDataset(from seriesData: VolumetricSeriesData) -> VolumeDataset {
+    public static func makeVolumeDataset<SeriesData: VolumetricSeriesDataProvider>(
+        from seriesData: SeriesData
+    ) -> VolumeDataset {
         makeVolumeDataset(
             voxels: seriesData.voxels,
             dimensions: seriesData.dimensions,
@@ -116,30 +123,27 @@ public enum VolumeDatasetFactory {
     }
 }
 
-// MARK: - Type Conversion Extensions
+// MARK: - Volumetric Series Data Provider
 
-/// Protocol requirements for volumetric series data input.
-/// Any source format must provide these properties for dataset conversion.
+/// Stable MTKCore boundary for renderer-ready volumetric input.
+///
+/// App-side DICOM loaders keep ownership of parsing, PHI handling, ordering,
+/// decompression, and rescale/window metadata. The provider exposes only the
+/// scalar volume fields MTKCore needs to create a ``VolumeDataset``.
 public protocol VolumetricSeriesDataProvider {
-    associatedtype DimensionType
-    associatedtype SpacingType
-    associatedtype PixelFormatType
-    associatedtype OrientationType
-
     var voxels: Data { get }
-    var dimensions: DimensionType { get }
-    var spacing: SpacingType { get }
-    var pixelFormat: PixelFormatType { get }
+    var dimensions: VolumetricDimensions { get }
+    var spacing: VolumetricSpacing { get }
+    var pixelFormat: VolumetricPixelFormat { get }
     var intensityRange: ClosedRange<Int32> { get }
-    var orientation: OrientationType { get }
+    var orientation: VolumetricOrientation { get }
     var recommendedWindow: ClosedRange<Int32>? { get }
 }
 
-// MARK: - Internal Type Definitions (placeholders for external types)
+// MARK: - Stable MTKCore Volumetric Input DTOs
 
-/// Represents 3D volumetric dimensions.
-/// Replace with the upstream dimensions type used by your loader layer if needed.
-public struct VolumetricDimensions {
+/// MTKCore-owned dimensions DTO for renderer-ready volume input.
+public struct VolumetricDimensions: Sendable, Equatable {
     public var width: Int
     public var height: Int
     public var depth: Int
@@ -151,9 +155,8 @@ public struct VolumetricDimensions {
     }
 }
 
-/// Represents physical spacing between voxels.
-/// Replace with the upstream spacing type used by your loader layer if needed.
-public struct VolumetricSpacing {
+/// MTKCore-owned physical spacing DTO for renderer-ready volume input.
+public struct VolumetricSpacing: Sendable, Equatable {
     public var x: Double
     public var y: Double
     public var z: Double
@@ -165,9 +168,8 @@ public struct VolumetricSpacing {
     }
 }
 
-/// Represents volumetric orientation in space.
-/// Replace with the upstream orientation type used by your loader layer if needed.
-public struct VolumetricOrientation {
+/// MTKCore-owned orientation DTO for renderer-ready volume input.
+public struct VolumetricOrientation: Sendable, Equatable {
     public var row: SIMD3<Float>
     public var column: SIMD3<Float>
     public var origin: SIMD3<Float>
@@ -179,14 +181,13 @@ public struct VolumetricOrientation {
     }
 }
 
-/// Pixel format enumeration for volumetric data.
-/// Replace with the upstream pixel format type used by your loader layer if needed.
-public enum VolumetricPixelFormat {
+/// MTKCore-owned pixel format DTO for renderer-ready volume input.
+public enum VolumetricPixelFormat: Sendable, Equatable {
     case int16Signed
     case int16Unsigned
 
     /// Converts volumetric pixel format to MTK's VolumePixelFormat.
-    func toVolumePixelFormat() -> VolumePixelFormat {
+    public func toVolumePixelFormat() -> VolumePixelFormat {
         switch self {
         case .int16Signed:
             return .int16Signed
@@ -196,9 +197,12 @@ public enum VolumetricPixelFormat {
     }
 }
 
-/// Represents complete volumetric series data.
-/// Replace with the upstream series type used by your loader layer if needed.
-public struct VolumetricSeriesData: VolumetricSeriesDataProvider {
+/// Stable MTKCore DTO for complete renderer-ready volumetric series data.
+///
+/// Use this type when an app-side loader has already decoded and validated a
+/// single scalar volume. It intentionally does not model DICOM parsing,
+/// decompression, slice sorting, PHI, or PACS/networking concerns.
+public struct VolumetricSeriesData: Sendable, Equatable, VolumetricSeriesDataProvider {
     public var voxels: Data
     public var dimensions: VolumetricDimensions
     public var spacing: VolumetricSpacing

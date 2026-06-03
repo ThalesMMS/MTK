@@ -107,9 +107,17 @@ public struct SurfaceMesh: Identifiable, Sendable, Equatable {
 
 public struct SurfaceMeshMaterial: Sendable, Equatable {
     public var color: SIMD4<Float>
+    public var shading: SurfaceMeshShading
 
     public init(color: SIMD4<Float>) {
         self.color = color
+        self.shading = .clinicalDefault
+    }
+
+    public init(color: SIMD4<Float>,
+                shading: SurfaceMeshShading) {
+        self.color = color
+        self.shading = shading
     }
 
     public static let segmentationRed = SurfaceMeshMaterial(color: SIMD4<Float>(1, 0.12, 0.05, 1))

@@ -652,6 +652,7 @@ public final class VolumeViewportCoordinator: ObservableObject {
 
     private func propagateState(to controller: VolumeViewportController,
                                 surface: SurfaceKey) async {
+        await configureDisplay(for: controller, surface: surface)
         if let dataset = pendingDataset {
             await controller.applyDataset(dataset)
         }
@@ -662,7 +663,11 @@ public final class VolumeViewportCoordinator: ObservableObject {
             await controller.setHuWindow(window)
             await controller.setMprHuWindow(min: window.minHU, max: window.maxHU)
         }
+        await configureDisplay(for: controller, surface: surface)
+    }
 
+    private func configureDisplay(for controller: VolumeViewportController,
+                                  surface: SurfaceKey) async {
         switch surface {
         case .volume:
             await controller.setDisplayConfiguration(volumeConfiguration.displayConfiguration)

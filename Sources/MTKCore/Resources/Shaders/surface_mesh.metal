@@ -6,6 +6,8 @@ struct SurfaceMeshVertexIn {
     float3 normal;
     float4 color;
     float3 texturePosition;
+    float4 shadingControls;
+    float4 renderFlags;
 };
 
 struct SurfaceMeshUniforms {
@@ -23,6 +25,8 @@ struct SurfaceMeshVertexOut {
     float3 normal;
     float4 color;
     float3 texturePosition;
+    float4 shadingControls;
+    float4 renderFlags;
 };
 
 vertex SurfaceMeshVertexOut surface_mesh_vertex(
@@ -36,6 +40,8 @@ vertex SurfaceMeshVertexOut surface_mesh_vertex(
     output.normal = normalize(input.normal);
     output.color = input.color;
     output.texturePosition = input.texturePosition;
+    output.shadingControls = input.shadingControls;
+    output.renderFlags = input.renderFlags;
     return output;
 }
 
@@ -58,8 +64,21 @@ fragment float4 surface_mesh_fragment(
             discard_fragment();
         }
     }
+    if (input.renderFlags.x < 0.5f) {
+        return input.color;
+    }
+
     float3 normal = normalize(input.normal);
     float3 lightDirection = normalize(-uniforms.lightDirection.xyz);
-    float lighting = 0.35 + 0.65 * max(dot(normal, lightDirection), 0.0);
-    return float4(input.color.rgb * lighting, input.color.a);
+    float ambient = clamp(input.shadingControls.x, 0.0f, 1.0f);
+    float diffuseWeight = clamp(input.shadingControls.y, 0.0f, 2.0f);
+    float specularWeight = clamp(input.shadingControls.z, 0.0f, 1.0f);
+    float shininess = clamp(input.shadingControls.w, 1.0f, 128.0f);
+    float diffuse = max(dot(normal, lightDirection), 0.0f);
+    float3 viewDirection = float3(0.0f, 0.0f, 1.0f);
+    float3 halfVector = normalize(lightDirection + viewDirection);
+    float specular = pow(max(dot(normal, halfVector), 0.0f), shininess);
+    float3 shaded = input.color.rgb * (ambient + diffuseWeight * diffuse) +
+        float3(specularWeight * specular);
+    return float4(clamp(shaded, 0.0f, 1.0f), input.color.a);
 }

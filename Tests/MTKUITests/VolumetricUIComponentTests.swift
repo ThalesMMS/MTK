@@ -9,8 +9,16 @@ import XCTest
 
 @MainActor
 final class VolumetricUIComponentTests: XCTestCase {
-    func testStubSceneControllerPublishesState() async throws {
-        throw XCTSkip("Stub controller is no longer used on macOS. Real controller requires GPU resources.")
+    func testVolumeViewportConfigurationDefaultsUseSupportedUIPath() {
+        let configuration = VolumeViewportConfiguration.default
+
+        XCTAssertTrue(configuration.overlays.showsCrosshair)
+        XCTAssertTrue(configuration.overlays.showsOrientationLabels)
+        XCTAssertFalse(configuration.overlays.showsGestureOverlay)
+        XCTAssertTrue(configuration.gestures.isEnabled)
+        XCTAssertEqual(configuration.windowLevel.defaultWindow, 400)
+        XCTAssertEqual(configuration.windowLevel.defaultLevel, 40)
+        XCTAssertEqual(configuration.crosshair.lineWidth, 1)
     }
 
     func testVolumeGestureConfigurationIsEnabledReflectsCapabilities() {

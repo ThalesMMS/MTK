@@ -96,6 +96,43 @@ final class ViewerSyncTests: XCTestCase {
         XCTAssertNotEqual(filteredPeer.sliceIndex, source.sliceIndex)
     }
 
+    func testSyncCoordinatorDoesNotPropagateLocationToIncompatibleGeometry() throws {
+        let source = Viewer2DPanelSnapshot(
+            identity: ViewerPanelIdentity(panelID: "source",
+                                          datasetIdentifier: "dataset-a",
+                                          studyInstanceUID: "study-a",
+                                          frameOfReferenceUID: "frame-a"),
+            transform: Viewer2DTransform(zoom: 2),
+            windowLevelState: TwoDWindowLevelState(window: 100, level: 30),
+            sliceIndex: 4,
+            normalizedLocation: 0.4
+        )
+        let peer = Viewer2DPanelSnapshot(
+            identity: ViewerPanelIdentity(panelID: "peer",
+                                          datasetIdentifier: "dataset-b",
+                                          studyInstanceUID: "study-a",
+                                          frameOfReferenceUID: "frame-b"),
+            windowLevelState: TwoDWindowLevelState(window: 400, level: 40),
+            sliceIndex: 1,
+            normalizedLocation: 0.1
+        )
+        var coordinator = Clinical2DSyncCoordinator(
+            syncState: ViewerSyncState(syncTransforms: true,
+                                       syncWindowLevel: true,
+                                       syncLocation: true,
+                                       syncSameStudy: true),
+            panels: [source, peer]
+        )
+
+        let updated = coordinator.applySourcePanelUpdate(source)
+        let syncedPeer = try XCTUnwrap(updated.first { $0.id == "peer" })
+
+        XCTAssertEqual(syncedPeer.transform, source.transform)
+        XCTAssertEqual(syncedPeer.windowLevelState, source.windowLevelState)
+        XCTAssertEqual(syncedPeer.sliceIndex, 1)
+        XCTAssertEqual(syncedPeer.normalizedLocation, 0.1)
+    }
+
     func testSyncCoordinatorLeavesSinglePanelStateLocal() {
         let source = Viewer2DPanelSnapshot(
             identity: ViewerPanelIdentity(panelID: "single",

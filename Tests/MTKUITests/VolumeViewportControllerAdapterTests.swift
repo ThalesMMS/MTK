@@ -62,6 +62,54 @@ final class VolumeViewportControllerAdapterTests: XCTestCase {
         XCTAssertEqual(controller.viewportSurface.drawablePixelSize.height, 40)
     }
 
+    func testControllerInitializesWhenVolumeRendererFactoryFails() throws {
+        let device = try requireMetalDevice()
+        let counter = VolumeRendererFactoryCounter()
+        let controller = try makeController(device: device,
+                                            failingVolumeRenderer: counter)
+
+        XCTAssertNotNil(controller.surface)
+        XCTAssertEqual(counter.value, 0)
+    }
+
+    func testMPRFlowDoesNotResolveUnavailableVolumeRenderer() async throws {
+        let device = try requireMetalDevice()
+        let counter = VolumeRendererFactoryCounter()
+        let controller = try makeController(device: device,
+                                            failingVolumeRenderer: counter)
+
+        await controller.setDisplayConfiguration(
+            .mpr(axis: .z,
+                 index: 4,
+                 blend: .single,
+                 slab: nil)
+        )
+        await controller.applyDataset(makeSyntheticDataset())
+
+        let texture = try await waitForRenderedTexture(controller)
+        XCTAssertEqual(texture.width, 64)
+        XCTAssertEqual(texture.height, 64)
+        XCTAssertEqual(counter.value, 0)
+    }
+
+    func testRenderVolumeSnapshotFrameReportsUnavailableVolumeRendererOnce() async throws {
+        let device = try requireMetalDevice()
+        let counter = VolumeRendererFactoryCounter()
+        let controller = try makeController(device: device,
+                                            failingVolumeRenderer: counter)
+
+        await controller.setRenderMode(.paused)
+        await controller.applyDataset(makeSyntheticDataset())
+
+        try await assertControllerVolumeRendererUnavailable {
+            _ = try await controller.renderVolumeSnapshotFrame()
+        }
+        try await assertControllerVolumeRendererUnavailable {
+            _ = try await controller.renderVolumeSnapshotFrame()
+        }
+        XCTAssertEqual(counter.value, 1)
+    }
+
     func testVolumeConfigurationsRenderTexturesForAllMethods() async throws {
         let device = try requireMetalDevice()
         let controller = try makeController(device: device)
@@ -514,6 +562,14 @@ final class VolumeViewportControllerAdapterTests: XCTestCase {
         try VolumeViewportController(device: device, surface: makeSurface(width: 64, height: 64))
     }
 
+    private func makeController(device: any MTLDevice,
+                                failingVolumeRenderer counter: VolumeRendererFactoryCounter) throws -> VolumeViewportController {
+        try VolumeViewportController(device: device,
+                                     surface: makeSurface(width: 64, height: 64),
+                                     mprVolumeTextureCache: nil,
+                                     volumeRendererFactory: counter.makeRenderer)
+    }
+
     private func makeSurface(width: CGFloat, height: CGFloat) throws -> MetalViewportSurface {
         let surface = try MetalViewportSurface()
         surface.view.frame = CGRect(x: 0, y: 0, width: width, height: height)
@@ -635,11 +691,37 @@ final class VolumeViewportControllerAdapterTests: XCTestCase {
         throw XCTestError(.timeoutWhileWaiting)
     }
 
+    private func assertControllerVolumeRendererUnavailable(
+        _ expression: @escaping () async throws -> Void,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        do {
+            try await expression()
+            XCTFail("Expected volumeRendererUnavailable", file: file, line: line)
+        } catch VolumeViewportController.Error.volumeRendererUnavailable(let reason) {
+            XCTAssertTrue(reason.contains("pipeline"), file: file, line: line)
+        } catch {
+            XCTFail("Expected volumeRendererUnavailable, got \(error)", file: file, line: line)
+        }
+    }
+
     private func requireMetalDevice() throws -> any MTLDevice {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw XCTSkip("Metal not available")
         }
         return device
+    }
+}
+
+private final class VolumeRendererFactoryCounter {
+    private(set) var value = 0
+
+    func makeRenderer(device: any MTLDevice,
+                      commandQueue: any MTLCommandQueue) throws -> MetalVolumeRenderingAdapter {
+        _ = (device, commandQueue)
+        value += 1
+        throw MetalVolumeRenderingAdapter.InitializationError.pipelineCreationFailed
     }
 }
 

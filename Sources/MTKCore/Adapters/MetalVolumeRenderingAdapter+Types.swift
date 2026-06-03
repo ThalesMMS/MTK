@@ -188,6 +188,9 @@ extension MetalVolumeRenderingAdapter {
         /// Scalar volume transforms are not applied by the v1 fusion path.
         case unsupportedScalarLayerTransform(String)
 
+        /// Tone curve channels are limited to the renderer's four supported channels.
+        case invalidToneCurveChannel(Int)
+
         public var errorDescription: String? {
             switch self {
             case .invalidHistogramBinCount:
@@ -203,7 +206,9 @@ extension MetalVolumeRenderingAdapter {
             case .datasetReadFailed:
                 return "Dataset read failed"
             case .unsupportedScalarLayerTransform(let layerID):
-                return "Scalar volume layer \(layerID) uses a transform; v1 multi-volume fusion requires pre-registered volumes in the base texture space."
+                return "Scalar volume layer \(layerID) uses an unsupported transform for registered fusion."
+            case .invalidToneCurveChannel(let channel):
+                return "Tone curve channel \(channel) is not supported."
             }
         }
 
@@ -222,7 +227,9 @@ extension MetalVolumeRenderingAdapter {
             case .datasetReadFailed:
                 return "The adapter could not construct a reader for the dataset's voxel buffer."
             case .unsupportedScalarLayerTransform:
-                return "Register or resample the scalar layer into the base texture space before using it for v1 fusion."
+                return "Use identity/pre-resampled layers or translated/scaled transforms that MTK can resample into base texture space."
+            case .invalidToneCurveChannel:
+                return "Tone curve channel must be in the zero-based range 0...3."
             }
         }
     }
@@ -247,13 +254,17 @@ extension MetalVolumeRenderingAdapter {
         /// Metal reported an execution failure after the command buffer was committed.
         case commandBufferExecutionFailed(underlyingDescription: String)
 
+        /// Unable to allocate a GPU buffer for sampled tone curve values.
+        case toneBufferUnavailable
+
         public static func == (lhs: RenderingError, rhs: RenderingError) -> Bool {
             switch (lhs, rhs) {
             case (.datasetTextureUnavailable, .datasetTextureUnavailable),
                  (.transferTextureUnavailable, .transferTextureUnavailable),
                  (.commandEncodingFailed, .commandEncodingFailed),
                  (.outputTextureUnavailable, .outputTextureUnavailable),
-                 (.cgImageCreationFailed, .cgImageCreationFailed):
+                 (.cgImageCreationFailed, .cgImageCreationFailed),
+                 (.toneBufferUnavailable, .toneBufferUnavailable):
                 return true
             case let (.commandBufferExecutionFailed(lhsDescription),
                       .commandBufferExecutionFailed(rhsDescription)):
@@ -277,6 +288,8 @@ extension MetalVolumeRenderingAdapter {
                 return "CGImage creation failed"
             case .commandBufferExecutionFailed:
                 return "Metal command buffer execution failed"
+            case .toneBufferUnavailable:
+                return "Tone buffer unavailable"
             }
         }
 
@@ -294,6 +307,8 @@ extension MetalVolumeRenderingAdapter {
                 return "The rendered frame could not be converted to a CGImage for snapshot or export."
             case .commandBufferExecutionFailed(let underlyingDescription):
                 return underlyingDescription
+            case .toneBufferUnavailable:
+                return "The adapter could not allocate the sampled tone curve buffer required by the renderer."
             }
         }
     }
@@ -330,5 +345,18 @@ extension MetalVolumeRenderingAdapter {
 
         /// The intensity window applied during rendering.
         public var window: ClosedRange<Int32>
+
+        /// The preset applied to the render, if one matched the request dataset.
+        public var preset: VolumeRenderingPreset?
+
+        public init(dataset: VolumeDataset,
+                    metadata: VolumeRenderFrame.Metadata,
+                    window: ClosedRange<Int32>,
+                    preset: VolumeRenderingPreset? = nil) {
+            self.dataset = dataset
+            self.metadata = metadata
+            self.window = window
+            self.preset = preset
+        }
     }
 }

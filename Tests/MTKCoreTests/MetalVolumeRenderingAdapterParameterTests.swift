@@ -186,22 +186,36 @@ final class GateUniformTests: XCTestCase {
         let params = try await adapter.buildRenderingParameters(for: makeRequest(renderQualitySettings: settings))
 
         XCTAssertEqual(params.material.isLightingOn, 1)
+        XCTAssertEqual(params.material.shadowMode, VolumeShadowMode.soft.shaderValue)
         XCTAssertEqual(params.light, 1.5, accuracy: 1e-6)
         XCTAssertEqual(params.shade, 0.4, accuracy: 1e-6)
         XCTAssertEqual(params.scale, 2.0, accuracy: 1e-6)
     }
 
-    func testShadowOffDisablesCurrentLightingPlaceholder() async throws {
+    func testShadowOffDisablesLightingAndShaderMode() async throws {
         try await adapter.send(.setWindow(min: -1024, max: 1023))
         let settings = VolumeRenderQualitySettings(shadowMode: .off)
 
         let uniforms = try await adapter.buildVolumeUniforms(for: makeRequest(renderQualitySettings: settings))
 
         XCTAssertEqual(uniforms.isLightingOn, 0)
+        XCTAssertEqual(uniforms.shadowMode, VolumeShadowMode.off.shaderValue)
     }
 
-    func testHardAndSoftShadowKernelPathsPendingUntilShadowPassExists() throws {
-        throw XCTSkip("Pending: hard and soft modes are carried through uniforms, but both still use the current gradient-lighting shader path until a shadow pass exists.")
+    func testHardAndSoftShadowModesPopulateDistinctShaderModes() async throws {
+        try await adapter.send(.setWindow(min: -1024, max: 1023))
+        let hardUniforms = try await adapter.buildVolumeUniforms(
+            for: makeRequest(renderQualitySettings: VolumeRenderQualitySettings(shadowMode: .hard))
+        )
+        let softUniforms = try await adapter.buildVolumeUniforms(
+            for: makeRequest(renderQualitySettings: VolumeRenderQualitySettings(shadowMode: .soft))
+        )
+
+        XCTAssertEqual(hardUniforms.isLightingOn, 1)
+        XCTAssertEqual(softUniforms.isLightingOn, 1)
+        XCTAssertEqual(hardUniforms.shadowMode, VolumeShadowMode.hard.shaderValue)
+        XCTAssertEqual(softUniforms.shadowMode, VolumeShadowMode.soft.shaderValue)
+        XCTAssertNotEqual(hardUniforms.shadowMode, softUniforms.shadowMode)
     }
 
     private func makeRequest(renderQualitySettings: VolumeRenderQualitySettings = .default) -> VolumeRenderRequest {

@@ -14,6 +14,8 @@ public enum VolumePipelineError: Error, Equatable, LocalizedError {
     case scalarValueOutOfRange(value: Int32, pixelFormat: VolumePixelFormat)
     case invalidHistogramBinCount
     case invalidSpacing
+    case invalidKernelRadius
+    case invalidIntensityRange
 
     public var errorDescription: String? {
         switch self {
@@ -29,6 +31,10 @@ public enum VolumePipelineError: Error, Equatable, LocalizedError {
             return "Invalid histogram bin count"
         case .invalidSpacing:
             return "Invalid volume spacing"
+        case .invalidKernelRadius:
+            return "Invalid kernel radius"
+        case .invalidIntensityRange:
+            return "Invalid intensity range"
         }
     }
 
@@ -46,6 +52,10 @@ public enum VolumePipelineError: Error, Equatable, LocalizedError {
             return "Histogram bin counts must be greater than zero."
         case .invalidSpacing:
             return "Spacing values must be finite and greater than zero."
+        case .invalidKernelRadius:
+            return "Morphology kernel radius must be greater than zero."
+        case .invalidIntensityRange:
+            return "Intensity ranges must have a finite, positive span."
         }
     }
 }

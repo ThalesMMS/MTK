@@ -79,7 +79,7 @@ public enum VolumeShadowMode: String, CaseIterable, Codable, Identifiable, Senda
         }
     }
 
-    public var usesCurrentLightingPlaceholder: Bool {
+    public var isEnabled: Bool {
         self != .off
     }
 }
@@ -147,8 +147,16 @@ public struct VolumeRenderQualitySettings: Codable, Equatable, Sendable {
         depthResolution.depthGradientScale
     }
 
+    public func effectiveShadowMode(for quality: VolumeRenderRequest.Quality) -> VolumeShadowMode {
+        guard shadowMode.isEnabled else { return .off }
+        if disableShadowsWhenInteracting, quality != .production {
+            return .off
+        }
+        return directionalLightIntensity > 0 ? shadowMode : .off
+    }
+
     public func lightingEnabled(for quality: VolumeRenderRequest.Quality) -> Bool {
-        guard shadowMode.usesCurrentLightingPlaceholder else { return false }
+        guard shadowMode.isEnabled else { return false }
         if disableShadowsWhenInteracting, quality != .production {
             return false
         }

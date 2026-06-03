@@ -19,6 +19,12 @@ public protocol VolumeRenderingPortExtended: VolumeRenderingPort {
     func setHuGate(enabled: Bool, minHU: Int32, maxHU: Int32) async throws
     
     // Channel controls
+    //
+    // The production renderer supports channels 0...3. The request transfer
+    // function is shared across those channels; these controls apply per-channel
+    // intensity weights and tone/gain multipliers to the shared transfer output.
+    // Preset keys are reported in snapshots as caller-facing labels for the
+    // effective control points and gain.
     func updateChannelIntensities(_ intensities: [Float]) async throws
     func setToneCurveControlPoints(_ points: [SIMD2<Float>], forChannel channel: Int) async throws
     func setToneCurvePresetKey(_ key: String, forChannel channel: Int) async throws

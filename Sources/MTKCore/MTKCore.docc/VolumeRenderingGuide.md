@@ -19,7 +19,7 @@ Interactive rendering is GPU-native. ``MetalVolumeRenderingAdapter/renderFrame(u
 
 ### Segmentation Surfaces
 
-MTKCore supports a v1 surface path for segmentation review:
+MTKCore supports a surface path for segmentation review:
 
 ```text
 LabelmapVolume -> SurfaceMesh -> SurfaceMeshLayer -> volume3D viewport
@@ -27,9 +27,9 @@ LabelmapVolume -> SurfaceMesh -> SurfaceMeshLayer -> volume3D viewport
 
 ``SurfaceMesh`` is the public polydata contract. It carries vertices, per-vertex normals, indexed triangles, a coordinate-space declaration, bounds, and segment metadata. ``MarchingCubesExtractor`` can extract a mesh from a `LabelmapVolume` label or from a scalar `VolumeDataset` threshold. Labelmap meshes carry the same label and segment id that MPR labelmap overlays use. By default, extracted vertices are written in `.worldMillimeters` using the source volume affine so spacing, origin, and orientation are preserved.
 
-The initial renderer is intentionally small: ``MetalSurfaceMeshRenderer`` draws visible ``SurfaceMeshLayer`` triangles into the 3D viewport output texture after volume raycasting. Opaque surfaces write mesh-local depth before semi-transparent surfaces, transparent layers are ordered back-to-front at the layer level, and volume crop/clip settings discard matching surface fragments. It does not yet composite against raycast volume depth.
+``SurfaceMeshProcessor`` can repair invalid or degenerate topology, apply deterministic Laplacian smoothing, and reduce triangle count with ratio-based CPU decimation. ``SurfaceMeshMaterial`` provides clinical, matte, glossy, and unlit shading defaults. ``MetalSurfaceMeshRenderer`` draws visible ``SurfaceMeshLayer`` triangles into the 3D viewport output texture after volume raycasting. Opaque surfaces write mesh-local depth before semi-transparent surfaces, transparent layers are ordered back-to-front at the layer level, and volume crop/clip settings discard matching surface fragments.
 
-V1 limits: no smoothing, decimation, topology repair, advanced materials, GPU extraction, or true raycast-volume depth occlusion.
+True raycast-volume depth occlusion and GPU surface extraction are explicit follow-ups: the current raycast pass produces color output only and does not publish a reusable depth texture for mesh compositing.
 
 ### Multi-Volume Clinical Fusion
 
@@ -44,7 +44,7 @@ The Metal path keeps a fast path for a single visible scalar layer. When multipl
 
 ``VolumeResourceManager`` reuses scalar volume textures by resource handle. Assigning the same scalar layer dataset to multiple viewports retains the existing handle instead of uploading duplicate 3D textures, and resource metrics include the shared layer textures and output texture pool memory.
 
-V1 does not solve DICOM registration. Scalar fusion assumes all layers are already registered and resampled into the base volume texture space. Non-identity scalar layer transforms are rejected with a structured error. Existing labelmap MPR affine handling remains supported for segmentation overlays. The v2 registration and resampling roadmap is tracked in [Architecture/MultiVolumeRegistration.md](../../../Architecture/MultiVolumeRegistration.md); until that plan is implemented, PET/CT, CT plus dose, MR T1/T2, and prior/current overlays require external alignment and resampling before entering MTK.
+MTK does not solve DICOM registration. Scalar fusion accepts layers that are already in base texture space and externally supplied axis-aligned scale/translation transforms that can be CPU-resampled into base geometry. Unsupported affine, rotation, shear, perspective, and non-finite scalar transforms fail with a structured error. Existing labelmap MPR affine handling remains supported for segmentation overlays. The registration and resampling contract is tracked in [Architecture/MultiVolumeRegistration.md](../../../Architecture/MultiVolumeRegistration.md); PET/CT, CT plus dose, MR T1/T2, and prior/current overlays still require an external registration source before entering MTK.
 
 ## Storage Mode Policy
 

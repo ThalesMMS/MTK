@@ -2,7 +2,7 @@
 //  MetalSurfaceMeshRenderer.swift
 //  MTKCore
 //
-//  Minimal Metal triangle renderer for segmentation surface overlays.
+//  Metal triangle renderer for segmentation surface overlays.
 //
 
 import CoreGraphics
@@ -66,6 +66,8 @@ public final class MetalSurfaceMeshRenderer: @unchecked Sendable {
         var normal: SIMD3<Float>
         var color: SIMD4<Float>
         var texturePosition: SIMD3<Float>
+        var shadingControls: SIMD4<Float>
+        var renderFlags: SIMD4<Float>
     }
 
     private struct Uniforms {
@@ -296,6 +298,14 @@ public final class MetalSurfaceMeshRenderer: @unchecked Sendable {
                 clamp01(layer.material.color.z),
                 alpha
             )
+            let shading = layer.material.shading
+            let shadingControls = SIMD4<Float>(
+                shading.clampedAmbientIntensity,
+                shading.clampedDiffuseIntensity,
+                shading.clampedSpecularIntensity,
+                shading.clampedShininess
+            )
+            let renderFlags = SIMD4<Float>(shading.lightingEnabled ? 1 : 0, 0, 0, 0)
             let start = UInt32(vertices.count)
             for vertexIndex in mesh.vertices.indices {
                 let texturePosition = texturePosition(for: mesh.vertices[vertexIndex],
@@ -307,7 +317,9 @@ public final class MetalSurfaceMeshRenderer: @unchecked Sendable {
                 vertices.append(Vertex(position: texturePosition - SIMD3<Float>(repeating: 0.5),
                                        normal: textureNormal,
                                        color: color,
-                                       texturePosition: texturePosition))
+                                       texturePosition: texturePosition,
+                                       shadingControls: shadingControls,
+                                       renderFlags: renderFlags))
             }
             indices.append(contentsOf: mesh.indices.map { start + $0 })
         }

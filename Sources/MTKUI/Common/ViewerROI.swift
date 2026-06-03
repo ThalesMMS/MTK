@@ -113,8 +113,17 @@ public enum ViewerROIKind: String, CaseIterable, Codable, Identifiable, Sendable
         }
     }
 
+    public var supportsDrawnAnnotationMeasurement: Bool {
+        switch self {
+        case .volume:
+            return false
+        default:
+            return true
+        }
+    }
+
     public var isImplementedInMPRFirstDelivery: Bool {
-        true
+        supportsDrawnAnnotationMeasurement
     }
 
     public var measurementModel: ViewerROIMeasurementModel {
@@ -606,6 +615,11 @@ public struct ViewerROIStore: Equatable, Sendable {
 }
 
 public enum ViewerROIMeasurementCalculator {
+    public static func volumeMeasurement(in layer: VolumeLayer,
+                                         label: UInt16? = nil) throws -> ViewerROIMeasurement {
+        try ViewerROILabelmapVolumeCalculator.summary(in: layer, label: label).measurement
+    }
+
     public static func measurement(kind: ViewerROIKind,
                                    axis: MTKCore.Axis,
                                    normalizedImagePoints points: [CGPoint],
@@ -1017,6 +1031,7 @@ public struct ViewerROILabelmapVolumeSummary: Equatable, Sendable {
 public enum ViewerROILabelmapVolumeError: Error, Equatable, LocalizedError {
     case missingLabelmap(String)
     case malformedLabelmap(String)
+    case emptySelection(String, UInt16?)
     case invalidSpacing(String)
 
     public var errorDescription: String? {
@@ -1025,6 +1040,11 @@ public enum ViewerROILabelmapVolumeError: Error, Equatable, LocalizedError {
             return "ROI layer \(id) does not contain a labelmap volume."
         case .malformedLabelmap(let id):
             return "ROI layer \(id) has malformed labelmap data."
+        case .emptySelection(let id, let label):
+            if let label {
+                return "ROI layer \(id) has no voxels for label \(label)."
+            }
+            return "ROI layer \(id) has no selected labelmap voxels."
         case .invalidSpacing(let id):
             return "ROI layer \(id) has invalid voxel spacing."
         }
@@ -1055,6 +1075,9 @@ public enum ViewerROILabelmapVolumeCalculator {
                 continue
             }
             voxelCount += 1
+        }
+        guard voxelCount > 0 else {
+            throw ViewerROILabelmapVolumeError.emptySelection(layer.id, label)
         }
         let segmentName = label.flatMap { labelmap.segmentsByLabel[$0]?.name }
         return ViewerROILabelmapVolumeSummary(layerID: layer.id,

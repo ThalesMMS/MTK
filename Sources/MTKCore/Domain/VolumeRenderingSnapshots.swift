@@ -10,11 +10,16 @@ import Foundation
 import simd
 
 public struct ChannelControlSnapshot: Sendable, Equatable {
+    public let channel: Int
     public let presetKey: String
     public let gain: Float
     public let controlPoints: [SIMD2<Float>]
     
-    public init(presetKey: String, gain: Float, controlPoints: [SIMD2<Float>] = []) {
+    public init(channel: Int = 0,
+                presetKey: String,
+                gain: Float,
+                controlPoints: [SIMD2<Float>] = []) {
+        self.channel = channel
         self.presetKey = presetKey
         self.gain = gain
         self.controlPoints = controlPoints

@@ -270,6 +270,7 @@ public enum ViewerToolAction: Equatable, Sendable {
     case toggleMPRCrosshair
     case resetActiveMPRView
     case resetMPRViews
+    case shareMPRSnapshot
     case setMPRWindowPreset(MPRWindowPreset)
     case setMPRCLUTPreset(Volume3DCLUTPreset)
     case toggleMPRWindowInvert
@@ -482,12 +483,14 @@ public struct ViewerChromeConfigurationFactory: Sendable {
                               selectedMPRROIKind: ViewerROIKind = .distance,
                               isMPRAnnotationsVisible: Bool = true,
                               isMPRCrosshairVisible: Bool = true,
+                              isMPRShareEnabled: Bool = false,
                               selectedTwoDWindowPreset: Volume3DWindowPreset = .default,
                               selectedTwoDCLUTPreset: Clinical2DCLUT = .grayscale,
                               isTwoDWindowInverted: Bool = false,
                               selectedTwoDROIKind: ViewerROIKind = .distance,
                               isTwoDSyncEnabled: Bool = false,
                               twoDSyncState: ViewerSyncState? = nil,
+                              isTwoDLocationSyncEnabled: Bool = false,
                               twoDScrollSettings: TwoDScrollSettings = .default,
                               selectedTwoDResliceAxis: MTKCore.Axis = .axial,
                               isTwoDResliceEnabled: Bool = true,
@@ -507,7 +510,8 @@ public struct ViewerChromeConfigurationFactory: Sendable {
                                     isWindowInverted: isMPRWindowInverted,
                                     selectedROIKind: selectedMPRROIKind,
                                     isAnnotationsVisible: isMPRAnnotationsVisible,
-                                    isCrosshairVisible: isMPRCrosshairVisible)
+                                    isCrosshairVisible: isMPRCrosshairVisible,
+                                    isShareEnabled: isMPRShareEnabled)
         case .stack2D:
             return stack2DConfiguration(selectedToolID: selectedToolID,
                                         selectedWindowPreset: selectedTwoDWindowPreset,
@@ -515,6 +519,7 @@ public struct ViewerChromeConfigurationFactory: Sendable {
                                         isWindowInverted: isTwoDWindowInverted,
                                         selectedROIKind: selectedTwoDROIKind,
                                         syncState: twoDSyncState ?? Self.legacySyncState(isEnabled: isTwoDSyncEnabled),
+                                        isLocationSyncEnabled: isTwoDLocationSyncEnabled,
                                         scrollSettings: twoDScrollSettings,
                                         selectedResliceAxis: selectedTwoDResliceAxis,
                                         isResliceEnabled: isTwoDResliceEnabled,
@@ -578,7 +583,8 @@ public struct ViewerChromeConfigurationFactory: Sendable {
                                   isWindowInverted: Bool,
                                   selectedROIKind: ViewerROIKind,
                                   isAnnotationsVisible: Bool,
-                                  isCrosshairVisible: Bool) -> ViewerChromeConfiguration {
+                                  isCrosshairVisible: Bool,
+                                  isShareEnabled: Bool) -> ViewerChromeConfiguration {
         let selected = selectedToolID ?? .scroll
         return ViewerChromeConfiguration(
             mode: .clinical,
@@ -610,7 +616,8 @@ public struct ViewerChromeConfigurationFactory: Sendable {
             optionsAction: .openMenu(.mprOptions),
             optionsMenu: mprOptionsMenu(selectedScreenLayout: selectedScreenLayout,
                                         isAnnotationsVisible: isAnnotationsVisible,
-                                        isCrosshairVisible: isCrosshairVisible)
+                                        isCrosshairVisible: isCrosshairVisible,
+                                        isShareEnabled: isShareEnabled)
         )
     }
 
@@ -620,6 +627,7 @@ public struct ViewerChromeConfigurationFactory: Sendable {
                                       isWindowInverted: Bool,
                                       selectedROIKind: ViewerROIKind,
                                       syncState: ViewerSyncState,
+                                      isLocationSyncEnabled: Bool,
                                       scrollSettings: TwoDScrollSettings,
                                       selectedResliceAxis: MTKCore.Axis,
                                       isResliceEnabled: Bool,
@@ -644,7 +652,8 @@ public struct ViewerChromeConfigurationFactory: Sendable {
                          menu: stack2DROIMenu(selectedKind: selectedROIKind)),
                 twoDTool(.sync,
                          selected: selected,
-                         menu: stack2DSyncMenu(state: syncState)),
+                         menu: stack2DSyncMenu(state: syncState,
+                                               isLocationSyncEnabled: isLocationSyncEnabled)),
                 twoDTool(.reslice,
                          selected: selected,
                          isEnabled: isResliceEnabled,
@@ -858,6 +867,7 @@ public struct ViewerChromeConfigurationFactory: Sendable {
                                    title: kind.displayName,
                                    systemImage: kind == selectedKind ? "checkmark" : kind.systemImage,
                                    action: .set2DROIKind(kind),
+                                   isEnabled: kind.supportsDrawnAnnotationMeasurement,
                                    isSelected: kind == selectedKind)
             )
         }
@@ -874,7 +884,8 @@ public struct ViewerChromeConfigurationFactory: Sendable {
         return ViewerToolMenu(entries: entries, accessibilityIdentifier: "MTK2DToolMenuROI")
     }
 
-    private func stack2DSyncMenu(state: ViewerSyncState) -> ViewerToolMenu {
+    private func stack2DSyncMenu(state: ViewerSyncState,
+                                 isLocationSyncEnabled: Bool) -> ViewerToolMenu {
         ViewerToolMenu(items: [
             ViewerToolMenuItem(id: "2d-sync-transform",
                                title: "Sync image transforms",
@@ -888,8 +899,10 @@ public struct ViewerChromeConfigurationFactory: Sendable {
                                isSelected: state.syncWindowLevel),
             ViewerToolMenuItem(id: "2d-sync-location",
                                title: "Sync images (location)",
+                               systemImage: state.syncLocation ? "checkmark" : nil,
                                action: .set2DSyncOption(.location, !state.syncLocation),
-                               isEnabled: false),
+                               isEnabled: isLocationSyncEnabled,
+                               isSelected: state.syncLocation),
             ViewerToolMenuItem(id: "2d-sync-same-study",
                                title: "Sync images (same study)",
                                systemImage: state.syncSameStudy ? "checkmark" : nil,
@@ -997,7 +1010,7 @@ public struct ViewerChromeConfigurationFactory: Sendable {
                                    title: kind.displayName,
                                    systemImage: kind == selectedKind ? "checkmark" : kind.systemImage,
                                    action: .setMPRROIKind(kind),
-                                   isEnabled: kind.isImplementedInMPRFirstDelivery,
+                                   isEnabled: kind.supportsDrawnAnnotationMeasurement,
                                    isSelected: kind == selectedKind)
             )
         }
@@ -1016,7 +1029,8 @@ public struct ViewerChromeConfigurationFactory: Sendable {
 
     private func mprOptionsMenu(selectedScreenLayout: MPRScreenLayout,
                                 isAnnotationsVisible: Bool,
-                                isCrosshairVisible: Bool) -> ViewerToolMenu {
+                                isCrosshairVisible: Bool,
+                                isShareEnabled: Bool) -> ViewerToolMenu {
         ViewerToolMenu(entries: [
             .section(ViewerToolMenuSection(
                 id: "mpr-screen-layout",
@@ -1054,8 +1068,8 @@ public struct ViewerChromeConfigurationFactory: Sendable {
             .item(ViewerToolMenuItem(id: "mpr-options-share",
                                      title: "Share",
                                      systemImage: "square.and.arrow.up",
-                                     action: .none,
-                                     isEnabled: false))
+                                     action: .shareMPRSnapshot,
+                                     isEnabled: isShareEnabled))
         ])
     }
 
@@ -1184,7 +1198,7 @@ public struct ViewerChromeState: Equatable, Sendable {
             selectedTools[mode] = .brush
             activeOverlay = nil
         case .setMPRScreenLayout, .toggleMPRAnnotations, .toggleMPRCrosshair,
-             .resetActiveMPRView, .resetMPRViews:
+             .resetActiveMPRView, .resetMPRViews, .shareMPRSnapshot:
             activeOverlay = nil
         case .setMPRWindowPreset, .setMPRCLUTPreset, .toggleMPRWindowInvert:
             selectedTools[mode] = .windowLevel

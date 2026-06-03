@@ -193,9 +193,10 @@ final class ViewerChromeConfigurationTests: XCTestCase {
 
         XCTAssertEqual(kindItems.map(\.id), ViewerROIKind.allCases.map { "mpr-roi-\($0.stableIdentifier)" })
         XCTAssertEqual(kindItems.map(\.action), ViewerROIKind.allCases.map { .setMPRROIKind($0) })
-        XCTAssertEqual(kindItems.map(\.isEnabled), ViewerROIKind.allCases.map(\.isImplementedInMPRFirstDelivery))
+        XCTAssertEqual(kindItems.map(\.isEnabled), ViewerROIKind.allCases.map(\.supportsDrawnAnnotationMeasurement))
         XCTAssertTrue(try XCTUnwrap(items.first { $0.id == "mpr-roi-arrow" }).isSelected)
         XCTAssertTrue(try XCTUnwrap(items.first { $0.id == "mpr-roi-angle" }).isEnabled)
+        XCTAssertFalse(try XCTUnwrap(items.first { $0.id == "mpr-roi-volume" }).isEnabled)
         XCTAssertEqual(try XCTUnwrap(items.first { $0.id == "mpr-roi-delete-view" }).action,
                        .deleteMPRROIsInView)
         XCTAssertEqual(try XCTUnwrap(items.first { $0.id == "mpr-roi-delete-series" }).action,
@@ -267,7 +268,20 @@ final class ViewerChromeConfigurationTests: XCTestCase {
         XCTAssertEqual(crosshair.action, .toggleMPRCrosshair)
         XCTAssertEqual(resetActive.action, .resetActiveMPRView)
         XCTAssertEqual(reset.action, .resetMPRViews)
+        XCTAssertEqual(share.action, .shareMPRSnapshot)
         XCTAssertFalse(share.isEnabled)
+    }
+
+    func testMPROptionsMenuEnablesShareWhenMPRSnapshotIsExportable() throws {
+        let configuration = factory.configuration(
+            for: .clinical,
+            isMPRShareEnabled: true
+        )
+        let menu = try XCTUnwrap(configuration.optionsMenu)
+        let share = try XCTUnwrap(menu.items.first { $0.id == "mpr-options-share" })
+
+        XCTAssertEqual(share.action, .shareMPRSnapshot)
+        XCTAssertTrue(share.isEnabled)
     }
 
     func testStack2DToolbarUsesClinical2DToolsetInOrder() {
@@ -427,6 +441,7 @@ final class ViewerChromeConfigurationTests: XCTestCase {
             "2d-roi-delete-series"
         ])
         XCTAssertTrue(try XCTUnwrap(roi.longPressMenu?.items.first { $0.id == "2d-roi-arrow" }).isSelected)
+        XCTAssertFalse(try XCTUnwrap(roi.longPressMenu?.items.first { $0.id == "2d-roi-volume" }).isEnabled)
         XCTAssertEqual(sync.longPressMenu?.accessibilityIdentifier, "MTK2DToolMenuSync")
         XCTAssertEqual(sync.longPressMenu?.items.map(\.id), [
             "2d-sync-transform",
@@ -456,6 +471,24 @@ final class ViewerChromeConfigurationTests: XCTestCase {
             .set2DResliceAxis(.axial)
         ])
         XCTAssertTrue(try XCTUnwrap(reslice.longPressMenu?.items.first { $0.id == "2d-reslice-sagittal" }).isSelected)
+    }
+
+    func testStack2DSyncMenuEnablesLocationSyncWhenCapabilityAllowsIt() throws {
+        let configuration = factory.configuration(
+            for: .stack2D,
+            twoDSyncState: ViewerSyncState(syncTransforms: true,
+                                           syncWindowLevel: true,
+                                           syncLocation: true,
+                                           syncSameStudy: true),
+            isTwoDLocationSyncEnabled: true
+        )
+        let sync = try XCTUnwrap(configuration.bottomTools.first { $0.id == .sync })
+        let location = try XCTUnwrap(sync.longPressMenu?.items.first { $0.id == "2d-sync-location" })
+
+        XCTAssertEqual(location.action, .set2DSyncOption(.location, false))
+        XCTAssertTrue(location.isEnabled)
+        XCTAssertTrue(location.isSelected)
+        XCTAssertEqual(location.systemImage, "checkmark")
     }
 
     func testMPR3DAndFuture2DChromeConfigurationsStayIndependent() {

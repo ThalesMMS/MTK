@@ -112,6 +112,43 @@ final class VolumeRaycastPassTests: XCTestCase {
                       "texture summary: \(textureSummary), image summary: \(imageSummary)")
     }
 
+    func testHardAndSoftShadowModesProduceDistinctDVRReadback() async throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("Metal device unavailable on this test runner")
+        }
+
+        let camera = VolumeRenderRequest.Camera(position: SIMD3<Float>(0.5, 0.5, -2.0),
+                                                target: SIMD3<Float>(repeating: 0.5),
+                                                up: SIMD3<Float>(0, 1, 0),
+                                                fieldOfView: 45)
+        let setup = try await makeDirectPassSetup(device: device,
+                                                  compositing: .frontToBack,
+                                                  viewportSize: CGSize(width: 96, height: 96),
+                                                  requestCamera: camera)
+        var hardInput = setup.input
+        hardInput.shaderParameters.material.isLightingOn = 1
+        hardInput.shaderParameters.material.shadowMode = VolumeShadowMode.hard.shaderValue
+        hardInput.shaderParameters.material.renderingQuality = 384
+        hardInput.shaderParameters.renderingStep = 1.0 / 384.0
+        hardInput.shaderParameters.light = 1.8
+        hardInput.shaderParameters.shade = 0.15
+        var softInput = hardInput
+        softInput.shaderParameters.material.shadowMode = VolumeShadowMode.soft.shaderValue
+
+        let hardOutput = try await setup.pass.execute(input: hardInput,
+                                                      commandQueue: setup.commandQueue)
+        let softOutput = try await setup.pass.execute(input: softInput,
+                                                      commandQueue: setup.commandQueue)
+        let hardEnergy = try await rgbEnergy(from: hardOutput)
+        let softEnergy = try await rgbEnergy(from: softOutput)
+
+        XCTAssertGreaterThan(hardEnergy, 0)
+        XCTAssertGreaterThan(softEnergy, 0)
+        XCTAssertGreaterThan(abs(hardEnergy - softEnergy),
+                             10,
+                             "hard and soft shadow readbacks should differ, got \(hardEnergy) and \(softEnergy)")
+    }
+
     func testAnisotropicDatasetRendersWithPhysicalSideViewBounds() async throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw XCTSkip("Metal device unavailable on this test runner")
@@ -342,6 +379,12 @@ final class VolumeRaycastPassTests: XCTestCase {
         )
     }
 
+    private func rgbEnergy(from output: VolumeRaycastPassOutput) async throws -> Int {
+        let frame = makeTestVolumeRenderFrame(from: output)
+        let image = try await TextureSnapshotExporter().makeCGImage(from: frame)
+        return try XCTUnwrap(rgbEnergy(in: image))
+    }
+
     private func makeDirectPassSetup(device: any MTLDevice,
                                      compositing: VolumeRenderRequest.Compositing,
                                      viewportSize: CGSize = VolumeRenderRegressionFixture.viewportSize,
@@ -402,6 +445,33 @@ final class VolumeRaycastPassTests: XCTestCase {
                                commandQueue: commandQueue,
                                input: input,
                                viewportSize: viewportSize)
+    }
+
+    private func rgbEnergy(in image: CGImage) -> Int? {
+        let width = image.width
+        let height = image.height
+        let bytesPerRow = width * 4
+        var pixels = [UInt8](repeating: 0, count: bytesPerRow * height)
+        let bitmapInfo = CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedFirst.rawValue)
+            .union(.byteOrder32Little)
+        guard let context = CGContext(data: &pixels,
+                                      width: width,
+                                      height: height,
+                                      bitsPerComponent: 8,
+                                      bytesPerRow: bytesPerRow,
+                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: bitmapInfo.rawValue) else {
+            return nil
+        }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        var energy = 0
+        for index in stride(from: 0, to: pixels.count, by: 4) {
+            energy += Int(pixels[index])
+            energy += Int(pixels[index + 1])
+            energy += Int(pixels[index + 2])
+        }
+        return energy
     }
 
     private func makeSolidSignedDataset(dimensions: VolumeDimensions,

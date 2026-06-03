@@ -302,8 +302,22 @@ public final class ArgumentEncoderManager {
         defer { stateLock.unlock() }
 
         let index = argumentIndex.rawValue
-
+        let existing = buffers[index]
+        let shouldUpdate: Bool
         if needsUpdate[index] == true {
+            shouldUpdate = true
+        } else {
+            switch (existing, buffer) {
+            case (nil, nil):
+                shouldUpdate = false
+            case let (lhs?, rhs?):
+                shouldUpdate = ObjectIdentifier(lhs as AnyObject) != ObjectIdentifier(rhs as AnyObject)
+            default:
+                shouldUpdate = true
+            }
+        }
+
+        if shouldUpdate {
             buffers[index] = buffer
             argumentEncoder.setBuffer(buffer, offset: 0, index: index)
             needsUpdate[index] = false

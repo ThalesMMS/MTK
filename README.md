@@ -61,19 +61,27 @@ Bounding geometry can be a valid internal implementation detail for ray entry an
 
 For application code, prefer the stable public wrappers: `VolumeDataset`/`ImageData3D`, `StackViewport`, `VolumeViewport`, `VolumeViewport3D`, `ClinicalViewportSession`, clinical transfer functions, `VolumeLayer`, `SurfaceMeshLayer`, and `MetalViewportSurface`/`MetalViewportView`. `MTKRenderingEngine`, `ViewportRenderGraph`, `VolumeResourceManager`, `RenderPassNode`, and output texture pools are implementation details behind those wrappers, not the recommended product API.
 
+## Volume input boundary
+MTKCore owns the renderer-ready volume DTOs used at the package boundary: `VolumetricDimensions`,
+`VolumetricSpacing`, `VolumetricOrientation`, `VolumetricPixelFormat`, `VolumetricSeriesData`, and
+`VolumetricSeriesDataProvider`. App-side loaders that use GDCM, DICOM-Decoder, or custom ingestion keep responsibility
+for DICOM parsing, PHI handling, decompression, slice ordering, rescale, and window metadata, then hand MTKCore a
+decoded scalar volume through `VolumetricSeriesData`, a provider adapter, or a manually constructed `VolumeDataset`.
+The main rendering path does not require `MTKDicomBridge`.
+
 ## Segmentation surfaces
-MTKCore exposes a minimal `SurfaceMesh` contract with vertices, normals, indices, coordinate space, bounds, and segment metadata. `MarchingCubesExtractor` provides deterministic CPU extraction from `LabelmapVolume` labels or scalar `VolumeDataset` thresholds. Extracted labelmap meshes carry the same label/segment id that MPR labelmap overlays use. Extracted meshes default to `.worldMillimeters` coordinates through the source volume affine; `.textureNormalized` is available for callers that need texture-space geometry.
+MTKCore exposes a `SurfaceMesh` contract with vertices, normals, indices, coordinate space, bounds, and segment metadata. `MarchingCubesExtractor` provides deterministic CPU extraction from `LabelmapVolume` labels or scalar `VolumeDataset` thresholds. Extracted labelmap meshes carry the same label/segment id that MPR labelmap overlays use. Extracted meshes default to `.worldMillimeters` coordinates through the source volume affine; `.textureNormalized` is available for callers that need texture-space geometry.
 
 `MTKDicomBridge` can convert parsed DICOM SEG objects into `VolumeLayer` labelmaps aligned to a base `VolumeDataset`, preserving segment labels for MPR and 3D overlay review.
 
-The v1 render path is `labelmap 3D -> SurfaceMesh -> SurfaceMeshLayer -> volume3D viewport`. `MetalSurfaceMeshRenderer` draws indexed triangles into the existing Metal output texture after volume raycasting. Opaque surfaces write mesh-local depth first, semi-transparent surfaces render afterward with stable layer-level back-to-front ordering, and volume crop/clip settings are applied to the surface fragments. True raycast-volume depth occlusion, smoothing, decimation, topology repair, advanced materials, and GPU extraction remain out of scope for this version.
+The render path is `labelmap 3D -> SurfaceMesh -> SurfaceMeshLayer -> volume3D viewport`. `SurfaceMeshProcessor` provides deterministic CPU topology repair, Laplacian smoothing, and ratio-based triangle decimation before rendering. `SurfaceMeshMaterial` carries clinical, matte, glossy, and unlit shading defaults, and `MetalSurfaceMeshRenderer` draws indexed triangles into the existing Metal output texture after volume raycasting. Opaque surfaces write mesh-local depth first, semi-transparent surfaces render afterward with stable layer-level back-to-front ordering, and volume crop/clip settings are applied to the surface fragments. True raycast-volume depth occlusion and GPU extraction remain explicit follow-ups because the raycast pass does not yet publish a reusable depth texture.
 
 ## Multi-volume fusion
 MTKCore and MTKUI support v1 scalar volume fusion for registered layer stacks in a 3D viewport. `VolumeLayer` can carry scalar volume content with its own `VolumeDataset`, `VolumeTransferFunction`, opacity, visibility, and blend mode. `VolumeLayerBlendMode.sourceOver` is the default alpha-over mode, and `.additive` is available for PET-like heat or dose overlays.
 
 The existing single-volume `VolumeRenderRequest(dataset:transferFunction:...)`, `VolumeViewport3D.applyDataset`, and `ClinicalViewportSession` setup paths remain source-compatible. Multi-layer rendering keeps the one-layer fast path; additional visible scalar layers are raycast separately and composited through a Metal pass, so cost scales with the number of visible scalar layers. `VolumeResourceManager` shares layer resources by handle across viewports and reports layer memory in GPU resource metrics.
 
-V1 does not implement registration. Scalar layers must already be registered and resampled into the base volume texture space; non-identity scalar transforms are rejected with a clear error. Labelmap/MPR affine overlay support remains unchanged. The v2 plan for explicit `LayerTransform`, affine consumption, CPU/GPU resampling, PET/CT, MR multimodal, dose-map, and prior/current workflows is documented in [Architecture/MultiVolumeRegistration.md](Architecture/MultiVolumeRegistration.md). Until that plan is implemented, alignment and resampling are external preprocessing requirements.
+MTK does not implement automatic or deformable registration. Scalar layers can be supplied either pre-resampled into the base volume texture space or with an externally supplied axis-aligned scale/translation `baseWorldToLayerWorld` transform. Supported registered scalar overlays are CPU-resampled into the base geometry before the 3D fusion fast path; unsupported affine, rotation, shear, perspective, and non-finite transforms fail with a structured error. Labelmap/MPR affine overlay support remains unchanged. The registration and resampling contract is documented in [Architecture/MultiVolumeRegistration.md](Architecture/MultiVolumeRegistration.md).
 
 ## Requirements
 - Swift 5.10, Xcode 16
@@ -246,6 +254,13 @@ do {
 
 ## Testing notes
 - `swift test` requires a Metal-capable host for GPU-dependent suites; those tests require Metal and skip when unavailable.
+- Hardware or OS capability skips are expected for unavailable Metal, unavailable MPS features, and iOS-only gesture
+  overlay coverage when the suite runs on macOS.
+- Clinical performance budget coverage uses the committed manifest at
+  `Roadmap/ClinicalPerformanceBudgetManifest.json`; local benchmark result files should include the environment fields
+  listed there before comparisons are treated as clinical-rendering evidence.
+- DICOM geometry tests commit small non-PHI manifest fixtures. Large real DICOM series remain optional local fixtures
+  and are intentionally skipped when unavailable.
 - The standalone `VolumeRendererComparison` benchmark requires an explicit local DICOM path through `--dicom`. If you want to use the sample data from the demo project, clone or download fixtures from `https://github.com/ThalesMMS/MTK-Demo.git` and pass the local path explicitly.
 - DICOM source security coverage lives in `DICOM-Decoder`; visual-quality checks compare MPS-accelerated empty-space skipping (feature availability requires MPS) against core Metal ray marching on synthetic datasets.
 

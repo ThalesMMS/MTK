@@ -398,13 +398,21 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
                 : float3(0.0f);
             float3 eyeDir = (material.isBackwardOn != 0) ? rayDirWorld : -rayDirWorld;
             float3 lightDir = eyeDir;
-            sampleColour.rgb = Util::calculateLighting(sampleColour.rgb,
-                                                       normal,
-                                                       lightDir,
-                                                       eyeDir,
-                                                       0.3f,
-                                                       args.params.shade,
-                                                       args.params.light);
+            const float3 shadowDir = ray.direction;
+            const float shadow = VolumeCompute::shadowVisibility(args,
+                                                                 samplePos,
+                                                                 shadowDir,
+                                                                 baseStep,
+                                                                 windowMinValue,
+                                                                 invWindowRange);
+            sampleColour.rgb = VolumeCompute::calculateShadowedLighting(sampleColour.rgb,
+                                                                        normal,
+                                                                        lightDir,
+                                                                        eyeDir,
+                                                                        0.3f,
+                                                                        args.params.shade,
+                                                                        args.params.light,
+                                                                        shadow);
         }
 
         const float alpha = clamp(sampleColour.a, 0.0f, 1.0f);
@@ -450,13 +458,23 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
                                                                   projectionNormal);
                 float3 eyeDir = (material.isBackwardOn != 0) ? rayDirWorld : -rayDirWorld;
                 float3 lightDir = eyeDir;
-                accumulator.rgb = Util::calculateLighting(accumulator.rgb,
-                                                          projectionNormal,
-                                                          lightDir,
-                                                          eyeDir,
-                                                          0.3f,
-                                                          args.params.shade,
-                                                          args.params.light);
+                const float3 projectionPosition = VolumeCompute::projectionPosition(projectionState,
+                                                                                    material.method);
+                const float3 shadowDir = ray.direction;
+                const float shadow = VolumeCompute::shadowVisibility(args,
+                                                                     projectionPosition,
+                                                                     shadowDir,
+                                                                     baseStep,
+                                                                     windowMinValue,
+                                                                     invWindowRange);
+                accumulator.rgb = VolumeCompute::calculateShadowedLighting(accumulator.rgb,
+                                                                           projectionNormal,
+                                                                           lightDir,
+                                                                           eyeDir,
+                                                                           0.3f,
+                                                                           args.params.shade,
+                                                                           args.params.light,
+                                                                           shadow);
             }
         }
         if (debugDensityEnabled) {

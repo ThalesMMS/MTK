@@ -78,6 +78,9 @@ extension MetalVolumeRenderingAdapter {
             extendedState.lightingEnabled &&
             renderQualitySettings.lightingEnabled(for: request.quality)
         uniforms.isLightingOn = lightingEnabled ? 1 : 0
+        uniforms.shadowMode = lightingEnabled
+            ? renderQualitySettings.effectiveShadowMode(for: request.quality).shaderValue
+            : VolumeShadowMode.off.shaderValue
 
         if let gate = extendedState.huGate {
             uniforms.useHuGate = 1

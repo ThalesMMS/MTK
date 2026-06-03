@@ -216,11 +216,65 @@ final class ViewerROITests: XCTestCase {
     }
 
     func testLabelmapVolumeMeasurementCountsRequestedSegment() throws {
+        let layer = try makeLabelmapLayer(labels: [1, 2, 0, 2],
+                                          spacing: VolumeSpacing(x: 2, y: 3, z: 4))
+
+        let summary = try ViewerROILabelmapVolumeCalculator.summary(in: layer, label: 2)
+        let measurement = try ViewerROIMeasurementCalculator.volumeMeasurement(in: layer, label: 2)
+
+        XCTAssertEqual(summary.layerID, "roi-layer")
+        XCTAssertEqual(summary.label, 2)
+        XCTAssertEqual(summary.segmentName, "Target")
+        XCTAssertEqual(summary.voxelCount, 2)
+        XCTAssertEqual(summary.volumeCubicMillimeters, 48, accuracy: 0.001)
+        XCTAssertEqual(summary.measurement.displayText, "48.0 mm3")
+        XCTAssertEqual(measurement, .volumeCubicMillimeters(48))
+    }
+
+    func testLabelmapVolumeMeasurementCountsAllNonZeroLabelsWhenNoSegmentIsSelected() throws {
+        let layer = try makeLabelmapLayer(labels: [1, 2, 0, 2],
+                                          spacing: VolumeSpacing(x: 2, y: 3, z: 4))
+
+        let summary = try ViewerROILabelmapVolumeCalculator.summary(in: layer)
+
+        XCTAssertNil(summary.label)
+        XCTAssertNil(summary.segmentName)
+        XCTAssertEqual(summary.voxelCount, 3)
+        XCTAssertEqual(summary.volumeCubicMillimeters, 72, accuracy: 0.001)
+        XCTAssertEqual(summary.measurement, .volumeCubicMillimeters(72))
+    }
+
+    func testLabelmapVolumeMeasurementRejectsEmptySelection() throws {
+        let layer = try makeLabelmapLayer(labels: [1, 2, 0, 2],
+                                          spacing: VolumeSpacing(x: 2, y: 3, z: 4))
+
+        XCTAssertThrowsError(try ViewerROILabelmapVolumeCalculator.summary(in: layer, label: 3)) { error in
+            XCTAssertEqual(error as? ViewerROILabelmapVolumeError, .emptySelection("roi-layer", 3))
+        }
+    }
+
+    func testVolumeROIKindIsNotSupportedAsDrawnAnnotation() {
+        XCTAssertFalse(ViewerROIKind.volume.supportsDrawnAnnotationMeasurement)
+        XCTAssertFalse(ViewerROIKind.volume.isImplementedInMPRFirstDelivery)
+        XCTAssertNil(ViewerROIMeasurementCalculator.measurement(
+            kind: .volume,
+            axis: .axial,
+            normalizedImagePoints: [
+                CGPoint(x: 0.1, y: 0.1),
+                CGPoint(x: 0.8, y: 0.8)
+            ],
+            dimensions: VolumeDimensions(width: 2, height: 2, depth: 1),
+            spacing: VolumeSpacing(x: 2, y: 3, z: 4)
+        ))
+    }
+
+    private func makeLabelmapLayer(labels: [UInt16],
+                                   spacing: VolumeSpacing) throws -> VolumeLayer {
         let dimensions = VolumeDimensions(width: 2, height: 2, depth: 1)
         let dataset = VolumeDataset(
-            data: Data([1, 0, 2, 0, 0, 0, 2, 0]),
+            data: labels.withUnsafeBytes { Data($0) },
             dimensions: dimensions,
-            spacing: VolumeSpacing(x: 2, y: 3, z: 4),
+            spacing: spacing,
             pixelFormat: .int16Unsigned,
             intensityRange: 0...2
         )
@@ -231,16 +285,7 @@ final class ViewerROITests: XCTestCase {
                 LabelmapSegment(label: 2, name: "Target", color: SIMD4<Float>(1, 0, 0, 1))
             ]
         )
-        let layer = VolumeLayer(id: "roi-layer", labelmap: labelmap)
-
-        let summary = try ViewerROILabelmapVolumeCalculator.summary(in: layer, label: 2)
-
-        XCTAssertEqual(summary.layerID, "roi-layer")
-        XCTAssertEqual(summary.label, 2)
-        XCTAssertEqual(summary.segmentName, "Target")
-        XCTAssertEqual(summary.voxelCount, 2)
-        XCTAssertEqual(summary.volumeCubicMillimeters, 48, accuracy: 0.001)
-        XCTAssertEqual(summary.measurement.displayText, "48.0 mm3")
+        return VolumeLayer(id: "roi-layer", labelmap: labelmap)
     }
 
     private func makeAnnotation(id: UUID = UUID(),

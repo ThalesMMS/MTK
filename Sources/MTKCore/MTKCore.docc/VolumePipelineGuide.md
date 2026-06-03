@@ -20,6 +20,8 @@ The v1 filters below use ``VolumeFilterExecutionPolicy/cpu`` so they can be test
 - ``VolumeCropFilter``
 - ``VolumeThresholdFilter``
 - ``VolumeResampleFilter``
+- ``VolumeBinaryMorphologyFilter``
+- ``VolumeIntensityNormalizationFilter``
 - ``VolumeHistogramFilter``
 - ``VolumeGradientHistogramFilter``
 
@@ -65,8 +67,12 @@ try await viewport.setTransferFunction(mapped.transferFunction)
 
 ``VolumeResampleFilter`` supports nearest-neighbor and trilinear CPU resampling. It preserves physical extent by adjusting spacing according to the source and target dimensions, keeps origin and orientation unchanged, and recomputes the intensity range.
 
+``VolumeBinaryMorphologyFilter`` supports deterministic binary dilation, erosion, opening, and closing over scalar label volumes. Its cubic kernel is clipped at dataset edges so single-slice masks are processed in their available plane instead of being erased by missing out-of-bounds neighbors. It preserves dimensions, spacing, origin, orientation, recommended window, and clinical metadata while recomputing the output intensity range.
+
+``VolumeIntensityNormalizationFilter`` maps scalar values from a source intensity range into a target range, clamps values outside the source range, preserves geometry and clinical metadata, updates the recommended window through the same mapping when present, and recomputes the output intensity range.
+
 ``VolumeHistogramFilter`` returns the existing ``VolumeHistogram`` type. ``VolumeGradientHistogramFilter`` returns ``VolumeGradientHistogram`` with intensity and spacing-aware gradient-magnitude bins.
 
 ## Out of Scope
 
-The v1 pipeline does not add a renderer, backend switch, SceneKit path, Gaussian/median filters, connected components, or surface extraction. Those can be layered onto the same contracts later.
+The CPU pipeline now covers crop, threshold, resample, binary morphology, intensity normalization, histograms, gradient histograms, and mapping. It still does not add a renderer, backend switch, SceneKit path, Gaussian/median filters, connected components, or surface extraction. Those can be layered onto the same contracts later as separate operation slices.

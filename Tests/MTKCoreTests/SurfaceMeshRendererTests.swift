@@ -119,6 +119,41 @@ final class SurfaceMeshRendererTests: XCTestCase {
         XCTAssertFalse(hasVisibleRGB)
     }
 
+    func testSurfaceClippingUsesClipPlanes() async throws {
+        let device = try makeTestMetalDevice()
+        guard let queue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal command queue unavailable on this test runner")
+        }
+        let renderer = try MetalSurfaceMeshRenderer(device: device, commandQueue: queue)
+        let target = try makeRenderTarget(device: device, width: 64, height: 64)
+        let dataset = makeDataset()
+        let layer = SurfaceMeshLayer(
+            id: "clipped-away",
+            mesh: makeQuadMesh(z: 0.75),
+            material: SurfaceMeshMaterial(color: SIMD4<Float>(1, 0, 0, 1))
+        )
+        let plane = try VolumeClipPlane(textureCenteredNormal: SIMD3<Float>(0, 0, 1),
+                                        offset: 0,
+                                        dataset: dataset)
+        let clipping = try VolumeClippingState(clipPlanes: [plane])
+
+        try await renderer.render(layers: [layer],
+                                  dataset: dataset,
+                                  camera: makeCamera(),
+                                  targetTexture: target,
+                                  clipping: clipping,
+                                  clearTarget: true)
+
+        let bytes = try MPRTextureReadbackHelper.readBytes(from: target,
+                                                           bytesPerPixel: 4,
+                                                           device: device,
+                                                           commandQueue: queue)
+        let hasVisibleRGB = stride(from: 0, to: bytes.count, by: 4).contains { offset in
+            bytes[offset] > 5 || bytes[offset + 1] > 5 || bytes[offset + 2] > 5
+        }
+        XCTAssertFalse(hasVisibleRGB)
+    }
+
     func testSemiTransparentSurfaceBlendsWithExistingTarget() async throws {
         let device = try makeTestMetalDevice()
         guard let queue = device.makeCommandQueue() else {
@@ -142,6 +177,60 @@ final class SurfaceMeshRendererTests: XCTestCase {
         let pixel = try centerPixel(from: target, device: device, commandQueue: queue)
         XCTAssertGreaterThan(pixel.g, 10)
         XCTAssertLessThan(pixel.g, 220)
+    }
+
+    func testTransparentSurfacesAreLayerSortedBackToFront() async throws {
+        let device = try makeTestMetalDevice()
+        guard let queue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal command queue unavailable on this test runner")
+        }
+        let renderer = try MetalSurfaceMeshRenderer(device: device, commandQueue: queue)
+        let target = try makeRenderTarget(device: device, width: 64, height: 64)
+        let near = SurfaceMeshLayer(
+            id: "near",
+            mesh: makeQuadMesh(z: 0.75),
+            material: SurfaceMeshMaterial(color: SIMD4<Float>(1, 0, 0, 1)),
+            opacity: 0.5
+        )
+        let far = SurfaceMeshLayer(
+            id: "far",
+            mesh: makeQuadMesh(z: 0.25),
+            material: SurfaceMeshMaterial(color: SIMD4<Float>(0, 0, 1, 1)),
+            opacity: 0.5
+        )
+
+        try await renderer.render(layers: [near, far],
+                                  dataset: makeDataset(),
+                                  camera: makeCamera(),
+                                  targetTexture: target,
+                                  clearTarget: true)
+
+        let pixel = try centerPixel(from: target, device: device, commandQueue: queue)
+        XCTAssertGreaterThan(pixel.r, pixel.b)
+    }
+
+    func testUnlitSurfaceMaterialBypassesDirectionalShading() async throws {
+        let device = try makeTestMetalDevice()
+        guard let queue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal command queue unavailable on this test runner")
+        }
+        let renderer = try MetalSurfaceMeshRenderer(device: device, commandQueue: queue)
+        let target = try makeRenderTarget(device: device, width: 64, height: 64)
+        let layer = SurfaceMeshLayer(
+            id: "unlit",
+            mesh: makeQuadMesh(z: 0.5),
+            material: SurfaceMeshMaterial(color: SIMD4<Float>(0, 1, 0, 1),
+                                          shading: .unlit)
+        )
+
+        try await renderer.render(layers: [layer],
+                                  dataset: makeDataset(),
+                                  camera: makeCamera(),
+                                  targetTexture: target,
+                                  clearTarget: true)
+
+        let pixel = try centerPixel(from: target, device: device, commandQueue: queue)
+        XCTAssertGreaterThan(pixel.g, 220)
     }
 
     private func makeRenderTarget(device: any MTLDevice,

@@ -14,6 +14,9 @@ constant float kToneLookupScale = 2550.0f;
 [[maybe_unused]] constant ushort OPTION_ADAPTIVE = 1u << 2;
 [[maybe_unused]] constant ushort OPTION_DEBUG_DENSITY = 1u << 3;
 [[maybe_unused]] constant ushort OPTION_USE_ACCELERATION = 1u << 4;
+[[maybe_unused]] constant int SHADOW_OFF = 0;
+[[maybe_unused]] constant int SHADOW_HARD = 1;
+[[maybe_unused]] constant int SHADOW_SOFT = 2;
 
 [[maybe_unused]] static inline float3 computeRayDirection(float3 cameraLocal01,
                                                           float3 pixelLocal01)
@@ -311,6 +314,204 @@ struct ProjectionState {
                              densityDataset,
                              0.0f,
                              true);
+}
+
+[[maybe_unused]] static inline bool isInsideUnitVolume(float3 position)
+{
+    return all(position >= float3(0.0f)) && all(position <= float3(1.0f));
+}
+
+[[maybe_unused]] static inline float shadowSampleAlpha(constant RenderingArguments& args,
+                                                       float3 position,
+                                                       float windowMinValue,
+                                                       float invWindowRange)
+{
+    const float huValue = VR::getDensityTrilinear(args.volumeTexture, position);
+    const short hu = VR::decodeInt16SampleToShort(huValue);
+    const float densityWindow = clamp((huValue - windowMinValue) * invWindowRange, 0.0f, 1.0f);
+    if (gateDensity(densityWindow, args.params, hu)) {
+        return 0.0f;
+    }
+    const float densityFloor = clamp(args.params.material.densityFloor, 0.0f, 1.0f);
+    if (densityWindow <= densityFloor) {
+        return 0.0f;
+    }
+    return densityWindow;
+}
+
+[[maybe_unused]] static inline float accumulateShadowOpacity(constant RenderingArguments& args,
+                                                             float3 samplePosition,
+                                                             float3 shadowDirection,
+                                                             float stepDistance,
+                                                             int stepCount,
+                                                             float windowMinValue,
+                                                             float invWindowRange,
+                                                             float opacityScale)
+{
+    if (dot(shadowDirection, shadowDirection) <= 1.0e-6f) {
+        return 0.0f;
+    }
+
+    const float3 direction = normalize(shadowDirection);
+    float3 position = samplePosition + direction * stepDistance * 1.5f;
+    float accumulated = 0.0f;
+
+    for (int step = 0; step < stepCount; ++step) {
+        if (!isInsideUnitVolume(position)) {
+            break;
+        }
+
+        const float alpha = clamp(shadowSampleAlpha(args,
+                                                    position,
+                                                    windowMinValue,
+                                                    invWindowRange) * opacityScale,
+                                  0.0f,
+                                  1.0f);
+        accumulated += (1.0f - accumulated) * alpha;
+        if (accumulated > 0.95f) {
+            break;
+        }
+        position += direction * stepDistance;
+    }
+
+    return clamp(accumulated, 0.0f, 1.0f);
+}
+
+[[maybe_unused]] static inline float hardShadowVisibility(constant RenderingArguments& args,
+                                                          float3 samplePosition,
+                                                          float3 shadowDirection,
+                                                          float baseStep,
+                                                          float windowMinValue,
+                                                          float invWindowRange)
+{
+    // Hard shadows use a thresholded opacity cut so occluders produce a crisp attenuation step.
+    const float localAlpha = shadowSampleAlpha(args,
+                                               samplePosition,
+                                               windowMinValue,
+                                               invWindowRange);
+    const float occlusion = accumulateShadowOpacity(args,
+                                                    samplePosition,
+                                                    shadowDirection,
+                                                    baseStep * 2.0f,
+                                                    8,
+                                                    windowMinValue,
+                                                    invWindowRange,
+                                                    0.45f);
+    const float effectiveOcclusion = max(occlusion, localAlpha * 0.35f);
+    return effectiveOcclusion > 0.12f ? 0.35f : 1.0f;
+}
+
+[[maybe_unused]] static inline float softShadowVisibility(constant RenderingArguments& args,
+                                                          float3 samplePosition,
+                                                          float3 shadowDirection,
+                                                          float baseStep,
+                                                          float windowMinValue,
+                                                          float invWindowRange)
+{
+    // Soft shadows average neighboring shadow rays and apply continuous absorption.
+    if (dot(shadowDirection, shadowDirection) <= 1.0e-6f) {
+        return 1.0f;
+    }
+
+    const float3 direction = normalize(shadowDirection);
+    const float3 referenceAxis = abs(direction.z) < 0.9f ? float3(0.0f, 0.0f, 1.0f)
+                                                         : float3(0.0f, 1.0f, 0.0f);
+    const float3 tangent = normalize(cross(referenceAxis, direction));
+    const float3 bitangent = normalize(cross(direction, tangent));
+    const float spread = 0.35f;
+    float occlusion = 0.0f;
+    const float localAlpha = shadowSampleAlpha(args,
+                                               samplePosition,
+                                               windowMinValue,
+                                               invWindowRange);
+
+    occlusion += accumulateShadowOpacity(args,
+                                         samplePosition,
+                                         direction,
+                                         baseStep * 2.0f,
+                                         8,
+                                         windowMinValue,
+                                         invWindowRange,
+                                         0.28f);
+    occlusion += accumulateShadowOpacity(args,
+                                         samplePosition,
+                                         normalize(direction + tangent * spread),
+                                         baseStep * 2.0f,
+                                         8,
+                                         windowMinValue,
+                                         invWindowRange,
+                                         0.28f);
+    occlusion += accumulateShadowOpacity(args,
+                                         samplePosition,
+                                         normalize(direction - bitangent * spread),
+                                         baseStep * 2.0f,
+                                         8,
+                                         windowMinValue,
+                                         invWindowRange,
+                                         0.28f);
+
+    const float averageOcclusion = max(occlusion / 3.0f, localAlpha * 0.22f);
+    return clamp(exp(-averageOcclusion * 1.6f), 0.45f, 1.0f);
+}
+
+[[maybe_unused]] static inline float shadowVisibility(constant RenderingArguments& args,
+                                                      float3 samplePosition,
+                                                      float3 shadowDirection,
+                                                      float baseStep,
+                                                      float windowMinValue,
+                                                      float invWindowRange)
+{
+    if (args.params.material.shadowMode == SHADOW_OFF) {
+        return 1.0f;
+    }
+
+    const int shadowMode = args.params.material.shadowMode;
+    if (shadowMode == SHADOW_HARD) {
+        return hardShadowVisibility(args,
+                                    samplePosition,
+                                    shadowDirection,
+                                    baseStep,
+                                    windowMinValue,
+                                    invWindowRange);
+    }
+    if (shadowMode == SHADOW_SOFT) {
+        return softShadowVisibility(args,
+                                    samplePosition,
+                                    shadowDirection,
+                                    baseStep,
+                                    windowMinValue,
+                                    invWindowRange);
+    }
+    return 1.0f;
+}
+
+[[maybe_unused]] static inline float3 calculateShadowedLighting(float3 color,
+                                                                float3 normal,
+                                                                float3 lightDirection,
+                                                                float3 eyeDirection,
+                                                                float specularIntensity,
+                                                                float ambientIntensity,
+                                                                float directionalIntensity,
+                                                                float shadow)
+{
+    const float ambient = clamp(ambientIntensity, 0.0f, 1.0f);
+    const float directional = clamp(directionalIntensity, 0.0f, 2.0f);
+    const float diffuseWeight = 0.7f * directional * shadow;
+    constexpr float specularPower = 20.0f;
+
+    float lengthSq = dot(normal, normal);
+    if (lengthSq <= 1.0e-6f) {
+        return ambient * color;
+    }
+
+    float3 n = normalize(normal);
+    float3 l = normalize(lightDirection);
+    float3 v = normalize(eyeDirection);
+    float diffuse = max(dot(n, l), 0.0f);
+    float3 halfVector = normalize(l + v);
+    float specular = pow(max(dot(n, halfVector), 0.0f), specularPower);
+    return color * (ambient + diffuseWeight * diffuse) +
+           float3(specularIntensity * directional * shadow * specular);
 }
 
 struct ClipSampleContext {

@@ -234,6 +234,12 @@ public struct MPRPresentationPass {
         var imageHeight: Float
     }
 
+    private struct EncodedPresentation {
+        let commandBuffer: any MTLCommandBuffer
+        let outputTexture: any MTLTexture
+        let startedAt: CFAbsoluteTime
+    }
+
     public init(device: any MTLDevice,
                 commandQueue: any MTLCommandQueue,
                 library: (any MTLLibrary)? = nil) throws {
@@ -334,24 +340,157 @@ public struct MPRPresentationPass {
                                       shutter: MPRPresentationShutter?,
                                       onCommandBufferFailure: ((MPRPresentationCommandBufferError) -> Void)?,
                                       onCommandBufferCompleted: (() -> Void)?) throws -> CFAbsoluteTime {
+        let encoded = try encodePresentation(frame: frame,
+                                             window: window,
+                                             outputTexture: drawable.texture,
+                                             invert: invert,
+                                             colormap: colormap,
+                                             flipHorizontal: flipHorizontal,
+                                             flipVertical: flipVertical,
+                                             bitShift: bitShift,
+                                             viewportTransform: viewportTransform,
+                                             labelmapOverlays: labelmapOverlays,
+                                             scalarOverlays: scalarOverlays,
+                                             shutter: shutter)
+        let commandBuffer = encoded.commandBuffer
+        let drawableWidth = drawable.texture.width
+        let drawableHeight = drawable.texture.height
+        commandBuffer.present(drawable)
+        if Logger.performanceLoggingEnabled {
+            CommandBufferProfiler.captureTimes(for: commandBuffer,
+                                               label: "mpr_present",
+                                               category: "Benchmark")
+        }
+        let profilerDevice = device
+        let presentationMemoryEstimate = ResourceMemoryEstimator.estimate(for: encoded.outputTexture)
+        let drawablePixelFormat = drawable.texture.pixelFormat
+        commandBuffer.addCompletedHandler { buffer in
+            guard buffer.error == nil, buffer.status == .completed else {
+                onCommandBufferFailure?(
+                    MPRPresentationCommandBufferError.commandBufferFailed(
+                        status: Int(buffer.status.rawValue),
+                        description: buffer.error?.localizedDescription
+                    )
+                )
+                return
+            }
+            if ClinicalProfiler.shared.isRecordingEnabled {
+                let timing = buffer.timings(cpuStart: encoded.startedAt,
+                                            cpuEnd: CFAbsoluteTimeGetCurrent())
+                ClinicalProfiler.shared.recordSample(
+                    stage: .presentationPass,
+                    cpuTime: timing.cpuTime,
+                    gpuTime: timing.gpuTime > 0 ? timing.gpuTime : nil,
+                    memory: presentationMemoryEstimate,
+                    viewport: ProfilingViewportContext(
+                        resolutionWidth: drawableWidth,
+                        resolutionHeight: drawableHeight,
+                        viewportType: "mpr",
+                        quality: "unknown",
+                        renderMode: "mprPresentation"
+                    ),
+                    metadata: [
+                        "cpuPresentTimeMilliseconds": String(format: "%.6f", timing.cpuTime),
+                        "gpuPresentTimeMilliseconds": timing.gpuTime > 0
+                            ? String(format: "%.6f", timing.gpuTime)
+                            : "unavailable",
+                        "kernelTimeMilliseconds": String(format: "%.6f", timing.kernelTime),
+                        "sourceTextureSize": "\(frame.texture.width)x\(frame.texture.height)",
+                        "drawableWidth": "\(drawableWidth)",
+                        "drawableHeight": "\(drawableHeight)",
+                        "drawableSize": "\(drawableWidth)x\(drawableHeight)",
+                        "sourcePixelFormat": "\(frame.texture.pixelFormat)",
+                        "drawablePixelFormat": "\(drawablePixelFormat)",
+                        "voiLUTApplied": colormap == nil ? "false" : "true",
+                        "labelmapOverlayCount": "\(labelmapOverlays.count)",
+                        "scalarOverlayCount": "\(scalarOverlays.count)",
+                        "presentationShutter": shutter == nil ? "false" : "true",
+                        "monochrome": invert ? "MONOCHROME1" : "MONOCHROME2",
+                        "flipHorizontal": flipHorizontal ? "true" : "false",
+                        "flipVertical": flipVertical ? "true" : "false",
+                        "viewportZoom": String(format: "%.6f", viewportTransform.zoom),
+                        "viewportPanX": String(format: "%.6f", viewportTransform.pan.x),
+                        "viewportPanY": String(format: "%.6f", viewportTransform.pan.y)
+                    ],
+                    device: profilerDevice
+                )
+            }
+            onCommandBufferCompleted?()
+        }
+        commandBuffer.commit()
+        return CFAbsoluteTimeGetCurrent() - encoded.startedAt
+    }
+
+    public mutating func makeSnapshotTexture(frame: MPRTextureFrame,
+                                             window: ClosedRange<Int32>,
+                                             transform: MPRDisplayTransform,
+                                             width: Int,
+                                             height: Int,
+                                             invert: Bool = false,
+                                             colormap: (any MTLTexture)? = nil,
+                                             bitShift: Int32 = 0,
+                                             viewportTransform: MPRViewportTransform = .identity,
+                                             labelmapOverlays: [MPRLabelmapOverlay] = [],
+                                             scalarOverlays: [MPRScalarVolumeOverlay] = [],
+                                             shutter: MPRPresentationShutter? = nil) throws -> any MTLTexture {
+        let outputTexture = try makePresentationTexture(width: max(1, width),
+                                                        height: max(1, height),
+                                                        label: "MPR.snapshotTexture")
+        let encoded = try encodePresentation(frame: frame,
+                                             window: window,
+                                             outputTexture: outputTexture,
+                                             invert: invert,
+                                             colormap: colormap,
+                                             flipHorizontal: transform.presentationFlipHorizontal,
+                                             flipVertical: transform.presentationFlipVertical,
+                                             bitShift: bitShift,
+                                             viewportTransform: viewportTransform,
+                                             labelmapOverlays: labelmapOverlays,
+                                             scalarOverlays: scalarOverlays,
+                                             shutter: shutter)
+        encoded.commandBuffer.commit()
+        encoded.commandBuffer.waitUntilCompleted()
+        guard encoded.commandBuffer.error == nil,
+              encoded.commandBuffer.status == .completed else {
+            throw MPRPresentationCommandBufferError.commandBufferFailed(
+                status: Int(encoded.commandBuffer.status.rawValue),
+                description: encoded.commandBuffer.error?.localizedDescription
+            )
+        }
+        return outputTexture
+    }
+
+    private mutating func encodePresentation(frame: MPRTextureFrame,
+                                             window: ClosedRange<Int32>,
+                                             outputTexture: any MTLTexture,
+                                             invert: Bool,
+                                             colormap: (any MTLTexture)?,
+                                             flipHorizontal: Bool,
+                                             flipVertical: Bool,
+                                             bitShift: Int32,
+                                             viewportTransform: MPRViewportTransform,
+                                             labelmapOverlays: [MPRLabelmapOverlay],
+                                             scalarOverlays: [MPRScalarVolumeOverlay],
+                                             shutter: MPRPresentationShutter?) throws -> EncodedPresentation {
         assert(
             Thread.isMainThread,
-            "MPRPresentationPass.present() uses pipelineCache and cachedPresentationTexture; use it from the MainActor or another single-threaded context."
+            "MPRPresentationPass uses pipelineCache and cachedPresentationTexture; " +
+                "use it from the MainActor or another single-threaded context."
         )
         let startedAt = CFAbsoluteTimeGetCurrent()
         try validate(frame: frame,
-                     drawableTexture: drawable.texture,
+                     drawableTexture: outputTexture,
                      colormap: colormap,
                      labelmapOverlays: labelmapOverlays,
                      scalarOverlays: scalarOverlays)
 
-        let drawableWidth = drawable.texture.width
-        let drawableHeight = drawable.texture.height
+        let outputWidth = outputTexture.width
+        let outputHeight = outputTexture.height
         let layout = MPRPresentationLayout.aspectFit(contentAspectRatio: frame.planeGeometry.physicalAspectRatio,
-                                                     destinationWidth: drawableWidth,
-                                                     destinationHeight: drawableHeight)
-        let presentationTexture = try reusablePresentationTexture(width: drawableWidth,
-                                                                  height: drawableHeight)
+                                                     destinationWidth: outputWidth,
+                                                     destinationHeight: outputHeight)
+        let presentationTexture = try reusablePresentationTexture(width: outputWidth,
+                                                                  height: outputHeight)
         let colormapTexture = try colormap ?? reusableFallbackColormapTexture()
         let pipeline = try pipelineState(for: frame.pixelFormat)
         let shutterUniforms = Self.shutterUniformValues(for: shutter)
@@ -447,74 +586,15 @@ public struct MPRPresentationPass {
                          sourceSize: MTLSize(width: finalPresentationTexture.width,
                                              height: finalPresentationTexture.height,
                                              depth: 1),
-                         to: drawable.texture,
+                         to: outputTexture,
                          destinationSlice: 0,
                          destinationLevel: 0,
                          destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
         blitEncoder.endEncoding()
 
-        commandBuffer.present(drawable)
-        if Logger.performanceLoggingEnabled {
-            CommandBufferProfiler.captureTimes(for: commandBuffer,
-                                               label: "mpr_present",
-                                               category: "Benchmark")
-        }
-        let profilerDevice = device
-        let presentationMemoryEstimate = ResourceMemoryEstimator.estimate(for: presentationTexture)
-        let drawablePixelFormat = drawable.texture.pixelFormat
-        commandBuffer.addCompletedHandler { buffer in
-            guard buffer.error == nil, buffer.status == .completed else {
-                onCommandBufferFailure?(
-                    MPRPresentationCommandBufferError.commandBufferFailed(
-                        status: Int(buffer.status.rawValue),
-                        description: buffer.error?.localizedDescription
-                    )
-                )
-                return
-            }
-            if ClinicalProfiler.shared.isRecordingEnabled {
-                let timing = buffer.timings(cpuStart: startedAt,
-                                            cpuEnd: CFAbsoluteTimeGetCurrent())
-                ClinicalProfiler.shared.recordSample(
-                    stage: .presentationPass,
-                    cpuTime: timing.cpuTime,
-                    gpuTime: timing.gpuTime > 0 ? timing.gpuTime : nil,
-                    memory: presentationMemoryEstimate,
-                    viewport: ProfilingViewportContext(
-                        resolutionWidth: drawableWidth,
-                        resolutionHeight: drawableHeight,
-                        viewportType: "mpr",
-                        quality: "unknown",
-                        renderMode: "mprPresentation"
-                    ),
-                    metadata: [
-                        "cpuPresentTimeMilliseconds": String(format: "%.6f", timing.cpuTime),
-                        "gpuPresentTimeMilliseconds": timing.gpuTime > 0 ? String(format: "%.6f", timing.gpuTime) : "unavailable",
-                        "kernelTimeMilliseconds": String(format: "%.6f", timing.kernelTime),
-                        "sourceTextureSize": "\(frame.texture.width)x\(frame.texture.height)",
-                        "drawableWidth": "\(drawableWidth)",
-                        "drawableHeight": "\(drawableHeight)",
-                        "drawableSize": "\(drawableWidth)x\(drawableHeight)",
-                        "sourcePixelFormat": "\(frame.texture.pixelFormat)",
-                        "drawablePixelFormat": "\(drawablePixelFormat)",
-                        "voiLUTApplied": colormap == nil ? "false" : "true",
-                        "labelmapOverlayCount": "\(labelmapOverlays.count)",
-                        "scalarOverlayCount": "\(scalarOverlays.count)",
-                        "presentationShutter": shutter == nil ? "false" : "true",
-                        "monochrome": invert ? "MONOCHROME1" : "MONOCHROME2",
-                        "flipHorizontal": flipHorizontal ? "true" : "false",
-                        "flipVertical": flipVertical ? "true" : "false",
-                        "viewportZoom": String(format: "%.6f", viewportTransform.zoom),
-                        "viewportPanX": String(format: "%.6f", viewportTransform.pan.x),
-                        "viewportPanY": String(format: "%.6f", viewportTransform.pan.y)
-                    ],
-                    device: profilerDevice
-                )
-            }
-            onCommandBufferCompleted?()
-        }
-        commandBuffer.commit()
-        return CFAbsoluteTimeGetCurrent() - startedAt
+        return EncodedPresentation(commandBuffer: commandBuffer,
+                                   outputTexture: outputTexture,
+                                   startedAt: startedAt)
     }
 
     @discardableResult
@@ -954,13 +1034,14 @@ public struct MPRPresentationPass {
     }
 
     private func makePresentationTexture(width: Int,
-                                         height: Int) throws -> any MTLTexture {
+                                         height: Int,
+                                         label: String = "MPR.presentationTexture") throws -> any MTLTexture {
         // StorageModePolicy.md: presentation targets are GPU-only and private.
         guard let texture = OutputTextureFactory.makeTexture(
             device: device,
             width: width,
             height: height,
-            label: "MPR.presentationTexture",
+            label: label,
             usage: OutputTextureFactory.shaderUsage
         ) else {
             throw MPRPresentationPassError.presentationTextureCreationFailed

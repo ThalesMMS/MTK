@@ -52,15 +52,18 @@ extension MetalVolumeRenderingAdapter: VolumeRenderingPortExtended {
     }
 
     public func setToneCurveControlPoints(_ points: [SIMD2<Float>], forChannel channel: Int) async throws {
-        extendedState.toneCurvePoints[channel] = points
+        try validateToneCurveChannel(channel)
+        extendedState.toneCurvePoints[channel] = sanitizeToneCurveControlPoints(points)
     }
 
     public func setToneCurvePresetKey(_ key: String, forChannel channel: Int) async throws {
+        try validateToneCurveChannel(channel)
         extendedState.toneCurvePresetKeys[channel] = key
     }
 
     public func setToneCurveGain(_ gain: Float, forChannel channel: Int) async throws {
-        extendedState.toneCurveGains[channel] = gain
+        try validateToneCurveChannel(channel)
+        extendedState.toneCurveGains[channel] = gain.isFinite ? max(gain, 0) : 1
     }
 
     // MARK: - Rendering Controls
@@ -140,16 +143,19 @@ extension MetalVolumeRenderingAdapter: VolumeRenderingPortExtended {
     
     public func getVolumeMetadata() async throws -> VolumeMetadata? {
         if let snapshot = debugLastSnapshot {
+            let dataset = snapshot.dataset
             return VolumeMetadata(
                 dimensions: SIMD3<Int32>(
-                    Int32(snapshot.dataset.dimensions.width),
-                    Int32(snapshot.dataset.dimensions.height),
-                    Int32(snapshot.dataset.dimensions.depth)
+                    Int32(dataset.dimensions.width),
+                    Int32(dataset.dimensions.height),
+                    Int32(dataset.dimensions.depth)
                 ),
-                spacing: SIMD3<Float>(1, 1, 1),
-                origin: SIMD3<Float>(0, 0, 0),
-                orientation: simd_float3x3(diagonal: SIMD3<Float>(1, 1, 1)),
-                intensityRange: snapshot.dataset.intensityRange
+                spacing: SIMD3<Float>(Float(dataset.spacing.x),
+                                      Float(dataset.spacing.y),
+                                      Float(dataset.spacing.z)),
+                origin: dataset.imageData.origin,
+                orientation: dataset.imageData.direction,
+                intensityRange: dataset.intensityRange
             )
         }
         return nil
@@ -160,8 +166,11 @@ extension MetalVolumeRenderingAdapter: VolumeRenderingPortExtended {
     }
     
     public func getChannelControlSnapshot() async throws -> [ChannelControlSnapshot] {
-        let gain = extendedState.toneCurveGains[0] ?? 1
-        let preset = extendedState.toneCurvePresetKeys[0] ?? "default"
-        return [ChannelControlSnapshot(presetKey: preset, gain: gain, controlPoints: extendedState.toneCurvePoints[0] ?? [])]
+        Self.supportedToneChannelRange.map { channel in
+            ChannelControlSnapshot(channel: channel,
+                                   presetKey: extendedState.toneCurvePresetKeys[channel] ?? "default",
+                                   gain: extendedState.toneCurveGains[channel] ?? 1,
+                                   controlPoints: extendedState.toneCurvePoints[channel] ?? [])
+        }
     }
 }

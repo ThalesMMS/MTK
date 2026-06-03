@@ -22,6 +22,8 @@ private struct OutputTextureShape: Equatable, Sendable {
     let pixelFormat: VolumePixelFormat
 }
 
+typealias MPRPipelineStateFactory = (MTLComputePipelineDescriptor) throws -> MTLComputePipelineState
+
 @preconcurrency
 public actor MetalMPRComputeAdapter: MPRReslicePort {
     public enum ComputeError: Error {
@@ -54,7 +56,9 @@ public actor MetalMPRComputeAdapter: MPRReslicePort {
     private let commandQueue: any MTLCommandQueue
     private let library: any MTLLibrary
     private let debugOptions: VolumeRenderingDebugOptions
+    private let pipelineStateFactory: MPRPipelineStateFactory
     private var pipelineCache: [String: MTLComputePipelineState] = [:]
+    private var unavailablePipelineNames: Set<String> = []
     private var cachedVolumeTexture: (any MTLTexture)?
     private var cachedDatasetIdentity: DatasetIdentity.Content?
     private(set) var textureUploadCount: Int = 0
@@ -73,11 +77,30 @@ public actor MetalMPRComputeAdapter: MPRReslicePort {
                 library: any MTLLibrary,
                 featureFlags: FeatureFlags,
                 debugOptions: VolumeRenderingDebugOptions) {
+        self.init(device: device,
+                  commandQueue: commandQueue,
+                  library: library,
+                  featureFlags: featureFlags,
+                  debugOptions: debugOptions,
+                  pipelineStateFactory: nil)
+    }
+
+    init(device: any MTLDevice,
+         commandQueue: any MTLCommandQueue,
+         library: any MTLLibrary,
+         featureFlags: FeatureFlags,
+         debugOptions: VolumeRenderingDebugOptions,
+         pipelineStateFactory: MPRPipelineStateFactory?) {
         self.device = device
         self.featureFlags = featureFlags
         self.commandQueue = commandQueue
         self.library = library
         self.debugOptions = debugOptions
+        self.pipelineStateFactory = pipelineStateFactory ?? { descriptor in
+            try device.makeComputePipelineState(descriptor: descriptor,
+                                                options: [],
+                                                reflection: nil)
+        }
 
         // Check MPS availability for potential texture operation optimizations
         #if canImport(MetalPerformanceShaders)
@@ -225,6 +248,9 @@ extension MetalMPRComputeAdapter {
     public var debugOutputTextureAllocationCount: Int { outputTextureAllocationCount }
 
     @_spi(Testing)
+    public var debugUnavailablePipelineNames: Set<String> { unavailablePipelineNames }
+
+    @_spi(Testing)
     public var debugCachedOutputTextureShape: (
         width: Int,
         height: Int,
@@ -263,8 +289,12 @@ private extension MetalMPRComputeAdapter {
         if let cached = pipelineCache[functionName] {
             return cached
         }
+        if unavailablePipelineNames.contains(functionName) {
+            throw ComputeError.pipelineUnavailable
+        }
 
         guard let function = library.makeFunction(name: functionName) else {
+            unavailablePipelineNames.insert(functionName)
             logger.error("Metal function \(functionName) not found")
             throw ComputeError.pipelineUnavailable
         }
@@ -275,12 +305,11 @@ private extension MetalMPRComputeAdapter {
         descriptor.computeFunction = function
 
         do {
-            let pipeline = try device.makeComputePipelineState(descriptor: descriptor,
-                                                               options: [],
-                                                               reflection: nil)
+            let pipeline = try pipelineStateFactory(descriptor)
             pipelineCache[functionName] = pipeline
             return pipeline
         } catch {
+            unavailablePipelineNames.insert(functionName)
             logger.error("Failed to create MPR compute pipeline: \(error.localizedDescription)")
             throw ComputeError.pipelineUnavailable
         }

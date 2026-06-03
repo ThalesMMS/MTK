@@ -164,7 +164,7 @@ final class MTKRenderingEngineResourceTests: MTKRenderingEngineTestCase {
         XCTAssertEqual(releasedMetrics.volumeTextureCount, 1)
     }
 
-    func test_nonIdentityScalarVolumeLayerTransformIsRejectedBeforeResourceAcquisition() async throws {
+    func test_translatedScalarVolumeLayerTransformIsResampledBeforeResourceAcquisition() async throws {
         let viewport = try await engine.createViewport(
             ViewportDescriptor(type: .volume3D,
                                initialSize: CGSize(width: 32, height: 32))
@@ -175,8 +175,41 @@ final class MTKRenderingEngineResourceTests: MTKRenderingEngineTestCase {
             seed: 42
         )
         var transform = matrix_identity_float4x4
-        transform.columns.3.x = 8
+        transform.columns.3.x = 1
         let petLayer = VolumeLayer(id: "translated-pet",
+                                   dataset: petDataset,
+                                   transferFunction: .defaultGrayscale(for: petDataset),
+                                   baseWorldToLayerWorld: transform)
+
+        try await engine.setVolume(testDataset, for: viewport)
+        try await engine.configure(viewport, volumeLayers: [petLayer])
+
+        let textureCount = await engine.debugResourceTextureCount
+        let diagnostics = await engine.volumeLayerResourceSharingDiagnostics(for: [viewport])
+        let storedLayers = await engine.debugVolumeLayers(for: viewport)
+        XCTAssertEqual(textureCount, 2)
+        XCTAssertEqual(diagnostics.map(\.layerID), ["translated-pet"])
+        XCTAssertEqual(storedLayers?.first?.baseWorldToLayerWorld, matrix_identity_float4x4)
+        XCTAssertEqual(storedLayers?.first?.scalarVolume?.dataset.dimensions, testDataset.dimensions)
+    }
+
+    func test_unsupportedScalarVolumeLayerTransformIsRejectedBeforeResourceAcquisition() async throws {
+        let viewport = try await engine.createViewport(
+            ViewportDescriptor(type: .volume3D,
+                               initialSize: CGSize(width: 32, height: 32))
+        )
+        let petDataset = VolumeDatasetTestFactory.makeTestDataset(
+            dimensions: testDataset.dimensions,
+            pixelFormat: .int16Signed,
+            seed: 42
+        )
+        let transform = simd_float4x4(columns: (
+            SIMD4<Float>(0, 1, 0, 0),
+            SIMD4<Float>(-1, 0, 0, 0),
+            SIMD4<Float>(0, 0, 1, 0),
+            SIMD4<Float>(0, 0, 0, 1)
+        ))
+        let petLayer = VolumeLayer(id: "rotated-pet",
                                    dataset: petDataset,
                                    transferFunction: .defaultGrayscale(for: petDataset),
                                    baseWorldToLayerWorld: transform)
@@ -185,9 +218,9 @@ final class MTKRenderingEngineResourceTests: MTKRenderingEngineTestCase {
 
         do {
             try await engine.configure(viewport, volumeLayers: [petLayer])
-            XCTFail("Expected non-identity scalar transform to be rejected")
+            XCTFail("Expected unsupported scalar transform to be rejected")
         } catch let error as MTKRenderingEngine.EngineError {
-            XCTAssertEqual(error, .unsupportedScalarLayerTransform("translated-pet"))
+            XCTAssertEqual(error, .unsupportedScalarLayerTransform("rotated-pet"))
         } catch {
             XCTFail("Unexpected error: \(error)")
         }

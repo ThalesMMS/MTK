@@ -141,11 +141,12 @@ final class MakeTransferFunctionTests: XCTestCase {
         XCTAssertEqual(tf.maximumValue, 3071, accuracy: 1, "maximumValue should come from dataset intensityRange")
     }
 
-    func testMakeTransferFunctionSetsShiftToZero() async throws {
+    func testMakeTransferFunctionUsesExtendedShift() async throws {
         let dataset = makeDataset(intensityMin: 0, intensityMax: 4095)
         let transfer = makeValidTransferFunction()
+        try await adapter.setShift(128)
         let tf = try await adapter.makeTransferFunctionForTesting(from: transfer, dataset: dataset)
-        XCTAssertEqual(tf.shift, 0, accuracy: 1e-6, "shift should always be 0")
+        XCTAssertEqual(tf.shift, 128, accuracy: 1e-6)
     }
 
     func testMakeTransferFunctionThrowsForEmptyColourPoints() async {

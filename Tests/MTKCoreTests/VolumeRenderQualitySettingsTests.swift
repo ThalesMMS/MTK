@@ -51,6 +51,26 @@ final class VolumeRenderQualitySettingsTests: XCTestCase {
         XCTAssertEqual(settings.ambientLightIntensity, 0)
     }
 
+    func testShadowModeShaderValuesAreStable() {
+        XCTAssertEqual(VolumeShadowMode.off.shaderValue, 0)
+        XCTAssertEqual(VolumeShadowMode.hard.shaderValue, 1)
+        XCTAssertEqual(VolumeShadowMode.soft.shaderValue, 2)
+        XCTAssertFalse(VolumeShadowMode.off.isEnabled)
+        XCTAssertTrue(VolumeShadowMode.hard.isEnabled)
+        XCTAssertTrue(VolumeShadowMode.soft.isEnabled)
+    }
+
+    func testEffectiveShadowModeReflectsInteractionAndLightIntensity() {
+        let interacting = VolumeRenderQualitySettings(shadowMode: .soft,
+                                                      disableShadowsWhenInteracting: true)
+        let dark = VolumeRenderQualitySettings(shadowMode: .hard,
+                                               directionalLightIntensity: 0)
+
+        XCTAssertEqual(interacting.effectiveShadowMode(for: .interactive), .off)
+        XCTAssertEqual(interacting.effectiveShadowMode(for: .production), .soft)
+        XCTAssertEqual(dark.effectiveShadowMode(for: .production), .off)
+    }
+
     func testLightingIsDisabledForInteractiveQualityWhenRequested() {
         let settings = VolumeRenderQualitySettings(shadowMode: .hard,
                                                    disableShadowsWhenInteracting: true)

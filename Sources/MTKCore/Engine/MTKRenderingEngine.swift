@@ -47,6 +47,7 @@ package actor MTKRenderingEngine {
         case volumeResourceUnavailable
         case renderTextureUnavailable
         case unsupportedScalarLayerTransform(String)
+        case volumeRendererUnavailable(reason: String)
 
         package var errorDescription: String? {
             switch self {
@@ -63,7 +64,9 @@ package actor MTKRenderingEngine {
             case .renderTextureUnavailable:
                 return "Render texture unavailable"
             case .unsupportedScalarLayerTransform(let layerID):
-                return "Scalar volume layer \(layerID) uses a transform; v1 multi-volume fusion requires pre-registered volumes in the base texture space."
+                return "Scalar volume layer \(layerID) uses an unsupported transform for registered fusion."
+            case .volumeRendererUnavailable(let reason):
+                return "Volume renderer unavailable: \(reason)"
             }
         }
     }
@@ -119,7 +122,7 @@ package actor MTKRenderingEngine {
     private let device: any MTLDevice
     private let commandQueue: any MTLCommandQueue
     private let resourceManager: VolumeResourceManager
-    private let volumeAdapter: MetalVolumeRenderingAdapter
+    private let volumeAdapterProvider: MetalVolumeRenderingAdapterProvider
     private let mprAdapter: MetalMPRAdapter
     private let renderGraph = ViewportRenderGraph()
     private var viewports: [ViewportID: ViewportState] = [:]
@@ -144,7 +147,8 @@ package actor MTKRenderingEngine {
         }
     }
 
-    package init(device: (any MTLDevice)? = nil) async throws {
+    package init(device: (any MTLDevice)? = nil,
+                 volumeAdapterFactory: @escaping MetalVolumeRenderingAdapterProvider.Factory = MetalVolumeRenderingAdapterProvider.defaultFactory) async throws {
         let resolvedDevice: any MTLDevice
         if let device {
             resolvedDevice = device
@@ -162,15 +166,16 @@ package actor MTKRenderingEngine {
         self.commandQueue = resolvedQueue
         self.resourceManager = VolumeResourceManager(device: resolvedDevice,
                                                      commandQueue: resolvedQueue)
-        self.volumeAdapter = try MetalVolumeRenderingAdapter(device: resolvedDevice,
-                                                             commandQueue: resolvedQueue)
+        self.volumeAdapterProvider = MetalVolumeRenderingAdapterProvider(device: resolvedDevice,
+                                                                         commandQueue: resolvedQueue,
+                                                                         factory: volumeAdapterFactory)
         self.mprAdapter = try MetalMPRAdapter(device: resolvedDevice,
                                               commandQueue: resolvedQueue)
         self.mprFrameCache = await MainActor.run { MPRFrameCache<ViewportID>() }
         self.renderPassDispatcher = RenderPassDispatcher(
             device: resolvedDevice,
             commandQueue: resolvedQueue,
-            volumeAdapter: volumeAdapter,
+            volumeAdapterProvider: volumeAdapterProvider,
             mprAdapter: mprAdapter,
             resourceManager: resourceManager,
             mprFrameCache: mprFrameCache,
@@ -657,8 +662,10 @@ package actor MTKRenderingEngine {
             }
         }
 
+        let normalizedVolumeLayers = try resampledVolumeLayersIfNeeded(volumeLayers,
+                                                                       for: uniqueViewports)
         let sharedLayerHandles = try await acquireSharedScalarLayerHandles(
-            for: volumeLayers,
+            for: normalizedVolumeLayers,
             referenceCount: uniqueViewports.count
         )
         var didCommit = false
@@ -677,7 +684,7 @@ package actor MTKRenderingEngine {
                 throw EngineError.viewportNotFound(viewport)
             }
             previousLayerHandles.append(state.volumeLayerResourceHandles)
-            state.volumeLayers = volumeLayers
+            state.volumeLayers = normalizedVolumeLayers
             state.volumeLayerResourceHandles = sharedLayerHandles
             replacements.append((viewport, state))
         }
@@ -900,6 +907,52 @@ package struct ViewportLayerResourceDiagnostic: Sendable, Equatable {
 #endif
 
 private extension MTKRenderingEngine {
+    func resampledVolumeLayersIfNeeded(_ layers: [VolumeLayer],
+                                       for viewportIDs: [ViewportID]) throws -> [VolumeLayer] {
+        guard let transformedLayer = layers.first(where: { layer in
+            guard layer.isVisible,
+                  layer.clampedOpacity > 0,
+                  layer.scalarVolume != nil else {
+                return false
+            }
+            return !LayerTransform(baseWorldToLayerWorld: layer.baseWorldToLayerWorld).isApproximatelyIdentity
+        }) else {
+            return layers
+        }
+
+        var baseDataset: VolumeDataset?
+        var baseIdentity: DatasetIdentity.Content?
+        for viewport in viewportIDs {
+            guard let state = viewports[viewport] else {
+                throw EngineError.viewportNotFound(viewport)
+            }
+            guard let handle = state.resourceHandle,
+                  let dataset = resourceManager.dataset(for: handle) else {
+                throw EngineError.volumeNotSet(viewport)
+            }
+            let identity = DatasetIdentity.Content(dataset: dataset)
+            if let baseIdentity, baseIdentity != identity {
+                throw EngineError.unsupportedScalarLayerTransform(transformedLayer.id)
+            }
+            baseDataset = dataset
+            baseIdentity = identity
+        }
+
+        guard let baseDataset else { return layers }
+        return try layers.map { layer in
+            guard layer.isVisible,
+                  layer.clampedOpacity > 0,
+                  layer.scalarVolume != nil else {
+                return layer
+            }
+            do {
+                return try RegisteredVolumeLayerResampler.resampledLayer(layer, into: baseDataset)
+            } catch RegisteredVolumeLayerResamplingError.unsupportedTransform {
+                throw EngineError.unsupportedScalarLayerTransform(layer.id)
+            }
+        }
+    }
+
     func acquireSharedScalarLayerHandles(for layers: [VolumeLayer],
                                          referenceCount: Int) async throws -> [String: VolumeResourceHandle] {
         guard referenceCount > 0 else { return [:] }
@@ -936,7 +989,7 @@ private extension MTKRenderingEngine {
                   layer.scalarVolume != nil else {
                 return nil
             }
-            guard layer.baseWorldToLayerWorld.isApproximatelyIdentity else {
+            guard LayerTransform(baseWorldToLayerWorld: layer.baseWorldToLayerWorld).isApproximatelyIdentity else {
                 throw EngineError.unsupportedScalarLayerTransform(layer.id)
             }
             return layer
@@ -998,30 +1051,6 @@ private extension MTKRenderingEngine {
 
         let transferFunction = state.transferFunction ?? .defaultGrayscale(for: dataset)
         return !transferFunction.colourPoints.isEmpty && !transferFunction.opacityPoints.isEmpty
-    }
-}
-
-private extension simd_float4x4 {
-    var isApproximatelyIdentity: Bool {
-        isApproximatelyEqual(to: matrix_identity_float4x4, tolerance: 1e-5)
-    }
-
-    func isApproximatelyEqual(to other: simd_float4x4,
-                              tolerance: Float) -> Bool {
-        columns.0.isApproximatelyEqual(to: other.columns.0, tolerance: tolerance) &&
-            columns.1.isApproximatelyEqual(to: other.columns.1, tolerance: tolerance) &&
-            columns.2.isApproximatelyEqual(to: other.columns.2, tolerance: tolerance) &&
-            columns.3.isApproximatelyEqual(to: other.columns.3, tolerance: tolerance)
-    }
-}
-
-private extension SIMD4 where Scalar == Float {
-    func isApproximatelyEqual(to other: SIMD4<Float>,
-                              tolerance: Float) -> Bool {
-        abs(x - other.x) <= tolerance &&
-            abs(y - other.y) <= tolerance &&
-            abs(z - other.z) <= tolerance &&
-            abs(w - other.w) <= tolerance
     }
 }
 

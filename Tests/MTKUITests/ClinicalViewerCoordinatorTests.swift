@@ -181,6 +181,17 @@ final class ClinicalViewerCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.twoDSyncState.syncLocation)
     }
 
+    func test2DLocationSyncRequiresLocationCapability() {
+        let coordinator = ClinicalViewerCoordinator()
+
+        XCTAssertFalse(coordinator.canSyncTwoDLocation)
+
+        coordinator.setTwoDSyncOption(.location, enabled: true)
+
+        XCTAssertFalse(coordinator.twoDSyncState.syncLocation)
+        XCTAssertEqual(coordinator.twoDTool, .sync)
+    }
+
     func test2DResliceReportsUnavailableWithoutDataset() {
         let coordinator = ClinicalViewerCoordinator()
 
@@ -227,6 +238,24 @@ final class ClinicalViewerCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.twoDROIAnnotations.isEmpty)
     }
 
+    func test2DVolumeROIKindIsIgnoredUntilDrawnVolumeMeasurementExists() {
+        let coordinator = ClinicalViewerCoordinator()
+
+        coordinator.setTwoDROIKind(.distance)
+        coordinator.setTwoDROIKind(.volume)
+        XCTAssertEqual(coordinator.twoDROIKind, .distance)
+
+        coordinator.handleTwoDROIInteraction(
+            Clinical2DROIInteraction(kind: .volume,
+                                     axis: .axial,
+                                     sliceIndex: 0,
+                                     startImagePoint: CGPoint(x: 0.1, y: 0.1),
+                                     endImagePoint: CGPoint(x: 0.5, y: 0.5))
+        )
+
+        XCTAssertTrue(coordinator.twoDROIAnnotations.isEmpty)
+    }
+
     func test2DWindowLevelDefaultsAndPresentationApplyToStackViewport() async throws {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal unavailable in this environment.")
@@ -261,6 +290,75 @@ final class ClinicalViewerCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.interactionMode, .orbit)
         XCTAssertEqual(coordinator.mprInteractionTool, .crosshair)
         XCTAssertEqual(coordinator.mprViewportTransforms, mprTransformsBefore2DRotation)
+    }
+
+    func testStack2DSnapshotFrameExportsThroughCoordinator() async throws {
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("Metal unavailable in this environment.")
+        }
+        let coordinator = ClinicalViewerCoordinator()
+        defer { coordinator.shutdownActiveViewports() }
+        let dataset = makeStackSnapshotDataset(dimensions: VolumeDimensions(width: 8, height: 8, depth: 4))
+
+        coordinator.setMode(.stack2D)
+        try await coordinator.applyDataset(dataset)
+        try await waitUntil("2D stack viewport received dataset") {
+            coordinator.stack2DViewport?.state.dataset?.dimensions == dataset.dimensions
+        }
+        let viewport = try XCTUnwrap(coordinator.stack2DViewport)
+        setSurfaceSize(viewport.metalSurface, size: CGSize(width: 64, height: 64))
+        XCTAssertTrue(coordinator.canCaptureSnapshot)
+
+        coordinator.setTwoDSliceIndex(2)
+        coordinator.setTwoDWindowLevel(window: 600, level: -700)
+        try await waitUntil("2D stack viewport applied snapshot window") {
+            viewport.sliceIndex == 2
+                && viewport.state.windowLevel.window == 600
+                && viewport.state.windowLevel.level == -700
+        }
+
+        coordinator.applyTwoDCLUTPreset(.invertedGrayscale)
+        coordinator.setTwoDTransform(
+            Viewer2DTransform(zoom: 1.2,
+                              pan: SIMD2<Double>(0.05, -0.05),
+                              rotationRadians: .pi / 2,
+                              isFlippedHorizontally: true)
+        )
+        try await waitUntil("2D stack viewport applied snapshot presentation") {
+            viewport.windowPresentation.clut == .invertedGrayscale
+                && abs(viewport.viewportTransform.rotationRadians - .pi / 2) < 0.0001
+        }
+
+        let frame = try await coordinator.renderSnapshotFrame()
+        let image = try await TextureSnapshotExporter().makeCGImage(from: frame)
+
+        XCTAssertEqual(frame.metadata.viewportID, viewport.id)
+        XCTAssertEqual(frame.metadata.pixelFormat, .bgra8Unorm)
+        XCTAssertEqual(frame.texture.width, 64)
+        XCTAssertEqual(frame.texture.height, 64)
+        XCTAssertTrue(imageContainsVisiblePixels(image))
+    }
+
+    func testStack2DSnapshotFrameReportsMissingDataset() async throws {
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("Metal unavailable in this environment.")
+        }
+        let coordinator = ClinicalViewerCoordinator()
+        defer { coordinator.shutdownActiveViewports() }
+
+        coordinator.setMode(.stack2D)
+        try await waitUntil("2D stack viewport created") {
+            coordinator.stack2DViewport != nil
+        }
+
+        do {
+            _ = try await coordinator.renderSnapshotFrame()
+            XCTFail("Expected missing dataset error")
+        } catch VolumeViewportController.Error.datasetNotLoaded {
+            // Expected explicit failure mode.
+        } catch {
+            XCTFail("Expected datasetNotLoaded, got \(error)")
+        }
     }
 
     func test2DResliceAxisRecreatesStackViewportAndPreservesPresentation() async throws {
@@ -827,9 +925,40 @@ private func assertTransferFunction(_ actual: TransferFunction?,
     XCTAssertEqual(actual.renderingIntent, expected.renderingIntent, file: file, line: line)
 }
 
+private func imageContainsVisiblePixels(_ image: CGImage) -> Bool {
+    let width = image.width
+    let height = image.height
+    let bytesPerPixel = 4
+    let bytesPerRow = width * bytesPerPixel
+    var pixels = [UInt8](repeating: 0, count: bytesPerRow * height)
+
+    guard let context = CGContext(data: &pixels,
+                                  width: width,
+                                  height: height,
+                                  bitsPerComponent: 8,
+                                  bytesPerRow: bytesPerRow,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+        return false
+    }
+
+    context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+    return stride(from: 0, to: pixels.count, by: bytesPerPixel).contains { index in
+        pixels[index] > 0 || pixels[index + 1] > 0 || pixels[index + 2] > 0
+    }
+}
+
+@MainActor
+private func setSurfaceSize(_ surface: MetalViewportSurface, size: CGSize) {
+    surface.view.frame = CGRect(origin: .zero, size: size)
+    surface.setContentScale(1)
+}
+
 private func makeDataset(intensityRange: ClosedRange<Int32> = 0...1,
                          recommendedWindow: ClosedRange<Int32>? = nil,
-                         dimensions: VolumeDimensions = VolumeDimensions(width: 2, height: 2, depth: 2)) -> VolumeDataset {
+                         dimensions: VolumeDimensions = VolumeDimensions(width: 2,
+                                                                          height: 2,
+                                                                          depth: 2)) -> VolumeDataset {
     let voxelCount = dimensions.width * dimensions.height * dimensions.depth
     let values = [Int16](repeating: 1, count: voxelCount)
     return VolumeDataset(
@@ -839,6 +968,26 @@ private func makeDataset(intensityRange: ClosedRange<Int32> = 0...1,
         pixelFormat: .int16Signed,
         intensityRange: intensityRange,
         recommendedWindow: recommendedWindow
+    )
+}
+
+private func makeStackSnapshotDataset(dimensions: VolumeDimensions) -> VolumeDataset {
+    var values = [Int16]()
+    values.reserveCapacity(dimensions.voxelCount)
+    for z in 0..<dimensions.depth {
+        for y in 0..<dimensions.height {
+            for x in 0..<dimensions.width {
+                values.append(Int16(-1_000 + x + y * 10 + z * 100))
+            }
+        }
+    }
+    return VolumeDataset(
+        data: values.withUnsafeBytes { Data($0) },
+        dimensions: dimensions,
+        spacing: VolumeSpacing(x: 1, y: 1, z: 2),
+        pixelFormat: .int16Signed,
+        intensityRange: -1_000...(-400),
+        recommendedWindow: -900...(-500)
     )
 }
 

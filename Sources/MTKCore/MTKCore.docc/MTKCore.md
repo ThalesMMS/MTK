@@ -56,6 +56,8 @@ Source/filter/mapper contracts for deterministic volume data transforms before d
 - ``VolumeCropFilter``
 - ``VolumeThresholdFilter``
 - ``VolumeResampleFilter``
+- ``VolumeBinaryMorphologyFilter``
+- ``VolumeIntensityNormalizationFilter``
 - ``VolumeHistogramFilter``
 - ``VolumeGradientHistogramFilter``
 

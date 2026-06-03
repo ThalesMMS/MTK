@@ -112,6 +112,47 @@ final class MetalMPRComputeAdapterStateTests: MetalMPRComputeAdapterTestCase {
         XCTAssertEqual(snapshot?.intensityRange, dataset.intensityRange)
     }
 
+    func test_pipelineCreationFailureIsMemoizedWithoutAllocatingOutputTexture() async throws {
+        let counter = PipelineStateFactoryCounter()
+        let failingAdapter = MetalMPRComputeAdapter(
+            device: device,
+            commandQueue: commandQueue,
+            library: library,
+            featureFlags: FeatureFlags.evaluate(for: device),
+            debugOptions: VolumeRenderingDebugOptions(),
+            pipelineStateFactory: { descriptor in
+                try counter.makePipelineState(descriptor)
+            }
+        )
+        let dataset = VolumeDatasetTestFactory.makeTestDataset()
+        let plane = MPRTestHelpers.makeTestPlaneGeometry(for: dataset)
+        let volumeTexture = try await makeVolumeTexture(for: dataset)
+
+        for _ in 0..<2 {
+            do {
+                _ = try await failingAdapter.makeSlabTexture(
+                    dataset: dataset,
+                    volumeTexture: volumeTexture,
+                    plane: plane,
+                    thickness: 1,
+                    steps: 1,
+                    blend: .single
+                )
+                XCTFail("Expected MPR pipeline creation to fail")
+            } catch MetalMPRComputeAdapter.ComputeError.pipelineUnavailable {
+                continue
+            } catch {
+                XCTFail("Unexpected error: \(error)")
+            }
+        }
+
+        XCTAssertEqual(counter.count, 1)
+        let unavailablePipelineNames = await failingAdapter.debugUnavailablePipelineNames
+        let outputTextureAllocationCount = await failingAdapter.debugOutputTextureAllocationCount
+        XCTAssertEqual(unavailablePipelineNames, ["computeMPRSlabUnsigned"])
+        XCTAssertEqual(outputTextureAllocationCount, 0)
+    }
+
     func test_makeTextureFrameWithSmallDataset() async throws {
         let dimensions = VolumeDimensions(width: 2, height: 2, depth: 2)
         let values: [UInt16] = Array(repeating: 1000, count: dimensions.voxelCount)
@@ -161,3 +202,24 @@ final class MetalMPRComputeAdapterStateTests: MetalMPRComputeAdapterTestCase {
         XCTAssertEqual(try MPRTestHelpers.readInputValues(UInt16.self, from: frame).count, 64 * 64)
     }
 }
+
+private final class PipelineStateFactoryCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var callCount = 0
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return callCount
+    }
+
+    func makePipelineState(_ descriptor: MTLComputePipelineDescriptor) throws -> MTLComputePipelineState {
+        _ = descriptor
+        lock.lock()
+        callCount += 1
+        lock.unlock()
+        throw PipelineStateFactoryError()
+    }
+}
+
+private struct PipelineStateFactoryError: Error {}

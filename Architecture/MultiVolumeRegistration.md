@@ -4,13 +4,14 @@ This note defines the current MTK v1 multi-volume contract and the technical
 direction for v2 registration-aware fusion. It is a design plan, not a clinical
 validation claim.
 
-## Current V1 Contract
+## Current Contract
 
 MTK currently supports scalar layer fusion for volumes that are already
-registered and resampled into the base volume texture space:
+registered and either resampled into the base volume texture space or supplied
+with a supported externally computed transform:
 
 ```text
-base VolumeDataset + [registered scalar VolumeLayer] -> per-layer raycast -> 2D composite
+base VolumeDataset + [registered scalar VolumeLayer] -> optional CPU resample -> per-layer raycast -> 2D composite
 ```
 
 Supported today:
@@ -21,61 +22,61 @@ Supported today:
 - `VolumeLayerBlendMode.additive` supports heat-like PET or dose overlays.
 - `VolumeViewport3D` and `ClinicalViewportSession` can apply visible scalar
   layers to the 3D volume viewport.
+- `LayerTransform` classifies scalar `baseWorldToLayerWorld` matrices.
+- Supported non-identity scalar transforms are axis-aligned scale, translation,
+  or both. These are CPU-resampled into the base volume geometry before 3D
+  fusion dispatch.
 - Layer rendering cost scales with the number of visible scalar layers because
   v1 raycasts each scalar layer separately before the 2D composite pass.
 
 Explicitly rejected today:
 
-- Non-identity scalar `VolumeLayer.baseWorldToLayerWorld` transforms.
+- Rotation, shear, perspective, non-affine, non-finite, and non-positive-scale
+  scalar `VolumeLayer.baseWorldToLayerWorld` transforms.
 - Runtime registration, affine solving, deformable registration, and automatic
   alignment.
 - Sampling a secondary scalar layer directly in its own voxel grid during a base
   volume raycast.
 
-The rejection is intentional. V1 renders only layers that already share the base
-texture space, so external preprocessing must register and resample PET, MR,
-dose, or prior/current volumes before they enter the layer stack.
+The rejection is intentional. MTK consumes externally supplied registration and
+can resample the supported scale/translation subset, but it does not compute or
+clinically validate registration.
 
 Labelmap MPR overlays are separate: they may use `baseWorldToLayerWorld` for MPR
-texture-basis mapping, but that does not imply scalar 3D fusion supports
-non-identity transforms.
+texture-basis mapping.
 
-## Proposed V2 Model
+## Implemented Transform Model
 
-V2 should promote the current raw matrix into a named transform contract:
+The current public classifier is:
 
 ```swift
-public struct LayerTransform: Sendable, Equatable, Codable {
+public struct LayerTransform: Sendable, Equatable {
     public var baseWorldToLayerWorld: simd_float4x4
-    public var provenance: Provenance
-    public var registrationQuality: RegistrationQuality?
 
-    public enum Provenance: Sendable, Equatable, Codable {
+    public enum Classification: String, Sendable, Equatable {
         case identity
-        case externalRigid
-        case externalAffine
-        case preResampled
-        case derivedFromDicomGeometry
+        case translation
+        case axisAlignedScale
+        case translatedAxisAlignedScale
+        case unsupportedAffine
+        case nonAffine
     }
-}
 
-public struct RegistrationQuality: Sendable, Equatable, Codable {
-    public var rmsErrorMillimeters: Double?
-    public var confidence: Float?
-    public var notes: String?
+    public var classification: Classification { get }
+    public var supportsCPUResampling: Bool { get }
 }
 ```
 
-The important boundary is provenance. MTK may consume an affine supplied by a
-trusted external workflow, but MTK should not claim that it computed or validated
-clinical registration unless a dedicated validated registration module exists.
+Future provenance and registration-quality metadata can extend this value type.
+For now, provenance remains a caller responsibility: MTK may consume a transform
+supplied by a trusted external workflow, but MTK does not claim that it computed
+or validated clinical registration.
 
 Expected `VolumeLayer` behavior:
 
 - Identity or `preResampled` layers use the current v1 fast path.
-- Rigid or affine layers require either an explicit resampling step before
-  rendering, or a renderer that can sample in layer texture space from base ray
-  coordinates.
+- Supported scale/translation layers are resampled by
+  `RegisteredVolumeLayerResampler` before 3D rendering.
 - Unsupported transforms fail before GPU resource allocation with a recovery
   message that asks the caller to register or resample into base space.
 - Transfer function, opacity, visibility, and blend mode remain per layer.
@@ -92,7 +93,8 @@ Expected `VolumeLayerBlendMode` behavior:
 
 ## Resampling Strategy
 
-V2 should add an explicit resampling stage before changing interactive rendering:
+The implemented baseline adds an explicit resampling stage before interactive
+3D rendering:
 
 ```text
 secondary VolumeDataset
@@ -102,10 +104,9 @@ secondary VolumeDataset
   -> current VolumeLayer fast path
 ```
 
-CPU resampling is the minimum viable implementation because it is deterministic,
-testable without new render pipeline contracts, and suitable for small planning
-fixtures. GPU resampling can follow once interpolation, bounds behavior, and
-metadata provenance are stable.
+CPU resampling is used because it is deterministic, testable without new render
+pipeline contracts, and suitable for small planning fixtures. GPU resampling can
+follow once interpolation, bounds behavior, and metadata provenance are stable.
 
 Minimum resampling requirements:
 
@@ -114,7 +115,7 @@ Minimum resampling requirements:
 - explicit out-of-bounds fill value;
 - resulting `ImageData3D` matching the base dataset geometry;
 - intensity range recomputed after resampling;
-- provenance recorded in layer metadata or a future `LayerTransform`.
+- unsupported transforms reported before GPU resource allocation.
 
 ## Scenario Plan
 

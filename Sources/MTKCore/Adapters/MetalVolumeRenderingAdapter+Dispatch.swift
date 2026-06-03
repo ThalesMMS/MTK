@@ -36,7 +36,8 @@ extension MetalVolumeRenderingAdapter {
         let datasetPreparation: DatasetTexturePreparationResult
         let preparationStartedAt = CFAbsoluteTimeGetCurrent()
         let transferCacheHit = state.transferCache?.transfer == request.transferFunction &&
-            state.transferCache?.intensityRange == request.dataset.intensityRange
+            state.transferCache?.intensityRange == request.dataset.intensityRange &&
+            state.transferCache?.shift == extendedState.shift
         let datasetPreparationStartedAt = CFAbsoluteTimeGetCurrent()
         if let providedDatasetTexture {
             datasetPreparation = prepareDatasetTextureResult(for: request.dataset,
@@ -62,6 +63,7 @@ extension MetalVolumeRenderingAdapter {
 
         let parameterPreparationStartedAt = CFAbsoluteTimeGetCurrent()
         let parameters = try buildRenderingParameters(for: request)
+        let toneBuffers = try makeToneBuffers(state: state)
         let optionValue = computeOptionFlags()
         let targetViewSize = UInt16(clamping: max(viewport.width, viewport.height))
         let quaternion = SIMD4<Float>(0, 0, 0, 1)
@@ -84,6 +86,7 @@ extension MetalVolumeRenderingAdapter {
         let passInput = VolumeRaycastPassInput(
             volumeTexture: datasetTexture,
             transferFunctionTexture: transferTexture,
+            toneBuffers: toneBuffers,
             cameraUniforms: camera,
             renderingParameters: passRenderingParameters,
             shaderParameters: parameters,
@@ -276,7 +279,8 @@ extension MetalVolumeRenderingAdapter {
             logger.info("[DIAG] renderTexture called - viewport: \(request.viewportSize.width)x\(request.viewportSize.height), compositing: \(String(describing: request.compositing)), quality: \(String(describing: request.quality))")
         }
 
-        var effectiveRequest = request
+        let presetResolution = applyCurrentPresetIfNeeded(to: request)
+        var effectiveRequest = presetResolution.request
 
         if let compositing = overrides.compositing {
             effectiveRequest.compositing = compositing
@@ -292,7 +296,8 @@ extension MetalVolumeRenderingAdapter {
                                                             outputTexture: outputTexture)
         lastSnapshot = RenderSnapshot(dataset: request.dataset,
                                       metadata: frame.metadata,
-                                      window: window)
+                                      window: window,
+                                      preset: presetResolution.preset)
         return frame
     }
 
@@ -312,10 +317,11 @@ extension VolumeRenderRequest {
                   layer.scalarVolume != nil else {
                 continue
             }
-            guard layer.baseWorldToLayerWorld.isApproximatelyIdentity else {
+            do {
+                layers.append(try RegisteredVolumeLayerResampler.resampledLayer(layer, into: dataset))
+            } catch RegisteredVolumeLayerResamplingError.unsupportedTransform {
                 throw MetalVolumeRenderingAdapter.AdapterError.unsupportedScalarLayerTransform(layer.id)
             }
-            layers.append(layer)
         }
         if layers.isEmpty {
             layers.append(
@@ -352,28 +358,4 @@ private func formatPerf(_ value: Float) -> String {
 private func objectIdentifier(_ object: AnyObject?) -> String {
     guard let object else { return "nil" }
     return String(describing: ObjectIdentifier(object))
-}
-
-private extension simd_float4x4 {
-    var isApproximatelyIdentity: Bool {
-        isApproximatelyEqual(to: matrix_identity_float4x4, tolerance: 1e-5)
-    }
-
-    func isApproximatelyEqual(to other: simd_float4x4,
-                              tolerance: Float) -> Bool {
-        columns.0.isApproximatelyEqual(to: other.columns.0, tolerance: tolerance) &&
-            columns.1.isApproximatelyEqual(to: other.columns.1, tolerance: tolerance) &&
-            columns.2.isApproximatelyEqual(to: other.columns.2, tolerance: tolerance) &&
-            columns.3.isApproximatelyEqual(to: other.columns.3, tolerance: tolerance)
-    }
-}
-
-private extension SIMD4 where Scalar == Float {
-    func isApproximatelyEqual(to other: SIMD4<Float>,
-                              tolerance: Float) -> Bool {
-        abs(x - other.x) <= tolerance &&
-            abs(y - other.y) <= tolerance &&
-            abs(z - other.z) <= tolerance &&
-            abs(w - other.w) <= tolerance
-    }
 }
