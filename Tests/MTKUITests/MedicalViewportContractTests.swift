@@ -237,6 +237,64 @@ final class MedicalViewportContractTests: XCTestCase {
         XCTAssertEqual(session.debugSnapshot(for: session.volumeViewportID).viewportType, "volume3D")
     }
 
+    func testClinicalViewportSessionExposesViewportIdentityAndPresentationByAxis() async throws {
+        try requireMetalDevice()
+        let session = try await ClinicalViewportSession.make()
+        let surfaceSize = CGSize(width: 120, height: 80)
+        session.surface(for: .axial).metalView.frame = CGRect(origin: .zero, size: surfaceSize)
+        session.surface(for: .axial).setContentScale(1)
+
+        XCTAssertEqual(session.viewportID(for: .axial), session.axialViewportID)
+        XCTAssertEqual(session.viewportID(for: .coronal), session.coronalViewportID)
+        XCTAssertEqual(session.viewportID(for: .sagittal), session.sagittalViewportID)
+        XCTAssertTrue(session.surface(for: .axial) === session.axialSurface)
+        XCTAssertTrue(session.surface(for: .coronal) === session.coronalSurface)
+        XCTAssertTrue(session.surface(for: .sagittal) === session.sagittalSurface)
+        XCTAssertEqual(session.drawableSize(for: .axial), surfaceSize)
+        XCTAssertEqual(session.displayTransform(for: .axial), session.displayTransform(for: session.axialViewportID))
+        XCTAssertEqual(session.renderQualityState, .settled)
+
+        await session.shutdown()
+    }
+
+    func testClinicalViewportSessionPublishesViewportStatesWithoutControllerAccess() async throws {
+        try requireMetalDevice()
+        let dataset = makeDataset(dimensions: VolumeDimensions(width: 4, height: 5, depth: 6))
+        let session = try await ClinicalViewportSession.make(dataset: dataset)
+
+        await session.setMPRSlicePosition(axis: .axial, normalizedPosition: 0.75)
+        await session.setMPRWindowLevel(window: 650, level: -50)
+        await session.setMPRSlabBlendMode(.mip)
+        try await session.setVolumeViewportMode(.mip)
+
+        let axialState = session.state(for: .axial)
+        let volumeState = session.volumeViewportState
+
+        XCTAssertEqual(session.viewportStates.count, 4)
+        XCTAssertEqual(axialState.viewportID, session.axialViewportID)
+        XCTAssertEqual(axialState.viewportType, .volume(axis: .axial))
+        XCTAssertEqual(axialState.renderMode, .mpr(blend: .mip))
+        XCTAssertEqual(axialState.dataset?.dimensions, dataset.dimensions)
+        XCTAssertEqual(axialState.windowLevel.window, 650, accuracy: 0.001)
+        XCTAssertEqual(axialState.windowLevel.level, -50, accuracy: 0.001)
+        XCTAssertEqual(axialState.slice?.axis, .axial)
+        XCTAssertEqual(axialState.slice?.index, 4)
+        XCTAssertEqual(axialState.slice?.count, 6)
+        XCTAssertEqual(try XCTUnwrap(axialState.slice?.normalizedPosition), 0.75, accuracy: 0.001)
+        XCTAssertTrue(axialState.presentation.isMetalBacked)
+        XCTAssertEqual(try XCTUnwrap(session.state(for: session.axialViewportID)), axialState)
+
+        XCTAssertEqual(volumeState.viewportID, session.volumeViewportID)
+        XCTAssertEqual(volumeState.viewportType, .projection(mode: .mip))
+        XCTAssertEqual(volumeState.renderMode, .projection(mode: .mip))
+        XCTAssertEqual(volumeState.dataset?.dimensions, dataset.dimensions)
+        XCTAssertEqual(volumeState.clipping, session.volumeClipping)
+        XCTAssertTrue(volumeState.presentation.isMetalBacked)
+        XCTAssertEqual(try XCTUnwrap(session.state(for: session.volumeViewportID)), volumeState)
+
+        await session.shutdown()
+    }
+
     func testClinicalViewportSessionAppliesPublicVolumeClipping() async throws {
         try requireMetalDevice()
         let session = try await ClinicalViewportSession.make()
@@ -286,7 +344,7 @@ final class MedicalViewportContractTests: XCTestCase {
         XCTAssertEqual(session.surfaceMeshLayers.map(\.id), [surfaceLayer.id])
         XCTAssertEqual(session.surfaceMeshLayers.first?.isVisible, false)
 
-        await session.controller.shutdown()
+        await session.shutdown()
     }
 
     func testClinicalViewportSessionAppliesScalarVolumeLayerControls() async throws {
@@ -308,7 +366,7 @@ final class MedicalViewportContractTests: XCTestCase {
         XCTAssertEqual(session.volumeLayers.first?.isVisible, false)
         XCTAssertNil(session.lastRenderError)
 
-        await session.controller.shutdown()
+        await session.shutdown()
     }
 
     func testClinicalViewportSessionExposesQuantitativeScalarLegend() async throws {
@@ -346,7 +404,7 @@ final class MedicalViewportContractTests: XCTestCase {
         XCTAssertEqual(session.quantitativeScalarLegends[0].unitsLabel, "SUV body weight")
         XCTAssertEqual(session.quantitativeScalarLegends[0].physicalRange.upperBound, 12)
 
-        await session.controller.shutdown()
+        await session.shutdown()
     }
 
     func testClinicalViewportSessionAppliesRTDoseOverlaysAsVolumeLayers() async throws {
@@ -367,7 +425,7 @@ final class MedicalViewportContractTests: XCTestCase {
         XCTAssertEqual(session.volumeLayers.map(\.id), ["plan-dose"])
         XCTAssertEqual(session.volumeLayers.first?.opacity, 0.25)
 
-        await session.controller.shutdown()
+        await session.shutdown()
     }
 
     private func requireMetalDevice() throws {

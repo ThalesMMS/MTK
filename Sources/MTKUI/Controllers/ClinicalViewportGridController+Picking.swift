@@ -28,28 +28,11 @@ extension ClinicalViewportGridController {
 
     public func pick(in axis: MTKCore.Axis,
                      screenPoint: CGPoint) throws -> VolumePickResult {
-        guard let dataset = currentDataset else {
+        guard let context = mprGeometryDisplayContext(for: axis) else {
             throw VolumePickError.invalidViewport
         }
-        let planeAxis = planeAxis(for: axis)
-        let plane = currentMPRPlane(for: axis)
-            ?? MPRPlaneGeometryFactory.makePlane(
-                for: dataset,
-                axis: planeAxis,
-                slicePosition: normalizedPositions[axis] ?? 0.5
-            )
-        let displayTransform = displayTransform(for: axis)
-        return try VolumePicking.pickMPR(
-            screenPoint: screenPoint,
-            viewportSize: drawableSize(for: axis),
-            dataset: dataset,
-            plane: plane,
-            displayTransform: displayTransform,
-            viewportTransform: viewportTransform(for: axis),
-            outputAspect: .aspectFit(physicalAspectRatio: plane.physicalAspectRatio),
-            axis: planeAxis,
-            layers: volumeLayers
-        )
+        return try context.pick(screenPoint: screenPoint,
+                                layers: volumeLayers)
     }
 
     public func pickVolume(screenPoint: CGPoint) throws -> VolumePickResult {

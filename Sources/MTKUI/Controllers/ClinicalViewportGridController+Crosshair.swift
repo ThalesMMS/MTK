@@ -96,62 +96,10 @@ extension ClinicalViewportGridController {
         guard let dataset = currentDataset else { return nil }
         let normalized = normalizedPositions[axis] ?? 0.5
         let rotation = mprPlaneRotationsByAxis[axis] ?? identityMPRRotation()
-        if isIdentityMPRRotation(rotation) {
-            return MPRPlaneGeometryFactory.makePlane(for: dataset,
-                                                     axis: planeAxis(for: axis),
-                                                     slicePosition: normalized)
-        }
-
-        let dims = MprPlaneComputation.datasetDimensions(width: dataset.dimensions.width,
-                                                         height: dataset.dimensions.height,
-                                                         depth: dataset.dimensions.depth)
-        let count = sliceCount(for: axis) ?? 1
-        let maximumIndex = max(count - 1, 0)
-        let index = Int((clampNormalized(normalized) * Float(maximumIndex)).rounded())
-        let computation = MprPlaneComputation.make(axis: volumeAxis(for: axis),
-                                                   index: index,
-                                                   dims: dims,
-                                                   rotation: rotation)
-        let geometry = DICOMGeometry(imageData: dataset.imageData)
-        let world = computation.world(using: geometry)
-        let tex = geometry.planeWorldToTex(originW: world.origin,
-                                           axisUW: world.axisU,
-                                           axisVW: world.axisV)
-        let normal = safeNormalize(simd_cross(world.axisU, world.axisV),
-                                   fallback: fallbackNormal(for: axis))
-
-        return MPRPlaneGeometry(originVoxel: computation.originVoxel,
-                                axisUVoxel: computation.axisUVoxel,
-                                axisVVoxel: computation.axisVVoxel,
-                                originWorld: world.origin,
-                                axisUWorld: world.axisU,
-                                axisVWorld: world.axisV,
-                                originTexture: tex.originT,
-                                axisUTexture: tex.axisUT,
-                                axisVTexture: tex.axisVT,
-                                normalWorld: normal)
-    }
-
-    func volumeAxis(for axis: MTKCore.Axis) -> VolumeViewportController.Axis {
-        switch axis {
-        case .axial:
-            return .z
-        case .coronal:
-            return .y
-        case .sagittal:
-            return .x
-        }
-    }
-
-    func fallbackNormal(for axis: MTKCore.Axis) -> SIMD3<Float> {
-        switch axis {
-        case .axial:
-            return SIMD3<Float>(0, 0, 1)
-        case .coronal:
-            return SIMD3<Float>(0, 1, 0)
-        case .sagittal:
-            return SIMD3<Float>(1, 0, 0)
-        }
+        return MPRGeometryDisplayMapper.makePlane(for: dataset,
+                                                  axis: planeAxis(for: axis),
+                                                  slicePosition: normalized,
+                                                  rotation: rotation)
     }
 
     /// Compute normalized position updates for the two axes perpendicular to the given axis based on a screen point.
@@ -164,35 +112,16 @@ extension ClinicalViewportGridController {
     ///   - `.sagittal` -> `(.coronal, texture.x)`, `(.axial, texture.y)`
     func normalizedPositionUpdates(from point: CGPoint,
                                    in axis: MTKCore.Axis) -> [(MTKCore.Axis, Float)] {
-        if let dataset = currentDataset {
-            let planeAxis = planeAxis(for: axis)
-            let plane = currentMPRPlane(for: axis)
-                ?? MPRPlaneGeometryFactory.makePlane(
-                    for: dataset,
-                    axis: planeAxis,
-                    slicePosition: normalizedPositions[axis] ?? 0.5
-                )
-            let displayTransform = displayTransform(for: axis)
+        if let context = mprGeometryDisplayContext(for: axis) {
             let surfaceSize = drawableSize(for: axis)
             let clampedX = CGFloat(clampNormalized(Float(point.x)))
             let clampedY = CGFloat(clampNormalized(Float(point.y)))
             let pickPoint = CGPoint(x: clampedX * surfaceSize.width,
                                     y: clampedY * surfaceSize.height)
             do {
-                let pick = try VolumePicking.pickMPR(
-                    screenPoint: pickPoint,
-                    viewportSize: surfaceSize,
-                    dataset: dataset,
-                    plane: plane,
-                    displayTransform: displayTransform,
-                    viewportTransform: viewportTransform(for: axis),
-                    outputAspect: .aspectFit(physicalAspectRatio: plane.physicalAspectRatio),
-                    axis: planeAxis,
-                    layers: volumeLayers
-                )
-                return normalizedPositionUpdates(fromVoxel: pick.voxel.continuousIndex,
-                                                 dimensions: dataset.dimensions,
-                                                 in: axis)
+                let updates = try context.normalizedPositionUpdates(fromScreenPoint: pickPoint,
+                                                                    layers: volumeLayers)
+                return clinicalPositionUpdates(from: updates)
             } catch VolumePickError.outsideImagedArea {
                 return []
             } catch {
@@ -218,20 +147,13 @@ extension ClinicalViewportGridController {
     func normalizedPositionUpdates(fromVoxel voxel: SIMD3<Float>,
                                    dimensions: VolumeDimensions,
                                    in axis: MTKCore.Axis) -> [(MTKCore.Axis, Float)] {
-        let sagittal = normalizedPosition(forContinuousVoxelComponent: voxel.x,
-                                          count: dimensions.width)
-        let coronal = normalizedPosition(forContinuousVoxelComponent: voxel.y,
-                                         count: dimensions.height)
-        let axial = normalizedPosition(forContinuousVoxelComponent: voxel.z,
-                                       count: dimensions.depth)
-        switch axis {
-        case .axial:
-            return [(.sagittal, sagittal), (.coronal, coronal)]
-        case .coronal:
-            return [(.sagittal, sagittal), (.axial, axial)]
-        case .sagittal:
-            return [(.coronal, coronal), (.axial, axial)]
-        }
+        clinicalPositionUpdates(
+            from: MPRGeometryDisplayMapper.normalizedPositionUpdates(
+                fromVoxel: voxel,
+                dimensions: dimensions,
+                viewingAxis: planeAxis(for: axis)
+            )
+        )
     }
 
     func normalizedPosition(forContinuousVoxelComponent component: Float,
@@ -398,6 +320,21 @@ extension ClinicalViewportGridController {
         clinicalPlaneAxis(for: axis)
     }
 
+    func clinicalAxis(for axis: MPRPlaneAxis) -> MTKCore.Axis {
+        switch axis {
+        case .x:
+            return .sagittal
+        case .y:
+            return .coronal
+        case .z:
+            return .axial
+        }
+    }
+
+    func clinicalPositionUpdates(from updates: [MPRGeometryPositionUpdate]) -> [(MTKCore.Axis, Float)] {
+        updates.map { (clinicalAxis(for: $0.axis), $0.position) }
+    }
+
     /// Provides a fallback plane geometry for the given axis.
     /// - Returns: A default `MPRPlaneGeometry` to use when no specific geometry is available for the axis.
     func fallbackPlaneGeometry(for axis: MTKCore.Axis) -> MPRPlaneGeometry {
@@ -437,39 +374,37 @@ extension ClinicalViewportGridController {
         if positions == normalizedPositions {
             return crosshairOffset(for: axis)
         }
-        let size = drawableSize(for: axis)
-        let texture = textureCoordinates(for: axis, positions: positions)
-        let imageScreen = displayTransform(for: axis).screenCoordinates(forTexture: texture)
-        let imagePoint = viewportTransform(for: axis).screenCoordinates(forImageScreen: imageScreen)
-        let layout = outputAspect(for: axis).layout(destinationSize: size)
-        let screen = layout.viewportPoint(fromImagePoint: imagePoint)
-        return CGPoint(x: CGFloat(screen.x - 0.5) * size.width,
-                       y: CGFloat(screen.y - 0.5) * size.height)
+        if let dataset = currentDataset,
+           let context = mprGeometryDisplayContext(for: axis),
+           let offset = try? context.crosshairOffset(
+            forVoxel: voxel(fromNormalizedPositions: positions,
+                            dimensions: dataset.dimensions)
+           ) {
+            return offset
+        }
+        return crosshairOffsetForNormalizedPositions(axis: axis,
+                                                     positions: positions)
     }
 
     func crosshairOffset(for axis: MTKCore.Axis) -> CGPoint {
-        guard let dataset = currentDataset,
-              let worldPoint = mprCursorWorldPoint,
-              let plane = currentMPRPlane(for: axis),
-              let screen = try? VolumePicking.screenPoint(
-                forWorldPoint: worldPoint,
-                dataset: dataset,
-                plane: plane,
-                displayTransform: displayTransform(for: axis),
-                viewportTransform: viewportTransform(for: axis),
-                outputAspect: .aspectFit(physicalAspectRatio: plane.physicalAspectRatio),
-                viewportSize: drawableSize(for: axis)
-              )
+        guard let worldPoint = mprCursorWorldPoint,
+              let context = mprGeometryDisplayContext(for: axis),
+              let offset = try? context.crosshairOffset(forWorldPoint: worldPoint)
         else {
             return crosshairOffsetForNormalizedPositions(axis: axis)
         }
-        return CGPoint(x: screen.screenPoint.x - drawableSize(for: axis).width * 0.5,
-                       y: screen.screenPoint.y - drawableSize(for: axis).height * 0.5)
+        return offset
     }
 
     private func crosshairOffsetForNormalizedPositions(axis: MTKCore.Axis) -> CGPoint {
+        crosshairOffsetForNormalizedPositions(axis: axis,
+                                              positions: normalizedPositions)
+    }
+
+    private func crosshairOffsetForNormalizedPositions(axis: MTKCore.Axis,
+                                                       positions: [MTKCore.Axis: Float]) -> CGPoint {
         let size = drawableSize(for: axis)
-        let texture = textureCoordinates(for: axis, positions: normalizedPositions)
+        let texture = textureCoordinates(for: axis, positions: positions)
         let imageScreen = displayTransform(for: axis).screenCoordinates(forTexture: texture)
         let imagePoint = viewportTransform(for: axis).screenCoordinates(forImageScreen: imageScreen)
         let layout = outputAspect(for: axis).layout(destinationSize: size)
@@ -482,7 +417,32 @@ extension ClinicalViewportGridController {
     /// aspect-fit layout that `MPRPresentationPass` applies when drawing the
     /// rendered slab. Falls back to `.fill` when no dataset/plane is available.
     func outputAspect(for axis: MTKCore.Axis) -> MPROutputAspect {
+        if let context = mprGeometryDisplayContext(for: axis) {
+            return context.outputAspect
+        }
         guard let plane = currentMPRPlane(for: axis) else { return .fill }
         return .aspectFit(physicalAspectRatio: plane.physicalAspectRatio)
+    }
+
+    func mprGeometryDisplayContext(for axis: MTKCore.Axis,
+                                   viewportSize: CGSize? = nil) -> MPRGeometryDisplayContext? {
+        guard let dataset = currentDataset else { return nil }
+        return try? MPRGeometryDisplayMapper.makeContext(
+            dataset: dataset,
+            axis: planeAxis(for: axis),
+            slicePosition: normalizedPositions[axis] ?? 0.5,
+            planeRotation: mprPlaneRotationsByAxis[axis] ?? identityMPRRotation(),
+            viewportTransform: viewportTransform(for: axis),
+            viewportSize: viewportSize ?? drawableSize(for: axis)
+        )
+    }
+
+    func voxel(fromNormalizedPositions positions: [MTKCore.Axis: Float],
+               dimensions: VolumeDimensions) -> SIMD3<Float> {
+        SIMD3<Float>(
+            clampNormalized(positions[.sagittal] ?? 0.5) * Float(max(dimensions.width - 1, 0)),
+            clampNormalized(positions[.coronal] ?? 0.5) * Float(max(dimensions.height - 1, 0)),
+            clampNormalized(positions[.axial] ?? 0.5) * Float(max(dimensions.depth - 1, 0))
+        )
     }
 }

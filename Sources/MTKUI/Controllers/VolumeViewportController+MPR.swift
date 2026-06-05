@@ -341,9 +341,11 @@ extension VolumeViewportController {
     /// - Returns: A SIMD3<Float> with (width, height, depth) in voxels; `(1, 1, 1)` if no dataset is available.
     func datasetDimensions() -> SIMD3<Float> {
         guard let dataset else { return SIMD3<Float>(1, 1, 1) }
-        return MprPlaneComputation.datasetDimensions(width: dataset.dimensions.width,
-                                                     height: dataset.dimensions.height,
-                                                     depth: dataset.dimensions.depth)
+        return SIMD3<Float>(
+            max(1, Float(dataset.dimensions.width)),
+            max(1, Float(dataset.dimensions.height)),
+            max(1, Float(dataset.dimensions.depth))
+        )
     }
 
     /// Creates a normalized rotation quaternion from Euler angles.
@@ -362,41 +364,22 @@ extension VolumeViewportController {
     ///   - index: The slice index along `axis` to generate the plane for.
     /// - Returns: An `MPRPlaneGeometry` containing voxel-space origins/axes, world-space origins/axes, texture-space origins/axes, and the plane's world-space normal.
     func makeMprPlane(axis: Axis, index: Int) -> MPRPlaneGeometry {
-        let dims = datasetDimensions()
-        let plane = MprPlaneComputation.make(axis: axis,
-                                             index: index,
-                                             dims: dims,
-                                             rotation: rotationQuaternion(for: mprEuler))
-        if let geometry {
-            let world = plane.world(using: geometry)
-            let tex = geometry.planeWorldToTex(originW: world.origin,
-                                               axisUW: world.axisU,
-                                               axisVW: world.axisV)
-            let normal = safeNormalize(simd_cross(world.axisU, world.axisV), fallback: SIMD3<Float>(0, 0, 1))
-            return MPRPlaneGeometry(originVoxel: plane.originVoxel,
-                                    axisUVoxel: plane.axisUVoxel,
-                                    axisVVoxel: plane.axisVVoxel,
-                                    originWorld: world.origin,
-                                    axisUWorld: world.axisU,
-                                    axisVWorld: world.axisV,
-                                    originTexture: tex.originT,
-                                    axisUTexture: tex.axisUT,
-                                    axisVTexture: tex.axisVT,
-                                    normalWorld: normal)
-        } else {
-            let tex = plane.tex(dims: dims)
-            let normal = safeNormalize(simd_cross(tex.axisU, tex.axisV), fallback: SIMD3<Float>(0, 0, 1))
-            return MPRPlaneGeometry(originVoxel: plane.originVoxel,
-                                    axisUVoxel: plane.axisUVoxel,
-                                    axisVVoxel: plane.axisVVoxel,
-                                    originWorld: plane.originVoxel,
-                                    axisUWorld: plane.axisUVoxel,
-                                    axisVWorld: plane.axisVVoxel,
-                                    originTexture: tex.origin,
-                                    axisUTexture: tex.axisU,
-                                    axisVTexture: tex.axisV,
-                                    normalWorld: normal)
+        guard let dataset else {
+            return MPRPlaneGeometry(originVoxel: .zero,
+                                    axisUVoxel: .zero,
+                                    axisVVoxel: .zero,
+                                    originWorld: .zero,
+                                    axisUWorld: .zero,
+                                    axisVWorld: .zero,
+                                    originTexture: SIMD3<Float>(repeating: 0.5),
+                                    axisUTexture: .zero,
+                                    axisVTexture: .zero,
+                                    normalWorld: SIMD3<Float>(0, 0, 1))
         }
+        return MPRGeometryDisplayMapper.makePlane(for: dataset,
+                                                  axis: axis.mprPlaneAxis,
+                                                  sliceIndex: index,
+                                                  rotation: rotationQuaternion(for: mprEuler))
     }
 
     /// Aligns the camera to face and center on the currently selected MPR plane.

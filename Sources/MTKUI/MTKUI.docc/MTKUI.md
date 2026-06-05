@@ -234,6 +234,10 @@ picking. It does not clip MPR reslices, crosshair movement, or MPR picking.
 
 Use ``ClinicalViewportSession`` with ``ClinicalViewportGrid`` for the reference
 axial/coronal/sagittal plus 3D/projection layout.
+Drive clinical viewport behavior through the session: apply datasets, select
+MPR slices, adjust windowing, configure render quality, and read
+``ClinicalViewportSession/viewportStates`` or `state(for:)` for
+controller-free viewport state snapshots.
 
 ```swift
 import SwiftUI

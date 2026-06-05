@@ -9,6 +9,101 @@ final class MetalVolumeRenderingAdapterExtendedTests: XCTestCase {
         case coordinatesOutOfBounds
     }
 
+    func testApplyRenderStateUpdatesEffectiveSnapshots() async throws {
+        let adapter = try makeTestAdapter()
+        let clipBounds = ClipBoundsSnapshot(xMin: 0.1,
+                                            xMax: 0.9,
+                                            yMin: 0.2,
+                                            yMax: 0.8,
+                                            zMin: 0.3,
+                                            zMax: 0.7)
+        let state = VolumeRenderState(
+            huWindow: 300...1_200,
+            earlyTerminationThreshold: 1.4,
+            densityGate: 0.2...0.8,
+            channels: [
+                VolumeRenderChannelState(channel: 0,
+                                         intensity: 0.75,
+                                         presetKey: "ct.lung",
+                                         gain: 1.25,
+                                         controlPoints: [
+                                             SIMD2<Float>(255, 1),
+                                             SIMD2<Float>(0, 0)
+                                         ]),
+                VolumeRenderChannelState(channel: 2,
+                                         intensity: 0.5,
+                                         presetKey: "pet",
+                                         gain: 0.8)
+            ],
+            adaptiveEnabled: true,
+            adaptiveThreshold: 0.35,
+            jitterAmount: 0.125,
+            lightingEnabled: false,
+            samplingStep: 1.0 / 128.0,
+            shift: 42,
+            clipBounds: clipBounds,
+            clipPlane: ClipPlaneSnapshot(preset: 1, offset: 0.25)
+        )
+
+        try await adapter.applyRenderState(state)
+
+        let effective = try await adapter.getRenderStateSnapshot()
+        XCTAssertEqual(effective.huWindow, 300...1_200)
+        XCTAssertEqual(effective.earlyTerminationThreshold, 1, accuracy: 1e-6)
+        XCTAssertEqual(effective.densityGate, 0.2...0.8)
+        XCTAssertNil(effective.huGate)
+        XCTAssertEqual(effective.channels.count, 4)
+        XCTAssertEqual(effective.channels[0].intensity, 0.75, accuracy: 1e-6)
+        XCTAssertEqual(effective.channels[0].presetKey, "ct.lung")
+        XCTAssertEqual(effective.channels[0].gain, 1.25, accuracy: 1e-6)
+        XCTAssertEqual(effective.channels[0].controlPoints, [
+            SIMD2<Float>(0, 0),
+            SIMD2<Float>(1, 1)
+        ])
+        XCTAssertEqual(effective.channels[1].intensity, 0, accuracy: 1e-6)
+        XCTAssertEqual(effective.channels[2].intensity, 0.5, accuracy: 1e-6)
+        XCTAssertTrue(effective.adaptiveEnabled)
+        XCTAssertEqual(effective.adaptiveThreshold, 0.35, accuracy: 1e-6)
+        XCTAssertEqual(effective.jitterAmount, 0.125, accuracy: 1e-6)
+        XCTAssertFalse(effective.lightingEnabled)
+        XCTAssertEqual(effective.samplingStep, 1.0 / 128.0, accuracy: 1e-6)
+        XCTAssertEqual(effective.shift, 42, accuracy: 1e-6)
+        XCTAssertEqual(effective.clipBounds, clipBounds)
+        XCTAssertEqual(effective.clipPlane, ClipPlaneSnapshot(preset: 1, offset: 0.25))
+
+        let channelSnapshots = try await adapter.getChannelControlSnapshot()
+        XCTAssertEqual(channelSnapshots[0].presetKey, "ct.lung")
+        XCTAssertEqual(channelSnapshots[0].gain, 1.25, accuracy: 1e-6)
+        XCTAssertEqual(channelSnapshots[0].controlPoints, [
+            SIMD2<Float>(0, 0),
+            SIMD2<Float>(1, 1)
+        ])
+        let renderingQuality = try await adapter.getCurrentRenderingQuality()
+        let clipBoundsSnapshot = try await adapter.getClipBoundsSnapshot()
+        let clipPlaneSnapshot = try await adapter.getClipPlaneSnapshot()
+        XCTAssertEqual(renderingQuality, 1.0 / 128.0, accuracy: 1e-6)
+        XCTAssertEqual(clipBoundsSnapshot, clipBounds)
+        XCTAssertEqual(clipPlaneSnapshot, ClipPlaneSnapshot(preset: 1, offset: 0.25))
+    }
+
+    func testApplyRenderStateRejectsInvalidChannelsBeforeMutation() async throws {
+        let adapter = try makeTestAdapter()
+        let baseline = try await adapter.getRenderStateSnapshot()
+        let invalid = VolumeRenderState(channels: [
+            VolumeRenderChannelState(channel: 4,
+                                     intensity: 1,
+                                     presetKey: "invalid",
+                                     gain: 2)
+        ])
+
+        await XCTAssertThrowsAsync(
+            try await adapter.applyRenderState(invalid),
+            expecting: MetalVolumeRenderingAdapter.AdapterError.invalidToneCurveChannel(4)
+        )
+        let afterFailure = try await adapter.getRenderStateSnapshot()
+        XCTAssertEqual(afterFailure, baseline)
+    }
+
     func testChannelControlSnapshotReportsEverySupportedChannel() async throws {
         let adapter = try makeTestAdapter()
 

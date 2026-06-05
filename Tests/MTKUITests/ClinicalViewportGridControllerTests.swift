@@ -689,10 +689,10 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
 
         let session = ClinicalViewportSession(controller: controller)
         let targetUV = SIMD2<Float>(1.0 / 3.0, 2.0 / 3.0)
-        let screenPoint = controller.displayTransform(for: .axial).screenCoordinates(forTexture: targetUV)
-        let viewportSize = controller.drawableSize(for: .axial)
+        let screenPoint = session.displayTransform(for: .axial).screenCoordinates(forTexture: targetUV)
+        let viewportSize = session.drawableSize(for: .axial)
         let pick = try session.pick(
-            in: controller.axialViewportID,
+            in: session.axialViewportID,
             screenPoint: CGPoint(x: CGFloat(screenPoint.x) * viewportSize.width,
                                  y: CGFloat(screenPoint.y) * viewportSize.height)
         )
@@ -717,10 +717,10 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
 
         let session = ClinicalViewportSession(controller: controller)
         let targetUV = SIMD2<Float>(1.0 / 3.0, 2.0 / 3.0)
-        let screenPoint = controller.displayTransform(for: .axial).screenCoordinates(forTexture: targetUV)
-        let viewportSize = controller.drawableSize(for: .axial)
+        let screenPoint = session.displayTransform(for: .axial).screenCoordinates(forTexture: targetUV)
+        let viewportSize = session.drawableSize(for: .axial)
         let pick = try session.pick(
-            in: controller.axialViewportID,
+            in: session.axialViewportID,
             screenPoint: CGPoint(x: CGFloat(screenPoint.x) * viewportSize.width,
                                  y: CGFloat(screenPoint.y) * viewportSize.height)
         )
@@ -728,9 +728,9 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         let scalarSample = try XCTUnwrap(pick.scalarSamples.first { $0.layerID == "pet-suv" })
         XCTAssertEqual(try XCTUnwrap(scalarSample.quantitativeValue).value, 22.1, accuracy: 1e-6)
 
-        let statistics = try controller.quantitativeScalarStatistics(layerID: "pet-suv",
-                                                                     roiLayerID: "target-label",
-                                                                     label: 9)
+        let statistics = try session.quantitativeScalarStatistics(layerID: "pet-suv",
+                                                                  roiLayerID: "target-label",
+                                                                  label: 9)
         XCTAssertEqual(statistics.sampleCount, 1)
         XCTAssertEqual(statistics.meanValue, 22.1, accuracy: 1e-6)
         XCTAssertEqual(statistics.unitsLabel, "SUV body weight")
@@ -1871,7 +1871,7 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
                                  dataset: VolumeDataset,
                                  controller: ClinicalViewportGridController,
                                  session: ClinicalViewportSession) async throws -> VolumePickResult {
-        await controller.setSlicePosition(axis: axis,
+        await session.setMPRSlicePosition(axis: axis,
                                           normalizedPosition: normalizedPosition(for: axis,
                                                                                  target: target,
                                                                                  dimensions: dataset.dimensions))
@@ -1879,8 +1879,8 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
                                              axis: axis,
                                              dataset: dataset,
                                              controller: controller,
-                                             viewportSize: controller.drawableSize(for: axis))
-        return try session.pick(in: controller.viewportID(for: axis),
+                                             viewportSize: session.drawableSize(for: axis))
+        return try session.pick(in: session.viewportID(for: axis),
                                 screenPoint: screenPoint)
     }
 

@@ -75,12 +75,21 @@ public protocol VolumeViewportControlling: AnyObject {
     func setDisplayConfiguration(_ configuration: VolumeViewportController.DisplayConfiguration) async
     func metadata() -> (dimension: SIMD3<Int32>, resolution: SIMD3<Float>)?
 
+    // Viewport compatibility controls. For coordinated renderer-internal updates
+    // spanning HU gates, channels, quality, and clipping, use MTKCore's
+    // VolumeRenderState through VolumeRenderingPortExtended.
     func setTransferFunction(_ transferFunction: TransferFunction?) async throws
     /// Sets the volume rendering method; this is the preferred API for DVR/MIP/MinIP/Avg changes.
     func setVolumeMethod(_ method: VolumetricRenderMethod) async
     func setPreset(_ preset: VolumeRenderingBuiltinPreset) async
+    /// Compatibility action for single-control UI updates; coordinated renderer changes are applied
+    /// as `VolumeRenderState`.
     func setShift(_ shift: Float) async
+    /// Compatibility action for single-control UI updates; coordinated renderer changes are applied
+    /// as `VolumeRenderState`.
     func setHuGate(enabled: Bool) async
+    /// Compatibility action for single-control UI updates; coordinated renderer changes are applied
+    /// as `VolumeRenderState`.
     func setHuWindow(_ window: VolumetricHUWindowMapping) async
     func setRenderMode(_ mode: VolumetricRenderMode) async
     func updateTransferFunctionShift(_ shift: Float) async
@@ -92,7 +101,11 @@ public protocol VolumeViewportControlling: AnyObject {
     /// Deprecated compatibility alias; use ``setVolumeMethod(_:)`` for volume method changes.
     @available(*, deprecated, message: "Use setVolumeMethod(_:) instead")
     func setRenderMethod(_ method: VolumetricRenderMethod) async
+    /// Compatibility action for single-control UI updates; coordinated renderer changes are applied
+    /// as `VolumeRenderState`.
     func setLighting(enabled: Bool) async
+    /// Compatibility action for single-control UI updates; coordinated renderer changes are applied
+    /// as `VolumeRenderState`.
     func setSamplingStep(_ step: Float) async
     func setVolumeRenderQualitySettings(_ settings: VolumeRenderQualitySettings) async
     func setProjectionsUseTransferFunction(_ enabled: Bool) async

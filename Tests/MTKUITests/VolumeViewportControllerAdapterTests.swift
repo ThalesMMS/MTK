@@ -542,6 +542,12 @@ final class VolumeViewportControllerAdapterTests: XCTestCase {
         XCTAssertEqual(controller.debugProjectionHuGate.max, 500)
         XCTAssertNotEqual(controller.cameraState.position, cameraBefore.position)
         _ = try await waitForRenderedTexture(controller)
+
+        let renderState = try await controller.volumeRendererProvider.renderer().getRenderStateSnapshot()
+        XCTAssertEqual(renderState.huWindow, -300...900)
+        XCTAssertFalse(renderState.lightingEnabled)
+        XCTAssertEqual(renderState.huGate, -200...500)
+        XCTAssertNil(renderState.densityGate)
     }
 
     func testHUWindowMappingClampsToDatasetRange() {

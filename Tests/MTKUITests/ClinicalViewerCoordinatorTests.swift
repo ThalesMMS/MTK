@@ -524,9 +524,9 @@ final class ClinicalViewerCoordinatorTests: XCTestCase {
         let expected = try coordinator.transferFunction(for: coordinator.transferPreset)
 
         try await waitUntil("clinical transfer function uses opacity scale") {
-            session.controller.lastTransferFunction?.alphaPoints == expected.alphaPoints
+            session.activeTransferFunction?.alphaPoints == expected.alphaPoints
         }
-        assertTransferFunction(session.controller.lastTransferFunction, matches: expected)
+        assertTransferFunction(session.activeTransferFunction, matches: expected)
     }
 
     func testPreferencesApplyToFutureClinicalSession() async throws {
@@ -545,7 +545,7 @@ final class ClinicalViewerCoordinatorTests: XCTestCase {
         let expected = try coordinator.transferFunction(for: coordinator.transferPreset)
 
         XCTAssertFalse(session.adaptiveSamplingEnabled)
-        assertTransferFunction(session.controller.lastTransferFunction, matches: expected)
+        assertTransferFunction(session.activeTransferFunction, matches: expected)
     }
 
     func testSlabBlendPreferenceAppliesToFutureClinicalSession() async throws {
@@ -561,9 +561,9 @@ final class ClinicalViewerCoordinatorTests: XCTestCase {
         try await coordinator.applyDataset(makeDataset())
 
         let session = try XCTUnwrap(coordinator.clinicalViewportSession)
-        let axialSlab = await session.controller.engine.debugSlabConfiguration(for: session.axialViewportID)
-        let coronalSlab = await session.controller.engine.debugSlabConfiguration(for: session.coronalViewportID)
-        let sagittalSlab = await session.controller.engine.debugSlabConfiguration(for: session.sagittalViewportID)
+        let axialSlab = await session.debugSlabConfiguration(for: .axial)
+        let coronalSlab = await session.debugSlabConfiguration(for: .coronal)
+        let sagittalSlab = await session.debugSlabConfiguration(for: .sagittal)
         XCTAssertEqual(session.mprSlabBlendMode, .minIP)
         XCTAssertEqual(session.slabThickness, 9)
         XCTAssertEqual(axialSlab?.blend, .minimum)

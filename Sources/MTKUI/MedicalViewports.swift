@@ -1065,6 +1065,8 @@ public final class ClinicalViewportSession: ObservableObject {
     public var coronalViewportID: ViewportID { controller.coronalViewportID }
     public var sagittalViewportID: ViewportID { controller.sagittalViewportID }
     public var volumeViewportID: ViewportID { controller.volumeViewportID }
+    public var allViewportIDs: [ViewportID] { controller.allViewportIDs }
+    public var mprViewportIDs: [ViewportID] { controller.mprViewportIDs }
     public var axialSurface: MetalViewportSurface { controller.axialSurface }
     public var coronalSurface: MetalViewportSurface { controller.coronalSurface }
     public var sagittalSurface: MetalViewportSurface { controller.sagittalSurface }
@@ -1102,9 +1104,46 @@ public final class ClinicalViewportSession: ObservableObject {
     public var lastRenderError: (any Error)? { controller.lastRenderErrors.values.first ?? controller.lastRenderError }
     public var adaptiveSamplingEnabled: Bool { controller.adaptiveSamplingEnabled }
     public var volumeRenderQualitySettings: VolumeRenderQualitySettings { controller.volumeRenderQualitySettings }
+    public var activeTransferFunction: TransferFunction? { controller.lastTransferFunction }
     public var crosshairAngles: [MTKCore.Axis: Double] { controller.crosshairAngles }
     public var hangingProtocolResolvedLayout: HangingProtocolResolvedLayout? { controller.hangingProtocolResolvedLayout }
     public var hangingProtocolSlotAssignments: [HangingProtocolResolvedViewport] { controller.hangingProtocolSlotAssignments }
+    public var renderQualityState: RenderQualityState { controller.renderQualityState }
+    public var viewportStates: [MedicalViewportState] {
+        MTKCore.Axis.allCases.map { state(for: $0) } + [volumeViewportState]
+    }
+
+    public var volumeViewportState: MedicalViewportState {
+        let viewportType: MedicalViewportType
+        let renderMode: MedicalViewportRenderMode
+        switch volumeViewportMode {
+        case .dvr:
+            viewportType = .volume3D
+            renderMode = .volume3D(method: .dvr)
+        case .mip:
+            viewportType = .projection(mode: .mip)
+            renderMode = .projection(mode: .mip)
+        case .minip:
+            viewportType = .projection(mode: .minip)
+            renderMode = .projection(mode: .minip)
+        case .aip:
+            viewportType = .projection(mode: .aip)
+            renderMode = .projection(mode: .aip)
+        }
+
+        return MedicalViewportState(
+            viewportID: volumeViewportID,
+            viewportType: viewportType,
+            renderMode: renderMode,
+            dataset: controller.currentDataset.map(MedicalViewportDatasetSummary.init(dataset:)),
+            camera: VolumetricCameraState(position: controller.volumeCameraTarget + controller.volumeCameraOffset,
+                                          target: controller.volumeCameraTarget,
+                                          up: controller.volumeCameraUp),
+            windowLevel: windowLevelState,
+            clipping: volumeClipping,
+            presentation: MedicalViewportPresentationState(surface: volumeSurface)
+        )
+    }
 
     public init(controller: ClinicalViewportGridController) {
         self.controller = controller
@@ -1122,6 +1161,61 @@ public final class ClinicalViewportSession: ObservableObject {
                                                                        dataset: dataset,
                                                                        transferFunction: transferFunction)
         return ClinicalViewportSession(controller: controller)
+    }
+
+    public func viewportID(for axis: MTKCore.Axis) -> ViewportID {
+        controller.viewportID(for: axis)
+    }
+
+    public func axis(for viewport: ViewportID) -> MTKCore.Axis? {
+        controller.viewportAxesByID[viewport]
+    }
+
+    public func surface(for axis: MTKCore.Axis) -> MetalViewportSurface {
+        controller.surface(for: axis)
+    }
+
+    public func drawableSize(for axis: MTKCore.Axis) -> CGSize {
+        controller.drawableSize(for: axis)
+    }
+
+    public func displayTransform(for axis: MTKCore.Axis) -> MPRDisplayTransform {
+        controller.displayTransform(for: axis)
+    }
+
+    public func displayTransform(for viewport: ViewportID) -> MPRDisplayTransform? {
+        axis(for: viewport).map { controller.displayTransform(for: $0) }
+    }
+
+    public func state(for axis: MTKCore.Axis) -> MedicalViewportState {
+        let dataset = controller.currentDataset
+        let count = dataset.map { Self.sliceCount(for: axis, in: $0) } ?? 0
+        let normalized = VolumetricMath.clampFloat(normalizedPositions[axis] ?? 0.5,
+                                                   lower: 0,
+                                                   upper: 1)
+        let slice = MedicalViewportSliceState(axis: axis,
+                                              index: Self.sliceIndex(axis: axis,
+                                                                     normalized: normalized,
+                                                                     dataset: dataset),
+                                              count: count,
+                                              normalizedPosition: normalized)
+        return MedicalViewportState(
+            viewportID: viewportID(for: axis),
+            viewportType: .volume(axis: axis),
+            renderMode: .mpr(blend: mprSlabBlendMode.volumetricBlendMode),
+            dataset: dataset.map(MedicalViewportDatasetSummary.init(dataset:)),
+            windowLevel: windowLevelState,
+            slice: slice,
+            presentation: MedicalViewportPresentationState(surface: surface(for: axis))
+        )
+    }
+
+    public func state(for viewport: ViewportID) -> MedicalViewportState? {
+        if viewport == volumeViewportID {
+            return volumeViewportState
+        }
+        guard let axis = axis(for: viewport) else { return nil }
+        return state(for: axis)
     }
 
     public func applyDataset(_ dataset: VolumeDataset) async throws {
@@ -1402,8 +1496,41 @@ public final class ClinicalViewportSession: ObservableObject {
         controller.debugSnapshot(for: viewport)
     }
 
+    public func debugSlabConfiguration(for axis: MTKCore.Axis) async -> (thickness: Int, steps: Int, blend: MPRBlendMode)? {
+        await debugSlabConfiguration(for: viewportID(for: axis))
+    }
+
+    public func debugSlabConfiguration(for viewport: ViewportID) async -> (thickness: Int, steps: Int, blend: MPRBlendMode)? {
+        await controller.engine.debugSlabConfiguration(for: viewport)
+    }
+
     public func shutdown() async {
         await controller.shutdown()
+    }
+
+    private var windowLevelState: VolumetricWindowLevelState {
+        VolumetricWindowLevelState(window: windowLevel.window, level: windowLevel.level)
+    }
+
+    private static func sliceCount(for axis: MTKCore.Axis, in dataset: VolumeDataset) -> Int {
+        switch axis {
+        case .axial:
+            return max(dataset.dimensions.depth, 0)
+        case .coronal:
+            return max(dataset.dimensions.height, 0)
+        case .sagittal:
+            return max(dataset.dimensions.width, 0)
+        }
+    }
+
+    private static func sliceIndex(axis: MTKCore.Axis,
+                                   normalized: Float,
+                                   dataset: VolumeDataset?) -> Int {
+        guard let dataset else { return 0 }
+        let count = sliceCount(for: axis, in: dataset)
+        guard count > 1 else { return 0 }
+        let clamped = VolumetricMath.clampFloat(normalized, lower: 0, upper: 1)
+        return Int(round(clamped * Float(count - 1)))
     }
 }
 

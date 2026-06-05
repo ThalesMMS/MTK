@@ -547,23 +547,30 @@ extension VolumeViewportController {
         return try await TextureSnapshotExporter().makeCGImage(from: frame)
     }
 
-    /// Configure the volume renderer's HU window, lighting, and HU gate using controller state and the provided dataset.
+    /// Applies the controller-owned renderer state without requiring callers to know adapter setter ordering.
     /// - Parameters:
-    ///   - dataset: The volume dataset whose intensity range is used as a fallback for HU gate bounds when no explicit HU window or projection gate values are available.
+    ///   - dataset: The volume dataset whose intensity range is used as a fallback for HU gate bounds
+    ///     when no explicit HU window or projection gate values are available.
     /// - Throws: Any error thrown by the underlying `volumeRenderer` configuration calls.
     func applyVolumeRendererState(for dataset: VolumeDataset) async throws {
         let volumeRenderer = try volumeRendererProvider.renderer()
+        var renderState = try await volumeRenderer.getRenderStateSnapshot()
         if let huWindow {
-            try await volumeRenderer.setHuWindow(min: huWindow.minHU, max: huWindow.maxHU)
+            renderState.huWindow = huWindow.minHU...huWindow.maxHU
         }
-        try await volumeRenderer.setLighting(lightingEnabled)
+        renderState.lightingEnabled = lightingEnabled
         if projectionHuGate.enabled || huGateEnabled {
-            let minHU = projectionHuGate.enabled ? projectionHuGate.min : (huWindow?.minHU ?? dataset.intensityRange.lowerBound)
-            let maxHU = projectionHuGate.enabled ? projectionHuGate.max : (huWindow?.maxHU ?? dataset.intensityRange.upperBound)
-            try await volumeRenderer.setHuGate(enabled: true, minHU: minHU, maxHU: maxHU)
+            let minHU = projectionHuGate.enabled
+                ? projectionHuGate.min
+                : (huWindow?.minHU ?? dataset.intensityRange.lowerBound)
+            let maxHU = projectionHuGate.enabled
+                ? projectionHuGate.max
+                : (huWindow?.maxHU ?? dataset.intensityRange.upperBound)
+            renderState.huGate = minHU...maxHU
         } else {
-            try await volumeRenderer.setHuGate(enabled: false, minHU: 0, maxHU: 0)
+            renderState.huGate = nil
         }
+        try await volumeRenderer.applyRenderState(renderState)
     }
 
     /// Builds a VolumeRenderRequest configured for the current viewport, camera, transfer function, compositing mode, and render quality.

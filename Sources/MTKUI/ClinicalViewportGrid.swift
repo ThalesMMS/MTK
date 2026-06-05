@@ -184,9 +184,9 @@ private final class ClinicalViewportGridControllerStore: ObservableObject {
     func applyHangingProtocolIfNeeded(definition: HangingProtocolDefinition?,
                                       context: HangingProtocolContext?) async {
         guard let definition,
-              let controller
+              let session
         else { return }
-        await controller.applyHangingProtocol(definition, context: context)
+        await session.applyHangingProtocol(definition, context: context)
     }
 
     func shutdownIfOwned() async {

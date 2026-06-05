@@ -68,6 +68,33 @@ final class MetalInteractiveOutputTexturePoolTests: XCTestCase {
         XCTAssertEqual(resizedAvailableCount, 3)
     }
 
+    func testDebugLifecycleMetricsExposeAcquirePresentationAndRelease() async throws {
+        let device = try makeDevice()
+        let pool = MetalInteractiveOutputTexturePool(capacity: 2)
+
+        let lease = try await pool.acquire(width: 32,
+                                           height: 24,
+                                           device: device,
+                                           frameIndex: 4)
+
+        var metrics = await pool.debugLifecycleMetrics
+        XCTAssertEqual(metrics.acquiredCount, 1)
+        XCTAssertEqual(metrics.presentedCount, 0)
+        XCTAssertEqual(metrics.releasedCount, 0)
+        XCTAssertEqual(metrics.pendingCount, 1)
+
+        lease.markPresented()
+        lease.release()
+
+        metrics = await pool.debugLifecycleMetrics
+        XCTAssertEqual(metrics.acquiredCount, 1)
+        XCTAssertEqual(metrics.presentedCount, 1)
+        XCTAssertEqual(metrics.releasedCount, 1)
+        XCTAssertEqual(metrics.droppedCount, 0)
+        XCTAssertEqual(metrics.pendingCount, 0)
+        XCTAssertEqual(metrics.availableSlotCount, 1)
+    }
+
     private func makeDevice() throws -> any MTLDevice {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw XCTSkip("Metal device unavailable on this test runner")

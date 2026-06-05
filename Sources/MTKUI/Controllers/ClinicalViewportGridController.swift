@@ -1239,24 +1239,12 @@ public final class ClinicalViewportGridController: ObservableObject {
         let clampedY = CGFloat(clampNormalized(Float(normalizedPoint.y)))
         let pickPoint = CGPoint(x: clampedX * surfaceSize.width,
                                 y: clampedY * surfaceSize.height)
-        let plane = currentMPRPlane(for: axis) ?? MPRPlaneGeometryFactory.makePlane(
-            for: dataset,
-            axis: planeAxis(for: axis),
-            slicePosition: normalizedPositions[axis] ?? 0.5
-        )
         let previousPositions = normalizedPositions
         do {
-            let pick = try VolumePicking.pickMPR(
-                screenPoint: pickPoint,
-                viewportSize: surfaceSize,
-                dataset: dataset,
-                plane: plane,
-                displayTransform: displayTransform(for: axis),
-                viewportTransform: viewportTransform(for: axis),
-                outputAspect: .aspectFit(physicalAspectRatio: plane.physicalAspectRatio),
-                axis: planeAxis(for: axis),
-                layers: volumeLayers
-            )
+            guard let context = mprGeometryDisplayContext(for: axis,
+                                                          viewportSize: surfaceSize) else { return }
+            let pick = try context.pick(screenPoint: pickPoint,
+                                        layers: volumeLayers)
             setMPRCursorVoxel(pick.voxel.continuousIndex, in: dataset)
         } catch VolumePickError.outsideImagedArea {
             return
@@ -1594,6 +1582,10 @@ public final class ClinicalViewportGridController: ObservableObject {
     public func displayTransform(for axis: MTKCore.Axis) -> MPRDisplayTransform {
         if let cached = displayTransformsByAxis[axis] {
             return cached
+        }
+        if let context = mprGeometryDisplayContext(for: axis) {
+            displayTransformsByAxis[axis] = context.displayTransform
+            return context.displayTransform
         }
         if let plane = currentMPRPlane(for: axis) {
             let transform = displayTransform(for: plane, axis: axis)
