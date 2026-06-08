@@ -26,9 +26,9 @@ Swift Package with Metal-native volume rendering, SwiftUI overlays, and companio
 
 ## Related repositories
 - [MTK](https://github.com/ThalesMMS/MTK) — Metal rendering core, SwiftUI viewports, and synthetic fixtures.
-- [DICOM-Decoder](https://github.com/ThalesMMS/DICOM-Decoder) — Swift DICOM parsing, ZIP loading, metadata extraction, and decoded series assembly.
+- [DICOM-Swift](https://github.com/ThalesMMS/DICOM-Swift) — Swift DICOM parsing, ZIP loading, metadata extraction, and decoded series assembly.
 - [MTKDicomBridge](https://github.com/ThalesMMS/MTKDicomBridge) — Separate SwiftPM package that converts `DicomCore.DicomDecodedSeries` into MTK `VolumeDataset` values.
-- [MTK-Demo](https://github.com/ThalesMMS/MTK-Demo) — Public demo app that consumes MTK, MTKDicomBridge, and DICOM-Decoder by release tag.
+- [MTK-Demo](https://github.com/ThalesMMS/MTK-Demo) — Public demo app that consumes MTK, MTKDicomBridge, and DICOM-Swift by release tag.
 
 ## Architecture
 The public app-facing API contract is documented in [Architecture/PublicAPI.md](Architecture/PublicAPI.md). The accepted clinical rendering architecture is documented in [Architecture/ClinicalRenderingADR.md](Architecture/ClinicalRenderingADR.md). Multi-volume registration and resampling follow the staged plan in [Architecture/MultiVolumeRegistration.md](Architecture/MultiVolumeRegistration.md).
@@ -69,7 +69,7 @@ For application code, prefer the stable public wrappers: `VolumeDataset`/`ImageD
 ## Volume input boundary
 MTKCore owns the renderer-ready volume DTOs used at the package boundary: `VolumetricDimensions`,
 `VolumetricSpacing`, `VolumetricOrientation`, `VolumetricPixelFormat`, `VolumetricSeriesData`, and
-`VolumetricSeriesDataProvider`. App-side loaders that use GDCM, DICOM-Decoder, or custom ingestion keep responsibility
+`VolumetricSeriesDataProvider`. App-side loaders that use GDCM, DICOM-Swift, or custom ingestion keep responsibility
 for DICOM parsing, PHI handling, decompression, slice ordering, rescale, and window metadata, then hand MTKCore a
 decoded scalar volume through `VolumetricSeriesData`, a provider adapter, or a manually constructed `VolumeDataset`.
 The main rendering path does not require `MTKDicomBridge`.
@@ -207,7 +207,7 @@ try await session.applyTransferFunction(restored)
 When `gradientOpacity` is present, MTK builds a 2D transfer texture and multiplies scalar opacity by gradient magnitude during DVR. Presets without `gradientOpacity` keep the legacy 1D transfer-texture path.
 
 ## Loading DICOM volumes
-`DICOM-Decoder` owns DICOM source loading, ZIP extraction, slice ordering, geometry validation, rescale slope/intercept, recommended window metadata, and DICOM errors. Use `MTKCore` alone when your app already has a `VolumeDataset`. Import `MTKDicomBridge` when you want to convert the default `DICOM-Decoder` result into a renderer-ready dataset:
+`DICOM-Swift` owns DICOM source loading, ZIP extraction, slice ordering, geometry validation, rescale slope/intercept, recommended window metadata, and DICOM errors. Use `MTKCore` alone when your app already has a `VolumeDataset`. Import `MTKDicomBridge` when you want to convert the default `DICOM-Swift` result into a renderer-ready dataset:
 
 ```swift
 import MTKCore
@@ -225,7 +225,7 @@ Progress and failures are surfaced from `DicomCore`; the bridge does not remap D
 ## Expected inputs and outputs
 **Typical inputs**
 - A synthetic or programmatically generated voxel buffer wrapped in `VolumeDataset`
-- A DICOM directory, ZIP archive, or individual file routed through `DICOM-Decoder` and converted by `MTKDicomBridge`
+- A DICOM directory, ZIP archive, or individual file routed through `DICOM-Swift` and converted by `MTKDicomBridge`
 - 16-bit scalar volume data with spatial metadata available for reconstruction
 
 **Typical outputs**
@@ -269,13 +269,13 @@ do {
 - DICOM geometry tests commit small non-PHI manifest fixtures. Large real DICOM series remain optional local fixtures
   and are intentionally skipped when unavailable.
 - The standalone `VolumeRendererComparison` benchmark requires an explicit local DICOM path through `--dicom`. If you want to use the sample data from the demo project, clone or download fixtures from `https://github.com/ThalesMMS/MTK-Demo.git` and pass the local path explicitly.
-- DICOM source security coverage lives in `DICOM-Decoder`; visual-quality checks compare MPS-accelerated empty-space skipping (feature availability requires MPS) against core Metal ray marching on synthetic datasets.
+- DICOM source security coverage lives in `DICOM-Swift`; visual-quality checks compare MPS-accelerated empty-space skipping (feature availability requires MPS) against core Metal ray marching on synthetic datasets.
 
 ## Limitations and evaluation caveats
 - The package targets Apple-platform rendering workflows; it is not a cross-platform PACS, archive, or viewer.
 - Public examples and tests mostly exercise synthetic datasets, renderer behaviors, and optional local fixtures rather than a versioned benchmark corpus committed in this repository.
 - Rendering correctness checks and visual-regression tests are useful engineering signals, but they are **not** the same thing as clinical validation or reader-study evidence.
-- DICOM import support depends on `DICOM-Decoder` metadata coverage and input quality. Unsupported transfer syntaxes, malformed datasets, geometry failures, unsupported scalar formats, empty sources, and unsafe ZIP entries surface as `DicomCore` errors.
+- DICOM import support depends on `DICOM-Swift` metadata coverage and input quality. Unsupported transfer syntaxes, malformed datasets, geometry failures, unsupported scalar formats, empty sources, and unsafe ZIP entries surface as `DicomCore` errors.
 
 ## Documentation
 

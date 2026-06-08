@@ -13,7 +13,7 @@ import simd
 /// Factory for creating VolumeDataset instances from MTKCore volumetric input DTOs.
 ///
 /// MTKCore does not parse DICOM or own application-side loading. Apps that use
-/// GDCM, DICOM-Decoder, or another loader should map their decoded scalar volume
+/// GDCM, DICOM-Swift, or another loader should map their decoded scalar volume
 /// into ``VolumetricSeriesData``/``VolumetricSeriesDataProvider`` or construct a
 /// ``VolumeDataset`` directly.
 public enum VolumeDatasetFactory {

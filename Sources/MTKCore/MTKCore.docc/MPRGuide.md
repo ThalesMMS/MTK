@@ -308,7 +308,7 @@ struct MPRView: View {
             sagittalController: sagittalController
         )
         .task {
-            // Load a renderer-ready dataset. Import MTKDicomBridge when using DICOM-Decoder.
+            // Load a renderer-ready dataset. Import MTKDicomBridge when using DICOM-Swift.
             let importer = DicomVolumeDatasetImporter()
             let dataset = try await importDataset(from: dicomDirectory, using: importer)
 

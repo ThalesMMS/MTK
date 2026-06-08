@@ -50,7 +50,7 @@
     },
     {
       "id": "dicom-ingest-to-volume",
-      "component": "DICOM-Decoder",
+      "component": "DICOM-Swift",
       "fixturePolicy": "committed non-PHI metadata fixtures only",
       "benchmarkMode": "volume-ingest",
       "budgets": [

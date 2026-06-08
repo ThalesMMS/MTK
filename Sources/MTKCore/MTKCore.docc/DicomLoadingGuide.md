@@ -3,10 +3,10 @@
 MTKCore does not parse DICOM sources. DICOM file discovery, ZIP extraction,
 path-traversal validation, slice ordering, geometry validation, rescale
 slope/intercept, window metadata, and DICOM-specific errors belong to the
-`DICOM-Decoder` package.
+`DICOM-Swift` package.
 
 MTKCore consumes renderer-ready `VolumeDataset` values. Apps that want the
-default DICOM-Decoder integration should import `MTKDicomBridge`, which converts
+default DICOM-Swift integration should import `MTKDicomBridge`, which converts
 `DicomCore.DicomDecodedSeries` into `VolumeDataset` without redefining DICOM
 protocols inside MTKCore.
 

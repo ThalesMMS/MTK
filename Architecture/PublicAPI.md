@@ -40,7 +40,7 @@ Use these types to create or receive 3D image data before rendering. A
 downstream app should be able to construct a `VolumeDataset` manually without
 touching the renderer, resource manager, render graph, or DICOM loader.
 `Volumetric*` DTOs are the stable MTKCore handoff contract for app-side loaders
-that already decoded a scalar volume through GDCM, DICOM-Decoder, or another
+that already decoded a scalar volume through GDCM, DICOM-Swift, or another
 ingestion path.
 
 ### Clinical Geometry And Picking
@@ -139,9 +139,9 @@ experimental topics.
 
 The stable app contract in `MTKCore` is still `VolumeDataset`. DICOM parsing,
 source loading, ordering, geometry validation, window metadata, and DICOM errors
-belong to `DICOM-Decoder`. The optional `MTKDicomBridge` product only converts
+belong to `DICOM-Swift`. The optional `MTKDicomBridge` product only converts
 `DicomCore.DicomDecodedSeries` into `VolumeDataset` for apps that want the
-default DICOM-Decoder-backed import path.
+default DICOM-Swift-backed import path.
 
 ### Runtime, Output, And Snapshot Boundaries
 

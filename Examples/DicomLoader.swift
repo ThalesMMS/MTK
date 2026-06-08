@@ -14,7 +14,7 @@ import MTKUI
 ///
 /// ADR concepts demonstrated:
 /// the example uses `DicomVolumeDatasetImporter.loadDataset(from:progress:completion:)`
-/// to bridge a DICOM-Decoder result into `VolumeDataset`, then applies that
+/// to bridge a DICOM-Swift result into `VolumeDataset`, then applies that
 /// dataset through `ClinicalViewportSession.applyDataset(_:)`. That call routes the
 /// dataset into the clinical grid implementation, which acquires a shared
 /// `VolumeResourceHandle` through `VolumeResourceManager` before binding the
@@ -158,7 +158,7 @@ struct BasicDicomLoaderExample: View {
 }
 
 /*
- `DICOM-Decoder` remains the canonical importer for directories, archives, and
+ `DICOM-Swift` remains the canonical importer for directories, archives, and
  individual DICOM files. `MTKDicomBridge` only converts the decoded result:
 
  1. `DicomVolumeDatasetImporter` produces a `VolumeDataset`.

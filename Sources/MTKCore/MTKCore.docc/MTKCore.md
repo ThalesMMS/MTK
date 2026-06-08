@@ -8,7 +8,7 @@ MTKCore provides the foundational building blocks for GPU-accelerated medical vo
 
 The official clinical rendering path is Metal-native. The target flow is `DICOM / VolumeDataset -> VolumeResourceManager -> GPU textures -> MTKRenderingEngine -> ViewportRenderGraph -> render passes -> PresentationPass -> MTKView/CAMetalLayer drawable`. `MTLTexture` is the official result type for interactive rendering frames. `CGImage` is for export, snapshot, debug, and test readback use cases only; it is not the interactive display path.
 
-The app-facing API boundary is recorded in [Architecture/PublicAPI.md](../../../Architecture/PublicAPI.md), and the accepted architecture decision is recorded in [Architecture/ClinicalRenderingADR.md](../../../Architecture/ClinicalRenderingADR.md). The framework handles the pipeline from `VolumeDataset` through GPU texture creation, ray marching computation, and transfer function application. DICOM parsing and import policy live in `DICOM-Decoder`; the optional `MTKDicomBridge` product only converts decoded DICOM volumes into `VolumeDataset`. Synchronized viewports should share GPU resources by handle, including volume textures, transfer textures, acceleration textures, and intermediate pass outputs.
+The app-facing API boundary is recorded in [Architecture/PublicAPI.md](../../../Architecture/PublicAPI.md), and the accepted architecture decision is recorded in [Architecture/ClinicalRenderingADR.md](../../../Architecture/ClinicalRenderingADR.md). The framework handles the pipeline from `VolumeDataset` through GPU texture creation, ray marching computation, and transfer function application. DICOM parsing and import policy live in `DICOM-Swift`; the optional `MTKDicomBridge` product only converts decoded DICOM volumes into `VolumeDataset`. Synchronized viewports should share GPU resources by handle, including volume textures, transfer textures, acceleration textures, and intermediate pass outputs.
 
 For application code, the stable data contract is ``VolumeDataset``/``ImageData3D`` plus transfer functions, clipping, layers, and snapshot/export boundaries. Build viewer UI through ``MTKUI/StackViewport``, ``MTKUI/VolumeViewport``, ``MTKUI/VolumeViewport3D``, or ``MTKUI/ClinicalViewportSession`` instead of directly depending on render graph, resource manager, pass node, or output texture pool internals.
 
@@ -83,7 +83,7 @@ Transfer functions map volume intensities to visual properties (color and opacit
 
 ### DICOM Integration Boundary
 
-MTKCore consumes `VolumeDataset`. Use the optional `MTKDicomBridge` product when an app needs to convert `DICOM-Decoder` output into MTKCore data.
+MTKCore consumes `VolumeDataset`. Use the optional `MTKDicomBridge` product when an app needs to convert `DICOM-Swift` output into MTKCore data.
 
 ### Metal Utilities
 
