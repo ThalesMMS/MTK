@@ -7,17 +7,20 @@ public struct ViewerBottomToolbar: View {
     private let onToolTap: (ViewerToolDescriptor) -> Void
     private let onToolLongPress: (ViewerToolDescriptor) -> Void
     private let onMenuItemTap: (ViewerToolMenuItem) -> Void
+    private let trailingAccessory: AnyView?
 
     public init(configuration: ViewerChromeConfiguration,
                 activeMenuToolID: ViewerToolID?,
                 onToolTap: @escaping (ViewerToolDescriptor) -> Void,
                 onToolLongPress: @escaping (ViewerToolDescriptor) -> Void,
-                onMenuItemTap: @escaping (ViewerToolMenuItem) -> Void) {
+                onMenuItemTap: @escaping (ViewerToolMenuItem) -> Void,
+                trailingAccessory: AnyView? = nil) {
         self.configuration = configuration
         self.activeMenuToolID = activeMenuToolID
         self.onToolTap = onToolTap
         self.onToolLongPress = onToolLongPress
         self.onMenuItemTap = onMenuItemTap
+        self.trailingAccessory = trailingAccessory
     }
 
     public var body: some View {
@@ -32,6 +35,9 @@ public struct ViewerBottomToolbar: View {
             HStack(spacing: 14) {
                 ForEach(configuration.bottomTools) { tool in
                     toolButton(tool)
+                }
+                if let trailingAccessory {
+                    trailingAccessory
                 }
             }
             .padding(.horizontal, 18)
@@ -80,17 +86,20 @@ public struct MPRBottomToolbar: View {
     private let onToolTap: (ViewerToolDescriptor) -> Void
     private let onToolLongPress: (ViewerToolDescriptor) -> Void
     private let onMenuItemTap: (ViewerToolMenuItem) -> Void
+    private let trailingAccessory: AnyView?
 
     public init(configuration: ViewerChromeConfiguration,
                 activeMenuToolID: ViewerToolID?,
                 onToolTap: @escaping (ViewerToolDescriptor) -> Void,
                 onToolLongPress: @escaping (ViewerToolDescriptor) -> Void,
-                onMenuItemTap: @escaping (ViewerToolMenuItem) -> Void) {
+                onMenuItemTap: @escaping (ViewerToolMenuItem) -> Void,
+                trailingAccessory: AnyView? = nil) {
         self.configuration = configuration
         self.activeMenuToolID = activeMenuToolID
         self.onToolTap = onToolTap
         self.onToolLongPress = onToolLongPress
         self.onMenuItemTap = onMenuItemTap
+        self.trailingAccessory = trailingAccessory
     }
 
     public var body: some View {
@@ -98,7 +107,8 @@ public struct MPRBottomToolbar: View {
                             activeMenuToolID: activeMenuToolID,
                             onToolTap: onToolTap,
                             onToolLongPress: onToolLongPress,
-                            onMenuItemTap: onMenuItemTap)
+                            onMenuItemTap: onMenuItemTap,
+                            trailingAccessory: trailingAccessory)
     }
 }
 

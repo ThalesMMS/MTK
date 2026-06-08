@@ -184,6 +184,8 @@ public final class StackViewport: ObservableObject, MedicalViewport {
     @Published public private(set) var windowPresentation = StackViewportWindowPresentation()
     @Published public private(set) var viewportTransform = Viewer2DTransform.identity
     @Published public private(set) var volumeLayers: [MTKCore.VolumeLayer] = []
+    @Published public private(set) var slabBlendMode: VolumetricMPRBlendMode = .single
+    @Published public private(set) var slab: VolumeViewportController.SlabConfiguration?
 
     public var surface: any ViewportPresenting { metalSurface }
     public var viewportType: MedicalViewportType { .stack(axis: axis) }
@@ -320,6 +322,18 @@ public final class StackViewport: ObservableObject, MedicalViewport {
         refreshState()
     }
 
+    public func setSlabProjection(blend: VolumetricMPRBlendMode, thickness: Int) async {
+        slabBlendMode = blend
+        if blend == .single {
+            slab = nil
+        } else {
+            let resolved = max(1, thickness)
+            slab = VolumeViewportController.SlabConfiguration(thickness: resolved, steps: resolved)
+        }
+        await configureController()
+        refreshState()
+    }
+
     public func resetCamera() async {
         await controller.resetCamera()
         refreshState()
@@ -397,8 +411,8 @@ public final class StackViewport: ObservableObject, MedicalViewport {
         await controller.setDisplayConfiguration(
             .mpr(axis: controllerAxis,
                  index: sliceIndex,
-                 blend: .single,
-                 slab: nil)
+                 blend: slabBlendMode,
+                 slab: slab)
         )
         await controller.setMprPlane(axis: controllerAxis,
                                      normalized: normalizedPosition)
@@ -987,6 +1001,17 @@ public final class VolumeViewport3D: ObservableObject, MedicalViewport {
     func applyNativePanDelta(_ delta: CGSize) -> Bool {
         let changed = controller.panCameraInteractively(
             screenDelta: SIMD2<Float>(Float(delta.width), Float(delta.height))
+        )
+        if changed { refreshState() }
+        return changed
+    }
+
+    @discardableResult
+    func applyNativeTiltDelta(_ delta: CGSize) -> Bool {
+        let scale: Float = 0.01
+        let changed = controller.tiltCameraInteractively(
+            roll: -Float(delta.width) * scale,
+            pitch: -Float(delta.height) * scale
         )
         if changed { refreshState() }
         return changed

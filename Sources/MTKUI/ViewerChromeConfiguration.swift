@@ -134,6 +134,8 @@ public extension Clinical2DTool {
             self = .sync
         case .reslice:
             self = .reslice
+        case .thickSlab:
+            self = .thickSlab
         default:
             return nil
         }
@@ -153,6 +155,8 @@ public extension Clinical2DTool {
             return .sync
         case .reslice:
             return .reslice
+        case .thickSlab:
+            return .thickSlab
         }
     }
 
@@ -170,6 +174,8 @@ public extension Clinical2DTool {
             return "MTK2DToolSync"
         case .reslice:
             return "MTK2DToolReslice"
+        case .thickSlab:
+            return "MTK2DToolThickSlab"
         }
     }
 
@@ -187,6 +193,8 @@ public extension Clinical2DTool {
             return "link"
         case .reslice:
             return "brain.head.profile"
+        case .thickSlab:
+            return "square.3.layers.3d"
         }
     }
 }
@@ -240,7 +248,9 @@ public enum ViewerChromeOverlayID: String, Sendable {
 }
 
 public enum ViewerOptionsMenuID: String, Sendable {
+    case volume3DOptions
     case mprOptions
+    case stack2DOptions
 }
 
 public enum ViewerSettingsSheetID: String, Sendable {
@@ -250,6 +260,7 @@ public enum ViewerSettingsSheetID: String, Sendable {
     case mprThickSlab
     case stack2DSettings
     case stack2DWindowLevelManual
+    case stack2DThickSlab
 }
 
 public enum ViewerToolAction: Equatable, Sendable {
@@ -265,6 +276,8 @@ public enum ViewerToolAction: Equatable, Sendable {
     case set3DBrushMode(VolumeBrushMode)
     case adjust3DBrushSize(Double)
     case reset3DBrushVolume
+    case toggle3DImageAnnotations
+    case share3DSnapshot
     case setMPRScreenLayout(MPRScreenLayout)
     case toggleMPRAnnotations
     case toggleMPRCrosshair
@@ -294,6 +307,15 @@ public enum ViewerToolAction: Equatable, Sendable {
     case set2DSyncEnabled(Bool)
     case set2DSyncOption(ViewerSyncOption, Bool)
     case set2DResliceAxis(MTKCore.Axis)
+    case set2DScreenLayout(TwoDScreenLayout)
+    case toggle2DImageAnnotations
+    case toggle2DReferenceLines
+    case add2DBookmark
+    case show2DBookmarks
+    case toggle2DBookmarksPanel
+    case deleteAll2DBookmarks
+    case show2DMetadata
+    case share2DCurrentImage
     case openSettings(ViewerSettingsSheetID)
     case none
 }
@@ -476,6 +498,8 @@ public struct ViewerChromeConfigurationFactory: Sendable {
                               selected3DCLUTPreset: Volume3DCLUTPreset = .defaultPreset,
                               selected3DRotationTarget: Volume3DRotationTarget = .model,
                               volumeBrushState: VolumeBrushState = VolumeBrushState(),
+                              isVolume3DImageAnnotationsVisible: Bool = true,
+                              isVolume3DShareEnabled: Bool = false,
                               selectedMPRScreenLayout: MPRScreenLayout = .defaultLayout,
                               selectedMPRWindowPreset: MPRWindowPreset = .default,
                               selectedMPRCLUTPreset: Volume3DCLUTPreset = .defaultPreset,
@@ -492,16 +516,27 @@ public struct ViewerChromeConfigurationFactory: Sendable {
                               twoDSyncState: ViewerSyncState? = nil,
                               isTwoDLocationSyncEnabled: Bool = false,
                               twoDScrollSettings: TwoDScrollSettings = .default,
+                              selectedTwoDScreenLayout: TwoDScreenLayout = .singleWindow,
+                              enabledTwoDScreenLayouts: Set<TwoDScreenLayout> = [.singleWindow],
+                              isTwoDImageAnnotationsVisible: Bool = true,
+                              isTwoDReferenceLinesVisible: Bool = false,
+                              isTwoDReferenceLinesEnabled: Bool = false,
+                              isTwoDBookmarksPanelVisible: Bool = false,
+                              canDeleteAllTwoDBookmarks: Bool = false,
                               selectedTwoDResliceAxis: MTKCore.Axis = .axial,
                               isTwoDResliceEnabled: Bool = true,
-                              twoDResliceDisabledMessage: String? = nil) -> ViewerChromeConfiguration {
+                              twoDResliceDisabledMessage: String? = nil,
+                              isTwoDThickSlabEnabled: Bool = true,
+                              twoDThickSlabDisabledMessage: String? = nil) -> ViewerChromeConfiguration {
         switch mode {
         case .single3D:
             return single3DConfiguration(selectedToolID: selectedToolID,
                                          selectedWindowPreset: selected3DWindowPreset,
                                          selectedCLUTPreset: selected3DCLUTPreset,
                                          selectedRotationTarget: selected3DRotationTarget,
-                                         volumeBrushState: volumeBrushState)
+                                         volumeBrushState: volumeBrushState,
+                                         isImageAnnotationsVisible: isVolume3DImageAnnotationsVisible,
+                                         isShareEnabled: isVolume3DShareEnabled)
         case .clinical:
             return mprConfiguration(selectedToolID: selectedToolID,
                                     selectedScreenLayout: selectedMPRScreenLayout,
@@ -521,9 +556,18 @@ public struct ViewerChromeConfigurationFactory: Sendable {
                                         syncState: twoDSyncState ?? Self.legacySyncState(isEnabled: isTwoDSyncEnabled),
                                         isLocationSyncEnabled: isTwoDLocationSyncEnabled,
                                         scrollSettings: twoDScrollSettings,
+                                        selectedScreenLayout: selectedTwoDScreenLayout,
+                                        enabledScreenLayouts: enabledTwoDScreenLayouts,
+                                        isImageAnnotationsVisible: isTwoDImageAnnotationsVisible,
+                                        isReferenceLinesVisible: isTwoDReferenceLinesVisible,
+                                        isReferenceLinesEnabled: isTwoDReferenceLinesEnabled,
+                                        isBookmarksPanelVisible: isTwoDBookmarksPanelVisible,
+                                        canDeleteAllBookmarks: canDeleteAllTwoDBookmarks,
                                         selectedResliceAxis: selectedTwoDResliceAxis,
                                         isResliceEnabled: isTwoDResliceEnabled,
-                                        resliceDisabledMessage: twoDResliceDisabledMessage)
+                                        resliceDisabledMessage: twoDResliceDisabledMessage,
+                                        isThickSlabEnabled: isTwoDThickSlabEnabled,
+                                        thickSlabDisabledMessage: twoDThickSlabDisabledMessage)
         }
     }
 
@@ -538,14 +582,16 @@ public struct ViewerChromeConfigurationFactory: Sendable {
                                        selectedWindowPreset: Volume3DWindowPreset,
                                        selectedCLUTPreset: Volume3DCLUTPreset,
                                        selectedRotationTarget: Volume3DRotationTarget,
-                                       volumeBrushState: VolumeBrushState) -> ViewerChromeConfiguration {
-        let selected = selectedToolID ?? .rotation
+                                       volumeBrushState: VolumeBrushState,
+                                       isImageAnnotationsVisible: Bool,
+                                       isShareEnabled: Bool) -> ViewerChromeConfiguration {
+        let selected = selectedToolID ?? .orientation
         return ViewerChromeConfiguration(
             mode: .single3D,
             bottomTools: [
                 volume3DTool(.orientation,
-                             icon: "viewfinder",
-                             title: "Orientation",
+                             icon: "rotate.3d",
+                             title: "Rotate",
                              selected: selected,
                              menu: orientationMenu),
                 volume3DTool(.windowLevel,
@@ -555,8 +601,8 @@ public struct ViewerChromeConfigurationFactory: Sendable {
                              menu: volume3DWindowLevelMenu(selectedWindowPreset: selectedWindowPreset,
                                                            selectedCLUTPreset: selectedCLUTPreset)),
                 volume3DTool(.rotation,
-                             icon: "rotate.3d",
-                             title: "Rotation",
+                             icon: "gyroscope",
+                             title: "Tilt",
                              selected: selected,
                              menu: volume3DRotationMenu(selectedTarget: selectedRotationTarget)),
                 volume3DTool(.crop,
@@ -572,7 +618,9 @@ public struct ViewerChromeConfigurationFactory: Sendable {
                              action: .activateOverlay(.brush3D),
                              menu: Volume3DBrushToolMenu.menu(state: volumeBrushState))
             ],
-            optionsAction: .openSettings(.volumeRenderSettings)
+            optionsAction: .openMenu(.volume3DOptions),
+            optionsMenu: volume3DOptionsMenu(isImageAnnotationsVisible: isImageAnnotationsVisible,
+                                             isShareEnabled: isShareEnabled)
         )
     }
 
@@ -609,7 +657,7 @@ public struct ViewerChromeConfigurationFactory: Sendable {
                 mprTool(.roi, icon: "ruler", title: "ROI", selected: selected, menu: mprROIMenu(selectedKind: selectedROIKind)),
                 mprTool(.thickSlab,
                         icon: "square.3.layers.3d",
-                        title: "Thick slab",
+                        title: "Thick Slab",
                         selected: selected,
                         action: .openSettings(.mprThickSlab))
             ],
@@ -629,9 +677,18 @@ public struct ViewerChromeConfigurationFactory: Sendable {
                                       syncState: ViewerSyncState,
                                       isLocationSyncEnabled: Bool,
                                       scrollSettings: TwoDScrollSettings,
+                                      selectedScreenLayout: TwoDScreenLayout,
+                                      enabledScreenLayouts: Set<TwoDScreenLayout>,
+                                      isImageAnnotationsVisible: Bool,
+                                      isReferenceLinesVisible: Bool,
+                                      isReferenceLinesEnabled: Bool,
+                                      isBookmarksPanelVisible: Bool,
+                                      canDeleteAllBookmarks: Bool,
                                       selectedResliceAxis: MTKCore.Axis,
                                       isResliceEnabled: Bool,
-                                      resliceDisabledMessage: String?) -> ViewerChromeConfiguration {
+                                      resliceDisabledMessage: String?,
+                                      isThickSlabEnabled: Bool,
+                                      thickSlabDisabledMessage: String?) -> ViewerChromeConfiguration {
         let selected = selectedToolID ?? .scroll
         return ViewerChromeConfiguration(
             mode: .stack2D,
@@ -659,9 +716,21 @@ public struct ViewerChromeConfigurationFactory: Sendable {
                          isEnabled: isResliceEnabled,
                          disabledMessage: resliceDisabledMessage,
                          menu: stack2DResliceMenu(selectedAxis: selectedResliceAxis,
-                                                 isEnabled: isResliceEnabled))
+                                                  isEnabled: isResliceEnabled)),
+                twoDTool(.thickSlab,
+                         selected: selected,
+                         isEnabled: isThickSlabEnabled,
+                         disabledMessage: thickSlabDisabledMessage,
+                         action: .openSettings(.stack2DThickSlab))
             ],
-            optionsAction: .openSettings(.stack2DSettings)
+            optionsAction: .openMenu(.stack2DOptions),
+            optionsMenu: stack2DOptionsMenu(selectedScreenLayout: selectedScreenLayout,
+                                            enabledScreenLayouts: enabledScreenLayouts,
+                                            isImageAnnotationsVisible: isImageAnnotationsVisible,
+                                            isReferenceLinesVisible: isReferenceLinesVisible,
+                                            isReferenceLinesEnabled: isReferenceLinesEnabled,
+                                            isBookmarksPanelVisible: isBookmarksPanelVisible,
+                                            canDeleteAllBookmarks: canDeleteAllBookmarks)
         )
     }
 
@@ -1057,20 +1126,173 @@ public struct ViewerChromeConfigurationFactory: Sendable {
                                      systemImage: isCrosshairVisible ? "checkmark" : nil,
                                      action: .toggleMPRCrosshair,
                                      isSelected: isCrosshairVisible)),
-            .item(ViewerToolMenuItem(id: "mpr-options-reset-active-view",
-                                     title: "Reset Active View",
-                                     systemImage: "arrow.counterclockwise",
-                                     action: .resetActiveMPRView)),
             .item(ViewerToolMenuItem(id: "mpr-options-reset-views",
-                                     title: "Reset All Views",
+                                     title: "Reset Views",
                                      systemImage: "arrow.triangle.2.circlepath",
                                      action: .resetMPRViews)),
-            .item(ViewerToolMenuItem(id: "mpr-options-share",
-                                     title: "Share",
-                                     systemImage: "square.and.arrow.up",
-                                     action: .shareMPRSnapshot,
-                                     isEnabled: isShareEnabled))
-        ])
+            .section(ViewerToolMenuSection(
+                id: "mpr-options-share",
+                title: "Share",
+                systemImage: "square.and.arrow.up",
+                accessibilityIdentifier: "MPRShareMenu",
+                items: [
+                    ViewerToolMenuItem(
+                        id: "mpr-options-share-snapshot",
+                        title: "Export MPR Snapshot",
+                        systemImage: "photo",
+                        action: .shareMPRSnapshot,
+                        isEnabled: isShareEnabled
+                    )
+                ]
+            ))
+        ], accessibilityIdentifier: "MPROptionsMenu")
+    }
+
+    private func stack2DOptionsMenu(selectedScreenLayout: TwoDScreenLayout,
+                                    enabledScreenLayouts: Set<TwoDScreenLayout>,
+                                    isImageAnnotationsVisible: Bool,
+                                    isReferenceLinesVisible: Bool,
+                                    isReferenceLinesEnabled: Bool,
+                                    isBookmarksPanelVisible: Bool,
+                                    canDeleteAllBookmarks: Bool) -> ViewerToolMenu {
+        ViewerToolMenu(entries: [
+            .section(ViewerToolMenuSection(
+                id: "2d-options-screen-layout",
+                title: "Screen Layout",
+                systemImage: "rectangle.split.2x1",
+                accessibilityIdentifier: "Stack2DScreenLayoutMenu",
+                items: TwoDScreenLayout.allCases.map { layout in
+                    ViewerToolMenuItem(
+                        id: "2d-layout-\(layout.rawValue)",
+                        title: layout.title,
+                        systemImage: layout == selectedScreenLayout ? "checkmark" : nil,
+                        action: .set2DScreenLayout(layout),
+                        isEnabled: enabledScreenLayouts.contains(layout),
+                        isSelected: layout == selectedScreenLayout
+                    )
+                }
+            )),
+            .item(ViewerToolMenuItem(id: "2d-options-image-annotations",
+                                     title: "Image Annotations",
+                                     systemImage: isImageAnnotationsVisible ? "checkmark" : nil,
+                                     action: .toggle2DImageAnnotations,
+                                     isSelected: isImageAnnotationsVisible)),
+            .item(ViewerToolMenuItem(id: "2d-options-reference-lines",
+                                     title: "Show Reference Lines",
+                                     systemImage: isReferenceLinesVisible ? "checkmark" : nil,
+                                     action: .toggle2DReferenceLines,
+                                     isEnabled: isReferenceLinesEnabled,
+                                     isSelected: isReferenceLinesVisible)),
+            .section(ViewerToolMenuSection(
+                id: "2d-options-bookmarks",
+                title: "Bookmarks",
+                systemImage: "bookmark",
+                items: [
+                    ViewerToolMenuItem(id: "2d-bookmark-add",
+                                       title: "Add bookmark",
+                                       systemImage: "bookmark.fill",
+                                       action: .add2DBookmark),
+                    ViewerToolMenuItem(id: "2d-bookmarks-open",
+                                       title: "Bookmarks",
+                                       systemImage: "bookmarks",
+                                       action: .show2DBookmarks),
+                    ViewerToolMenuItem(id: "2d-bookmarks-panel",
+                                       title: "Show Bookmarks panel",
+                                       systemImage: isBookmarksPanelVisible ? "checkmark" : nil,
+                                       action: .toggle2DBookmarksPanel,
+                                       isSelected: isBookmarksPanelVisible),
+                    ViewerToolMenuItem(id: "2d-bookmarks-delete-all",
+                                       title: "Delete all",
+                                       systemImage: "trash",
+                                       action: .deleteAll2DBookmarks,
+                                       isEnabled: canDeleteAllBookmarks)
+                ]
+            )),
+            .item(ViewerToolMenuItem(id: "2d-options-metadata",
+                                     title: "Metadata",
+                                     systemImage: "list.bullet.rectangle",
+                                     action: .show2DMetadata)),
+            .section(ViewerToolMenuSection(
+                id: "2d-options-share",
+                title: "Share",
+                systemImage: "square.and.arrow.up",
+                items: [
+                    ViewerToolMenuItem(id: "2d-share-jpeg",
+                                       title: "Export image to JPEG",
+                                       systemImage: "photo",
+                                       action: .share2DCurrentImage)
+                ]
+            ))
+        ], accessibilityIdentifier: "Stack2DOptionsMenu")
+    }
+
+    private func volume3DOptionsMenu(isImageAnnotationsVisible: Bool,
+                                     isShareEnabled: Bool) -> ViewerToolMenu {
+        ViewerToolMenu(entries: [
+            .item(ViewerToolMenuItem(id: "3d-options-image-annotations",
+                                     title: "Image Annotations",
+                                     systemImage: isImageAnnotationsVisible ? "checkmark" : nil,
+                                     action: .toggle3DImageAnnotations,
+                                     isSelected: isImageAnnotationsVisible)),
+            .item(ViewerToolMenuItem(id: "3d-options-vr-settings",
+                                     title: "VR Settings",
+                                     systemImage: "slider.horizontal.3",
+                                     action: .openSettings(.volumeRenderSettings))),
+            .section(ViewerToolMenuSection(
+                id: "3d-options-screen-state",
+                title: "VR screen state",
+                systemImage: "square.stack.3d.up",
+                accessibilityIdentifier: "Volume3DScreenStateMenu",
+                items: [
+                    ViewerToolMenuItem(id: "3d-options-manage-states",
+                                       title: "Manage states",
+                                       systemImage: "folder",
+                                       action: .none,
+                                       isEnabled: false),
+                    ViewerToolMenuItem(id: "3d-options-save-new-state",
+                                       title: "Save new state",
+                                       systemImage: "plus",
+                                       action: .none,
+                                       isEnabled: false)
+                ]
+            )),
+            .section(ViewerToolMenuSection(
+                id: "3d-options-export",
+                title: "Export options",
+                systemImage: "square.and.arrow.up",
+                accessibilityIdentifier: "Volume3DExportOptionsMenu",
+                items: [
+                    ViewerToolMenuItem(id: "3d-options-share-image",
+                                       title: "Share 3D Image",
+                                       systemImage: "photo",
+                                       action: .share3DSnapshot,
+                                       isEnabled: isShareEnabled)
+                ]
+            )),
+            .section(ViewerToolMenuSection(
+                id: "3d-options-vr-save",
+                title: "VR save options...",
+                systemImage: "externaldrive",
+                accessibilityIdentifier: "Volume3DSaveOptionsMenu",
+                items: [
+                    ViewerToolMenuItem(id: "3d-options-new-dicom-series",
+                                       title: "Create new DICOM series from 3D",
+                                       systemImage: "square.stack.3d.up",
+                                       action: .none,
+                                       isEnabled: false),
+                    ViewerToolMenuItem(id: "3d-options-save-image-dicom",
+                                       title: "Save image as DICOM",
+                                       systemImage: "doc.badge.plus",
+                                       action: .none,
+                                       isEnabled: false)
+                ]
+            )),
+            .item(ViewerToolMenuItem(id: "3d-options-create-ssd-mesh",
+                                     title: "Create 3D mesh (SSD)",
+                                     systemImage: "cube",
+                                     action: .none,
+                                     isEnabled: false))
+        ], accessibilityIdentifier: "Volume3DOptionsMenu")
     }
 
     private func volume3DWindowLevelMenu(selectedWindowPreset: Volume3DWindowPreset,
@@ -1197,6 +1419,8 @@ public struct ViewerChromeState: Equatable, Sendable {
         case .set3DBrushMode, .adjust3DBrushSize, .reset3DBrushVolume:
             selectedTools[mode] = .brush
             activeOverlay = nil
+        case .toggle3DImageAnnotations, .share3DSnapshot:
+            activeOverlay = nil
         case .setMPRScreenLayout, .toggleMPRAnnotations, .toggleMPRCrosshair,
              .resetActiveMPRView, .resetMPRViews, .shareMPRSnapshot:
             activeOverlay = nil
@@ -1223,6 +1447,10 @@ public struct ViewerChromeState: Equatable, Sendable {
             activeOverlay = nil
         case .set2DResliceAxis:
             selectedTools[mode] = .reslice
+            activeOverlay = nil
+        case .set2DScreenLayout, .toggle2DImageAnnotations, .toggle2DReferenceLines,
+             .add2DBookmark, .show2DBookmarks, .toggle2DBookmarksPanel,
+             .deleteAll2DBookmarks, .show2DMetadata, .share2DCurrentImage:
             activeOverlay = nil
         case .openSettings(let sheet):
             if sheet == .mprWindowLevelManual || sheet == .stack2DWindowLevelManual {

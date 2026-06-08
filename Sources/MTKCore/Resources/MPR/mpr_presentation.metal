@@ -23,7 +23,7 @@ struct MPRPresentationUniforms {
     float viewportPanY;
     float viewportRotationCos;
     float viewportRotationSin;
-    float _pad1;
+    float sourceAspectRatio;
     float _pad2;
     float _pad3;
     float imageOriginX;
@@ -60,7 +60,7 @@ struct MPRLabelmapOverlayUniforms {
     float viewportPanY;
     float viewportRotationCos;
     float viewportRotationSin;
-    float _pad4;
+    float sourceAspectRatio;
     float _pad5;
     float _pad6;
     float imageOriginX;
@@ -87,7 +87,7 @@ struct MPRScalarOverlayUniforms {
     float viewportPanY;
     float viewportRotationCos;
     float viewportRotationSin;
-    float _pad3;
+    float sourceAspectRatio;
     float _pad4;
     float _pad5;
     float imageOriginX;
@@ -114,12 +114,19 @@ inline float2 inverseViewportTransform(float2 outputUV,
                                        float zoom,
                                        float2 pan,
                                        float rotationCos,
-                                       float rotationSin) {
+                                       float rotationSin,
+                                       float sourceAspectRatio) {
     float safeZoom = max(zoom, 1.0f);
-    float2 centered = outputUV - float2(0.5f) - pan;
+    float safeSourceAspectRatio = max(sourceAspectRatio, 1e-6f);
+    float2 sourceSize = float2(safeSourceAspectRatio, 1.0f);
+    float2 rotatedBounds = float2(
+        abs(rotationCos) * sourceSize.x + abs(rotationSin) * sourceSize.y,
+        abs(rotationSin) * sourceSize.x + abs(rotationCos) * sourceSize.y
+    );
+    float2 centered = (outputUV - float2(0.5f) - pan) * max(rotatedBounds, float2(1e-6f));
     float2 rotated = float2(centered.x * rotationCos + centered.y * rotationSin,
                             -centered.x * rotationSin + centered.y * rotationCos);
-    return float2(0.5f) + rotated / safeZoom;
+    return float2(0.5f) + (rotated / safeZoom) / sourceSize;
 }
 
 inline bool isInUnitSquare(float2 position) {
@@ -156,6 +163,7 @@ inline float2 sourceCoordinates(float2 outputUV,
                                 float2 viewportPan,
                                 float viewportRotationCos,
                                 float viewportRotationSin,
+                                float sourceAspectRatio,
                                 float2 imageOrigin,
                                 float2 imageSize) {
     float2 imageUV = imageCoordinates(outputUV, imageOrigin, imageSize);
@@ -167,7 +175,8 @@ inline float2 sourceCoordinates(float2 outputUV,
                                                viewportZoom,
                                                viewportPan,
                                                viewportRotationCos,
-                                               viewportRotationSin);
+                                               viewportRotationSin,
+                                               sourceAspectRatio);
     if (!isInUnitSquare(sourceUV)) {
         return sourceUV;
     }
@@ -192,6 +201,7 @@ inline float2 sourceCoordinates(uint2 outputGid,
                              float2(uniforms.viewportPanX, uniforms.viewportPanY),
                              uniforms.viewportRotationCos,
                              uniforms.viewportRotationSin,
+                             uniforms.sourceAspectRatio,
                              float2(uniforms.imageOriginX, uniforms.imageOriginY),
                              float2(uniforms.imageWidth, uniforms.imageHeight));
 }
@@ -207,6 +217,7 @@ inline float2 sourceCoordinates(uint2 outputGid,
                              float2(uniforms.viewportPanX, uniforms.viewportPanY),
                              uniforms.viewportRotationCos,
                              uniforms.viewportRotationSin,
+                             uniforms.sourceAspectRatio,
                              float2(uniforms.imageOriginX, uniforms.imageOriginY),
                              float2(uniforms.imageWidth, uniforms.imageHeight));
 }
@@ -222,6 +233,7 @@ inline float2 sourceCoordinates(uint2 outputGid,
                              float2(uniforms.viewportPanX, uniforms.viewportPanY),
                              uniforms.viewportRotationCos,
                              uniforms.viewportRotationSin,
+                             uniforms.sourceAspectRatio,
                              float2(uniforms.imageOriginX, uniforms.imageOriginY),
                              float2(uniforms.imageWidth, uniforms.imageHeight));
 }

@@ -85,6 +85,30 @@ final class Clinical2DInteractionRouterTests: XCTestCase {
                        .none)
     }
 
+    func testInvertedScrollDirectionFlipsGestureSteps() {
+        let invertedRouter = Clinical2DInteractionRouter(
+            scrollDragPixelsPerStep: 10,
+            isScrollDirectionInverted: true
+        )
+
+        XCTAssertEqual(
+            invertedRouter.routeWheel(tool: .scroll,
+                                      deltaY: 6,
+                                      hasPreciseScrollingDeltas: true),
+            .scrollSlices(-1)
+        )
+
+        XCTAssertEqual(invertedRouter.scrollDragResolution(deltaY: 24).steps, -2)
+        XCTAssertEqual(invertedRouter.scrollDragResolution(deltaY: -24).steps, 2)
+
+        XCTAssertEqual(invertedRouter.scrollMomentumSteps(translationY: 24,
+                                                          predictedEndTranslationY: 84),
+                       -2)
+        XCTAssertEqual(invertedRouter.scrollMomentumSteps(translationY: -24,
+                                                          predictedEndTranslationY: -84),
+                       2)
+    }
+
     func testScrollDragAccumulatesSubStepMovement() {
         var residual: CGFloat = 0
 

@@ -161,7 +161,7 @@ public struct MPRPresentationPass {
         var viewportPanY: Float
         var viewportRotationCos: Float
         var viewportRotationSin: Float
-        var _pad1: Float
+        var sourceAspectRatio: Float
         var _pad2: Float
         var _pad3: Float
         var imageOriginX: Float
@@ -198,7 +198,7 @@ public struct MPRPresentationPass {
         var viewportPanY: Float
         var viewportRotationCos: Float
         var viewportRotationSin: Float
-        var _pad4: Float
+        var sourceAspectRatio: Float
         var _pad5: Float
         var _pad6: Float
         var imageOriginX: Float
@@ -225,7 +225,7 @@ public struct MPRPresentationPass {
         var viewportPanY: Float
         var viewportRotationCos: Float
         var viewportRotationSin: Float
-        var _pad3: Float
+        var sourceAspectRatio: Float
         var _pad4: Float
         var _pad5: Float
         var imageOriginX: Float
@@ -486,9 +486,11 @@ public struct MPRPresentationPass {
 
         let outputWidth = outputTexture.width
         let outputHeight = outputTexture.height
-        let layout = MPRPresentationLayout.aspectFit(contentAspectRatio: frame.planeGeometry.physicalAspectRatio,
-                                                     destinationWidth: outputWidth,
-                                                     destinationHeight: outputHeight)
+        let sourceAspectRatio = Self.safeSourceAspectRatio(frame.planeGeometry.physicalAspectRatio)
+        let layout = Self.presentationLayout(sourceAspectRatio: sourceAspectRatio,
+                                             rotationRadians: viewportTransform.rotationRadians,
+                                             destinationWidth: outputWidth,
+                                             destinationHeight: outputHeight)
         let presentationTexture = try reusablePresentationTexture(width: outputWidth,
                                                                   height: outputHeight)
         let colormapTexture = try colormap ?? reusableFallbackColormapTexture()
@@ -508,7 +510,7 @@ public struct MPRPresentationPass {
             viewportPanY: viewportTransform.pan.y,
             viewportRotationCos: cos(viewportTransform.rotationRadians),
             viewportRotationSin: sin(viewportTransform.rotationRadians),
-            _pad1: 0,
+            sourceAspectRatio: sourceAspectRatio,
             _pad2: 0,
             _pad3: 0,
             imageOriginX: layout.origin.x,
@@ -564,6 +566,7 @@ public struct MPRPresentationPass {
                                                                flipHorizontal: flipHorizontal,
                                                                flipVertical: flipVertical,
                                                                layout: layout,
+                                                               sourceAspectRatio: sourceAspectRatio,
                                                                viewportTransform: viewportTransform)
         let finalPresentationTexture = try encodeLabelmapOverlays(labelmapOverlays,
                                                                   initialTexture: scalarCompositedTexture,
@@ -573,6 +576,7 @@ public struct MPRPresentationPass {
                                                                   flipHorizontal: flipHorizontal,
                                                                   flipVertical: flipVertical,
                                                                   layout: layout,
+                                                                  sourceAspectRatio: sourceAspectRatio,
                                                                   viewportTransform: viewportTransform)
 
         guard let blitEncoder = commandBuffer.makeBlitCommandEncoder() else {
@@ -662,6 +666,33 @@ public struct MPRPresentationPass {
         preset.windowRange
     }
 
+    private static func presentationLayout(sourceAspectRatio: Float,
+                                           rotationRadians: Float,
+                                           destinationWidth: Int,
+                                           destinationHeight: Int) -> MPRPresentationLayout {
+        MPRPresentationLayout.aspectFit(
+            contentAspectRatio: rotatedContentAspectRatio(sourceAspectRatio: sourceAspectRatio,
+                                                          rotationRadians: rotationRadians),
+            destinationWidth: destinationWidth,
+            destinationHeight: destinationHeight
+        )
+    }
+
+    private static func rotatedContentAspectRatio(sourceAspectRatio: Float,
+                                                  rotationRadians: Float) -> Float {
+        let sourceAspect = safeSourceAspectRatio(sourceAspectRatio)
+        let rotation = rotationRadians.isFinite ? rotationRadians : 0
+        let absoluteCos = abs(cos(rotation))
+        let absoluteSin = abs(sin(rotation))
+        let width = absoluteCos * sourceAspect + absoluteSin
+        let height = absoluteSin * sourceAspect + absoluteCos
+        return max(width / max(height, Float.ulpOfOne), Float.ulpOfOne)
+    }
+
+    private static func safeSourceAspectRatio(_ aspectRatio: Float) -> Float {
+        aspectRatio.isFinite ? max(aspectRatio, Float.ulpOfOne) : 1
+    }
+
     private static func shutterUniformValues(
         for shutter: MPRPresentationShutter?
     ) -> (mode: Int32, min: SIMD2<Float>, max: SIMD2<Float>, center: SIMD2<Float>, radius: Float) {
@@ -746,6 +777,7 @@ public struct MPRPresentationPass {
                                                flipHorizontal: Bool,
                                                flipVertical: Bool,
                                                layout: MPRPresentationLayout,
+                                               sourceAspectRatio: Float,
                                                viewportTransform: MPRViewportTransform) throws -> any MTLTexture {
         guard overlays.isEmpty == false else { return initialTexture }
 
@@ -785,7 +817,7 @@ public struct MPRPresentationPass {
                 viewportPanY: viewportTransform.pan.y,
                 viewportRotationCos: cos(viewportTransform.rotationRadians),
                 viewportRotationSin: sin(viewportTransform.rotationRadians),
-                _pad3: 0,
+                sourceAspectRatio: sourceAspectRatio,
                 _pad4: 0,
                 _pad5: 0,
                 imageOriginX: layout.origin.x,
@@ -823,6 +855,7 @@ public struct MPRPresentationPass {
                                                  flipHorizontal: Bool,
                                                  flipVertical: Bool,
                                                  layout: MPRPresentationLayout,
+                                                 sourceAspectRatio: Float,
                                                  viewportTransform: MPRViewportTransform) throws -> any MTLTexture {
         guard overlays.isEmpty == false else { return initialTexture }
 
@@ -860,7 +893,7 @@ public struct MPRPresentationPass {
                 viewportPanY: viewportTransform.pan.y,
                 viewportRotationCos: cos(viewportTransform.rotationRadians),
                 viewportRotationSin: sin(viewportTransform.rotationRadians),
-                _pad4: 0,
+                sourceAspectRatio: sourceAspectRatio,
                 _pad5: 0,
                 _pad6: 0,
                 imageOriginX: layout.origin.x,

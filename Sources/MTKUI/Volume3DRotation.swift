@@ -9,9 +9,9 @@ public enum Volume3DRotationTarget: String, CaseIterable, Identifiable, Sendable
     public var displayName: String {
         switch self {
         case .model:
-            return "Model rotation"
+            return "Model tilt"
         case .cropBox:
-            return "Cropping box rotation"
+            return "Cropping box tilt"
         }
     }
 
@@ -27,7 +27,7 @@ public enum Volume3DRotationTarget: String, CaseIterable, Identifiable, Sendable
 
 public enum Volume3DRotationToolMenu {
     public static func menu(selectedTarget: Volume3DRotationTarget = .model) -> ViewerToolMenu {
-        ViewerToolMenu(title: "Rotation", items: [
+        ViewerToolMenu(title: "Tilt", items: [
             targetItem(for: .model, selectedTarget: selectedTarget),
             targetItem(for: .cropBox, selectedTarget: selectedTarget),
             ViewerToolMenuItem(id: "volume3d-rotation-reset",

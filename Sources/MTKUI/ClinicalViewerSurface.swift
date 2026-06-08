@@ -57,7 +57,8 @@ public struct ClinicalViewerSurface: View {
                                 roiKind: coordinator.twoDROIKind,
                                 transform: coordinator.twoDTransform,
                                 router: Clinical2DInteractionRouter(
-                                    scrollDragPixelsPerStep: coordinator.twoDScrollSettings.dragPixelsPerStep
+                                    scrollDragPixelsPerStep: coordinator.twoDScrollSettings.dragPixelsPerStep,
+                                    isScrollDirectionInverted: true
                                 ),
                                 handlers: twoDInteractionHandlers
                             )
@@ -133,7 +134,7 @@ public struct ClinicalViewerSurface: View {
             angleDegrees: coordinator.twoDTransform.rotationRadians * 180.0 / .pi,
             isFlippedHorizontally: coordinator.twoDTransform.isFlippedHorizontally,
             isFlippedVertically: coordinator.twoDTransform.isFlippedVertically,
-            slabThicknessMillimeters: twoDSliceThicknessMillimeters(for: viewport),
+            slabThicknessMillimeters: twoDSlabThicknessMillimeters(for: viewport),
             locationMillimeters: twoDLocationMillimeters(for: viewport),
             activeTool: coordinator.twoDTool,
             roiKind: coordinator.twoDROIKind,
@@ -225,7 +226,7 @@ public struct ClinicalViewerSurface: View {
         }
     }
 
-    private func twoDSliceThicknessMillimeters(for viewport: StackViewport) -> Double? {
+    private func twoDSliceSpacingMillimeters(for viewport: StackViewport) -> Double? {
         guard let spacing = viewport.state.dataset?.spacing else { return nil }
         switch viewport.axis {
         case .axial:
@@ -237,8 +238,12 @@ public struct ClinicalViewerSurface: View {
         }
     }
 
+    private func twoDSlabThicknessMillimeters(for viewport: StackViewport) -> Double? {
+        coordinator.twoDSlabThicknessMillimeters ?? twoDSliceSpacingMillimeters(for: viewport)
+    }
+
     private func twoDLocationMillimeters(for viewport: StackViewport) -> Double? {
-        guard let thickness = twoDSliceThicknessMillimeters(for: viewport),
+        guard let thickness = twoDSliceSpacingMillimeters(for: viewport),
               viewport.sliceCount > 0 else {
             return nil
         }

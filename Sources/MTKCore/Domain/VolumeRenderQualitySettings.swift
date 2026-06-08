@@ -90,7 +90,7 @@ public struct VolumeRenderQualitySettings: Codable, Equatable, Sendable {
         interactingResolution: .medium,
         depthResolution: .high,
         iterations: .medium,
-        shadowMode: .hard,
+        shadowMode: .off,
         disableShadowsWhenInteracting: false,
         directionalLightIntensity: 1.0,
         ambientLightIntensity: 0.2
@@ -156,10 +156,7 @@ public struct VolumeRenderQualitySettings: Codable, Equatable, Sendable {
     }
 
     public func lightingEnabled(for quality: VolumeRenderRequest.Quality) -> Bool {
-        guard shadowMode.isEnabled else { return false }
-        if disableShadowsWhenInteracting, quality != .production {
-            return false
-        }
+        _ = quality
         return directionalLightIntensity > 0 || ambientLightIntensity > 0
     }
 

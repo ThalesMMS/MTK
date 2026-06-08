@@ -192,13 +192,13 @@ final class GateUniformTests: XCTestCase {
         XCTAssertEqual(params.scale, 2.0, accuracy: 1e-6)
     }
 
-    func testShadowOffDisablesLightingAndShaderMode() async throws {
+    func testShadowOffKeepsLightingAndDisablesShaderShadowMode() async throws {
         try await adapter.send(.setWindow(min: -1024, max: 1023))
         let settings = VolumeRenderQualitySettings(shadowMode: .off)
 
         let uniforms = try await adapter.buildVolumeUniforms(for: makeRequest(renderQualitySettings: settings))
 
-        XCTAssertEqual(uniforms.isLightingOn, 0)
+        XCTAssertEqual(uniforms.isLightingOn, 1)
         XCTAssertEqual(uniforms.shadowMode, VolumeShadowMode.off.shaderValue)
     }
 

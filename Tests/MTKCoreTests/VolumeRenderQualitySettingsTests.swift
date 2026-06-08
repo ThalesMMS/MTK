@@ -9,10 +9,12 @@ final class VolumeRenderQualitySettingsTests: XCTestCase {
         XCTAssertEqual(settings.interactingResolution, .medium)
         XCTAssertEqual(settings.depthResolution, .high)
         XCTAssertEqual(settings.iterations, .medium)
-        XCTAssertEqual(settings.shadowMode, .hard)
+        XCTAssertEqual(settings.shadowMode, .off)
         XCTAssertFalse(settings.disableShadowsWhenInteracting)
         XCTAssertEqual(settings.directionalLightIntensity, 1.0)
         XCTAssertEqual(settings.ambientLightIntensity, 0.2)
+        XCTAssertEqual(settings.effectiveShadowMode(for: .production), .off)
+        XCTAssertTrue(settings.lightingEnabled(for: .production))
     }
 
     func testSettingsRoundTripThroughCodable() throws {
@@ -71,12 +73,15 @@ final class VolumeRenderQualitySettingsTests: XCTestCase {
         XCTAssertEqual(dark.effectiveShadowMode(for: .production), .off)
     }
 
-    func testLightingIsDisabledForInteractiveQualityWhenRequested() {
+    func testDisablingShadowsDuringInteractionKeepsLightingEnabled() {
         let settings = VolumeRenderQualitySettings(shadowMode: .hard,
                                                    disableShadowsWhenInteracting: true)
 
-        XCTAssertFalse(settings.lightingEnabled(for: .preview))
-        XCTAssertFalse(settings.lightingEnabled(for: .interactive))
+        XCTAssertEqual(settings.effectiveShadowMode(for: .preview), .off)
+        XCTAssertEqual(settings.effectiveShadowMode(for: .interactive), .off)
+        XCTAssertEqual(settings.effectiveShadowMode(for: .production), .hard)
+        XCTAssertTrue(settings.lightingEnabled(for: .preview))
+        XCTAssertTrue(settings.lightingEnabled(for: .interactive))
         XCTAssertTrue(settings.lightingEnabled(for: .production))
     }
 }

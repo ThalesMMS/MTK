@@ -162,6 +162,41 @@ final class VolumeViewportControllerAdapterTests: XCTestCase {
         XCTAssertTrue(imageContainsVisiblePixels(image))
     }
 
+    func testVolumeDrawableUnavailableWhileSurfacePendingDefersWithoutFailureTelemetry() async throws {
+#if os(iOS)
+        let device = try requireMetalDevice()
+        let controller = try makeController(device: device)
+        let metrics = TestMetrics()
+
+        await controller.setRenderMode(.paused)
+        await controller.applyDataset(makeSyntheticDataset())
+        await controller.setDisplayConfiguration(.volume(method: .mip))
+        controller.debugSetSurfaceRenderDebounceDelayNanoseconds(1_000_000)
+        XCTAssertFalse(controller.viewportSurface.isPresentationSurfaceReady)
+
+        controller.renderMode = .active
+        controller.renderPending = false
+        controller.renderGeneration &+= 1
+        let generation = controller.renderGeneration
+
+        try await RenderingTelemetry.withMetrics(metrics) {
+            await controller.render(generation: generation)
+        }
+
+        XCTAssertNil(controller.lastRenderError)
+        XCTAssertTrue(controller.renderPending)
+        XCTAssertEqual(metrics.counter(named: "metal.volume.render.failure"), 0)
+
+        let baselineScheduleCount = controller.debugStableSurfaceRenderScheduleCount
+        controller.viewportSurface.onPresentationSurfaceReady?(controller.viewportSurface.drawablePixelSize)
+        try await Task.sleep(nanoseconds: 80_000_000)
+
+        XCTAssertGreaterThan(controller.debugStableSurfaceRenderScheduleCount, baselineScheduleCount)
+#else
+        throw XCTSkip("Surface-pending drawable deferral is iOS-only")
+#endif
+    }
+
     func testRenderVolumeSnapshotFrameReportsMissingDataset() async throws {
         let device = try requireMetalDevice()
         let controller = try makeController(device: device)
@@ -454,6 +489,22 @@ final class VolumeViewportControllerAdapterTests: XCTestCase {
         let request = controller.makeVolumeRenderRequest(dataset: dataset, method: .dvr)
 
         XCTAssertEqual(request.renderQualitySettings, settings.sanitized)
+    }
+
+    func testVolumeRenderQualitySettingsDoNotDisableLightingWhenShadowsAreOff() async throws {
+        let device = try requireMetalDevice()
+        let controller = try makeController(device: device)
+        let dataset = makeSyntheticDataset()
+        let settings = VolumeRenderQualitySettings(shadowMode: .off)
+
+        await controller.applyDataset(dataset)
+        await controller.setDisplayConfiguration(.volume(method: .dvr))
+        await controller.setVolumeRenderQualitySettings(settings)
+        _ = try await waitForRenderedTexture(controller)
+
+        XCTAssertTrue(controller.debugLightingEnabled)
+        let renderState = try await controller.volumeRendererProvider.renderer().getRenderStateSnapshot()
+        XCTAssertTrue(renderState.lightingEnabled)
     }
 
     func testQualityTelemetrySeparatesPreviewAndFinalVolumeRenders() async throws {

@@ -43,6 +43,8 @@ private enum ActiveClinicalViewerViewport {
 public final class ClinicalViewerCoordinator: ObservableObject {
     private let single3DFinalSamplingStep: Float
     private let volumeRenderQualitySettingsStore: VolumeRenderQualitySettingsStoring
+    private let mprViewerPreferencesStore: MPRViewerPreferencesStoring
+    private let volume3DViewerPreferencesStore: Volume3DViewerPreferencesStoring
     private let snapshotExporter = TextureSnapshotExporter()
 
     @Published public private(set) var clinicalViewportSession: ClinicalViewportSession?
@@ -87,7 +89,12 @@ public final class ClinicalViewerCoordinator: ObservableObject {
     @Published public var twoDScrollSettings = TwoDScrollSettings.default
     @Published public var twoDHUDSettings = TwoDHUDSettings.default
     @Published public var twoDMetadataOverlaySettings = ClinicalViewportMetadataOverlaySettings.default
+    @Published public private(set) var twoDScreenLayout: TwoDScreenLayout = .singleWindow
+    @Published public private(set) var isTwoDReferenceLinesVisible = false
+    @Published public private(set) var isTwoDBookmarksPanelVisible = false
     @Published public var twoDResliceAxis: MTKCore.Axis = .axial
+    @Published public var twoDSlabBlendMode: MPRSlabBlendOption = .mean
+    @Published public var twoDSlabThickness: Double = 1
     @Published public private(set) var keyImageNavigationState = KeyImageNavigationState()
     private var preferredTwoDSyncLocation = ViewerSyncState.default.syncLocation
     @Published public var volumeOpacityScale: Double = 1.0
@@ -97,6 +104,7 @@ public final class ClinicalViewerCoordinator: ObservableObject {
     @Published public var volume3DWindowPreset: Volume3DWindowPreset = .default
     @Published public var volume3DCLUTPreset: Volume3DCLUTPreset = .defaultPreset
     @Published public var volume3DRotationTarget: Volume3DRotationTarget = .model
+    @Published public var isVolume3DImageAnnotationsVisible = true
     @Published public var showDebugOverlay = false
     @Published public var isExportingSnapshot = false
     @Published public var adaptiveSamplingEnabled = true
@@ -144,10 +152,23 @@ public final class ClinicalViewerCoordinator: ObservableObject {
     private var twoDROIStore = ViewerROIStore()
 
     public init(single3DFinalSamplingStep: Float = 768,
-                volumeRenderQualitySettingsStore: VolumeRenderQualitySettingsStoring = UserDefaultsVolumeRenderQualitySettingsStore()) {
+                volumeRenderQualitySettingsStore: VolumeRenderQualitySettingsStoring =
+                    UserDefaultsVolumeRenderQualitySettingsStore(),
+                mprViewerPreferencesStore: MPRViewerPreferencesStoring = UserDefaultsMPRViewerPreferencesStore(),
+                volume3DViewerPreferencesStore: Volume3DViewerPreferencesStoring =
+                    UserDefaultsVolume3DViewerPreferencesStore()) {
         self.single3DFinalSamplingStep = single3DFinalSamplingStep
         self.volumeRenderQualitySettingsStore = volumeRenderQualitySettingsStore
-        self.volumeRenderQualitySettings = volumeRenderQualitySettingsStore.loadVolumeRenderQualitySettings() ?? .default
+        self.mprViewerPreferencesStore = mprViewerPreferencesStore
+        self.volume3DViewerPreferencesStore = volume3DViewerPreferencesStore
+        self.volumeRenderQualitySettings =
+            volumeRenderQualitySettingsStore.loadVolumeRenderQualitySettings() ?? .default
+        let mprPreferences = mprViewerPreferencesStore.loadMPRViewerPreferences() ?? .default
+        let volume3DPreferences = volume3DViewerPreferencesStore.loadVolume3DViewerPreferences() ?? .default
+        self.selectedMPRScreenLayout = mprPreferences.screenLayout
+        self.isMPRAnnotationsVisible = mprPreferences.isAnnotationsVisible
+        self.isMPRCrosshairVisible = mprPreferences.isCrosshairVisible
+        self.isVolume3DImageAnnotationsVisible = volume3DPreferences.isImageAnnotationsVisible
     }
 
     public var isMetalAvailable: Bool {
@@ -176,6 +197,15 @@ public final class ClinicalViewerCoordinator: ObservableObject {
             return false
         }
         return session.canExportActiveMPRSnapshot
+    }
+
+    public var canExportVolume3DSnapshot: Bool {
+        guard dataset != nil,
+              !isExportingSnapshot,
+              mode == .single3D else {
+            return false
+        }
+        return volumeViewport3D != nil || clinicalViewportSession != nil
     }
 
     public var twoDWindowLevel: WindowLevelShift {
@@ -215,6 +245,44 @@ public final class ClinicalViewerCoordinator: ObservableObject {
     public var twoDResliceDisabledMessage: String? {
         guard let dataset else { return "No dataset loaded." }
         return Self.supportsTwoDReslice(dataset) ? nil : "2D reslice requires a volumetric dataset."
+    }
+
+    public var enabledTwoDScreenLayouts: Set<TwoDScreenLayout> {
+        [.singleWindow]
+    }
+
+    public var isTwoDImageAnnotationsVisible: Bool {
+        twoDHUDSettings.showsTechnicalText || twoDMetadataOverlaySettings.isVisible
+    }
+
+    public var canUseTwoDReferenceLines: Bool {
+        false
+    }
+
+    public var canUseTwoDThickSlab: Bool {
+        Self.twoDSliceCount(for: twoDAxis, in: dataset) > 1
+    }
+
+    public var twoDThickSlabDisabledMessage: String? {
+        canUseTwoDThickSlab ? nil : Self.twoDThickSlabUnavailableMessage
+    }
+
+    public var twoDSlabSpacingMillimeters: Double? {
+        Self.twoDSpacingMillimeters(for: twoDAxis, in: dataset)
+    }
+
+    public var twoDSlabThicknessMillimeters: Double? {
+        guard let spacing = twoDSlabSpacingMillimeters else { return nil }
+        return twoDSlabThickness * spacing
+    }
+
+    public var mprSlabSpacingMillimeters: Double? {
+        Self.twoDSpacingMillimeters(for: activeMPRAxis, in: dataset)
+    }
+
+    public var mprSlabThicknessMillimeters: Double? {
+        guard let spacing = mprSlabSpacingMillimeters else { return nil }
+        return mprSlabThickness * spacing
     }
 
     public var volumeLayers: [VolumeLayer] {
@@ -444,6 +512,9 @@ public final class ClinicalViewerCoordinator: ObservableObject {
             switch interactionMode {
             case .orbit:
                 await viewport.rotateCamera(screenDelta: delta)
+            case .tilt:
+                let scale: Float = 0.01
+                await viewport.tiltCamera(roll: -delta.x * scale, pitch: -delta.y * scale)
             case .pan:
                 await viewport.panCamera(screenDelta: delta)
             case .transferFunction:
@@ -608,6 +679,7 @@ public final class ClinicalViewerCoordinator: ObservableObject {
 
     public func setMPRScreenLayout(_ layout: MPRScreenLayout) {
         selectedMPRScreenLayout = layout
+        persistMPRViewerPreferences()
     }
 
     public func setTwoDTool(_ tool: Clinical2DTool) {
@@ -645,6 +717,28 @@ public final class ClinicalViewerCoordinator: ObservableObject {
         } else {
             errorMessage = "Metal is not available on this device."
         }
+    }
+
+    public func setTwoDSlabBlendMode(_ blendMode: MPRSlabBlendOption) {
+        guard canUseTwoDThickSlab else {
+            errorMessage = twoDThickSlabDisabledMessage
+            return
+        }
+        twoDSlabBlendMode = blendMode
+        twoDTool = .thickSlab
+        applyTwoDSlabProjection()
+    }
+
+    public func setTwoDSlabThickness(_ thickness: Double) {
+        guard thickness.isFinite else { return }
+        guard canUseTwoDThickSlab else {
+            errorMessage = twoDThickSlabDisabledMessage
+            return
+        }
+        let clamped = min(max(thickness, 1), 99)
+        twoDSlabThickness = Double(ClinicalSlabConfiguration(thickness: Int(clamped.rounded())).thickness)
+        twoDTool = .thickSlab
+        applyTwoDSlabProjection()
     }
 
     public func setTwoDSliceIndex(_ index: Int) {
@@ -851,12 +945,67 @@ public final class ClinicalViewerCoordinator: ObservableObject {
         set2DScrollSettings(settings)
     }
 
+    public func setTwoDScreenLayout(_ layout: TwoDScreenLayout) {
+        guard enabledTwoDScreenLayouts.contains(layout) else {
+            errorMessage = "\(layout.title) requires multiple 2D viewports."
+            return
+        }
+        twoDScreenLayout = layout
+        if !canUseTwoDReferenceLines {
+            isTwoDReferenceLinesVisible = false
+        }
+    }
+
     public func set2DHUDSettings(_ settings: TwoDHUDSettings) {
         twoDHUDSettings = settings
     }
 
     public func set2DMetadataOverlaySettings(_ settings: ClinicalViewportMetadataOverlaySettings) {
         twoDMetadataOverlaySettings = settings
+    }
+
+    public func setTwoDImageAnnotationsVisible(_ isVisible: Bool) {
+        var hudSettings = twoDHUDSettings
+        hudSettings.showsSubjectName = isVisible
+        hudSettings.showsSeriesTitle = isVisible
+        hudSettings.showsTechnicalText = isVisible
+        hudSettings.showsOrientationMarkers = isVisible
+        hudSettings.showsCenterOrientationMarker = isVisible
+        hudSettings.showsAxisBadge = isVisible
+        twoDHUDSettings = hudSettings
+
+        var metadataSettings = twoDMetadataOverlaySettings
+        metadataSettings.isVisible = isVisible
+        metadataSettings.showsSubjectName = isVisible
+        metadataSettings.showsStudyTitle = isVisible
+        metadataSettings.showsSeriesTitle = isVisible
+        metadataSettings.showsTechnicalText = isVisible
+        twoDMetadataOverlaySettings = metadataSettings
+    }
+
+    public func toggleTwoDImageAnnotations() {
+        setTwoDImageAnnotationsVisible(!isTwoDImageAnnotationsVisible)
+    }
+
+    public func setTwoDReferenceLinesVisible(_ isVisible: Bool) {
+        guard !isVisible || canUseTwoDReferenceLines else {
+            isTwoDReferenceLinesVisible = false
+            errorMessage = "Reference lines require multiple 2D viewports."
+            return
+        }
+        isTwoDReferenceLinesVisible = isVisible
+    }
+
+    public func toggleTwoDReferenceLines() {
+        setTwoDReferenceLinesVisible(!isTwoDReferenceLinesVisible)
+    }
+
+    public func setTwoDBookmarksPanelVisible(_ isVisible: Bool) {
+        isTwoDBookmarksPanelVisible = isVisible
+    }
+
+    public func toggleTwoDBookmarksPanel() {
+        isTwoDBookmarksPanelVisible.toggle()
     }
 
     public func scroll2D(by delta: Int) {
@@ -1057,10 +1206,33 @@ public final class ClinicalViewerCoordinator: ObservableObject {
 
     public func setMPRAnnotationsVisible(_ visible: Bool) {
         isMPRAnnotationsVisible = visible
+        persistMPRViewerPreferences()
     }
 
     public func setMPRCrosshairVisible(_ visible: Bool) {
         isMPRCrosshairVisible = visible
+        persistMPRViewerPreferences()
+    }
+
+    private func persistMPRViewerPreferences() {
+        mprViewerPreferencesStore.saveMPRViewerPreferences(
+            MPRViewerPreferences(
+                screenLayout: selectedMPRScreenLayout,
+                isAnnotationsVisible: isMPRAnnotationsVisible,
+                isCrosshairVisible: isMPRCrosshairVisible
+            )
+        )
+    }
+
+    public func setVolume3DImageAnnotationsVisible(_ isVisible: Bool) {
+        isVolume3DImageAnnotationsVisible = isVisible
+        volume3DViewerPreferencesStore.saveVolume3DViewerPreferences(
+            Volume3DViewerPreferences(isImageAnnotationsVisible: isVisible)
+        )
+    }
+
+    public func toggleVolume3DImageAnnotations() {
+        setVolume3DImageAnnotationsVisible(!isVolume3DImageAnnotationsVisible)
     }
 
     public func applyMPRQuickWindowPreset(_ quickPreset: ClinicalViewerWindowQuickPreset) {
@@ -1165,6 +1337,10 @@ public final class ClinicalViewerCoordinator: ObservableObject {
                 await session.setVolumeRenderQualitySettings(sanitized)
             }
         }
+    }
+
+    public func resetVolumeRenderQualitySettings() {
+        setVolumeRenderQualitySettings(.default)
     }
 
     public func applyQuickPreset(_ quickPreset: ClinicalViewerTransferQuickPreset) {
@@ -1877,6 +2053,15 @@ public final class ClinicalViewerCoordinator: ObservableObject {
         publishTwoDROIAnnotations()
     }
 
+    private func applyTwoDSlabProjection() {
+        guard let stack2DViewport else { return }
+        Task { @MainActor [weak self, weak stack2DViewport] in
+            guard let self, let stack2DViewport else { return }
+            await self.applyCurrentTwoDSlabProjection(to: stack2DViewport)
+            self.sync2DState(from: stack2DViewport)
+        }
+    }
+
     private func syncKeyImageSelectionForCurrentSlice() {
         guard keyImageNavigationState.hasResolvedImages else { return }
         var next = keyImageNavigationState
@@ -1920,6 +2105,23 @@ public final class ClinicalViewerCoordinator: ObservableObject {
         dataset.dimensions.width > 1
             && dataset.dimensions.height > 1
             && dataset.dimensions.depth > 1
+    }
+
+    private static let twoDThickSlabUnavailableMessage = "Thick Slab requires a stack with adjacent slices."
+
+    private static func twoDSpacingMillimeters(for axis: MTKCore.Axis,
+                                               in dataset: VolumeDataset?) -> Double? {
+        guard let spacing = dataset?.spacing else { return nil }
+        let value: Double
+        switch axis {
+        case .axial:
+            value = spacing.z
+        case .coronal:
+            value = spacing.y
+        case .sagittal:
+            value = spacing.x
+        }
+        return value.isFinite && value > 0 ? value : nil
     }
 
     private var currentTwoDSeriesIdentifier: String? {
@@ -2088,7 +2290,17 @@ public final class ClinicalViewerCoordinator: ObservableObject {
         viewport.setWindowPresentation(isInverted: state.isInverted,
                                        clut: state.clut)
         viewport.setViewportTransform(twoDTransform)
+        await applyCurrentTwoDSlabProjection(to: viewport)
         sync2DState(from: viewport)
+    }
+
+    private func applyCurrentTwoDSlabProjection(to viewport: StackViewport) async {
+        guard Self.twoDSliceCount(for: viewport.axis, in: dataset) > 1 else {
+            await viewport.setSlabProjection(blend: .single, thickness: 1)
+            return
+        }
+        await viewport.setSlabProjection(blend: twoDSlabBlendMode.volumetricBlendMode,
+                                         thickness: Int(twoDSlabThickness))
     }
 
     private func applyCurrentConfiguration(to session: ClinicalViewportSession) async throws {

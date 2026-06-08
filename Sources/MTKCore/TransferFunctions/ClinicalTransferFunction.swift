@@ -119,7 +119,7 @@ public struct GradientOpacityFunction: Codable, Equatable, Sendable {
         case resolution
     }
 
-    public init(from decoder: Decoder) throws {
+    public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let minimum = try container.decodeIfPresent(Float.self, forKey: .minimumGradient) ?? 0
         let maximum = try container.decodeIfPresent(Float.self, forKey: .maximumGradient) ?? 1000

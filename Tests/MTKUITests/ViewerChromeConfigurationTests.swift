@@ -17,13 +17,89 @@ final class ViewerChromeConfigurationTests: XCTestCase {
             .brush
         ])
         XCTAssertEqual(configuration.bottomTools.map(\.title), [
-            "Orientation",
+            "Rotate",
             "WW/WL",
-            "Rotation",
+            "Tilt",
             "Crop",
             "Brush"
         ])
-        XCTAssertEqual(configuration.optionsAction, .openSettings(.volumeRenderSettings))
+        XCTAssertEqual(configuration.defaultToolID, .orientation)
+        XCTAssertEqual(configuration.optionsAction, .openMenu(.volume3DOptions))
+    }
+
+    func testSingle3DOptionsMenuMatchesReferenceLayout() throws {
+        let configuration = factory.configuration(
+            for: .single3D,
+            isVolume3DImageAnnotationsVisible: false,
+            isVolume3DShareEnabled: true
+        )
+        let menu = try XCTUnwrap(configuration.optionsMenu)
+
+        XCTAssertEqual(configuration.optionsAction, .openMenu(.volume3DOptions))
+        XCTAssertEqual(menu.accessibilityIdentifier, "Volume3DOptionsMenu")
+        XCTAssertEqual(menu.entries.map(\.id), [
+            "3d-options-image-annotations",
+            "3d-options-vr-settings",
+            "3d-options-screen-state",
+            "3d-options-export",
+            "3d-options-vr-save",
+            "3d-options-create-ssd-mesh"
+        ])
+
+        let annotations = try XCTUnwrap(menu.items.first { $0.id == "3d-options-image-annotations" })
+        let settings = try XCTUnwrap(menu.items.first { $0.id == "3d-options-vr-settings" })
+        let mesh = try XCTUnwrap(menu.items.first { $0.id == "3d-options-create-ssd-mesh" })
+
+        XCTAssertEqual(annotations.title, "Image Annotations")
+        XCTAssertEqual(annotations.action, .toggle3DImageAnnotations)
+        XCTAssertFalse(annotations.isSelected)
+        XCTAssertNil(annotations.systemImage)
+        XCTAssertEqual(settings.title, "VR Settings")
+        XCTAssertEqual(settings.action, .openSettings(.volumeRenderSettings))
+        XCTAssertEqual(mesh.title, "Create 3D mesh (SSD)")
+        XCTAssertFalse(mesh.isEnabled)
+
+        let screenState = try XCTUnwrap(menu.sections.first { $0.id == "3d-options-screen-state" })
+        XCTAssertEqual(screenState.title, "VR screen state")
+        XCTAssertEqual(screenState.accessibilityIdentifier, "Volume3DScreenStateMenu")
+        XCTAssertEqual(screenState.items.map(\.title), [
+            "Manage states",
+            "Save new state"
+        ])
+        XCTAssertEqual(screenState.items.map(\.isEnabled), [false, false])
+
+        let export = try XCTUnwrap(menu.sections.first { $0.id == "3d-options-export" })
+        let share = try XCTUnwrap(export.items.first { $0.id == "3d-options-share-image" })
+        XCTAssertEqual(export.title, "Export options")
+        XCTAssertEqual(export.accessibilityIdentifier, "Volume3DExportOptionsMenu")
+        XCTAssertEqual(share.title, "Share 3D Image")
+        XCTAssertEqual(share.action, .share3DSnapshot)
+        XCTAssertTrue(share.isEnabled)
+
+        let save = try XCTUnwrap(menu.sections.first { $0.id == "3d-options-vr-save" })
+        XCTAssertEqual(save.title, "VR save options...")
+        XCTAssertEqual(save.accessibilityIdentifier, "Volume3DSaveOptionsMenu")
+        XCTAssertEqual(save.items.map(\.title), [
+            "Create new DICOM series from 3D",
+            "Save image as DICOM"
+        ])
+        XCTAssertEqual(save.items.map(\.isEnabled), [false, false])
+    }
+
+    func testSingle3DOptionsMenuReflectsAnnotationAndShareAvailability() throws {
+        let configuration = factory.configuration(
+            for: .single3D,
+            isVolume3DImageAnnotationsVisible: true,
+            isVolume3DShareEnabled: false
+        )
+        let menu = try XCTUnwrap(configuration.optionsMenu)
+        let annotations = try XCTUnwrap(menu.items.first { $0.id == "3d-options-image-annotations" })
+        let export = try XCTUnwrap(menu.sections.first { $0.id == "3d-options-export" })
+        let share = try XCTUnwrap(export.items.first { $0.id == "3d-options-share-image" })
+
+        XCTAssertTrue(annotations.isSelected)
+        XCTAssertEqual(annotations.systemImage, "checkmark")
+        XCTAssertFalse(share.isEnabled)
     }
 
     func testSingle3DToolbarExposesStableVolumeToolAccessibilityIdentifiers() {
@@ -80,7 +156,7 @@ final class ViewerChromeConfigurationTests: XCTestCase {
             "WW/WL",
             "Rotation",
             "ROI",
-            "Thick slab"
+            "Thick Slab"
         ])
         XCTAssertEqual(configuration.bottomTools.map(\.accessibilityIdentifier), [
             "MPRToolScroll",
@@ -97,7 +173,6 @@ final class ViewerChromeConfigurationTests: XCTestCase {
             "mpr-screen-layout",
             "mpr-options-image-annotations",
             "mpr-options-show-crosshair",
-            "mpr-options-reset-active-view",
             "mpr-options-reset-views",
             "mpr-options-share"
         ])
@@ -245,9 +320,9 @@ final class ViewerChromeConfigurationTests: XCTestCase {
 
         XCTAssertEqual(layoutSection.title, "Screen Layout")
         XCTAssertEqual(layoutSection.items.map(\.title), [
-            "HSplit (2x1)",
-            "HSplit (1x2)",
-            "VSplit (3x1)"
+            "Two Over One (2x1)",
+            "One Over Two (1x2)",
+            "Three Stacked (3x1)"
         ])
         XCTAssertEqual(layoutSection.items.map(\.isSelected), [false, false, true])
         XCTAssertEqual(layoutSection.items.map(\.action), [
@@ -258,18 +333,22 @@ final class ViewerChromeConfigurationTests: XCTestCase {
 
         let annotations = try XCTUnwrap(menu.items.first { $0.id == "mpr-options-image-annotations" })
         let crosshair = try XCTUnwrap(menu.items.first { $0.id == "mpr-options-show-crosshair" })
-        let resetActive = try XCTUnwrap(menu.items.first { $0.id == "mpr-options-reset-active-view" })
         let reset = try XCTUnwrap(menu.items.first { $0.id == "mpr-options-reset-views" })
-        let share = try XCTUnwrap(menu.items.first { $0.id == "mpr-options-share" })
+        let shareSection = try XCTUnwrap(menu.sections.first { $0.id == "mpr-options-share" })
+        let shareSnapshot = try XCTUnwrap(shareSection.items.first { $0.id == "mpr-options-share-snapshot" })
 
         XCTAssertFalse(annotations.isSelected)
         XCTAssertEqual(annotations.action, .toggleMPRAnnotations)
         XCTAssertTrue(crosshair.isSelected)
         XCTAssertEqual(crosshair.action, .toggleMPRCrosshair)
-        XCTAssertEqual(resetActive.action, .resetActiveMPRView)
+        XCTAssertNil(menu.items.first { $0.id == "mpr-options-reset-active-view" })
+        XCTAssertEqual(reset.title, "Reset Views")
         XCTAssertEqual(reset.action, .resetMPRViews)
-        XCTAssertEqual(share.action, .shareMPRSnapshot)
-        XCTAssertFalse(share.isEnabled)
+        XCTAssertEqual(shareSection.title, "Share")
+        XCTAssertEqual(shareSection.accessibilityIdentifier, "MPRShareMenu")
+        XCTAssertEqual(shareSnapshot.title, "Export MPR Snapshot")
+        XCTAssertEqual(shareSnapshot.action, .shareMPRSnapshot)
+        XCTAssertFalse(shareSnapshot.isEnabled)
     }
 
     func testMPROptionsMenuEnablesShareWhenMPRSnapshotIsExportable() throws {
@@ -278,13 +357,79 @@ final class ViewerChromeConfigurationTests: XCTestCase {
             isMPRShareEnabled: true
         )
         let menu = try XCTUnwrap(configuration.optionsMenu)
-        let share = try XCTUnwrap(menu.items.first { $0.id == "mpr-options-share" })
+        let shareSection = try XCTUnwrap(menu.sections.first { $0.id == "mpr-options-share" })
+        let share = try XCTUnwrap(shareSection.items.first { $0.id == "mpr-options-share-snapshot" })
 
         XCTAssertEqual(share.action, .shareMPRSnapshot)
         XCTAssertTrue(share.isEnabled)
     }
 
-    func testStack2DToolbarUsesClinical2DToolsetInOrder() {
+    func testStack2DOptionsMenuMatchesCompactReference() throws {
+        let configuration = factory.configuration(for: .stack2D)
+        let menu = try XCTUnwrap(configuration.optionsMenu)
+
+        XCTAssertEqual(configuration.optionsAction, .openMenu(.stack2DOptions))
+        XCTAssertEqual(menu.accessibilityIdentifier, "Stack2DOptionsMenu")
+        XCTAssertEqual(menu.entries.map(\.id), [
+            "2d-options-screen-layout",
+            "2d-options-image-annotations",
+            "2d-options-reference-lines",
+            "2d-options-bookmarks",
+            "2d-options-metadata",
+            "2d-options-share"
+        ])
+
+        let layout = try XCTUnwrap(menu.sections.first { $0.id == "2d-options-screen-layout" })
+        XCTAssertEqual(layout.title, "Screen Layout")
+        XCTAssertEqual(layout.items.map(\.title), [
+            "Single Window",
+            "Dual (2x1)",
+            "Triple (3x1)",
+            "Quadruple (2x2)"
+        ])
+        XCTAssertEqual(layout.items.map(\.action), [
+            .set2DScreenLayout(.singleWindow),
+            .set2DScreenLayout(.dual2x1),
+            .set2DScreenLayout(.triple3x1),
+            .set2DScreenLayout(.quadruple2x2)
+        ])
+        XCTAssertEqual(layout.items.map(\.isSelected), [true, false, false, false])
+        XCTAssertEqual(layout.items.map(\.isEnabled), [true, false, false, false])
+
+        let annotations = try XCTUnwrap(menu.items.first { $0.id == "2d-options-image-annotations" })
+        let referenceLines = try XCTUnwrap(menu.items.first { $0.id == "2d-options-reference-lines" })
+        let metadata = try XCTUnwrap(menu.items.first { $0.id == "2d-options-metadata" })
+
+        XCTAssertEqual(annotations.title, "Image Annotations")
+        XCTAssertEqual(annotations.action, .toggle2DImageAnnotations)
+        XCTAssertTrue(annotations.isSelected)
+        XCTAssertEqual(annotations.systemImage, "checkmark")
+        XCTAssertEqual(referenceLines.title, "Show Reference Lines")
+        XCTAssertEqual(referenceLines.action, .toggle2DReferenceLines)
+        XCTAssertFalse(referenceLines.isEnabled)
+        XCTAssertEqual(metadata.action, .show2DMetadata)
+
+        let bookmarks = try XCTUnwrap(menu.sections.first { $0.id == "2d-options-bookmarks" })
+        XCTAssertEqual(bookmarks.items.map(\.title), [
+            "Add bookmark",
+            "Bookmarks",
+            "Show Bookmarks panel",
+            "Delete all"
+        ])
+        XCTAssertEqual(bookmarks.items.map(\.action), [
+            .add2DBookmark,
+            .show2DBookmarks,
+            .toggle2DBookmarksPanel,
+            .deleteAll2DBookmarks
+        ])
+        XCTAssertEqual(bookmarks.items.map(\.isEnabled), [true, true, true, false])
+
+        let share = try XCTUnwrap(menu.sections.first { $0.id == "2d-options-share" })
+        XCTAssertEqual(share.items.map(\.title), ["Export image to JPEG"])
+        XCTAssertEqual(share.items.first?.action, .share2DCurrentImage)
+    }
+
+    func testStack2DToolbarUsesClinical2DToolsetInOrder() throws {
         let configuration = factory.configuration(for: .stack2D)
 
         XCTAssertEqual(configuration.mode, .stack2D)
@@ -294,7 +439,8 @@ final class ViewerChromeConfigurationTests: XCTestCase {
             .rotation,
             .roi,
             .sync,
-            .reslice
+            .reslice,
+            .thickSlab
         ])
         XCTAssertEqual(configuration.bottomTools.map(\.id), [
             .scroll,
@@ -302,7 +448,8 @@ final class ViewerChromeConfigurationTests: XCTestCase {
             .rotation,
             .roi,
             .sync,
-            .reslice
+            .reslice,
+            .thickSlab
         ])
         XCTAssertEqual(configuration.bottomTools.map(\.title), [
             "Scroll",
@@ -310,7 +457,8 @@ final class ViewerChromeConfigurationTests: XCTestCase {
             "Rotation",
             "ROI",
             "Sync",
-            "Reslice"
+            "Reslice",
+            "Thick Slab"
         ])
         XCTAssertEqual(configuration.bottomTools.map(\.accessibilityIdentifier), [
             "MTK2DToolScroll",
@@ -318,11 +466,16 @@ final class ViewerChromeConfigurationTests: XCTestCase {
             "MTK2DToolRotation",
             "MTK2DToolROI",
             "MTK2DToolSync",
-            "MTK2DToolReslice"
+            "MTK2DToolReslice",
+            "MTK2DToolThickSlab"
         ])
-        XCTAssertTrue(configuration.bottomTools.allSatisfy { $0.longPressMenu != nil })
-        XCTAssertEqual(configuration.optionsAction, .openSettings(.stack2DSettings))
-        XCTAssertNil(configuration.optionsMenu)
+        let thickSlab = try XCTUnwrap(configuration.bottomTools.last)
+        XCTAssertEqual(thickSlab.id, .thickSlab)
+        XCTAssertEqual(thickSlab.tapAction, .openSettings(.stack2DThickSlab))
+        XCTAssertNil(thickSlab.longPressMenu)
+        XCTAssertTrue(configuration.bottomTools.dropLast().allSatisfy { $0.longPressMenu != nil })
+        XCTAssertEqual(configuration.optionsAction, .openMenu(.stack2DOptions))
+        XCTAssertNotNil(configuration.optionsMenu)
     }
 
     func testStack2DToolbarReflectsSelectedTool() {
@@ -334,6 +487,7 @@ final class ViewerChromeConfigurationTests: XCTestCase {
             false,
             false,
             true,
+            false,
             false
         ])
     }
@@ -496,12 +650,12 @@ final class ViewerChromeConfigurationTests: XCTestCase {
         let mpr = factory.configuration(for: .clinical)
         let stack2D = factory.configuration(for: .stack2D)
 
-        XCTAssertEqual(single3D.optionsAction, .openSettings(.volumeRenderSettings))
-        XCTAssertNil(single3D.optionsMenu)
+        XCTAssertEqual(single3D.optionsAction, .openMenu(.volume3DOptions))
+        XCTAssertNotNil(single3D.optionsMenu)
         XCTAssertEqual(mpr.optionsAction, .openMenu(.mprOptions))
         XCTAssertNotNil(mpr.optionsMenu)
-        XCTAssertEqual(stack2D.optionsAction, .openSettings(.stack2DSettings))
-        XCTAssertNil(stack2D.optionsMenu)
+        XCTAssertEqual(stack2D.optionsAction, .openMenu(.stack2DOptions))
+        XCTAssertNotNil(stack2D.optionsMenu)
 
         XCTAssertEqual(single3D.bottomTools.map(\.id), Volume3DTool.allCases.map(\.viewerToolID))
         XCTAssertEqual(mpr.bottomTools.map(\.id), MPRTool.allCases.map(\.viewerToolID))
@@ -531,13 +685,15 @@ final class ViewerChromeConfigurationTests: XCTestCase {
         XCTAssertEqual(state.selectedToolID(for: .clinical), .scroll)
     }
 
-    func testDismissingVolumeRenderSettingsPreservesSelected3DTool() {
+    func testDismissingVolumeRenderSettingsPreservesSelected3DTool() throws {
         let configuration = factory.configuration(for: .single3D)
+        let settings = try XCTUnwrap(configuration.optionsMenu?.items.first { $0.id == "3d-options-vr-settings" })
         var state = ViewerChromeState()
 
         state.prepareForMode(.single3D, configuration: configuration)
         state.activateTool(configuration.bottomTools[3], in: configuration)
         state.toggleOptions(configuration.optionsAction, in: configuration)
+        state.activateMenuItem(settings, in: configuration)
         state.dismissPresentedChrome()
 
         XCTAssertNil(state.activeSettingsSheet)
@@ -561,6 +717,24 @@ final class ViewerChromeConfigurationTests: XCTestCase {
         XCTAssertNil(state.activeOptionsMenu)
         XCTAssertNil(state.activeSettingsSheet)
         XCTAssertEqual(state.selectedToolID(for: .clinical), .scroll)
+    }
+
+    func testStack2DOptionsTerminalItemsDismissDedicatedMenu() throws {
+        let configuration = factory.configuration(for: .stack2D)
+        let annotations = try XCTUnwrap(configuration.optionsMenu?.items.first { $0.id == "2d-options-image-annotations" })
+        var state = ViewerChromeState()
+
+        state.prepareForMode(.stack2D, configuration: configuration)
+        state.toggleOptions(configuration.optionsAction, in: configuration)
+
+        XCTAssertEqual(state.activeOptionsMenu, .stack2DOptions)
+        XCTAssertNil(state.activeSettingsSheet)
+
+        state.activateMenuItem(annotations, in: configuration)
+
+        XCTAssertNil(state.activeOptionsMenu)
+        XCTAssertNil(state.activeSettingsSheet)
+        XCTAssertEqual(state.selectedToolID(for: .stack2D), .scroll)
     }
 
     func testStack2DMenuActionsSelectModeScopedTools() throws {
@@ -626,6 +800,28 @@ final class ViewerChromeConfigurationTests: XCTestCase {
         XCTAssertTrue(reslice.longPressMenu?.items.allSatisfy { !$0.isEnabled } == true)
     }
 
+    func testStack2DThickSlabToolCanBeDisabledForSingleSliceStacks() throws {
+        let message = "Thick Slab requires a stack with adjacent slices."
+        let configuration = factory.configuration(
+            for: .stack2D,
+            selectedToolID: .thickSlab,
+            isTwoDThickSlabEnabled: false,
+            twoDThickSlabDisabledMessage: message
+        )
+        let thickSlab = try XCTUnwrap(configuration.bottomTools.first { $0.id == .thickSlab })
+        var state = ViewerChromeState()
+
+        XCTAssertFalse(thickSlab.isEnabled)
+        XCTAssertEqual(thickSlab.disabledMessage, message)
+        XCTAssertEqual(thickSlab.tapAction, .openSettings(.stack2DThickSlab))
+        XCTAssertEqual(configuration.defaultToolID, .scroll)
+
+        state.prepareForMode(.stack2D, configuration: configuration)
+        state.activateTool(thickSlab, in: configuration)
+        XCTAssertEqual(state.selectedToolID(for: .stack2D), .scroll)
+        XCTAssertNil(state.activeSettingsSheet)
+    }
+
     func testStack2DScrollMenuReflectsScrollSettings() throws {
         let settings = TwoDScrollSettings(speed: TwoDScrollSpeedPreset.fast.speed,
                                           loopThroughImages: true,
@@ -684,6 +880,20 @@ final class ViewerChromeConfigurationTests: XCTestCase {
         XCTAssertNil(state.activeToolMenu)
     }
 
+    func testStack2DThickSlabToolOpensDedicatedSheet() throws {
+        let configuration = factory.configuration(for: .stack2D)
+        let thickSlab = try XCTUnwrap(configuration.bottomTools.first { $0.id == .thickSlab })
+        var state = ViewerChromeState()
+
+        state.prepareForMode(.stack2D, configuration: configuration)
+        state.activateTool(thickSlab, in: configuration)
+
+        XCTAssertEqual(state.selectedToolID(for: .stack2D), .thickSlab)
+        XCTAssertEqual(state.activeSettingsSheet, .stack2DThickSlab)
+        XCTAssertNil(state.activeOptionsMenu)
+        XCTAssertNil(state.activeToolMenu)
+    }
+
     func testLongPressMenusAreDataDriven() throws {
         let configuration = factory.configuration(for: .single3D)
         let orientation = try XCTUnwrap(configuration.bottomTools.first { $0.id == .orientation })
@@ -724,6 +934,7 @@ final class ViewerChromeConfigurationTests: XCTestCase {
         ])
         XCTAssertEqual(windowLevel.longPressMenu?.sections.map(\.title), ["CLUTs"])
         XCTAssertEqual(windowLevel.longPressMenu?.sections.first?.items.count, 29)
+        XCTAssertEqual(rotation.longPressMenu?.title, "Tilt")
         XCTAssertEqual(rotation.longPressMenu?.items.map(\.id), [
             "volume3d-rotation-model",
             "volume3d-rotation-cropBox",
@@ -731,8 +942,8 @@ final class ViewerChromeConfigurationTests: XCTestCase {
             "volume3d-rotation-select-crop"
         ])
         XCTAssertEqual(rotation.longPressMenu?.items.map(\.title), [
-            "Model rotation",
-            "Cropping box rotation",
+            "Model tilt",
+            "Cropping box tilt",
             "Reset",
             "Select Crop tool"
         ])
@@ -799,7 +1010,7 @@ final class ViewerChromeConfigurationTests: XCTestCase {
         XCTAssertEqual(state.selectedToolID(for: .single3D), .windowLevel)
     }
 
-    func testRotationMenuActionsSelectRotationToolAndCropShortcut() throws {
+    func testTiltMenuActionsSelectTiltToolAndCropShortcut() throws {
         let configuration = factory.configuration(for: .single3D)
         let rotation = try XCTUnwrap(configuration.bottomTools.first { $0.id == .rotation })
         let modelItem = try XCTUnwrap(rotation.longPressMenu?.items.first { $0.id == "volume3d-rotation-model" })

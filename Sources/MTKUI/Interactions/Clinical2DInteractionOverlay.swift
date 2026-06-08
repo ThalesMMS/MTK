@@ -54,9 +54,12 @@ public struct Clinical2DScrollDragResolution: Equatable, Sendable {
 
 public struct Clinical2DInteractionRouter: Sendable {
     public var scrollDragPixelsPerStep: CGFloat
+    public var isScrollDirectionInverted: Bool
 
-    public init(scrollDragPixelsPerStep: CGFloat = 10) {
+    public init(scrollDragPixelsPerStep: CGFloat = 10,
+                isScrollDirectionInverted: Bool = false) {
         self.scrollDragPixelsPerStep = max(scrollDragPixelsPerStep, 1)
+        self.isScrollDirectionInverted = isScrollDirectionInverted
     }
 
     public func routeDrag(tool: Clinical2DTool,
@@ -90,7 +93,7 @@ public struct Clinical2DInteractionRouter: Sendable {
                 return .none
             }
             return .rotate(radians: radians)
-        case .roi, .sync, .reslice:
+        case .roi, .sync, .reslice, .thickSlab:
             return .none
         }
     }
@@ -125,7 +128,12 @@ public struct Clinical2DInteractionRouter: Sendable {
         guard tool == .scroll else { return .none }
         let steps = MPRScrollStepMapper.steps(deltaY: deltaY,
                                               hasPreciseScrollingDeltas: hasPreciseScrollingDeltas)
-        return steps == 0 ? .none : .scrollSlices(steps)
+        let routedSteps = routedScrollSteps(steps)
+        return routedSteps == 0 ? .none : .scrollSlices(routedSteps)
+    }
+
+    private func routedScrollSteps(_ steps: Int) -> Int {
+        isScrollDirectionInverted ? -steps : steps
     }
 
     public func scrollDragResolution(deltaY: CGFloat,
@@ -138,7 +146,7 @@ public struct Clinical2DInteractionRouter: Sendable {
         let totalPixels = deltaY + residualPixels
         let steps = dragScrollSteps(deltaY: totalPixels)
         let consumedPixels = CGFloat(steps) * scrollDragPixelsPerStep
-        return Clinical2DScrollDragResolution(steps: steps,
+        return Clinical2DScrollDragResolution(steps: routedScrollSteps(steps),
                                               residualPixels: totalPixels - consumedPixels)
     }
 
@@ -155,7 +163,7 @@ public struct Clinical2DInteractionRouter: Sendable {
         let dampedDelta = projectedDelta * 0.45
         let maximumDelta = scrollDragPixelsPerStep * 8
         let clampedDelta = min(max(dampedDelta, -maximumDelta), maximumDelta)
-        return dragScrollSteps(deltaY: clampedDelta)
+        return routedScrollSteps(dragScrollSteps(deltaY: clampedDelta))
     }
 
     public func routeMagnification(factor: CGFloat,

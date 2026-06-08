@@ -107,7 +107,7 @@ public struct ClinicalBenchmarkMeasurement: Codable, Equatable, Sendable {
         case observedRenderModes
     }
 
-    public init(from decoder: Decoder) throws {
+    public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.scenarioID = try container.decode(String.self, forKey: .scenarioID)
         self.status = try container.decode(ClinicalBenchmarkMeasurementStatus.self, forKey: .status)

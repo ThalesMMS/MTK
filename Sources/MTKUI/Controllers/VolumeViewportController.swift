@@ -713,7 +713,6 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
         volumeRenderQualitySettings = sanitized
         qualityScheduler.applyVolumeRenderQualitySettings(sanitized)
         baseSamplingStep = qualityScheduler.baseSamplingStep
-        lightingEnabled = sanitized.shadowMode.isEnabled
         scheduleRender()
     }
 

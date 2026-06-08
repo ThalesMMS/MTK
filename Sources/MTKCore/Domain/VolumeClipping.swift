@@ -140,7 +140,7 @@ public struct VolumeCropBox: Sendable, Equatable, Codable {
         case xMin, xMax, yMin, yMax, zMin, zMax
     }
 
-    public init(from decoder: Decoder) throws {
+    public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         try self.init(
             textureMin: SIMD3<Float>(
@@ -244,7 +244,7 @@ public struct VolumeClipPlane: Sendable, Equatable, Codable {
         case normalX, normalY, normalZ, distance
     }
 
-    public init(from decoder: Decoder) throws {
+    public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let normal = SIMD3<Float>(
             try container.decode(Float.self, forKey: .normalX),

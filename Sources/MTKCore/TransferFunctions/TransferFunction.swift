@@ -256,7 +256,7 @@ public struct TransferFunction: Codable, Equatable, Sendable {
         case colorSpace
     }
 
-    public init(from decoder: Decoder) throws {
+    public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         version = try container.decodeIfPresent(Int.self, forKey: .version) ?? Self.currentVersion
         name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""

@@ -76,7 +76,7 @@ public struct TransferFunction2D: Codable {
         case gradientResolution
     }
 
-    public init(from decoder: Decoder) throws {
+    public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         version = try container.decodeIfPresent(Int.self, forKey: .version)
         name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""

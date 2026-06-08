@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 import MTKCore
 @testable import MTKUI
 import Metal
@@ -6,6 +7,18 @@ import XCTest
 
 @MainActor
 final class ClinicalViewerCoordinatorTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        UserDefaults.standard.removeObject(forKey: UserDefaultsMPRViewerPreferencesStore.defaultKey)
+        UserDefaults.standard.removeObject(forKey: UserDefaultsVolume3DViewerPreferencesStore.defaultKey)
+    }
+
+    override func tearDown() {
+        UserDefaults.standard.removeObject(forKey: UserDefaultsMPRViewerPreferencesStore.defaultKey)
+        UserDefaults.standard.removeObject(forKey: UserDefaultsVolume3DViewerPreferencesStore.defaultKey)
+        super.tearDown()
+    }
+
     func testDefaultsMatchDemoClinicalViewerState() {
         let coordinator = ClinicalViewerCoordinator()
 
@@ -18,6 +31,7 @@ final class ClinicalViewerCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.activeMPRAxis, .axial)
         XCTAssertEqual(coordinator.mprSlicePositions[.axial], 0.5)
         XCTAssertEqual(coordinator.mprSlabBlendMode, .mean)
+        XCTAssertEqual(coordinator.mprSlabThickness, 3)
         XCTAssertEqual(coordinator.selectedMPRScreenLayout, .defaultLayout)
         XCTAssertTrue(coordinator.isMPRAnnotationsVisible)
         XCTAssertTrue(coordinator.isMPRCrosshairVisible)
@@ -40,6 +54,14 @@ final class ClinicalViewerCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.twoDHUDSettings, .default)
         XCTAssertEqual(coordinator.twoDMetadataOverlaySettings, .default)
         XCTAssertEqual(coordinator.twoDResliceAxis, .axial)
+        XCTAssertEqual(coordinator.twoDSlabBlendMode, .mean)
+        XCTAssertEqual(coordinator.twoDSlabThickness, 1)
+        XCTAssertEqual(coordinator.twoDScreenLayout, .singleWindow)
+        XCTAssertTrue(coordinator.isTwoDImageAnnotationsVisible)
+        XCTAssertFalse(coordinator.canUseTwoDReferenceLines)
+        XCTAssertFalse(coordinator.isTwoDReferenceLinesVisible)
+        XCTAssertFalse(coordinator.canUseTwoDThickSlab)
+        XCTAssertEqual(coordinator.twoDThickSlabDisabledMessage, "Thick Slab requires a stack with adjacent slices.")
         XCTAssertFalse(coordinator.canUseTwoDReslice)
         XCTAssertEqual(coordinator.twoDResliceDisabledMessage, "No dataset loaded.")
         XCTAssertFalse(coordinator.showDebugOverlay)
@@ -58,10 +80,28 @@ final class ClinicalViewerCoordinatorTests: XCTestCase {
             "Rotation",
             "ROI",
             "Sync",
-            "Reslice"
+            "Reslice",
+            "Thick Slab"
         ])
         XCTAssertEqual(Clinical2DTool.allCases.compactMap { Clinical2DTool(viewerToolID: $0.viewerToolID) },
                        Clinical2DTool.allCases)
+        XCTAssertEqual(TwoDScreenLayout.allCases.map(\.title), [
+            "Single Window",
+            "Dual (2x1)",
+            "Triple (3x1)",
+            "Quadruple (2x2)"
+        ])
+        XCTAssertEqual(ThickSlabThicknessFormatter.label(thickness: 5, spacingMillimeters: 0.5), "2.50 mm")
+        XCTAssertEqual(ThickSlabThicknessFormatter.label(thickness: 5, spacingMillimeters: nil), "5 slices")
+    }
+
+    func testVolume3DInteractionModesExposeTiltForToolbarRouting() {
+        let coordinator = ClinicalViewerCoordinator()
+
+        coordinator.set3DInteractionMode(.tilt)
+
+        XCTAssertEqual(coordinator.interactionMode, .tilt)
+        XCTAssertEqual(NativeVolume3DInteractionMode.tilt.displayName, "Tilt")
     }
 
     func test2DToolFacadeMutatesCoordinatorStateWithoutViewport() {
@@ -200,6 +240,49 @@ final class ClinicalViewerCoordinatorTests: XCTestCase {
         coordinator.set2DResliceAxis(.coronal)
         XCTAssertEqual(coordinator.twoDAxis, .axial)
         XCTAssertEqual(coordinator.errorMessage, "No dataset loaded.")
+    }
+
+    func test2DThickSlabReportsUnavailableWithoutAdjacentSlices() {
+        let coordinator = ClinicalViewerCoordinator()
+        let message = "Thick Slab requires a stack with adjacent slices."
+
+        XCTAssertFalse(coordinator.canUseTwoDThickSlab)
+        XCTAssertEqual(coordinator.twoDThickSlabDisabledMessage, message)
+
+        coordinator.setTwoDSlabThickness(5)
+        XCTAssertEqual(coordinator.twoDSlabThickness, 1)
+        XCTAssertEqual(coordinator.twoDTool, .scroll)
+        XCTAssertEqual(coordinator.errorMessage, message)
+
+        coordinator.setTwoDSlabBlendMode(.mip)
+        XCTAssertEqual(coordinator.twoDSlabBlendMode, .mean)
+        XCTAssertEqual(coordinator.twoDTool, .scroll)
+        XCTAssertEqual(coordinator.errorMessage, message)
+    }
+
+    func test2DOptionsToggleAnnotationsAndReferenceLines() {
+        let coordinator = ClinicalViewerCoordinator()
+
+        coordinator.setTwoDImageAnnotationsVisible(false)
+
+        XCTAssertFalse(coordinator.isTwoDImageAnnotationsVisible)
+        XCTAssertFalse(coordinator.twoDHUDSettings.showsTechnicalText)
+        XCTAssertFalse(coordinator.twoDHUDSettings.showsSubjectName)
+        XCTAssertFalse(coordinator.twoDHUDSettings.showsSeriesTitle)
+        XCTAssertFalse(coordinator.twoDMetadataOverlaySettings.isVisible)
+
+        coordinator.toggleTwoDImageAnnotations()
+
+        XCTAssertTrue(coordinator.isTwoDImageAnnotationsVisible)
+        XCTAssertTrue(coordinator.twoDHUDSettings.showsTechnicalText)
+        XCTAssertTrue(coordinator.twoDMetadataOverlaySettings.isVisible)
+
+        coordinator.setTwoDScreenLayout(.singleWindow)
+        XCTAssertEqual(coordinator.twoDScreenLayout, .singleWindow)
+
+        coordinator.setTwoDReferenceLinesVisible(true)
+        XCTAssertFalse(coordinator.isTwoDReferenceLinesVisible)
+        XCTAssertEqual(coordinator.errorMessage, "Reference lines require multiple 2D viewports.")
     }
 
     func test2DROIsAreScopedToAxisSliceAndDeleteActions() {
@@ -399,6 +482,36 @@ final class ClinicalViewerCoordinatorTests: XCTestCase {
         XCTAssertEqual(viewport.viewportTransform, transform)
     }
 
+    func test2DThickSlabAppliesToActiveStackViewport() async throws {
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("Metal unavailable in this environment.")
+        }
+        let coordinator = ClinicalViewerCoordinator()
+        defer { coordinator.shutdownActiveViewports() }
+        let dataset = makeDataset(dimensions: VolumeDimensions(width: 4, height: 5, depth: 6))
+
+        coordinator.setMode(.stack2D)
+        try await coordinator.applyDataset(dataset)
+        try await waitUntil("2D stack viewport received dataset") {
+            coordinator.stack2DViewport?.state.dataset?.dimensions == dataset.dimensions
+        }
+        let viewport = try XCTUnwrap(coordinator.stack2DViewport)
+
+        XCTAssertTrue(coordinator.canUseTwoDThickSlab)
+        XCTAssertNil(coordinator.twoDThickSlabDisabledMessage)
+
+        coordinator.setTwoDSlabBlendMode(.mip)
+        coordinator.setTwoDSlabThickness(4)
+
+        try await waitUntil("2D slab projection applied to stack viewport") {
+            viewport.slabBlendMode == .mip && viewport.slab?.thickness == 5
+        }
+        XCTAssertEqual(coordinator.twoDTool, .thickSlab)
+        XCTAssertEqual(coordinator.twoDSlabBlendMode, .mip)
+        XCTAssertEqual(coordinator.twoDSlabThickness, 5)
+        XCTAssertEqual(coordinator.twoDSlabThicknessMillimeters, 5)
+    }
+
     func test2DResliceReportsUnavailableForPlanarDataset() async throws {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal unavailable in this environment.")
@@ -414,6 +527,25 @@ final class ClinicalViewerCoordinatorTests: XCTestCase {
         coordinator.set2DResliceAxis(.coronal)
         XCTAssertEqual(coordinator.twoDAxis, .axial)
         XCTAssertEqual(coordinator.errorMessage, "2D reslice requires a volumetric dataset.")
+    }
+
+    func test2DThickSlabReportsUnavailableForSingleSliceAxis() async throws {
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("Metal unavailable in this environment.")
+        }
+        let coordinator = ClinicalViewerCoordinator()
+        defer { coordinator.shutdownActiveViewports() }
+        let dataset = makeDataset(dimensions: VolumeDimensions(width: 4, height: 4, depth: 1))
+
+        try await coordinator.applyDataset(dataset)
+
+        XCTAssertFalse(coordinator.canUseTwoDThickSlab)
+        XCTAssertEqual(coordinator.twoDThickSlabDisabledMessage, "Thick Slab requires a stack with adjacent slices.")
+
+        coordinator.setTwoDSlabBlendMode(.minIP)
+
+        XCTAssertEqual(coordinator.twoDSlabBlendMode, .mean)
+        XCTAssertEqual(coordinator.errorMessage, "Thick Slab requires a stack with adjacent slices.")
     }
 
     func testMPROptionsStateMutatesIndependentlyFrom3DMode() {
@@ -471,6 +603,61 @@ final class ClinicalViewerCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(store.storedSettings, settings.sanitized)
         XCTAssertEqual(restored.volumeRenderQualitySettings, settings.sanitized)
+    }
+
+    func testResetVolumeRenderQualitySettingsRestoresAndPersistsDefault() {
+        let store = InMemoryVolumeRenderQualitySettingsStore()
+        let coordinator = ClinicalViewerCoordinator(volumeRenderQualitySettingsStore: store)
+        let settings = VolumeRenderQualitySettings(renderResolution: .fantastic,
+                                                   interactingResolution: .low,
+                                                   depthResolution: .medium,
+                                                   iterations: .high,
+                                                   shadowMode: .soft,
+                                                   disableShadowsWhenInteracting: true,
+                                                   directionalLightIntensity: 1.25,
+                                                   ambientLightIntensity: 0.45)
+
+        coordinator.setVolumeRenderQualitySettings(settings)
+        coordinator.resetVolumeRenderQualitySettings()
+
+        XCTAssertEqual(coordinator.volumeRenderQualitySettings, .default)
+        XCTAssertEqual(store.storedSettings, .default)
+    }
+
+    func testMPROptionsPreferencesPersistAndRestoreThroughStore() {
+        let store = InMemoryMPRViewerPreferencesStore()
+        let coordinator = ClinicalViewerCoordinator(mprViewerPreferencesStore: store)
+
+        coordinator.setMPRScreenLayout(.vSplit3x1)
+        coordinator.setMPRAnnotationsVisible(false)
+        coordinator.setMPRCrosshairVisible(false)
+
+        let restored = ClinicalViewerCoordinator(mprViewerPreferencesStore: store)
+
+        XCTAssertEqual(store.storedPreferences?.screenLayout, .vSplit3x1)
+        XCTAssertEqual(store.storedPreferences?.isAnnotationsVisible, false)
+        XCTAssertEqual(store.storedPreferences?.isCrosshairVisible, false)
+        XCTAssertEqual(restored.selectedMPRScreenLayout, .vSplit3x1)
+        XCTAssertFalse(restored.isMPRAnnotationsVisible)
+        XCTAssertFalse(restored.isMPRCrosshairVisible)
+    }
+
+    func testVolume3DImageAnnotationsPreferencePersistsAndRestoresThroughStore() {
+        let store = InMemoryVolume3DViewerPreferencesStore()
+        let coordinator = ClinicalViewerCoordinator(volume3DViewerPreferencesStore: store)
+
+        coordinator.setVolume3DImageAnnotationsVisible(false)
+        let restored = ClinicalViewerCoordinator(volume3DViewerPreferencesStore: store)
+
+        XCTAssertEqual(store.storedPreferences?.isImageAnnotationsVisible, false)
+        XCTAssertFalse(restored.isVolume3DImageAnnotationsVisible)
+    }
+
+    func testVolume3DViewerPreferencesStoreUsesReverseDNSDefaultKey() {
+        XCTAssertEqual(
+            UserDefaultsVolume3DViewerPreferencesStore.defaultKey,
+            "com.mtk.volume3DViewerPreferences"
+        )
     }
 
     func testRenderMethodMappingsArePublicAndStable() {
@@ -896,6 +1083,30 @@ private final class InMemoryVolumeRenderQualitySettingsStore: VolumeRenderQualit
 
     func saveVolumeRenderQualitySettings(_ settings: VolumeRenderQualitySettings) {
         storedSettings = settings
+    }
+}
+
+private final class InMemoryMPRViewerPreferencesStore: MPRViewerPreferencesStoring {
+    var storedPreferences: MPRViewerPreferences?
+
+    func loadMPRViewerPreferences() -> MPRViewerPreferences? {
+        storedPreferences
+    }
+
+    func saveMPRViewerPreferences(_ preferences: MPRViewerPreferences) {
+        storedPreferences = preferences
+    }
+}
+
+private final class InMemoryVolume3DViewerPreferencesStore: Volume3DViewerPreferencesStoring {
+    var storedPreferences: Volume3DViewerPreferences?
+
+    func loadVolume3DViewerPreferences() -> Volume3DViewerPreferences? {
+        storedPreferences
+    }
+
+    func saveVolume3DViewerPreferences(_ preferences: Volume3DViewerPreferences) {
+        storedPreferences = preferences
     }
 }
 

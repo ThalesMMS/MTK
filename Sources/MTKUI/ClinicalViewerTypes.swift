@@ -29,6 +29,7 @@ public enum Clinical2DTool: String, CaseIterable, Identifiable, Sendable {
     case roi
     case sync
     case reslice
+    case thickSlab
 
     public var id: String { rawValue }
 
@@ -46,7 +47,48 @@ public enum Clinical2DTool: String, CaseIterable, Identifiable, Sendable {
             return "Sync"
         case .reslice:
             return "Reslice"
+        case .thickSlab:
+            return "Thick Slab"
         }
+    }
+}
+
+public enum TwoDScreenLayout: String, CaseIterable, Identifiable, Sendable {
+    case singleWindow
+    case dual2x1
+    case triple3x1
+    case quadruple2x2
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .singleWindow:
+            return "Single Window"
+        case .dual2x1:
+            return "Dual (2x1)"
+        case .triple3x1:
+            return "Triple (3x1)"
+        case .quadruple2x2:
+            return "Quadruple (2x2)"
+        }
+    }
+
+    public var accessibilityIdentifier: String {
+        "TwoDScreenLayout.\(rawValue)"
+    }
+}
+
+public enum ThickSlabThicknessFormatter {
+    public static func label(thickness: Double, spacingMillimeters: Double?) -> String {
+        let resolvedThickness = thickness.isFinite ? max(thickness, 1) : 1
+        if let spacingMillimeters,
+           spacingMillimeters.isFinite,
+           spacingMillimeters > 0 {
+            return String(format: "%.2f mm", resolvedThickness * spacingMillimeters)
+        }
+        let slices = max(Int(resolvedThickness.rounded()), 1)
+        return slices == 1 ? "1 slice" : "\(slices) slices"
     }
 }
 
@@ -244,11 +286,11 @@ public enum MPRScreenLayout: String, Codable, CaseIterable, Identifiable, Sendab
     public var title: String {
         switch self {
         case .hSplit2x1:
-            return "HSplit (2x1)"
+            return "Two Over One (2x1)"
         case .hSplit1x2:
-            return "HSplit (1x2)"
+            return "One Over Two (1x2)"
         case .vSplit3x1:
-            return "VSplit (3x1)"
+            return "Three Stacked (3x1)"
         }
     }
 

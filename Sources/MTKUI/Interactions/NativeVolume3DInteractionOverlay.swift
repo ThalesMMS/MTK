@@ -6,6 +6,7 @@ import UIKit
 
 public enum NativeVolume3DInteractionMode: String, CaseIterable, Identifiable, Sendable, Equatable {
     case orbit
+    case tilt
     case pan
     case transferFunction
     case crop
@@ -17,6 +18,8 @@ public enum NativeVolume3DInteractionMode: String, CaseIterable, Identifiable, S
         switch self {
         case .orbit:
             return "Orbit"
+        case .tilt:
+            return "Tilt"
         case .pan:
             return "Pan"
         case .transferFunction:
@@ -32,7 +35,7 @@ public enum NativeVolume3DInteractionMode: String, CaseIterable, Identifiable, S
 private extension NativeVolume3DInteractionMode {
     var allowsNativeCameraGestures: Bool {
         switch self {
-        case .orbit, .pan, .transferFunction:
+        case .orbit, .tilt, .pan, .transferFunction:
             return true
         case .crop, .brush:
             return false
@@ -67,6 +70,8 @@ public struct NativeVolume3DInteraction {
                 switch interactionMode {
                 case .orbit:
                     return viewport.applyNativeOrbitDelta(delta)
+                case .tilt:
+                    return viewport.applyNativeTiltDelta(delta)
                 case .pan:
                     return viewport.applyNativePanDelta(delta)
                 case .transferFunction:
@@ -138,6 +143,12 @@ public struct NativeVolume3DInteraction {
                 switch interactionMode {
                 case .orbit:
                     return controller.rotateVolumeCameraInteractively(screenDelta: delta)
+                case .tilt:
+                    let scale: Float = 0.01
+                    return controller.tiltVolumeCameraInteractively(
+                        roll: -Float(delta.width) * scale,
+                        pitch: -Float(delta.height) * scale
+                    )
                 case .pan:
                     return controller.panVolumeCameraInteractively(screenDelta: delta)
                 case .transferFunction:

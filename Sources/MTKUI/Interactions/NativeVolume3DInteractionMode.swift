@@ -1,6 +1,7 @@
 #if !os(iOS)
 public enum NativeVolume3DInteractionMode: String, CaseIterable, Identifiable, Sendable, Equatable {
     case orbit
+    case tilt
     case pan
     case transferFunction
     case crop
@@ -12,6 +13,8 @@ public enum NativeVolume3DInteractionMode: String, CaseIterable, Identifiable, S
         switch self {
         case .orbit:
             return "Orbit"
+        case .tilt:
+            return "Tilt"
         case .pan:
             return "Pan"
         case .transferFunction:

@@ -91,6 +91,25 @@ final class MedicalViewportContractTests: XCTestCase {
         }
     }
 
+    func testStackViewportAppliesSlabProjectionConfiguration() async throws {
+        try requireMetalDevice()
+        let viewport = try StackViewport(axis: .axial)
+        let dataset = makeDataset(dimensions: VolumeDimensions(width: 4, height: 5, depth: 6))
+
+        await viewport.applyDataset(dataset)
+        await viewport.setSlabProjection(blend: .mip, thickness: 4)
+
+        XCTAssertEqual(viewport.slabBlendMode, .mip)
+        XCTAssertEqual(viewport.slab?.thickness, 5)
+        XCTAssertEqual(viewport.slab?.steps, 5)
+
+        await viewport.setSlabProjection(blend: .minip, thickness: 1)
+
+        XCTAssertEqual(viewport.slabBlendMode, .minip)
+        XCTAssertEqual(viewport.slab?.thickness, 1)
+        XCTAssertEqual(viewport.slab?.steps, 1)
+    }
+
     func testStackViewportAppliesLabelmapVolumeLayers() async throws {
         try requireMetalDevice()
         let viewport = try StackViewport(axis: .axial)

@@ -305,6 +305,11 @@ extension VolumeViewportController {
                 logInteractionDebug("[MTK3DInteraction] render.error.drop generation=\(generation) current=\(renderGeneration) cancelled=\(Task.isCancelled)")
                 return
             }
+            if shouldDeferPresentationUntilSurfaceReady(error) {
+                renderPending = true
+                logInteractionInfo("[MTK3DInteraction] render.deferSurface generation=\(generation) error=\(error.localizedDescription)")
+                return
+            }
             lastRenderError = error
             switch display {
             case .volume:
@@ -320,6 +325,18 @@ extension VolumeViewportController {
             }
             logger.error("Render failed", error: error)
         }
+    }
+
+    func shouldDeferPresentationUntilSurfaceReady(_ error: any Swift.Error) -> Bool {
+        #if os(iOS)
+        guard let presentationError = error as? PresentationPassError,
+              presentationError == .drawableUnavailable,
+              viewportSurface.isPresentationSurfaceReady == false
+        else { return false }
+        return true
+        #else
+        return false
+        #endif
     }
 
     func canPresentRender(generation: UInt64,

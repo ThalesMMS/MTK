@@ -29,11 +29,27 @@ public final class UserDefaultsVolumeRenderQualitySettingsStore: VolumeRenderQua
 
     public func loadVolumeRenderQualitySettings() -> VolumeRenderQualitySettings? {
         guard let data = userDefaults.data(forKey: key) else { return nil }
-        return try? decoder.decode(VolumeRenderQualitySettings.self, from: data).sanitized
+        guard let settings = try? decoder.decode(VolumeRenderQualitySettings.self, from: data).sanitized else {
+            return nil
+        }
+        return settings.isLegacyHardShadowDefault ? .default : settings
     }
 
     public func saveVolumeRenderQualitySettings(_ settings: VolumeRenderQualitySettings) {
         guard let data = try? encoder.encode(settings.sanitized) else { return }
         userDefaults.set(data, forKey: key)
+    }
+}
+
+private extension VolumeRenderQualitySettings {
+    var isLegacyHardShadowDefault: Bool {
+        renderResolution == .high &&
+            interactingResolution == .medium &&
+            depthResolution == .high &&
+            iterations == .medium &&
+            shadowMode == .hard &&
+            !disableShadowsWhenInteracting &&
+            directionalLightIntensity == 1.0 &&
+            ambientLightIntensity == 0.2
     }
 }
