@@ -107,7 +107,7 @@ If you load real DICOM studies, keep PHI handling, local security, and instituti
 Point Xcode or SwiftPM at the MTK Git repository and depend on the library products you need:
 
 ```swift
-.package(url: "https://github.com/ThalesMMS/MTK.git", exact: "1.3.0"),
+.package(url: "https://github.com/ThalesMMS/MTK.git", exact: "1.3.1"),
 .target(
     name: "YourApp",
     dependencies: [
@@ -120,8 +120,8 @@ Point Xcode or SwiftPM at the MTK Git repository and depend on the library produ
 `MTKDicomBridge` is published as a separate package, not as an MTK product. Add it only when the app wants MTK's default Swift DICOM parser:
 
 ```swift
-.package(url: "https://github.com/ThalesMMS/MTK.git", exact: "1.3.0"),
-.package(url: "https://github.com/ThalesMMS/MTKDicomBridge.git", exact: "1.0.0"),
+.package(url: "https://github.com/ThalesMMS/MTK.git", exact: "1.3.1"),
+.package(url: "https://github.com/ThalesMMS/MTKDicomBridge.git", exact: "1.0.2"),
 .target(
     name: "YourApp",
     dependencies: [
