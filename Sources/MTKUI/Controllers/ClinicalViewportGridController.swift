@@ -36,7 +36,7 @@ public final class ClinicalViewportGridController: ObservableObject {
     @Published public internal(set) var slabThickness: Double = 3
     @Published public internal(set) var activeMPRAxis: MTKCore.Axis = .axial
     @Published public internal(set) var mprInteractionTool: ClinicalMPRInteractionTool = .crosshair
-    @Published public internal(set) var mprSlabBlendMode: MPRSlabBlendOption = .mean
+    @Published public internal(set) var mprSlabBlendMode: MPRSlabBlendOption = .mip
     @Published public internal(set) var mprWindowPreset: MPRWindowPreset = .default
     @Published public internal(set) var mprCLUTPreset: Volume3DCLUTPreset = .defaultPreset
     @Published public internal(set) var isMPRWindowInverted = false
@@ -283,7 +283,7 @@ public final class ClinicalViewportGridController: ObservableObject {
         displayTransformsByAxis.removeAll()
         activeMPRAxis = .axial
         mprInteractionTool = .crosshair
-        mprSlabBlendMode = .mean
+        mprSlabBlendMode = .mip
         resetMPRROIAnnotations()
         normalizedPositions = Self.centeredNormalizedPositions
         crosshairOffsets = Self.centeredCrosshairOffsets
@@ -673,7 +673,7 @@ public final class ClinicalViewportGridController: ObservableObject {
             resetMPRROIAnnotations()
             activeMPRAxis = .axial
             mprInteractionTool = .crosshair
-            mprSlabBlendMode = .mean
+            mprSlabBlendMode = .mip
             mprViewportTransforms = Self.defaultMPRViewportTransforms
             normalizedPositions = Self.centeredNormalizedPositions
             crosshairAngles = [.axial: 0, .coronal: 0, .sagittal: 0]
@@ -718,7 +718,7 @@ public final class ClinicalViewportGridController: ObservableObject {
             currentDataset = nil
             currentVolumeTransferFunction = nil
             displayTransformsByAxis.removeAll()
-            mprSlabBlendMode = .mean
+            mprSlabBlendMode = .mip
             resetMPRROIAnnotations()
             viewportTimings.removeAll()
             latestTimingSnapshot = ClinicalViewportTimingSnapshot()

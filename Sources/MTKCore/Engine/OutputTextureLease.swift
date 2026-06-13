@@ -28,6 +28,7 @@ package final class OutputTextureLease: @unchecked Sendable {
     private var debugPresentationTokenStorage: String?
     private var presented = false
     private var released = false
+    private var releaseAfterPresentation = false
 
     init(texture: any MTLTexture,
          ownerPoolIdentifier: UUID,
@@ -82,23 +83,54 @@ package final class OutputTextureLease: @unchecked Sendable {
 
     package func markPresented() {
         let shouldNotify: Bool
+        let shouldRelease: Bool
 
         lock.lock()
         if released || presented {
             shouldNotify = false
+            shouldRelease = false
         } else {
             presented = true
             shouldNotify = true
+            if releaseAfterPresentation {
+                released = true
+                shouldRelease = true
+            } else {
+                shouldRelease = false
+            }
         }
         lock.unlock()
 
         if shouldNotify {
             onPresented(self)
         }
+        if shouldRelease {
+            onRelease(self)
+        }
     }
 
     package func release() {
         release(origin: .explicit)
+    }
+
+    package func releaseAfterPresentationCompletes() {
+        let shouldRelease: Bool
+
+        lock.lock()
+        if released {
+            shouldRelease = false
+        } else if presented {
+            released = true
+            shouldRelease = true
+        } else {
+            releaseAfterPresentation = true
+            shouldRelease = false
+        }
+        lock.unlock()
+
+        if shouldRelease {
+            onRelease(self)
+        }
     }
 
     private func release(origin: ReleaseOrigin) {

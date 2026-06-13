@@ -301,6 +301,22 @@ final class MetalVolumeRenderingAdapterSPIPropertiesTests: XCTestCase {
         XCTAssertFalse(firstFrame.outputTextureLease?.isReleased ?? true)
     }
 
+    func testEnqueueInteractiveFusionFrameUsesCachedCompositeResources() async throws {
+        try await adapter.send(.setWindow(min: -1_024, max: 1_024))
+        let firstFrame = try await adapter.enqueueInteractiveFrame(using: makeFusionRenderRequest())
+        defer { firstFrame.outputTextureLease?.release() }
+        let secondFrame = try await adapter.enqueueInteractiveFrame(using: makeFusionRenderRequest())
+        defer { secondFrame.outputTextureLease?.release() }
+
+        XCTAssertNotNil(firstFrame.outputTextureLease)
+        XCTAssertNotNil(secondFrame.outputTextureLease)
+        let passCreationCount = await adapter.debugLayerCompositePassCreationCount
+        let scratchTextureAllocationCount = await adapter.debugLayerStackScratchTextureAllocationCount
+
+        XCTAssertEqual(passCreationCount, 1)
+        XCTAssertEqual(scratchTextureAllocationCount, 3)
+    }
+
     func testProjectionCompositingDisablesTransferFunctionProjectionPath() async throws {
         let baseRequest = makeRenderRequest()
         let expectations: [(VolumeRenderRequest.Compositing, Int32)] = [
@@ -388,6 +404,52 @@ final class MetalVolumeRenderingAdapterSPIPropertiesTests: XCTestCase {
             samplingDistance: VolumeRenderRegressionFixture.samplingDistance,
             compositing: .frontToBack,
             quality: .interactive
+        )
+    }
+
+    private func makeFusionRenderRequest() -> VolumeRenderRequest {
+        let baseDataset = VolumeDatasetTestFactory.makeTestDataset(
+            dimensions: VolumeDimensions(width: 16, height: 16, depth: 16),
+            pixelFormat: .int16Signed,
+            seed: 1
+        )
+        let overlayDataset = VolumeDatasetTestFactory.makeTestDataset(
+            dimensions: baseDataset.dimensions,
+            pixelFormat: .int16Signed,
+            seed: 11
+        )
+        let doseDataset = VolumeDatasetTestFactory.makeTestDataset(
+            dimensions: baseDataset.dimensions,
+            pixelFormat: .int16Signed,
+            seed: 21
+        )
+        let baseTransfer = makeVisibleTransferFunction(for: baseDataset)
+        let overlayTransfer = makeVisibleTransferFunction(for: overlayDataset)
+        let doseTransfer = makeVisibleTransferFunction(for: doseDataset)
+        let layers = [
+            VolumeLayer(id: "ct",
+                        dataset: baseDataset,
+                        transferFunction: baseTransfer),
+            VolumeLayer(id: "pet",
+                        dataset: overlayDataset,
+                        transferFunction: overlayTransfer,
+                        opacity: 0.5,
+                        blendMode: .sourceOver),
+            VolumeLayer(id: "dose",
+                        dataset: doseDataset,
+                        transferFunction: doseTransfer,
+                        opacity: 0.25,
+                        blendMode: .additive)
+        ]
+        return VolumeRenderRequest(
+            dataset: baseDataset,
+            transferFunction: baseTransfer,
+            viewportSize: CGSize(width: 32, height: 32),
+            camera: VolumeRenderRegressionFixture.camera(),
+            samplingDistance: 1.0 / 32.0,
+            compositing: .frontToBack,
+            quality: .interactive,
+            layers: layers
         )
     }
 

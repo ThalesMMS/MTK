@@ -1,5 +1,6 @@
 @testable import MTKUI
 import MTKCore
+import SwiftUI
 import XCTest
 
 final class Clinical2DViewportOverlayTests: XCTestCase {
@@ -167,6 +168,80 @@ final class Clinical2DViewportOverlayTests: XCTestCase {
         XCTAssertEqual(doubleMirrored.crosshairAngleDegrees, 30)
     }
 
+#if os(macOS)
+    @MainActor
+    func testPointROIRendersInFullViewportCoordinateSpace() throws {
+        let viewportSize = CGSize(width: 800, height: 600)
+        let expectedCenterX = 100.0
+        let annotation = ViewerROIAnnotation(
+            kind: .point,
+            axis: .axial,
+            normalizedImagePoints: [CGPoint(x: expectedCenterX / viewportSize.width, y: 0.5)],
+            style: ViewerROIStyle(
+                strokeColor: ViewerROIColor(red: 1, green: 0, blue: 0),
+                textColor: ViewerROIColor(red: 1, green: 0, blue: 0),
+                labelBackgroundColor: .black,
+                lineWidth: 2
+            )
+        )
+        let state = Clinical2DViewportOverlayState(
+            axis: .axial,
+            windowLevel: WindowLevelShift(window: 400, level: 40),
+            sliceIndex: 0,
+            sliceCount: 1,
+            zoom: 1,
+            angleDegrees: 0,
+            activeTool: .scroll,
+            roiKind: .point,
+            roiAnnotations: [annotation],
+            showsCrosshair: false,
+            hudSettings: hiddenHUDSettings
+        )
+
+        let pixels = try renderRedPixels(
+            Clinical2DViewportOverlay(state: state)
+                .frame(width: viewportSize.width, height: viewportSize.height)
+                .background(Color.black),
+            width: Int(viewportSize.width),
+            height: Int(viewportSize.height)
+        )
+
+        let centerX = try XCTUnwrap(pixels.bounds?.midX)
+        XCTAssertEqual(centerX, expectedCenterX, accuracy: 2)
+    }
+
+    @MainActor
+    func testCrosshairRendersInFullViewportCoordinateSpace() throws {
+        let viewportSize = CGSize(width: 800, height: 600)
+        let expectedCenterX = 100.0
+        let panX = expectedCenterX / viewportSize.width - 0.5
+        let state = Clinical2DViewportOverlayState(
+            axis: .axial,
+            windowLevel: WindowLevelShift(window: 400, level: 40),
+            sliceIndex: 0,
+            sliceCount: 1,
+            zoom: 1,
+            pan: SIMD2<Double>(panX, 0),
+            angleDegrees: 0,
+            activeTool: .scroll,
+            roiKind: .point,
+            showsCrosshair: true,
+            hudSettings: hiddenHUDSettings
+        )
+
+        let pixels = try renderRedPixels(
+            Clinical2DViewportOverlay(state: state, style: RedOverlayStyle())
+                .frame(width: viewportSize.width, height: viewportSize.height)
+                .background(Color.black),
+            width: Int(viewportSize.width),
+            height: Int(viewportSize.height)
+        )
+
+        let centerX = try XCTUnwrap(pixels.dominantColumnX)
+        XCTAssertEqual(centerX, expectedCenterX, accuracy: 2)
+    }
+#endif
+
     private func makeState(axis: MTKCore.Axis,
                            metadataSample: ClinicalViewportMetadataSample? = nil,
                            metadataOverlaySettings: ClinicalViewportMetadataOverlaySettings = .default) -> Clinical2DViewportOverlayState {
@@ -215,4 +290,91 @@ final class Clinical2DViewportOverlayTests: XCTestCase {
                                               scalarSamples: [scalarSample],
                                               doseSamples: [doseSample])
     }
+
+    private var hiddenHUDSettings: TwoDHUDSettings {
+        TwoDHUDSettings(
+            showsSubjectName: false,
+            showsSeriesTitle: false,
+            showsTechnicalText: false,
+            showsOrientationMarkers: false,
+            showsCenterOrientationMarker: false,
+            showsAxisBadge: false
+        )
+    }
 }
+
+#if os(macOS)
+private struct RedOverlayStyle: VolumetricUIStyle {
+    let lineWidth: CGFloat = 2
+
+    var crosshairColor: Color { .red }
+    var scalebarColor: Color { .red }
+    var overlayBackground: Color { .black.opacity(0.55) }
+    var overlayForeground: Color { .red }
+}
+
+private struct RenderedRedPixels {
+    var bounds: CGRect?
+    var dominantColumnX: Double?
+}
+
+@MainActor
+private func renderRedPixels<V: View>(_ view: V,
+                                      width: Int,
+                                      height: Int) throws -> RenderedRedPixels {
+    let renderer = ImageRenderer(content: view)
+    renderer.scale = 1
+    guard let image = renderer.cgImage else {
+        XCTFail("Expected SwiftUI renderer to produce a CGImage")
+        return RenderedRedPixels()
+    }
+
+    var rgba = [UInt8](repeating: 0, count: width * height * 4)
+    let colorSpace = CGColorSpaceCreateDeviceRGB()
+    guard let context = CGContext(
+        data: &rgba,
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bytesPerRow: width * 4,
+        space: colorSpace,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue
+    ) else {
+        XCTFail("Expected to create bitmap context")
+        return RenderedRedPixels()
+    }
+    context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+    var minX = width
+    var maxX = 0
+    var minY = height
+    var maxY = 0
+    var countByColumn = [Int](repeating: 0, count: width)
+    for y in 0..<height {
+        for x in 0..<width {
+            let index = (y * width + x) * 4
+            let red = rgba[index]
+            let green = rgba[index + 1]
+            let blue = rgba[index + 2]
+            let alpha = rgba[index + 3]
+            guard red > 180, green < 80, blue < 80, alpha > 120 else { continue }
+            minX = min(minX, x)
+            maxX = max(maxX, x)
+            minY = min(minY, y)
+            maxY = max(maxY, y)
+            countByColumn[x] += 1
+        }
+    }
+
+    let bounds: CGRect?
+    if minX <= maxX, minY <= maxY {
+        bounds = CGRect(x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1)
+    } else {
+        bounds = nil
+    }
+    let dominantColumnX = countByColumn.enumerated().max { lhs, rhs in
+        lhs.element < rhs.element
+    }.flatMap { $0.element > 0 ? Double($0.offset) : nil }
+    return RenderedRedPixels(bounds: bounds, dominantColumnX: dominantColumnX)
+}
+#endif

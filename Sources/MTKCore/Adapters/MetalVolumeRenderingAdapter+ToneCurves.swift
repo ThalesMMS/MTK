@@ -45,21 +45,44 @@ extension MetalVolumeRenderingAdapter {
         let points = extendedState.toneCurvePoints[channel] ?? []
         let gain = extendedState.toneCurveGains[channel] ?? 1
         guard !points.isEmpty || abs(gain - 1) > 1e-6 else {
+            state.toneBufferCache[channel] = nil
             return nil
+        }
+
+        if let cached = state.toneBufferCache[channel],
+           cached.points == points,
+           cached.gain == gain {
+            return cached.buffer
         }
 
         let samples = sampledToneValues(points: points, gain: gain)
         let byteCount = samples.count * MemoryLayout<Float>.stride
-        let buffer = samples.withUnsafeBufferPointer { pointer -> (any MTLBuffer)? in
-            guard let baseAddress = pointer.baseAddress else { return nil }
-            return state.device.makeBuffer(bytes: baseAddress,
-                                           length: byteCount,
-                                           options: [.storageModeShared])
+        let buffer: (any MTLBuffer)?
+        if let cached = state.toneBufferCache[channel],
+           cached.buffer.length >= byteCount {
+            samples.withUnsafeBytes { bytes in
+                if let baseAddress = bytes.baseAddress {
+                    cached.buffer.contents().copyMemory(from: baseAddress, byteCount: byteCount)
+                }
+            }
+            buffer = cached.buffer
+        } else {
+            buffer = samples.withUnsafeBufferPointer { pointer -> (any MTLBuffer)? in
+                guard let baseAddress = pointer.baseAddress else { return nil }
+                return state.device.makeBuffer(bytes: baseAddress,
+                                               length: byteCount,
+                                               options: [.storageModeShared])
+            }
         }
         guard let buffer else {
             throw RenderingError.toneBufferUnavailable
         }
         buffer.label = "VolumeCompute.ToneCurve.Ch\(channel + 1)"
+        state.toneBufferCache[channel] = MetalState.ToneBufferCacheEntry(
+            points: points,
+            gain: gain,
+            buffer: buffer
+        )
         return buffer
     }
 

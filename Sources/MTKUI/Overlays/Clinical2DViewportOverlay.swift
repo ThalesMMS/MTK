@@ -194,10 +194,11 @@ public struct Clinical2DViewportOverlay: View {
 
             if state.hudSettings.showsOrientationMarkers {
                 OrientationOverlayView(labels: state.orientationLabels, style: style)
-                    .padding(24)
+                    .padding(30)
                     .allowsHitTesting(false)
             }
 
+            // Image-space overlays must share the full Metal viewport used by gestures and rendering.
             if state.showsCrosshair {
                 GeometryReader { proxy in
                     CrosshairOverlayView(
@@ -208,17 +209,15 @@ public struct Clinical2DViewportOverlay: View {
                         accessibilityIdentifier: "Clinical2DCrosshair"
                     )
                 }
-                .padding(8)
                 .allowsHitTesting(false)
             }
 
             Clinical2DROILayer(state: state, style: style)
-                .padding(8)
                 .allowsHitTesting(false)
 
             Clinical2DHUDOverlay(state: state, style: style)
+                .padding(6)
         }
-        .padding(6)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("Clinical2DViewportOverlay")
     }

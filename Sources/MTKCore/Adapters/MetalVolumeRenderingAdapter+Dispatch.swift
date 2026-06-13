@@ -150,11 +150,27 @@ extension MetalVolumeRenderingAdapter {
     }
 
     func renderLayerStackWithMetal(state: MetalState,
-                                   request: VolumeRenderRequest) async throws -> VolumeRenderFrame {
-        let layers = try request.visibleScalarLayersForRendering()
+                                   request: VolumeRenderRequest,
+                                   outputTexture providedOutputTexture: (any MTLTexture)? = nil,
+                                   waitsForCompletion: Bool = true) async throws -> VolumeRenderFrame {
+        let layers = try request.visibleScalarLayersForRendering(
+            resampleCache: state.registeredLayerResampleCache
+        )
         guard let firstLayer = layers.first,
               let firstScalar = firstLayer.scalarVolume else {
-            return try await renderWithMetal(state: state, request: request)
+            return try await renderWithMetal(state: state,
+                                             request: request,
+                                             outputTexture: providedOutputTexture,
+                                             waitsForCompletion: waitsForCompletion)
+        }
+        let overlayLayers = Array(layers.dropFirst())
+        guard !overlayLayers.isEmpty else {
+            let baseRequest = request.replacingPrimaryVolume(with: firstLayer,
+                                                             scalarVolume: firstScalar)
+            return try await renderWithMetal(state: state,
+                                             request: baseRequest,
+                                             outputTexture: providedOutputTexture,
+                                             waitsForCompletion: waitsForCompletion)
         }
 
         let viewport = VolumetricMath.clampViewportSize(request.viewportSize)
@@ -162,31 +178,62 @@ extension MetalVolumeRenderingAdapter {
             throw RenderingError.outputTextureUnavailable
         }
 
+        try await state.layerStackRenderLock.acquire()
+        defer {
+            Task {
+                await state.layerStackRenderLock.release()
+            }
+        }
+
+        let scratchTextureCount = min(3, max(2, layers.count))
+        let scratchTextures = try state.layerStackScratchTextures(width: viewport.width,
+                                                                  height: viewport.height,
+                                                                  count: scratchTextureCount)
+        let compositePass = try state.cachedLayerCompositePass()
         let baseRequest = request.replacingPrimaryVolume(with: firstLayer,
                                                          scalarVolume: firstScalar)
         var currentFrame = try await renderWithMetal(
             state: state,
             request: baseRequest,
-            outputTexture: makeStandaloneOutputTexture(width: viewport.width,
-                                                       height: viewport.height,
-                                                       device: state.device)
+            outputTexture: scratchTextures[0],
+            waitsForCompletion: waitsForCompletion
         )
-        let compositePass = try VolumeLayerCompositePass(device: state.device)
+        var currentScratchIndex: Int? = 0
 
-        for layer in layers.dropFirst() {
+        for (layerIndex, layer) in overlayLayers.enumerated() {
             guard let scalar = layer.scalarVolume else { continue }
+            let isLastLayer = layerIndex == overlayLayers.count - 1
+            let availableScratchIndices = scratchTextures.indices.filter { $0 != currentScratchIndex }
+            guard let overlayScratchIndex = availableScratchIndices.first else {
+                throw RenderingError.outputTextureUnavailable
+            }
+            let destinationScratchIndex = availableScratchIndices.dropFirst().first
+            let overlayTexture = scratchTextures[overlayScratchIndex]
+            let destinationTexture: any MTLTexture
+            let nextCurrentScratchIndex: Int?
+            if isLastLayer, let providedOutputTexture {
+                destinationTexture = providedOutputTexture
+                nextCurrentScratchIndex = nil
+            } else if isLastLayer {
+                destinationTexture = try makeStandaloneOutputTexture(width: viewport.width,
+                                                                     height: viewport.height,
+                                                                     device: state.device)
+                nextCurrentScratchIndex = nil
+            } else if let destinationScratchIndex {
+                destinationTexture = scratchTextures[destinationScratchIndex]
+                nextCurrentScratchIndex = destinationScratchIndex
+            } else {
+                throw RenderingError.outputTextureUnavailable
+            }
+
             let overlayRequest = request.replacingPrimaryVolume(with: layer,
                                                                 scalarVolume: scalar)
             let overlayFrame = try await renderWithMetal(
                 state: state,
                 request: overlayRequest,
-                outputTexture: makeStandaloneOutputTexture(width: viewport.width,
-                                                           height: viewport.height,
-                                                           device: state.device)
+                outputTexture: overlayTexture,
+                waitsForCompletion: waitsForCompletion
             )
-            let destinationTexture = try makeStandaloneOutputTexture(width: viewport.width,
-                                                                     height: viewport.height,
-                                                                     device: state.device)
             try await compositePass.composite(baseTexture: currentFrame.texture,
                                              overlayTexture: overlayFrame.texture,
                                              destinationTexture: destinationTexture,
@@ -200,9 +247,11 @@ extension MetalVolumeRenderingAdapter {
                     samplingDistance: request.samplingDistance,
                     compositing: request.compositing,
                     quality: request.quality,
-                    pixelFormat: destinationTexture.pixelFormat
+                    pixelFormat: destinationTexture.pixelFormat,
+                    debugFrameIndex: currentFrame.metadata.debugFrameIndex
                 )
             )
+            currentScratchIndex = nextCurrentScratchIndex
         }
 
         if ClinicalProfiler.shared.isRecordingEnabled {
@@ -309,7 +358,24 @@ extension MetalVolumeRenderingAdapter {
 }
 
 extension VolumeRenderRequest {
-    func visibleScalarLayersForRendering() throws -> [VolumeLayer] {
+    func visibleScalarLayerCountForRendering() throws -> Int {
+        var count = 0
+        for layer in self.layers {
+            guard layer.isVisible,
+                  layer.clampedOpacity > 0,
+                  layer.scalarVolume != nil else {
+                continue
+            }
+            let transform = LayerTransform(baseWorldToLayerWorld: layer.baseWorldToLayerWorld)
+            guard transform.supportsCPUResampling else {
+                throw MetalVolumeRenderingAdapter.AdapterError.unsupportedScalarLayerTransform(layer.id)
+            }
+            count += 1
+        }
+        return max(count, 1)
+    }
+
+    func visibleScalarLayersForRendering(resampleCache: RegisteredVolumeLayerResampleCache? = nil) throws -> [VolumeLayer] {
         var layers: [VolumeLayer] = []
         for layer in self.layers {
             guard layer.isVisible,
@@ -318,7 +384,11 @@ extension VolumeRenderRequest {
                 continue
             }
             do {
-                layers.append(try RegisteredVolumeLayerResampler.resampledLayer(layer, into: dataset))
+                if let resampleCache {
+                    layers.append(try resampleCache.resampledLayer(layer, into: dataset))
+                } else {
+                    layers.append(try RegisteredVolumeLayerResampler.resampledLayer(layer, into: dataset))
+                }
             } catch RegisteredVolumeLayerResamplingError.unsupportedTransform {
                 throw MetalVolumeRenderingAdapter.AdapterError.unsupportedScalarLayerTransform(layer.id)
             }

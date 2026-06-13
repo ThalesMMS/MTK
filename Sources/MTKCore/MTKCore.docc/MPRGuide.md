@@ -256,7 +256,7 @@ do {
 
 The Metal adapter initializes:
 - Metal command queue for GPU command submission
-- Shader library with `mprKernel` and `mprSlabKernel` compute functions
+- Shader library with the `computeMPRSlab` and `computeMPRSlabUnsigned` compute functions (selected per volume pixel format)
 - Argument buffers for efficient parameter passing
 
 Callers should handle:
@@ -309,14 +309,16 @@ struct MPRView: View {
         )
         .task {
             // Load a renderer-ready dataset. Import MTKDicomBridge when using DICOM-Swift.
+            // importDataset(from:using:) stands in for an app-provided async wrapper around
+            // DicomVolumeDatasetImporter.loadDataset(from:progress:completion:).
             let importer = DicomVolumeDatasetImporter()
             let dataset = try await importDataset(from: dicomDirectory, using: importer)
 
             // Apply dataset to all controllers
-            await volumeController.loadDataset(dataset)
-            await axialController.loadDataset(dataset)
-            await coronalController.loadDataset(dataset)
-            await sagittalController.loadDataset(dataset)
+            await volumeController.applyDataset(dataset)
+            await axialController.applyDataset(dataset)
+            await coronalController.applyDataset(dataset)
+            await sagittalController.applyDataset(dataset)
         }
     }
 }

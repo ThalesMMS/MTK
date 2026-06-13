@@ -111,6 +111,42 @@ final class VolumeTextureFactoryAsyncTests: XCTestCase {
         XCTAssertEqual(texture.pixelFormat, .r16Uint)
     }
 
+    func testAsyncTextureUploadRejectsDatasetWithTooFewBytes() async throws {
+        let dimensions = VolumeDimensions(width: 2, height: 2, depth: 2)
+        let expectedByteCount = dimensions.voxelCount * VolumePixelFormat.int16Unsigned.bytesPerVoxel
+        let dataset = VolumeDataset(
+            data: Data(count: expectedByteCount - 1),
+            dimensions: dimensions,
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+            pixelFormat: .int16Unsigned
+        )
+        let factory = VolumeTextureFactory(dataset: dataset)
+
+        do {
+            _ = try await factory.generateAsync(device: device, commandQueue: commandQueue)
+            XCTFail("Expected short voxel data to fail before Metal upload")
+        } catch let error as VolumeTextureFactory.TextureUploadError {
+            XCTAssertEqual(error, .malformedData(expectedByteCount: expectedByteCount,
+                                                 actualByteCount: expectedByteCount - 1))
+        } catch {
+            XCTFail("Expected malformed-data upload error, got \(error)")
+        }
+    }
+
+    func testSyncTextureUploadRejectsDatasetWithTooFewBytes() throws {
+        let dimensions = VolumeDimensions(width: 2, height: 2, depth: 2)
+        let expectedByteCount = dimensions.voxelCount * VolumePixelFormat.int16Signed.bytesPerVoxel
+        let dataset = VolumeDataset(
+            data: Data(count: expectedByteCount - 1),
+            dimensions: dimensions,
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+            pixelFormat: .int16Signed
+        )
+        let factory = VolumeTextureFactory(dataset: dataset)
+
+        XCTAssertNil(factory.generate(device: device))
+    }
+
     // MARK: - Comparison with Synchronous Method
 
     func testAsyncAndSyncMethodsProduceSameDimensions() async throws {

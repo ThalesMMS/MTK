@@ -30,7 +30,7 @@ final class ClinicalViewerCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.mprInteractionTool, .crosshair)
         XCTAssertEqual(coordinator.activeMPRAxis, .axial)
         XCTAssertEqual(coordinator.mprSlicePositions[.axial], 0.5)
-        XCTAssertEqual(coordinator.mprSlabBlendMode, .mean)
+        XCTAssertEqual(coordinator.mprSlabBlendMode, .mip)
         XCTAssertEqual(coordinator.mprSlabThickness, 3)
         XCTAssertEqual(coordinator.selectedMPRScreenLayout, .defaultLayout)
         XCTAssertTrue(coordinator.isMPRAnnotationsVisible)
@@ -54,7 +54,7 @@ final class ClinicalViewerCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.twoDHUDSettings, .default)
         XCTAssertEqual(coordinator.twoDMetadataOverlaySettings, .default)
         XCTAssertEqual(coordinator.twoDResliceAxis, .axial)
-        XCTAssertEqual(coordinator.twoDSlabBlendMode, .mean)
+        XCTAssertEqual(coordinator.twoDSlabBlendMode, .mip)
         XCTAssertEqual(coordinator.twoDSlabThickness, 1)
         XCTAssertEqual(coordinator.twoDScreenLayout, .singleWindow)
         XCTAssertTrue(coordinator.isTwoDImageAnnotationsVisible)
@@ -196,6 +196,29 @@ final class ClinicalViewerCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.errorMessage, "No dataset loaded.")
     }
 
+    func testZoomTwoDKeepsImagePointUnderNonCenterAnchor() {
+        let coordinator = ClinicalViewerCoordinator()
+        let router = Clinical2DInteractionRouter()
+        let viewportSize = CGSize(width: 1_000, height: 1_000)
+        let anchor = CGPoint(x: 0.25, y: 0.75)
+        let anchorLocation = CGPoint(x: anchor.x * viewportSize.width,
+                                     y: anchor.y * viewportSize.height)
+        let before = router.normalizedImagePoint(viewportLocation: anchorLocation,
+                                                 viewportSize: viewportSize,
+                                                 transform: coordinator.twoDTransform)
+
+        coordinator.zoomTwoD(factor: 2,
+                             anchor: SIMD2<Double>(Double(anchor.x), Double(anchor.y)))
+
+        XCTAssertEqual(coordinator.twoDTransform.zoom, 2, accuracy: 0.0001)
+        XCTAssertNotEqual(coordinator.twoDTransform.pan, .zero)
+        let after = router.normalizedImagePoint(viewportLocation: anchorLocation,
+                                                viewportSize: viewportSize,
+                                                transform: coordinator.twoDTransform)
+        XCTAssertEqual(after?.x ?? .nan, before?.x ?? .nan, accuracy: 0.0001)
+        XCTAssertEqual(after?.y ?? .nan, before?.y ?? .nan, accuracy: 0.0001)
+    }
+
     func test2DSyncRestoresLocationPreferenceWhenReEnabled() async throws {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal unavailable in this environment.")
@@ -255,7 +278,7 @@ final class ClinicalViewerCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.errorMessage, message)
 
         coordinator.setTwoDSlabBlendMode(.mip)
-        XCTAssertEqual(coordinator.twoDSlabBlendMode, .mean)
+        XCTAssertEqual(coordinator.twoDSlabBlendMode, .mip)
         XCTAssertEqual(coordinator.twoDTool, .scroll)
         XCTAssertEqual(coordinator.errorMessage, message)
     }
@@ -283,6 +306,32 @@ final class ClinicalViewerCoordinatorTests: XCTestCase {
         coordinator.setTwoDReferenceLinesVisible(true)
         XCTAssertFalse(coordinator.isTwoDReferenceLinesVisible)
         XCTAssertEqual(coordinator.errorMessage, "Reference lines require multiple 2D viewports.")
+    }
+
+    func test2DScreenLayoutsAreAllEnabledAndApply() {
+        let coordinator = ClinicalViewerCoordinator()
+
+        XCTAssertEqual(coordinator.enabledTwoDScreenLayouts, Set(TwoDScreenLayout.allCases))
+
+        for layout in TwoDScreenLayout.allCases {
+            coordinator.setTwoDScreenLayout(layout)
+            XCTAssertEqual(coordinator.twoDScreenLayout, layout)
+            XCTAssertNil(coordinator.errorMessage)
+        }
+    }
+
+    func testApplySyncedTwoDWindowLevelStateDoesNotChangeActiveTool() {
+        let coordinator = ClinicalViewerCoordinator()
+
+        coordinator.setTwoDTool(.scroll)
+        let synced = TwoDWindowLevelState(window: 1200,
+                                          level: 600,
+                                          presetID: Volume3DWindowPreset.bone.rawValue)
+
+        coordinator.applySyncedTwoDWindowLevelState(synced)
+
+        XCTAssertEqual(coordinator.twoDWindowLevelState, synced)
+        XCTAssertEqual(coordinator.twoDTool, .scroll)
     }
 
     func test2DROIsAreScopedToAxisSliceAndDeleteActions() {
@@ -544,7 +593,7 @@ final class ClinicalViewerCoordinatorTests: XCTestCase {
 
         coordinator.setTwoDSlabBlendMode(.minIP)
 
-        XCTAssertEqual(coordinator.twoDSlabBlendMode, .mean)
+        XCTAssertEqual(coordinator.twoDSlabBlendMode, .mip)
         XCTAssertEqual(coordinator.errorMessage, "Thick Slab requires a stack with adjacent slices.")
     }
 

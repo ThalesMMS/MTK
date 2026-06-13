@@ -16,12 +16,6 @@ import MetalPerformanceShaders
 import OSLog
 import simd
 
-private struct OutputTextureShape: Equatable, Sendable {
-    let width: Int
-    let height: Int
-    let pixelFormat: VolumePixelFormat
-}
-
 typealias MPRPipelineStateFactory = (MTLComputePipelineDescriptor) throws -> MTLComputePipelineState
 
 @preconcurrency
@@ -62,9 +56,7 @@ public actor MetalMPRComputeAdapter: MPRReslicePort {
     private var cachedVolumeTexture: (any MTLTexture)?
     private var cachedDatasetIdentity: DatasetIdentity.Content?
     private(set) var textureUploadCount: Int = 0
-    private var cachedOutputTexture: (any MTLTexture)?
-    private var cachedOutputShape: OutputTextureShape?
-    private var outputTextureInFlight = false
+    private let outputTexturePool: OutputTexturePool
     private var outputTextureAllocationCount = 0
     private var overrides = Overrides()
     private var lastSnapshot: SliceSnapshot?
@@ -96,6 +88,7 @@ public actor MetalMPRComputeAdapter: MPRReslicePort {
         self.commandQueue = commandQueue
         self.library = library
         self.debugOptions = debugOptions
+        self.outputTexturePool = OutputTexturePool(featureFlags: featureFlags)
         self.pipelineStateFactory = pipelineStateFactory ?? { descriptor in
             try device.makeComputePipelineState(descriptor: descriptor,
                                                 options: [],
@@ -153,18 +146,10 @@ public actor MetalMPRComputeAdapter: MPRReslicePort {
 
         let pipeline = try await getPipelineState(for: dataset.pixelFormat)
         let (width, height) = sliceDimensions(for: plane)
-        let outputTexture = try provideOutputTexture(width: width,
-                                                     height: height,
-                                                     pixelFormat: dataset.pixelFormat)
-        let outputTextureUsesCache = isCachedOutputTexture(outputTexture)
-        if outputTextureUsesCache {
-            outputTextureInFlight = true
-        }
-        defer {
-            if outputTextureUsesCache {
-                outputTextureInFlight = false
-            }
-        }
+        let outputTextureLease = try provideOutputTextureLease(width: width,
+                                                               height: height,
+                                                               pixelFormat: dataset.pixelFormat)
+        let outputTexture = outputTextureLease.texture
 
         var uniforms = try createUniforms(dataset: dataset,
                                           plane: plane,
@@ -172,12 +157,18 @@ public actor MetalMPRComputeAdapter: MPRReslicePort {
                                           steps: effectiveSteps,
                                           blend: effectiveBlend)
 
-        let timings = try await dispatchCompute(pipeline: pipeline,
+        let timings: CommandBufferTimings
+        do {
+            timings = try await dispatchCompute(pipeline: pipeline,
                                                 volumeTexture: volumeTexture,
                                                 outputTexture: outputTexture,
                                                 uniforms: &uniforms,
                                                 width: width,
                                                 height: height)
+        } catch {
+            outputTextureLease.release()
+            throw error
+        }
         ClinicalProfiler.shared.recordSample(
             stage: .mprReslice,
             cpuTime: timings.cpuTime,
@@ -197,13 +188,6 @@ public actor MetalMPRComputeAdapter: MPRReslicePort {
             device: device
         )
 
-        let resultTexture = outputTextureUsesCache
-            ? try await makeOutputTextureCopy(of: outputTexture,
-                                              width: width,
-                                              height: height,
-                                              pixelFormat: dataset.pixelFormat)
-            : outputTexture
-
         let axis = dominantAxis(for: plane)
         lastSnapshot = SliceSnapshot(axis: axis,
                                      intensityRange: dataset.intensityRange,
@@ -211,11 +195,12 @@ public actor MetalMPRComputeAdapter: MPRReslicePort {
                                      thickness: effectiveThickness,
                                      steps: effectiveSteps)
 
-        return MPRTextureFrame(texture: resultTexture,
+        return MPRTextureFrame(texture: outputTexture,
                                intensityRange: dataset.intensityRange,
                                pixelFormat: dataset.pixelFormat,
                                viewportID: viewportID,
-                               planeGeometry: plane)
+                               planeGeometry: plane,
+                               outputTextureLease: outputTextureLease)
     }
 
     public func send(_ command: MPRResliceCommand) async throws {
@@ -249,20 +234,6 @@ extension MetalMPRComputeAdapter {
 
     @_spi(Testing)
     public var debugUnavailablePipelineNames: Set<String> { unavailablePipelineNames }
-
-    @_spi(Testing)
-    public var debugCachedOutputTextureShape: (
-        width: Int,
-        height: Int,
-        pixelFormat: VolumePixelFormat
-    )? {
-        guard let cachedOutputShape else { return nil }
-        return (
-            width: cachedOutputShape.width,
-            height: cachedOutputShape.height,
-            pixelFormat: cachedOutputShape.pixelFormat
-        )
-    }
 
     @_spi(Testing)
     public var debugCachedDatasetIdentity: (
@@ -344,105 +315,30 @@ private extension MetalMPRComputeAdapter {
         return texture
     }
 
-    func provideOutputTexture(width: Int,
-                              height: Int,
-                              pixelFormat: VolumePixelFormat) throws -> any MTLTexture {
-        let shape = OutputTextureShape(width: width,
-                                       height: height,
-                                       pixelFormat: pixelFormat)
-
-        if let cachedOutputTexture,
-           cachedOutputShape == shape,
-           !outputTextureInFlight {
-            return cachedOutputTexture
-        }
-
-        // Do not replace the cached texture while a command buffer may still be writing to it.
-        if outputTextureInFlight {
-            return try createOutputTexture(width: width,
-                                           height: height,
-                                           pixelFormat: pixelFormat)
-        }
-
-        let texture = try createOutputTexture(width: width,
-                                              height: height,
-                                              pixelFormat: pixelFormat)
-        cachedOutputTexture = texture
-        cachedOutputShape = shape
-
-        return texture
-    }
-
-    func createOutputTexture(width: Int,
-                             height: Int,
-                             pixelFormat: VolumePixelFormat) throws -> any MTLTexture {
-        // StorageModePolicy.md: MPR compute output textures are GPU-only intermediates.
-        let descriptor = MTLTextureDescriptor()
-        descriptor.textureType = .type2D
-        descriptor.pixelFormat = pixelFormat.metalPixelFormat
-        descriptor.usage = [.shaderWrite, .shaderRead]
-        descriptor.width = width
-        descriptor.height = height
-        descriptor.storageMode = .private
-
-        guard let texture = device.makeTexture(descriptor: descriptor) else {
-            logger.error("Failed to create output texture (\(width)x\(height))")
-            throw ComputeError.outputTextureCreationFailed
-        }
-        outputTextureAllocationCount += 1
-        texture.label = "MPR.outputTexture"
-
-        return texture
-    }
-
-    func isCachedOutputTexture(_ texture: any MTLTexture) -> Bool {
-        guard let cachedOutputTexture else { return false }
-        return (texture as AnyObject) === (cachedOutputTexture as AnyObject)
-    }
-
-    func makeOutputTextureCopy(of source: any MTLTexture,
-                               width: Int,
-                               height: Int,
-                               pixelFormat: VolumePixelFormat) async throws -> any MTLTexture {
-        let destination = try createOutputTexture(width: width,
-                                                  height: height,
-                                                  pixelFormat: pixelFormat)
-        destination.label = "MPR.outputTexture.copy"
-
-        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
-            throw ComputeError.commandBufferCreationFailed
-        }
-        commandBuffer.label = "mpr_output_texture_copy"
-
-        guard let blitEncoder = commandBuffer.makeBlitCommandEncoder() else {
-            throw ComputeError.encoderCreationFailed
-        }
-        blitEncoder.label = "mpr_output_texture_copy"
-        blitEncoder.copy(
-            from: source,
-            sourceSlice: 0,
-            sourceLevel: 0,
-            sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
-            sourceSize: MTLSize(width: width, height: height, depth: 1),
-            to: destination,
-            destinationSlice: 0,
-            destinationLevel: 0,
-            destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0)
-        )
-        blitEncoder.endEncoding()
-
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            commandBuffer.addCompletedHandler { buffer in
-                if let error = buffer.error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume()
-                }
+    func provideOutputTextureLease(width: Int,
+                                   height: Int,
+                                   pixelFormat: VolumePixelFormat) throws -> OutputTextureLease {
+        let textureCountBeforeAcquire = outputTexturePool.debugTextureCount
+        do {
+            let lease = try outputTexturePool.acquireWithLease(width: width,
+                                                               height: height,
+                                                               pixelFormat: pixelFormat.metalPixelFormat,
+                                                               device: device)
+            let textureCountAfterAcquire = outputTexturePool.debugTextureCount
+            outputTextureAllocationCount += max(0, textureCountAfterAcquire - textureCountBeforeAcquire)
+            lease.texture.label = "MPR.outputTexture"
+            return lease
+        } catch let error as OutputTexturePool.PoolError {
+            switch error {
+            case .invalidDimensions(let width, let height):
+                throw ComputeError.invalidComputeConfiguration(
+                    "MPR output texture dimensions must be positive, got \(width)x\(height)."
+                )
+            case .textureCreationFailed:
+                logger.error("Failed to create output texture (\(width)x\(height))")
+                throw ComputeError.outputTextureCreationFailed
             }
-            commandBuffer.commit()
         }
-
-        return destination
     }
 }
 

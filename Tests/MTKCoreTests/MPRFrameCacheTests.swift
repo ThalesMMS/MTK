@@ -1,7 +1,7 @@
 import XCTest
 import Metal
 
-@testable import MTKCore
+@_spi(Testing) @testable import MTKCore
 
 @MainActor
 final class MPRFrameCacheTests: XCTestCase {
@@ -97,6 +97,29 @@ final class MPRFrameCacheTests: XCTestCase {
         XCTAssertEqual(cache.storedSignature(for: "axial"), secondSignature)
     }
 
+    func testCacheRetainsLeaseUntilInvalidationAfterPresentation() throws {
+        let device = try requireMetalDevice()
+        let pool = OutputTexturePool()
+        let lease = try pool.acquireWithLease(width: 1,
+                                              height: 1,
+                                              pixelFormat: .r16Uint,
+                                              device: device)
+        let frame = makeFrame(texture: lease.texture,
+                              outputTextureLease: lease)
+        let cache = MPRFrameCache<String>()
+        let signature = makeSignature(slicePosition: 0)
+
+        let retainedFrame = cache.store(frame, for: "axial", signature: signature)
+
+        XCTAssertTrue(retainedFrame.debugHasOutputTextureLease)
+        XCTAssertTrue(retainedFrame.outputTextureLeaseRetainedByCache)
+        XCTAssertNil(retainedFrame.presentationManagedOutputTextureLease)
+        lease.markPresented()
+        cache.invalidate("axial")
+        XCTAssertFalse(retainedFrame.debugHasOutputTextureLease)
+        XCTAssertEqual(pool.debugLeaseReleasedCount, 1)
+    }
+
     private func makeFrame() throws -> MPRTextureFrame {
         let device = try requireMetalDevice()
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .r16Uint,
@@ -108,10 +131,16 @@ final class MPRFrameCacheTests: XCTestCase {
             XCTFail("Failed to create test texture")
             throw XCTSkip("Unable to create Metal texture")
         }
-        return MPRTextureFrame(texture: texture,
-                               intensityRange: 0...0,
-                               pixelFormat: .int16Unsigned,
-                               planeGeometry: .canonical(axis: .z))
+        return makeFrame(texture: texture)
+    }
+
+    private func makeFrame(texture: any MTLTexture,
+                           outputTextureLease: OutputTextureLease? = nil) -> MPRTextureFrame {
+        MPRTextureFrame(texture: texture,
+                        intensityRange: 0...0,
+                        pixelFormat: .int16Unsigned,
+                        planeGeometry: .canonical(axis: .z),
+                        outputTextureLease: outputTextureLease)
     }
 
     private func makeSignature(slicePosition: Float,

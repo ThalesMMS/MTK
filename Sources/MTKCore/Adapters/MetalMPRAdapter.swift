@@ -171,7 +171,7 @@ public actor MetalMPRAdapter: MPRReslicePort {
     ///
     /// The adapter initializes a ``MetalMPRComputeAdapter`` with:
     /// - Feature flags evaluated from device capabilities
-    /// - MPR-specific Metal compute kernels (`mprKernel`, `mprSlabKernel`)
+    /// - MPR-specific Metal compute kernels (`computeMPRSlab`, `computeMPRSlabUnsigned`)
     /// - Argument buffers for efficient parameter passing
     ///
     /// ## Usage

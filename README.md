@@ -281,6 +281,11 @@ do {
 
 DocC documentation covers the two modules (`MTKCore`, `MTKUI`) with API reference, conceptual guides, and a Getting Started tutorial. The clinical rendering decision lives in `Architecture/ClinicalRenderingADR.md`. Runnable examples are in the `Examples/` directory.
 
+Platform-specific viewer UI contracts (which components target compact
+iPhone, large-screen iPadOS, and macOS desktop; layout classes; chrome
+recipes; MTK-Demo migration) are documented in the MTKUI adaptation guide:
+`Sources/MTKUI/MTKUI.docc/ViewerPlatformAdaptation.md`.
+
 Generate documentation locally:
 
 ```bash

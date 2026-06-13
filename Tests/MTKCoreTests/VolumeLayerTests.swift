@@ -263,6 +263,66 @@ final class VolumeLayerTests: XCTestCase {
         XCTAssertEqual(signedValues(from: resampledDataset), [20, 30, 0])
     }
 
+    func test_visibleScalarLayerCountDoesNotMaterializeRegisteredLayers() throws {
+        let dataset = makeSignedDataset(values: [0, 0, 0],
+                                        dimensions: VolumeDimensions(width: 3, height: 1, depth: 1))
+        let transferFunction = VolumeTransferFunction.defaultGrayscale(for: dataset)
+        var transform = matrix_identity_float4x4
+        transform.columns.3.x = 1
+        let invalidOverlay = VolumeDataset(
+            data: Data(),
+            dimensions: VolumeDimensions(width: 3, height: 1, depth: 1),
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+            pixelFormat: .int16Signed
+        )
+        let layer = VolumeLayer(id: "registered-dose",
+                                dataset: invalidOverlay,
+                                transferFunction: transferFunction,
+                                baseWorldToLayerWorld: transform)
+        let request = makeRequest(dataset: dataset,
+                                  transferFunction: transferFunction,
+                                  layers: [
+                                      VolumeLayer(id: VolumeRenderRequest.primaryVolumeLayerID,
+                                                  dataset: dataset,
+                                                  transferFunction: transferFunction),
+                                      layer
+                                  ])
+
+        XCTAssertEqual(try request.visibleScalarLayerCountForRendering(), 2)
+    }
+
+    func test_visibleScalarLayersReuseCachedRegisteredLayerAcrossFrames() throws {
+        let dataset = makeSignedDataset(values: [0, 0, 0],
+                                        dimensions: VolumeDimensions(width: 3, height: 1, depth: 1))
+        let overlay = makeSignedDataset(values: [10, 20, 30],
+                                        dimensions: VolumeDimensions(width: 3, height: 1, depth: 1))
+        let transferFunction = VolumeTransferFunction.defaultGrayscale(for: dataset)
+        var transform = matrix_identity_float4x4
+        transform.columns.3.x = 1
+        let layer = VolumeLayer(id: "registered-dose",
+                                dataset: overlay,
+                                transferFunction: transferFunction,
+                                baseWorldToLayerWorld: transform)
+        let request = makeRequest(dataset: dataset,
+                                  transferFunction: transferFunction,
+                                  layers: [
+                                      VolumeLayer(id: VolumeRenderRequest.primaryVolumeLayerID,
+                                                  dataset: dataset,
+                                                  transferFunction: transferFunction),
+                                      layer
+                                  ])
+        let cache = RegisteredVolumeLayerResampleCache()
+
+        let firstLayers = try request.visibleScalarLayersForRendering(resampleCache: cache)
+        let secondLayers = try request.visibleScalarLayersForRendering(resampleCache: cache)
+        let firstResampledDataset = try XCTUnwrap(firstLayers[1].scalarVolume?.dataset)
+        let secondResampledDataset = try XCTUnwrap(secondLayers[1].scalarVolume?.dataset)
+
+        XCTAssertEqual(cache.debugResampleMissCount, 1)
+        XCTAssertEqual(signedValues(from: firstResampledDataset), [20, 30, 0])
+        XCTAssertEqual(signedValues(from: secondResampledDataset), [20, 30, 0])
+    }
+
     func test_visibleScalarLayersRejectUnsupportedTransformWithClearError() throws {
         let dataset = VolumeDatasetTestFactory.makeTestDataset(pixelFormat: .int16Signed)
         let transferFunction = VolumeTransferFunction.defaultGrayscale(for: dataset)

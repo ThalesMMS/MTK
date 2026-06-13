@@ -501,6 +501,7 @@ public struct ViewerChromeConfigurationFactory: Sendable {
                               isVolume3DImageAnnotationsVisible: Bool = true,
                               isVolume3DShareEnabled: Bool = false,
                               selectedMPRScreenLayout: MPRScreenLayout = .defaultLayout,
+                              availableMPRScreenLayouts: [MPRScreenLayout] = MPRScreenLayout.compactLayouts,
                               selectedMPRWindowPreset: MPRWindowPreset = .default,
                               selectedMPRCLUTPreset: Volume3DCLUTPreset = .defaultPreset,
                               isMPRWindowInverted: Bool = false,
@@ -517,7 +518,7 @@ public struct ViewerChromeConfigurationFactory: Sendable {
                               isTwoDLocationSyncEnabled: Bool = false,
                               twoDScrollSettings: TwoDScrollSettings = .default,
                               selectedTwoDScreenLayout: TwoDScreenLayout = .singleWindow,
-                              enabledTwoDScreenLayouts: Set<TwoDScreenLayout> = [.singleWindow],
+                              enabledTwoDScreenLayouts: Set<TwoDScreenLayout> = Set(TwoDScreenLayout.allCases),
                               isTwoDImageAnnotationsVisible: Bool = true,
                               isTwoDReferenceLinesVisible: Bool = false,
                               isTwoDReferenceLinesEnabled: Bool = false,
@@ -540,6 +541,7 @@ public struct ViewerChromeConfigurationFactory: Sendable {
         case .clinical:
             return mprConfiguration(selectedToolID: selectedToolID,
                                     selectedScreenLayout: selectedMPRScreenLayout,
+                                    availableScreenLayouts: availableMPRScreenLayouts,
                                     selectedWindowPreset: selectedMPRWindowPreset,
                                     selectedCLUTPreset: selectedMPRCLUTPreset,
                                     isWindowInverted: isMPRWindowInverted,
@@ -626,6 +628,7 @@ public struct ViewerChromeConfigurationFactory: Sendable {
 
     private func mprConfiguration(selectedToolID: ViewerToolID?,
                                   selectedScreenLayout: MPRScreenLayout,
+                                  availableScreenLayouts: [MPRScreenLayout] = MPRScreenLayout.compactLayouts,
                                   selectedWindowPreset: MPRWindowPreset,
                                   selectedCLUTPreset: Volume3DCLUTPreset,
                                   isWindowInverted: Bool,
@@ -663,6 +666,7 @@ public struct ViewerChromeConfigurationFactory: Sendable {
             ],
             optionsAction: .openMenu(.mprOptions),
             optionsMenu: mprOptionsMenu(selectedScreenLayout: selectedScreenLayout,
+                                        availableScreenLayouts: availableScreenLayouts,
                                         isAnnotationsVisible: isAnnotationsVisible,
                                         isCrosshairVisible: isCrosshairVisible,
                                         isShareEnabled: isShareEnabled)
@@ -1097,16 +1101,24 @@ public struct ViewerChromeConfigurationFactory: Sendable {
     }
 
     private func mprOptionsMenu(selectedScreenLayout: MPRScreenLayout,
+                                availableScreenLayouts: [MPRScreenLayout] = MPRScreenLayout.compactLayouts,
                                 isAnnotationsVisible: Bool,
                                 isCrosshairVisible: Bool,
                                 isShareEnabled: Bool) -> ViewerToolMenu {
-        ViewerToolMenu(entries: [
+        // Large-screen presets only appear when the host opts in (e.g. via
+        // MPRScreenLayout.recommendedLayouts(for:), issue #1214); the
+        // selected layout is always listed so the checkmark never vanishes.
+        var layouts = availableScreenLayouts
+        if !layouts.contains(selectedScreenLayout) {
+            layouts.append(selectedScreenLayout)
+        }
+        return ViewerToolMenu(entries: [
             .section(ViewerToolMenuSection(
                 id: "mpr-screen-layout",
                 title: "Screen Layout",
                 systemImage: "rectangle.split.2x1",
                 accessibilityIdentifier: "MPRScreenLayoutMenu",
-                items: MPRScreenLayout.allCases.map { layout in
+                items: layouts.map { layout in
                     ViewerToolMenuItem(
                         id: "mpr-layout-\(layout.rawValue)",
                         title: layout.title,

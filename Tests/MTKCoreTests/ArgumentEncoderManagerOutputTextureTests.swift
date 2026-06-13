@@ -17,7 +17,6 @@ final class ArgumentEncoderManagerOutputTextureTests: XCTestCase {
         XCTAssertEqual(manager.currentOutputHeight, 24)
         XCTAssertEqual(manager.currentPxByteSize, ResourceMemoryEstimator.estimate(for: texture))
         XCTAssertEqual(manager.debugNeedsUpdateState(for: .outputTexture), false)
-        XCTAssertNotNil(manager.debugBoundBuffer(for: .legacyOutputBuffer))
     }
 
     func test_encodeOutputTextureStillCreatesInternalTexture() throws {

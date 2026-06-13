@@ -73,6 +73,8 @@ final class VolumeResourceManager {
         case textureLeased
     }
 
+    typealias DatasetTextureUpload = (VolumeDataset) async throws -> VolumeTextureUploader.UploadResult
+
     #if DEBUG
     struct DebugCounters: Equatable, Sendable {
         var volumeTextureCreates: Int = 0
@@ -173,12 +175,14 @@ final class VolumeResourceManager {
 
 
     private var textureCache: [ResourceIdentity: CachedResource] = [:]
+    private var inFlightDatasetUploads: [ResourceIdentity: InFlightDatasetUpload] = [:]
     private var handleMap: [VolumeResourceHandle: ResourceIdentity] = [:]
     private var handleReferenceCounts: [VolumeResourceHandle: Int] = [:]
     private let transferFunctionCache = TransferFunctionCache()
     private let device: any MTLDevice
     private let commandQueue: any MTLCommandQueue
     private let textureUploader: VolumeTextureUploader
+    private let datasetTextureUpload: DatasetTextureUpload
     private let featureFlags: FeatureFlags
     private let textureLeasePool: TextureLeasePool
     private let lifecycleLogger = os.Logger(subsystem: "com.mtk.volumerendering",
@@ -186,10 +190,15 @@ final class VolumeResourceManager {
 
     init(device: any MTLDevice,
          commandQueue: any MTLCommandQueue,
-         featureFlags: FeatureFlags? = nil) {
+         featureFlags: FeatureFlags? = nil,
+         datasetTextureUpload: DatasetTextureUpload? = nil) {
         self.device = device
         self.commandQueue = commandQueue
-        self.textureUploader = VolumeTextureUploader(device: device, commandQueue: commandQueue)
+        let textureUploader = VolumeTextureUploader(device: device, commandQueue: commandQueue)
+        self.textureUploader = textureUploader
+        self.datasetTextureUpload = datasetTextureUpload ?? { dataset in
+            try await textureUploader.upload(dataset: dataset)
+        }
         self.featureFlags = featureFlags ?? FeatureFlags.evaluate(for: device)
         self.textureLeasePool = TextureLeasePool(featureFlags: self.featureFlags)
     }
@@ -212,22 +221,44 @@ final class VolumeResourceManager {
                  commandQueue: any MTLCommandQueue) async throws -> VolumeResourceHandle {
         let identity = ResourceIdentity.dataset(DatasetIdentity.Content(dataset: dataset))
 
-        if var cached = textureCache[identity] {
-            cached.referenceCount += 1
-            textureCache[identity] = cached
-            let handle = VolumeResourceHandle(metadata: cached.metadata)
-            handleMap[handle] = identity
-            handleReferenceCounts[handle] = 1
-            #if DEBUG
-            debugCounters.volumeCacheHits += 1
-            #endif
-            logLifecycle(resourceType: "volume",
-                         action: "acquired",
-                         estimatedBytes: cached.estimatedBytes)
+        if let handle = acquireCachedHandle(for: identity) {
             return handle
         }
 
-        let uploadResult = try await textureUploader.upload(dataset: dataset)
+        if let inFlightUpload = inFlightDatasetUploads[identity] {
+            let uploadResult = try await inFlightUpload.value()
+            return acquireUploadedDatasetHandle(identity: identity,
+                                                dataset: dataset,
+                                                uploadResult: uploadResult)
+        }
+
+        let inFlightUpload = InFlightDatasetUpload()
+        inFlightDatasetUploads[identity] = inFlightUpload
+
+        do {
+            let uploadResult = try await datasetTextureUpload(dataset)
+            let handle = acquireUploadedDatasetHandle(identity: identity,
+                                                      dataset: dataset,
+                                                      uploadResult: uploadResult)
+            inFlightUpload.complete(.success(uploadResult))
+            clearInFlightDatasetUpload(identity: identity,
+                                       upload: inFlightUpload)
+            return handle
+        } catch {
+            inFlightUpload.complete(.failure(error))
+            clearInFlightDatasetUpload(identity: identity,
+                                       upload: inFlightUpload)
+            throw error
+        }
+    }
+
+    private func acquireUploadedDatasetHandle(identity: ResourceIdentity,
+                                              dataset: VolumeDataset,
+                                              uploadResult: VolumeTextureUploader.UploadResult) -> VolumeResourceHandle {
+        if let handle = acquireCachedHandle(for: identity) {
+            return handle
+        }
+
         let texture = uploadResult.texture
         texture.label = "MTKRenderingEngine.VolumeTexture3D"
         #if DEBUG
@@ -258,6 +289,36 @@ final class VolumeResourceManager {
                      action: "acquired",
                      estimatedBytes: cached.estimatedBytes)
         return handle
+    }
+
+    private func acquireCachedHandle(for identity: ResourceIdentity) -> VolumeResourceHandle? {
+        guard var cached = textureCache[identity] else {
+            return nil
+        }
+
+        cached.referenceCount += 1
+        textureCache[identity] = cached
+        let handle = VolumeResourceHandle(metadata: cached.metadata)
+        handleMap[handle] = identity
+        handleReferenceCounts[handle] = 1
+        #if DEBUG
+        debugCounters.volumeCacheHits += 1
+        #endif
+        logLifecycle(resourceType: "volume",
+                     action: "acquired",
+                     estimatedBytes: cached.estimatedBytes)
+        return handle
+    }
+
+    private func clearInFlightDatasetUpload(identity: ResourceIdentity,
+                                            upload: InFlightDatasetUpload) {
+        guard let currentUpload = inFlightDatasetUploads[identity],
+              currentUpload === upload
+        else {
+            return
+        }
+
+        inFlightDatasetUploads[identity] = nil
     }
 
     func acquireFromStream<S: AsyncSequence>(
@@ -581,6 +642,44 @@ final class VolumeResourceManager {
         }
 
         lifecycleLogger.info("resource=\(resourceType, privacy: .public) action=\(action, privacy: .public) estimatedBytes=\(estimatedBytes, privacy: .public)")
+    }
+}
+
+private final class InFlightDatasetUpload {
+    private let lock = NSLock()
+    private var result: Result<VolumeTextureUploader.UploadResult, Error>?
+    private var continuations: [CheckedContinuation<VolumeTextureUploader.UploadResult, Error>] = []
+
+    func value() async throws -> VolumeTextureUploader.UploadResult {
+        try await withCheckedThrowingContinuation { continuation in
+            lock.lock()
+            if let result {
+                lock.unlock()
+                continuation.resume(with: result)
+                return
+            }
+
+            continuations.append(continuation)
+            lock.unlock()
+        }
+    }
+
+    func complete(_ result: Result<VolumeTextureUploader.UploadResult, Error>) {
+        let pending: [CheckedContinuation<VolumeTextureUploader.UploadResult, Error>]
+        lock.lock()
+        guard self.result == nil else {
+            lock.unlock()
+            return
+        }
+
+        self.result = result
+        pending = continuations
+        continuations.removeAll()
+        lock.unlock()
+
+        for continuation in pending {
+            continuation.resume(with: result)
+        }
     }
 }
 

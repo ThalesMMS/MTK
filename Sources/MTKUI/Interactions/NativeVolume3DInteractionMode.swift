@@ -1,4 +1,3 @@
-#if !os(iOS)
 public enum NativeVolume3DInteractionMode: String, CaseIterable, Identifiable, Sendable, Equatable {
     case orbit
     case tilt
@@ -26,4 +25,14 @@ public enum NativeVolume3DInteractionMode: String, CaseIterable, Identifiable, S
         }
     }
 }
-#endif
+
+extension NativeVolume3DInteractionMode {
+    var allowsNativeCameraGestures: Bool {
+        switch self {
+        case .orbit, .tilt, .pan, .transferFunction:
+            return true
+        case .crop, .brush:
+            return false
+        }
+    }
+}

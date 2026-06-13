@@ -367,6 +367,35 @@ final class GradientHistogramCalculatorTests: XCTestCase {
         wait(for: [expectation], timeout: 5.0)
     }
 
+    func testComputeGradientHistogramAcceptsUnsigned16BitFullRange() throws {
+        let expectation = expectation(description: "Unsigned 16-bit gradient histogram")
+        let texture = try createUnsigned3DTexture(width: 2, height: 2, depth: 2, fillValue: 65_535)
+
+        calculator.computeGradientHistogram(
+            for: texture,
+            voxelMin: 0,
+            voxelMax: 65_535,
+            gradientMin: 0.0,
+            gradientMax: 1.0,
+            intensityBins: 4,
+            gradientBins: 4
+        ) { result in
+            switch result {
+            case .success(let histogram):
+                XCTAssertEqual(histogram.count, 4)
+                XCTAssertEqual(histogram[0].count, 4)
+                XCTAssertEqual(histogram.flatMap { $0 }.reduce(0, +), 8)
+                XCTAssertEqual(histogram[3][0], 8)
+                expectation.fulfill()
+            case .failure(let error):
+                XCTFail("Gradient histogram computation failed: \(error)")
+                expectation.fulfill()
+            }
+        }
+
+        wait(for: [expectation], timeout: 5.0)
+    }
+
     func testComputeGradientHistogramWithNegativeVoxelRange() {
         let expectation = expectation(description: "Negative voxel range")
 
@@ -595,6 +624,35 @@ final class GradientHistogramCalculatorTests: XCTestCase {
         // Fill texture with uniform value
         let totalVoxels = width * height * depth
         var data = [Int16](repeating: Int16(clamping: Int(fillValue)), count: totalVoxels)
+
+        data.withUnsafeMutableBytes { ptr in
+            texture.replace(
+                region: MTLRegion(origin: MTLOrigin(x: 0, y: 0, z: 0),
+                                  size: MTLSize(width: width, height: height, depth: depth)),
+                mipmapLevel: 0,
+                slice: 0,
+                withBytes: ptr.baseAddress!,
+                bytesPerRow: width * MemoryLayout<UInt16>.stride,
+                bytesPerImage: width * height * MemoryLayout<UInt16>.stride
+            )
+        }
+
+        return texture
+    }
+
+    private func createUnsigned3DTexture(width: Int, height: Int, depth: Int, fillValue: UInt16) throws -> MTLTexture {
+        let descriptor = MTLTextureDescriptor()
+        descriptor.textureType = .type3D
+        descriptor.pixelFormat = .r16Uint
+        descriptor.width = width
+        descriptor.height = height
+        descriptor.depth = depth
+        descriptor.storageMode = .shared
+        descriptor.usage = [.shaderRead]
+
+        let texture = try XCTUnwrap(device.makeTexture(descriptor: descriptor))
+        let totalVoxels = width * height * depth
+        var data = [UInt16](repeating: fillValue, count: totalVoxels)
 
         data.withUnsafeMutableBytes { ptr in
             texture.replace(

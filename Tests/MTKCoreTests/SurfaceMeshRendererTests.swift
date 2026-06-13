@@ -5,6 +5,31 @@ import XCTest
 @testable import MTKCore
 
 final class SurfaceMeshRendererTests: XCTestCase {
+    func testSurfaceMeshLookAtMatchesCanonicalMatrixForObliqueCamera() throws {
+        let eye = SIMD3<Float>(1.25, -0.75, 2.5)
+        let target = SIMD3<Float>(-0.2, 0.1, 0.3)
+        let up = simd_normalize(SIMD3<Float>(0.2, 1, 0.1))
+
+        let actual = try simd_float4x4(surfaceMeshLookAt: eye, target: target, up: up)
+        let expected = canonicalLookAt(eye: eye, target: target, up: up)
+
+        assertMatrix(actual, expected)
+    }
+
+    func testSurfaceMeshLookAtKeepsAxisAlignedDefaultCameraMatrix() throws {
+        let actual = try simd_float4x4(surfaceMeshLookAt: SIMD3<Float>(0, 0, 1.5),
+                                       target: .zero,
+                                       up: SIMD3<Float>(0, 1, 0))
+        let expected = simd_float4x4(columns: (
+            SIMD4<Float>(1, 0, 0, 0),
+            SIMD4<Float>(0, 1, 0, 0),
+            SIMD4<Float>(0, 0, 1, 0),
+            SIMD4<Float>(0, 0, -1.5, 1)
+        ))
+
+        assertMatrix(actual, expected)
+    }
+
     func testRendererDrawsSimpleSurfaceMeshIntoTexture() async throws {
         let device = try makeTestMetalDevice()
         guard let queue = device.makeCommandQueue() else {
@@ -233,6 +258,41 @@ final class SurfaceMeshRendererTests: XCTestCase {
         XCTAssertGreaterThan(pixel.g, 220)
     }
 
+    func testRendererReusesStaticMeshBuffersAndDepthTextureAcrossCameraFrames() async throws {
+        let device = try makeTestMetalDevice()
+        guard let queue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal command queue unavailable on this test runner")
+        }
+        let renderer = try MetalSurfaceMeshRenderer(device: device, commandQueue: queue)
+        let target = try makeRenderTarget(device: device, width: 64, height: 64)
+        let dataset = makeDataset()
+        let layer = SurfaceMeshLayer(
+            id: "static",
+            mesh: makeQuadMesh(z: 0.5),
+            material: SurfaceMeshMaterial(color: SIMD4<Float>(0, 1, 0, 1))
+        )
+        let firstCamera = makeCamera()
+        let secondCamera = VolumeRenderRequest.Camera(position: SIMD3<Float>(0.4, 0.5, 2),
+                                                      target: SIMD3<Float>(repeating: 0.5),
+                                                      up: SIMD3<Float>(0, 1, 0),
+                                                      fieldOfView: 45,
+                                                      projectionType: .orthographic)
+
+        try await renderer.render(layers: [layer],
+                                  dataset: dataset,
+                                  camera: firstCamera,
+                                  targetTexture: target,
+                                  clearTarget: true)
+        try await renderer.render(layers: [layer],
+                                  dataset: dataset,
+                                  camera: secondCamera,
+                                  targetTexture: target,
+                                  clearTarget: true)
+
+        XCTAssertEqual(renderer.debugDrawBufferRebuildCount, 1)
+        XCTAssertEqual(renderer.debugDepthTextureAllocationCount, 1)
+    }
+
     private func makeRenderTarget(device: any MTLDevice,
                                   width: Int,
                                   height: Int) throws -> any MTLTexture {
@@ -281,6 +341,38 @@ final class SurfaceMeshRendererTests: XCTestCase {
             indices: [0, 1, 2, 0, 2, 3],
             coordinateSpace: .textureNormalized
         )
+    }
+
+    private func canonicalLookAt(eye: SIMD3<Float>,
+                                 target: SIMD3<Float>,
+                                 up: SIMD3<Float>) -> simd_float4x4 {
+        let zAxis = simd_normalize(eye - target)
+        let xAxis = simd_normalize(simd_cross(up, zAxis))
+        let yAxis = simd_cross(zAxis, xAxis)
+        let translation = SIMD3<Float>(
+            -simd_dot(xAxis, eye),
+            -simd_dot(yAxis, eye),
+            -simd_dot(zAxis, eye)
+        )
+        return simd_float4x4(columns: (
+            SIMD4<Float>(xAxis.x, yAxis.x, zAxis.x, 0),
+            SIMD4<Float>(xAxis.y, yAxis.y, zAxis.y, 0),
+            SIMD4<Float>(xAxis.z, yAxis.z, zAxis.z, 0),
+            SIMD4<Float>(translation, 1)
+        ))
+    }
+
+    private func assertMatrix(_ actual: simd_float4x4,
+                              _ expected: simd_float4x4,
+                              accuracy: Float = 1e-5,
+                              file: StaticString = #filePath,
+                              line: UInt = #line) {
+        for column in 0..<4 {
+            XCTAssertEqual(actual[column].x, expected[column].x, accuracy: accuracy, file: file, line: line)
+            XCTAssertEqual(actual[column].y, expected[column].y, accuracy: accuracy, file: file, line: line)
+            XCTAssertEqual(actual[column].z, expected[column].z, accuracy: accuracy, file: file, line: line)
+            XCTAssertEqual(actual[column].w, expected[column].w, accuracy: accuracy, file: file, line: line)
+        }
     }
 
     private func centerPixel(from texture: any MTLTexture,

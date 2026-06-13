@@ -30,8 +30,6 @@ public final class ArgumentEncoderManager {
     var currentOutputHeight: Int = 0
     public private(set) var outputTexture: MTLTexture?
     private var readbackTexture: MTLTexture?
-    private var legacyOutputBuffer: MTLBuffer?
-    private var compatibilityPxByteSize: Int = 0
     private let outputPixelFormat: MTLPixelFormat = .bgra8Unorm
 
     public private(set) var sampler: MTLSamplerState?
@@ -55,7 +53,6 @@ public final class ArgumentEncoderManager {
         case pointSetCountBuffer = 11
         case pointSetSelectedBuffer = 12
         case pointCoordsBuffer = 13
-        case legacyOutputBuffer = 14
         case transferTextureCh1 = 15
         case transferTextureCh2 = 16
         case transferTextureCh3 = 17
@@ -78,7 +75,6 @@ public final class ArgumentEncoderManager {
             case .pointSetCountBuffer: return "pointSet count"
             case .pointSetSelectedBuffer: return "pointSet selector"
             case .pointCoordsBuffer: return "pointSet coords"
-            case .legacyOutputBuffer: return "output pixel buffer (compat)"
             case .transferTextureCh1: return "transfer function ch1"
             case .transferTextureCh2: return "transfer function ch2"
             case .transferTextureCh3: return "transfer function ch3"
@@ -88,7 +84,7 @@ public final class ArgumentEncoderManager {
         }
 
         static func validateShaderLayout(file: StaticString = #file, line: UInt = #line) {
-            assert(allCases.count == 20, "RenderingArguments defines 20 resources in volume_compute.metal", file: file, line: line)
+            assert(allCases.count == 19, "RenderingArguments defines 19 resources in volume_compute.metal", file: file, line: line)
             assert(ArgumentIndex.mainTexture.rawValue == 0, "volume_compute.metal expects volumeTexture at index 0", file: file, line: line)
             assert(ArgumentIndex.renderParams.rawValue == 1, "volume_compute.metal expects RenderingParameters at index 1", file: file, line: line)
             assert(ArgumentIndex.outputTexture.rawValue == 2, "volume_compute.metal expects outputTexture at index 2", file: file, line: line)
@@ -103,7 +99,6 @@ public final class ArgumentEncoderManager {
             assert(ArgumentIndex.pointSetCountBuffer.rawValue == 11, "volume_compute.metal expects pointSetCount at index 11", file: file, line: line)
             assert(ArgumentIndex.pointSetSelectedBuffer.rawValue == 12, "volume_compute.metal expects pointSelectedIndex at index 12", file: file, line: line)
             assert(ArgumentIndex.pointCoordsBuffer.rawValue == 13, "volume_compute.metal expects pointSet coordinates at index 13", file: file, line: line)
-            assert(ArgumentIndex.legacyOutputBuffer.rawValue == 14, "volume_compute.metal expects legacyOutputBuffer at index 14", file: file, line: line)
             assert(ArgumentIndex.transferTextureCh1.rawValue == 15, "volume_compute.metal expects transferTextureCh1 at index 15", file: file, line: line)
             assert(ArgumentIndex.transferTextureCh2.rawValue == 16, "volume_compute.metal expects transferTextureCh2 at index 16", file: file, line: line)
             assert(ArgumentIndex.transferTextureCh3.rawValue == 17, "volume_compute.metal expects transferTextureCh3 at index 17", file: file, line: line)
@@ -370,8 +365,6 @@ public final class ArgumentEncoderManager {
                 print("arg texture index:\(index) (\(ArgumentIndex.outputTexture.description)), output texture set @ \(width)x\(height)")
             }
         }
-
-        encodeCompatibilityBuffer(width: width, height: height)
     }
 
     public func setOutputTexture(_ texture: MTLTexture) {
@@ -394,39 +387,6 @@ public final class ArgumentEncoderManager {
 
             if debugOptions.isDebugMode {
                 print("arg texture index:\(index) (\(ArgumentIndex.outputTexture.description)), external output texture set @ \(texture.width)x\(texture.height)")
-            }
-        }
-
-        encodeCompatibilityBuffer(width: texture.width, height: texture.height)
-    }
-
-    private func encodeCompatibilityBuffer(width: Int, height: Int) {
-        let index = ArgumentIndex.legacyOutputBuffer.rawValue
-
-        let requiredBytes = width * height * 3
-        if legacyOutputBuffer == nil || compatibilityPxByteSize != requiredBytes {
-            // StorageModePolicy.md: legacy output compatibility buffers are CPU-visible readback storage.
-            #if os(macOS)
-            let readbackOptions: MTLResourceOptions = device.hasUnifiedMemory ? .storageModeShared : .storageModeManaged
-            #else
-            let readbackOptions: MTLResourceOptions = .storageModeShared
-            #endif
-            // If CPU readback is restored here, mirror TextureSnapshotExporter by synchronizing
-            // managed buffers with a blit synchronize(resource:) before reading contents().
-            legacyOutputBuffer = device.makeBuffer(length: MemoryLayout<UInt8>.stride * requiredBytes,
-                                                   options: readbackOptions)
-            legacyOutputBuffer?.label = MTL_label.outputPixelBuffer
-            needsUpdate[index] = true
-            compatibilityPxByteSize = requiredBytes
-        }
-
-        if needsUpdate[index] == true {
-            argumentEncoder.setBuffer(legacyOutputBuffer, offset: 0, index: index)
-            buffers[index] = legacyOutputBuffer
-            needsUpdate[index] = false
-
-            if debugOptions.isDebugMode {
-                print("arg buffer index:\(index) (\(ArgumentIndex.legacyOutputBuffer.description)), compatibility buffer set @ \(requiredBytes) bytes")
             }
         }
     }
@@ -483,8 +443,6 @@ public final class ArgumentEncoderManager {
 
         for (index, buffer) in buffers {
             switch ArgumentIndex(rawValue: index) {
-            case .legacyOutputBuffer:
-                encoder.useResource(buffer, usage: .write)
             case .renderParams, .toneBufferCh1, .toneBufferCh2, .toneBufferCh3, .toneBufferCh4,
                  .optionValue, .quaternion, .targetViewSize, .pointSetCountBuffer,
                  .pointSetSelectedBuffer, .pointCoordsBuffer:

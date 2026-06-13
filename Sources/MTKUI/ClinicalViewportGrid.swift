@@ -288,6 +288,40 @@ enum MPRViewportGridLayoutCalculator {
                     .horizontal(CGRect(x: 0, y: secondDividerY, width: totalWidth, height: dividerThickness))
                 ]
             )
+        case .primaryLeft:
+            // Large primary pane left, secondaries stacked right
+            // (issue #1214). horizontalSplit sizes the primary column,
+            // verticalSplit sizes the stacked secondaries — both dividers
+            // stay draggable.
+            let rightX = leftWidth + dividerThickness
+            let rightTopHeight = max(totalHeight * verticalSplit - halfDivider, 1)
+            let rightBottomHeight = max(totalHeight * (1.0 - verticalSplit) - halfDivider, 1)
+            let rightBottomY = rightTopHeight + dividerThickness
+            return MPRViewportGridLayout(
+                rect1: CGRect(x: 0, y: 0, width: leftWidth, height: totalHeight),
+                rect2: CGRect(x: rightX, y: 0, width: rightWidth, height: rightTopHeight),
+                rect3: CGRect(x: rightX, y: rightBottomY, width: rightWidth, height: rightBottomHeight),
+                dividers: [
+                    .vertical(CGRect(x: leftWidth, y: 0, width: dividerThickness, height: totalHeight)),
+                    .horizontal(CGRect(x: rightX, y: rightTopHeight, width: rightWidth, height: dividerThickness))
+                ]
+            )
+        case .vSplit1x3:
+            // Three equal columns for desktop workstations (issue #1214).
+            let columnWidth = max((totalWidth - dividerThickness * 2) / 3, 1)
+            let firstDividerX = columnWidth
+            let secondColumnX = columnWidth + dividerThickness
+            let secondDividerX = secondColumnX + columnWidth
+            let thirdColumnX = secondDividerX + dividerThickness
+            return MPRViewportGridLayout(
+                rect1: CGRect(x: 0, y: 0, width: columnWidth, height: totalHeight),
+                rect2: CGRect(x: secondColumnX, y: 0, width: columnWidth, height: totalHeight),
+                rect3: CGRect(x: thirdColumnX, y: 0, width: columnWidth, height: totalHeight),
+                dividers: [
+                    .vertical(CGRect(x: firstDividerX, y: 0, width: dividerThickness, height: totalHeight)),
+                    .vertical(CGRect(x: secondDividerX, y: 0, width: dividerThickness, height: totalHeight))
+                ]
+            )
         }
     }
 }
@@ -312,6 +346,13 @@ private struct ClinicalViewportGridContent: View {
     @State private var lastMPRDragEventTimes: [MTKCore.Axis: CFAbsoluteTime] = [:]
     @State private var lastMPRMagnifications: [MTKCore.Axis: CGFloat] = [:]
     @State private var lastMPRMagnificationEventTimes: [MTKCore.Axis: CFAbsoluteTime] = [:]
+    // Translation/magnification actually applied to the controller. Pending
+    // gesture tasks are cancelled when a newer event supersedes them, so the
+    // applying task derives its increment from these instead of the
+    // enqueue-time value — no movement is lost to coalescing.
+    @State private var mprDragBaselines = MPRDragBaselineTracker()
+    @State private var lastAppliedMPRMagnifications: [MTKCore.Axis: CGFloat] = [:]
+    @State private var mprScrollCoalescers: [MTKCore.Axis: MPRScrollCoalescer] = [:]
 
     @State private var activeMPRGestureTypes: [MTKCore.Axis: MPRGestureType] = [:]
     @State private var startDragAngles: [MTKCore.Axis: Double] = [:]
@@ -320,6 +361,7 @@ private struct ClinicalViewportGridContent: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.verticalSizeClass) private var verticalSizeClass
 #endif
+    @Environment(\.viewerLayoutClassOverride) private var layoutClassOverride
 
     @State private var slot1Axis: MTKCore.Axis = .axial
     @State private var slot2Axis: MTKCore.Axis = .sagittal
@@ -355,12 +397,19 @@ private struct ClinicalViewportGridContent: View {
 
     var body: some View {
         Group {
-            if isCompactPhonePortrait {
+            // Layout selection goes through the shared resolver (issue
+            // #1210); the compact chrome path matches the historical
+            // compact-portrait condition exactly.
+            switch resolvedLayoutClass {
+            case .compactPhone:
                 compactPhoneLayout()
-            } else {
+            case .compactTablet, .tablet:
                 regularLayout()
+            case .desktop:
+                desktopLayout()
             }
         }
+        .environment(\.viewerLayoutClassOverride, resolvedLayoutClass)
         .onAppear {
             draftWindowLevel = controller.windowLevel
             draftSlabThickness = controller.slabThickness
@@ -402,6 +451,24 @@ private struct ClinicalViewportGridContent: View {
 #endif
     }
 
+    /// Resolved layout class for this grid (issue #1210): explicit override
+    /// first (previews/tests/shells), then the shared resolver over the
+    /// current size classes.
+    var resolvedLayoutClass: ViewerLayoutClass {
+        if let layoutClassOverride {
+            return layoutClassOverride
+        }
+#if os(iOS)
+        let context = ViewerLayoutContext(
+            horizontalSizeClassIsCompact: horizontalSizeClass.map { $0 == .compact },
+            verticalSizeClassIsCompact: verticalSizeClass.map { $0 == .compact }
+        )
+#else
+        let context = ViewerLayoutContext()
+#endif
+        return ViewerLayoutClassResolver.resolve(context)
+    }
+
     private func regularLayout() -> some View {
         VStack(spacing: 12) {
             viewportGrid()
@@ -409,6 +476,14 @@ private struct ClinicalViewportGridContent: View {
             clinicalControls()
         }
         .padding()
+    }
+
+    /// Desktop: the grid fills the window — no square aspect lock and no
+    /// permanent slab/window-level sliders (window/level rides the drag
+    /// tool, slab thickness lives in the thick-slab settings sheet).
+    private func desktopLayout() -> some View {
+        viewportGrid()
+            .padding(8)
     }
 
     private func compactPhoneLayout() -> some View {
@@ -592,6 +667,8 @@ private struct ClinicalViewportGridContent: View {
                 .frame(width: 40, height: 6)
         }
         .contentShape(Rectangle())
+        // Pointer affordance on iPadOS/macOS (issue #1213).
+        .viewerHoverHighlight()
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { gesture in
@@ -617,6 +694,8 @@ private struct ClinicalViewportGridContent: View {
                 .frame(width: 6, height: 40)
         }
         .contentShape(Rectangle())
+        // Pointer affordance on iPadOS/macOS (issue #1213).
+        .viewerHoverHighlight()
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { gesture in
@@ -776,7 +855,6 @@ private struct ClinicalViewportGridContent: View {
     private func volumeSlotPane(slotIndex: Int) -> some View {
         GeometryReader { _ in
             Group {
-#if os(iOS)
                 MetalViewportContainer(
                     surface: controller.volumeSurface,
                     native3DInteraction: NativeVolume3DInteraction(controller: controller,
@@ -787,14 +865,6 @@ private struct ClinicalViewportGridContent: View {
                     }
                     .allowsHitTesting(false)
                 }
-#else
-                MetalViewportContainer(surface: controller.volumeSurface) {
-                    ZStack {
-                        viewportOverlay?(controller.debugSnapshot(for: controller.volumeViewportID))
-                    }
-                    .allowsHitTesting(false)
-                }
-#endif
             }
             .contentShape(Rectangle())
             .onAppear {
@@ -882,6 +952,14 @@ private struct ClinicalViewportGridContent: View {
 
                 let now = CFAbsoluteTimeGetCurrent()
                 let shouldBeginInteraction = activeMPRGestures.insert(axis).inserted
+                let gestureID: MPRDragBaselineTracker.GestureID
+                if shouldBeginInteraction {
+                    gestureID = mprDragBaselines.beginGesture(axis: axis)
+                } else if let activeGestureID = mprDragBaselines.activeGestureID(for: axis) {
+                    gestureID = activeGestureID
+                } else {
+                    gestureID = mprDragBaselines.beginGesture(axis: axis)
+                }
                 controller.setActiveMPRAxis(axis)
                 let previous = lastMPRDragTranslations[axis] ?? .zero
                 let delta = CGSize(width: value.translation.width - previous.width,
@@ -955,6 +1033,14 @@ private struct ClinicalViewportGridContent: View {
                 }
                 lastMPRDragEventTimes[axis] = now
                 let enqueuedAt = CFAbsoluteTimeGetCurrent()
+                // Supersede any queued apply: the replacement derives its
+                // increment from lastAppliedMPRDragTranslations, so the
+                // cancelled task's movement is folded in, not dropped.
+                pendingMPRGestureTasks[axis]?.cancel()
+                let translation = value.translation
+                let location = value.location
+                let startLocation = value.startLocation
+                let startAngleDegrees = startDragAngles[axis] ?? 0.0
                 pendingMPRGestureTasks[axis] = Task { @MainActor in
                     guard !Task.isCancelled else { return }
                     let latency = max(0, (CFAbsoluteTimeGetCurrent() - enqueuedAt) * 1000.0)
@@ -964,49 +1050,107 @@ private struct ClinicalViewportGridContent: View {
                                                  delta.width,
                                                  delta.height,
                                                  latency))
-                    switch gestureType {
-                    case .crosshair:
-                        await controller.setCrosshair(in: axis, normalizedPoint: normalized)
-                    case .tilt:
-                        let offset = controller.crosshairOffsets[axis] ?? .zero
-                        let center = CGPoint(x: size.width / 2 + offset.x, y: size.height / 2 + offset.y)
-                        let newAngleDegrees = ClinicalViewportGridController.rotationAngleDegrees(
-                            initialAngleDegrees: startDragAngles[axis] ?? 0.0,
-                            center: center,
-                            startLocation: value.startLocation,
-                            currentLocation: value.location
-                        )
-                        controller.setCrosshairAngle(newAngleDegrees, for: axis)
-                    case .slice:
-                        let deltaNormalized = Float(delta.height / max(size.height, 1))
-                        await controller.scrollSlice(axis: axis, deltaNormalized: deltaNormalized)
-                    case .pan:
-                        let deltaNormalized = SIMD2<Float>(
-                            Float(delta.width / max(size.width, 1)),
-                            Float(delta.height / max(size.height, 1))
-                        )
-                        controller.panMPR(axis: axis, deltaNormalized: deltaNormalized)
-                    case .windowLevel:
-                        await controller.adjustMPRWindowLevel(screenDelta: delta)
-                    case .roi:
-                        break
-                    }
+                    await applyMPRGesture(axis: axis,
+                                          gestureID: gestureID,
+                                          gestureType: gestureType,
+                                          translation: translation,
+                                          normalized: normalized,
+                                          location: location,
+                                          startLocation: startLocation,
+                                          startAngleDegrees: startAngleDegrees,
+                                          size: size)
                 }
             }
             .onEnded { value in
                 logMPRInteractionInfo("[MTKMPRInteraction] swiftui.drag.end axis=\(axis)")
-                if activeMPRGestureTypes[axis] == .roi {
+                let gestureType = activeMPRGestureTypes[axis]
+                if gestureType == .roi {
                     commitMPRROI(axis: axis, size: size, value: value)
+                }
+                let shouldEndInteraction = activeMPRGestures.remove(axis) != nil
+                let gestureID = mprDragBaselines.endGesture(axis: axis, preserveAppliedTranslation: true)
+                let translation = value.translation
+                let location = value.location
+                let startLocation = value.startLocation
+                let startAngleDegrees = startDragAngles[axis] ?? 0.0
+                let normalized = CGPoint(
+                    x: min(max(location.x / max(size.width, 1), 0), 1),
+                    y: min(max(location.y / max(size.height, 1), 0), 1)
+                )
+                // Not stored in pendingMPRGestureTasks: the next gesture must
+                // not cancel the residual apply / interaction-end bookkeeping.
+                pendingMPRGestureTasks[axis]?.cancel()
+                pendingMPRGestureTasks[axis] = nil
+                Task { @MainActor in
+                    if let gestureType, gestureType != .roi, let gestureID {
+                        await applyMPRGesture(axis: axis,
+                                              gestureID: gestureID,
+                                              gestureType: gestureType,
+                                              translation: translation,
+                                              normalized: normalized,
+                                              location: location,
+                                              startLocation: startLocation,
+                                              startAngleDegrees: startAngleDegrees,
+                                              size: size)
+                    }
+                    if let gestureID {
+                        mprDragBaselines.clear(gestureID: gestureID)
+                    }
+                    if shouldEndInteraction {
+                        await controller.endAdaptiveSamplingInteraction()
+                    }
                 }
                 lastMPRDragTranslations[axis] = nil
                 lastMPRDragEventTimes[axis] = nil
                 activeMPRGestureTypes[axis] = nil
                 startDragAngles[axis] = nil
-                pendingMPRGestureTasks[axis] = nil
-                if activeMPRGestures.remove(axis) != nil {
-                    Task { @MainActor in await controller.endAdaptiveSamplingInteraction() }
-                }
             }
+    }
+
+    /// Applies one drag increment. Incremental gestures (slice, pan,
+    /// window/level) measure their delta against the last translation that
+    /// actually reached the controller; absolute gestures (crosshair, tilt)
+    /// are last-value-wins.
+    private func applyMPRGesture(axis: MTKCore.Axis,
+                                 gestureID: MPRDragBaselineTracker.GestureID,
+                                 gestureType: MPRGestureType,
+                                 translation: CGSize,
+                                 normalized: CGPoint,
+                                 location: CGPoint,
+                                 startLocation: CGPoint,
+                                 startAngleDegrees: Double,
+                                 size: CGSize) async {
+        let delta = mprDragBaselines.apply(gestureID: gestureID, translation: translation)
+        switch gestureType {
+        case .crosshair:
+            await controller.setCrosshair(in: axis, normalizedPoint: normalized)
+        case .tilt:
+            let offset = controller.crosshairOffsets[axis] ?? .zero
+            let center = CGPoint(x: size.width / 2 + offset.x, y: size.height / 2 + offset.y)
+            let newAngleDegrees = ClinicalViewportGridController.rotationAngleDegrees(
+                initialAngleDegrees: startAngleDegrees,
+                center: center,
+                startLocation: startLocation,
+                currentLocation: location
+            )
+            controller.setCrosshairAngle(newAngleDegrees, for: axis)
+        case .slice:
+            let deltaNormalized = Float(delta.height / max(size.height, 1))
+            guard deltaNormalized != 0 else { return }
+            await controller.scrollSlice(axis: axis, deltaNormalized: deltaNormalized)
+        case .pan:
+            let deltaNormalized = SIMD2<Float>(
+                Float(delta.width / max(size.width, 1)),
+                Float(delta.height / max(size.height, 1))
+            )
+            guard deltaNormalized != .zero else { return }
+            controller.panMPR(axis: axis, deltaNormalized: deltaNormalized)
+        case .windowLevel:
+            guard delta != .zero else { return }
+            await controller.adjustMPRWindowLevel(screenDelta: delta)
+        case .roi:
+            break
+        }
     }
 
     private func mprMagnificationGesture(axis: MTKCore.Axis) -> some Gesture {
@@ -1044,6 +1188,10 @@ private struct ClinicalViewportGridContent: View {
                 }
                 lastMPRMagnificationEventTimes[axis] = now
                 let enqueuedAt = CFAbsoluteTimeGetCurrent()
+                // Supersede any queued apply; the replacement derives its
+                // ratio from lastAppliedMPRMagnifications so no zoom is lost.
+                pendingMPRMagnificationTasks[axis]?.cancel()
+                let magnification = value.magnification
                 pendingMPRMagnificationTasks[axis] = Task { @MainActor in
                     guard !Task.isCancelled else { return }
                     let latency = max(0, (CFAbsoluteTimeGetCurrent() - enqueuedAt) * 1000.0)
@@ -1051,18 +1199,40 @@ private struct ClinicalViewportGridContent: View {
                                                  String(describing: axis),
                                                  Double(factor),
                                                  latency))
-                    controller.zoomMPR(axis: axis, factor: Float(factor), anchor: anchor)
+                    applyMPRMagnification(axis: axis, magnification: magnification, anchor: anchor)
                 }
             }
-            .onEnded { _ in
+            .onEnded { value in
                 logMPRInteractionInfo("[MTKMPRInteraction] swiftui.pinch.end axis=\(axis)")
+                let shouldEndInteraction = activeMPRMagnificationGestures.remove(axis) != nil
+                let magnification = value.magnification
+                let anchor = SIMD2<Float>(Float(value.startAnchor.x),
+                                          Float(value.startAnchor.y))
+                // Not stored in pendingMPRMagnificationTasks: the next gesture
+                // must not cancel the residual apply / interaction-end.
+                Task { @MainActor in
+                    applyMPRMagnification(axis: axis, magnification: magnification, anchor: anchor)
+                    lastAppliedMPRMagnifications[axis] = nil
+                    if shouldEndInteraction {
+                        await controller.endAdaptiveSamplingInteraction()
+                    }
+                }
                 lastMPRMagnifications[axis] = nil
                 lastMPRMagnificationEventTimes[axis] = nil
                 pendingMPRMagnificationTasks[axis] = nil
-                if activeMPRMagnificationGestures.remove(axis) != nil {
-                    Task { @MainActor in await controller.endAdaptiveSamplingInteraction() }
-                }
             }
+    }
+
+    /// Applies one zoom increment, measured against the cumulative
+    /// magnification that actually reached the controller.
+    private func applyMPRMagnification(axis: MTKCore.Axis,
+                                       magnification: CGFloat,
+                                       anchor: SIMD2<Float>) {
+        let previous = lastAppliedMPRMagnifications[axis] ?? 1
+        let factor = previous > 0 ? magnification / previous : magnification
+        lastAppliedMPRMagnifications[axis] = magnification
+        guard factor.isFinite, abs(factor - 1) >= 0.0005 else { return }
+        controller.zoomMPR(axis: axis, factor: Float(factor), anchor: anchor)
     }
 
     private func commitMPRROI(axis: MTKCore.Axis,
@@ -1105,16 +1275,24 @@ private struct ClinicalViewportGridContent: View {
 
 
     private func attachMPRScrollWheel(axis: MTKCore.Axis, surface: MetalViewportSurface) {
+        let coalescer: MPRScrollCoalescer
+        if let existing = mprScrollCoalescers[axis] {
+            coalescer = existing
+        } else {
+            coalescer = MPRScrollCoalescer { [weak controller] steps in
+                guard let controller else { return }
+                await controller.scrollSlice(axis: axis, steps: steps)
+            }
+            mprScrollCoalescers[axis] = coalescer
+        }
         surface.onScrollWheel = { [weak controller] deltaY, hasPreciseScrollingDeltas in
             guard let controller else { return }
             guard controller.mprInteractionTool == .slice else { return }
             let steps = MPRScrollStepMapper.steps(deltaY: deltaY,
                                                   hasPreciseScrollingDeltas: hasPreciseScrollingDeltas)
             guard steps != 0 else { return }
-            Task { @MainActor in
-                logMPRInteractionInfo("[MTKMPRInteraction] scrollWheel axis=\(axis) steps=\(steps)")
-                await controller.scrollSlice(axis: axis, steps: steps)
-            }
+            logMPRInteractionInfo("[MTKMPRInteraction] scrollWheel axis=\(axis) steps=\(steps)")
+            coalescer.add(steps: steps)
         }
     }
 

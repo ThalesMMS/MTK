@@ -340,7 +340,11 @@ public struct MPRPresentationPass {
                                       shutter: MPRPresentationShutter?,
                                       onCommandBufferFailure: ((MPRPresentationCommandBufferError) -> Void)?,
                                       onCommandBufferCompleted: (() -> Void)?) throws -> CFAbsoluteTime {
-        let encoded = try encodePresentation(frame: frame,
+        let outputTextureLease = frame.outputTextureLease
+        let shouldReleaseLeaseAfterPresentation = !frame.outputTextureLeaseRetainedByCache
+        let encoded: EncodedPresentation
+        do {
+            encoded = try encodePresentation(frame: frame,
                                              window: window,
                                              outputTexture: drawable.texture,
                                              invert: invert,
@@ -352,6 +356,12 @@ public struct MPRPresentationPass {
                                              labelmapOverlays: labelmapOverlays,
                                              scalarOverlays: scalarOverlays,
                                              shutter: shutter)
+        } catch {
+            if shouldReleaseLeaseAfterPresentation {
+                outputTextureLease?.release()
+            }
+            throw error
+        }
         let commandBuffer = encoded.commandBuffer
         let drawableWidth = drawable.texture.width
         let drawableHeight = drawable.texture.height
@@ -366,6 +376,7 @@ public struct MPRPresentationPass {
         let drawablePixelFormat = drawable.texture.pixelFormat
         commandBuffer.addCompletedHandler { buffer in
             guard buffer.error == nil, buffer.status == .completed else {
+                outputTextureLease?.release()
                 onCommandBufferFailure?(
                     MPRPresentationCommandBufferError.commandBufferFailed(
                         status: Int(buffer.status.rawValue),
@@ -373,6 +384,10 @@ public struct MPRPresentationPass {
                     )
                 )
                 return
+            }
+            outputTextureLease?.markPresented()
+            if shouldReleaseLeaseAfterPresentation {
+                outputTextureLease?.release()
             }
             if ClinicalProfiler.shared.isRecordingEnabled {
                 let timing = buffer.timings(cpuStart: encoded.startedAt,

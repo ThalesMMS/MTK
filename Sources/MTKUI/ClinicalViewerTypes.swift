@@ -278,6 +278,11 @@ public enum MPRScreenLayout: String, Codable, CaseIterable, Identifiable, Sendab
     case hSplit2x1
     case hSplit1x2
     case vSplit3x1
+    /// Large primary pane on the left, two secondary panes stacked on the
+    /// right (tablet/desktop, issue #1214).
+    case primaryLeft
+    /// Three side-by-side columns (desktop workstations, issue #1214).
+    case vSplit1x3
 
     public var id: String { rawValue }
 
@@ -291,11 +296,32 @@ public enum MPRScreenLayout: String, Codable, CaseIterable, Identifiable, Sendab
             return "One Over Two (1x2)"
         case .vSplit3x1:
             return "Three Stacked (3x1)"
+        case .primaryLeft:
+            return "Primary + Stack"
+        case .vSplit1x3:
+            return "Three Columns (1x3)"
         }
     }
 
     public var accessibilityIdentifier: String {
         "MPRScreenLayout.\(rawValue)"
+    }
+
+    /// Layouts that fit compact viewports (the historical set).
+    public static let compactLayouts: [MPRScreenLayout] = [.hSplit2x1, .hSplit1x2, .vSplit3x1]
+
+    /// Layout choices recommended for a resolved viewer layout class
+    /// (issue #1214): compact classes keep the historical set, tablets add
+    /// the asymmetric primary layout, desktops also add three columns.
+    public static func recommendedLayouts(for layoutClass: ViewerLayoutClass) -> [MPRScreenLayout] {
+        switch layoutClass {
+        case .compactPhone, .compactTablet:
+            return compactLayouts
+        case .tablet:
+            return compactLayouts + [.primaryLeft]
+        case .desktop:
+            return compactLayouts + [.primaryLeft, .vSplit1x3]
+        }
     }
 }
 

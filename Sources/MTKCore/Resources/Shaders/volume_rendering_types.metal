@@ -116,7 +116,6 @@ struct RenderingArguments {
     constant ushort &pointSetCount                 [[id(11)]];
     constant ushort &pointSelectedIndex            [[id(12)]];
     constant float3 *pointSet                      [[id(13)]];
-    device uint8_t *legacyOutputBuffer             [[id(14)]];
     texture2d<float, access::sample> transferTextureCh1 [[id(15)]];
     texture2d<float, access::sample> transferTextureCh2 [[id(16)]];
     texture2d<float, access::sample> transferTextureCh3 [[id(17)]];

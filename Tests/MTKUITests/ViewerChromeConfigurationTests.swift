@@ -394,7 +394,7 @@ final class ViewerChromeConfigurationTests: XCTestCase {
             .set2DScreenLayout(.quadruple2x2)
         ])
         XCTAssertEqual(layout.items.map(\.isSelected), [true, false, false, false])
-        XCTAssertEqual(layout.items.map(\.isEnabled), [true, false, false, false])
+        XCTAssertEqual(layout.items.map(\.isEnabled), [true, true, true, true])
 
         let annotations = try XCTUnwrap(menu.items.first { $0.id == "2d-options-image-annotations" })
         let referenceLines = try XCTUnwrap(menu.items.first { $0.id == "2d-options-reference-lines" })

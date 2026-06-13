@@ -353,7 +353,6 @@ final class VolumeViewportControllerAdapterTests: XCTestCase {
             try await waitForMetric("metal.mpr.render.success", in: metrics, controller: controller)
 
             let renderCount = metrics.counter(named: "metal.mpr.render.success")
-            let firstTextureID = try XCTUnwrap(controller.debugCachedMPRFrameTextureIdentifier(axis: .z))
 
             await controller.setDisplayConfiguration(
                 .mpr(axis: .z,
@@ -368,7 +367,9 @@ final class VolumeViewportControllerAdapterTests: XCTestCase {
 
             let newTextureID = controller.debugCachedMPRFrameTextureIdentifier(axis: .z)
             XCTAssertNotNil(newTextureID)
-            XCTAssertNotEqual(try XCTUnwrap(newTextureID), firstTextureID)
+            XCTAssertEqual(controller.debugCachedMPRFrameCount, 1)
+            XCTAssertEqual(ObjectIdentifier(try XCTUnwrap(controller.debugRenderedTexture) as AnyObject),
+                           try XCTUnwrap(newTextureID))
         }
     }
 
@@ -388,7 +389,6 @@ final class VolumeViewportControllerAdapterTests: XCTestCase {
             try await waitForMetric("metal.mpr.render.success", in: metrics, controller: controller)
 
             let renderCount = metrics.counter(named: "metal.mpr.render.success")
-            let firstTextureID = try XCTUnwrap(controller.debugCachedMPRFrameTextureIdentifier(axis: .z))
 
             await controller.setDisplayConfiguration(
                 .mpr(axis: .z,
@@ -403,7 +403,9 @@ final class VolumeViewportControllerAdapterTests: XCTestCase {
 
             let newTextureID = controller.debugCachedMPRFrameTextureIdentifier(axis: .z)
             XCTAssertNotNil(newTextureID)
-            XCTAssertNotEqual(try XCTUnwrap(newTextureID), firstTextureID)
+            XCTAssertEqual(controller.debugCachedMPRFrameCount, 1)
+            XCTAssertEqual(ObjectIdentifier(try XCTUnwrap(controller.debugRenderedTexture) as AnyObject),
+                           try XCTUnwrap(newTextureID))
         }
     }
 

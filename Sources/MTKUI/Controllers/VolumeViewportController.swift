@@ -322,6 +322,10 @@ public final class VolumeViewportController: VolumeViewportControlling, Observab
         surfaceRenderDebounceTask?.cancel()
         interactiveOutputPrewarmTask?.cancel()
         qualityStateCancellable?.cancel()
+        let mprFrameCache = mprFrameCache
+        Task { @MainActor in
+            mprFrameCache.invalidateAll()
+        }
     }
 
     func surfaceMeshRendererInstance() throws -> MetalSurfaceMeshRenderer {

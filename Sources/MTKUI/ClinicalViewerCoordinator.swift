@@ -67,7 +67,7 @@ public final class ClinicalViewerCoordinator: ObservableObject {
     @Published public var isMPRWindowInverted = false
     @Published public var mprROIKind: ViewerROIKind = .distance
     @Published public private(set) var mprROIAnnotations: [ViewerROIAnnotation] = []
-    @Published public var mprSlabBlendMode: MPRSlabBlendOption = .mean
+    @Published public var mprSlabBlendMode: MPRSlabBlendOption = .mip
     @Published public var mprSlabThickness: Double = 3
     @Published public var isMPRAnnotationsVisible = true
     @Published public var isMPRCrosshairVisible = true
@@ -93,7 +93,7 @@ public final class ClinicalViewerCoordinator: ObservableObject {
     @Published public private(set) var isTwoDReferenceLinesVisible = false
     @Published public private(set) var isTwoDBookmarksPanelVisible = false
     @Published public var twoDResliceAxis: MTKCore.Axis = .axial
-    @Published public var twoDSlabBlendMode: MPRSlabBlendOption = .mean
+    @Published public var twoDSlabBlendMode: MPRSlabBlendOption = .mip
     @Published public var twoDSlabThickness: Double = 1
     @Published public private(set) var keyImageNavigationState = KeyImageNavigationState()
     private var preferredTwoDSyncLocation = ViewerSyncState.default.syncLocation
@@ -248,7 +248,7 @@ public final class ClinicalViewerCoordinator: ObservableObject {
     }
 
     public var enabledTwoDScreenLayouts: Set<TwoDScreenLayout> {
-        [.singleWindow]
+        Set(TwoDScreenLayout.allCases)
     }
 
     public var isTwoDImageAnnotationsVisible: Bool {
@@ -808,6 +808,14 @@ public final class ClinicalViewerCoordinator: ObservableObject {
                            presetID: Volume3DWindowPreset.other.rawValue)
     }
 
+    /// Applies a window-level state coming from another synchronized panel.
+    /// Unlike `setTwoDWindowLevel`, it must not change the active tool of this panel.
+    public func applySyncedTwoDWindowLevelState(_ state: TwoDWindowLevelState) {
+        guard state != twoDWindowLevelState else { return }
+        twoDWindowLevelState = state
+        applyTwoDWindowLevelToViewport()
+    }
+
     public func applyTwoDWindowPreset(_ preset: Volume3DWindowPreset) {
         twoDTool = .windowLevel
         switch preset {
@@ -1037,8 +1045,31 @@ public final class ClinicalViewerCoordinator: ObservableObject {
             return
         }
         var transform = twoDTransform
-        transform.zoom *= factor
+        let currentZoom = transform.zoom.isFinite ? max(transform.zoom, 0.01) : 1
+        let currentPan = SIMD2<Double>(
+            transform.pan.x.isFinite ? transform.pan.x : 0,
+            transform.pan.y.isFinite ? transform.pan.y : 0
+        )
+        let rotation = transform.rotationRadians.isFinite ? transform.rotationRadians : 0
+        let centeredAnchor = anchor - SIMD2<Double>(repeating: 0.5)
+        let imagePoint = SIMD2<Double>(repeating: 0.5)
+            + Self.rotated((centeredAnchor - currentPan) / currentZoom, radians: -rotation)
+        let nextZoom = max(currentZoom * factor, 0.01)
+        let nextImagePoint = Self.rotated((imagePoint - SIMD2<Double>(repeating: 0.5)) * nextZoom,
+                                          radians: rotation)
+        transform.zoom = nextZoom
+        transform.pan = centeredAnchor - nextImagePoint
         setTwoDTransform(transform)
+    }
+
+    private static func rotated(_ point: SIMD2<Double>, radians: Double) -> SIMD2<Double> {
+        guard radians != 0 else { return point }
+        let cosTheta = cos(radians)
+        let sinTheta = sin(radians)
+        return SIMD2<Double>(
+            point.x * cosTheta - point.y * sinTheta,
+            point.x * sinTheta + point.y * cosTheta
+        )
     }
 
     public func rotateTwoD(byRadians radians: Double) {

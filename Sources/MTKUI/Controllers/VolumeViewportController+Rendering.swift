@@ -522,8 +522,10 @@ extension VolumeViewportController {
         logInteractionDebug("[MTK3DInteraction] render.volume.texture.start backend=MetalVolumeRenderingAdapter quality=\(plan.request.quality) state=\(plan.qualityState) viewport=\(Int(plan.request.viewportSize.width))x\(Int(plan.request.viewportSize.height)) samplingDistance=\(mtkPerfFormat(Double(plan.request.samplingDistance)))")
         if let preuploadedPrimaryVolumeTexture,
            preuploadedPrimaryVolumeTexture.matches(dataset: plan.request.dataset) {
-            frame = try await adapter.renderTexture(using: plan.request,
-                                                    volumeTexture: preuploadedPrimaryVolumeTexture.texture)
+            frame = try await adapter.enqueueInteractiveFrame(
+                using: plan.request,
+                volumeTexture: preuploadedPrimaryVolumeTexture.texture
+            )
         } else {
             frame = try await adapter.enqueueInteractiveFrame(using: plan.request)
         }

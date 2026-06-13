@@ -1137,6 +1137,8 @@ final class ClinicalViewportGridControllerTests: XCTestCase {
         let controller = try await makeController()
         try await controller.applyDataset(makeDataset())
 
+        XCTAssertEqual(controller.mprSlabBlendMode, .mip)
+
         await controller.setMPRSlabBlendMode(.mip)
 
         let axialSlab = await controller.engine.debugSlabConfiguration(for: controller.axialViewportID)

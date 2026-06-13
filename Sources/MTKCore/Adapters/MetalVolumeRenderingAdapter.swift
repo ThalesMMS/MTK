@@ -96,6 +96,68 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
             var texture: any MTLTexture
         }
 
+        struct ToneBufferCacheEntry {
+            var points: [SIMD2<Float>]
+            var gain: Float
+            var buffer: any MTLBuffer
+        }
+
+        struct LayerStackScratchTextureCache {
+            var width: Int
+            var height: Int
+            var textures: [any MTLTexture]
+        }
+
+        actor LayerStackRenderLock {
+            private struct Waiter {
+                let id: UInt64
+                let continuation: CheckedContinuation<Void, any Error>
+            }
+
+            private var isLocked = false
+            private var waiters: [Waiter] = []
+            private var nextWaiterID: UInt64 = 0
+
+            func acquire() async throws {
+                try Task.checkCancellation()
+                if !isLocked {
+                    isLocked = true
+                    return
+                }
+
+                let id = nextWaiterID
+                nextWaiterID &+= 1
+
+                try await withTaskCancellationHandler {
+                    try await withCheckedThrowingContinuation { continuation in
+                        waiters.append(Waiter(id: id, continuation: continuation))
+                    }
+                } onCancel: {
+                    Task {
+                        await self.cancelWaiter(id)
+                    }
+                }
+            }
+
+            private func cancelWaiter(_ id: UInt64) {
+                guard let index = waiters.firstIndex(where: { $0.id == id }) else {
+                    return
+                }
+                let waiter = waiters.remove(at: index)
+                waiter.continuation.resume(throwing: CancellationError())
+            }
+
+            func release() {
+                guard !waiters.isEmpty else {
+                    isLocked = false
+                    return
+                }
+
+                let waiter = waiters.removeFirst()
+                waiter.continuation.resume()
+            }
+        }
+
         let device: any MTLDevice
         let commandQueue: any MTLCommandQueue
         let raycastPass: VolumeRaycastPass
@@ -103,8 +165,15 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
         var datasetIdentity: DatasetIdentity.Storage?
         var volumeTexture: (any MTLTexture)?
         var transferCache: TransferCache?
+        var toneBufferCache: [Int: ToneBufferCacheEntry] = [:]
         var interactiveOutputTexture: (any MTLTexture)?
         let interactiveOutputPool: MetalInteractiveOutputTexturePool
+        let layerStackRenderLock = LayerStackRenderLock()
+        let registeredLayerResampleCache = RegisteredVolumeLayerResampleCache()
+        var layerCompositePass: VolumeLayerCompositePass?
+        var layerStackScratchTextureCache: LayerStackScratchTextureCache?
+        var layerCompositePassCreationCount = 0
+        var layerStackScratchTextureAllocationCount = 0
         var frameIndex: UInt32 = 0
 
         init(device: any MTLDevice,
@@ -120,6 +189,45 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
 
         var argumentManager: ArgumentEncoderManager {
             raycastPass.argumentManager
+        }
+
+        func cachedLayerCompositePass() throws -> VolumeLayerCompositePass {
+            if let layerCompositePass {
+                return layerCompositePass
+            }
+            let pass = try VolumeLayerCompositePass(device: device)
+            layerCompositePass = pass
+            layerCompositePassCreationCount += 1
+            return pass
+        }
+
+        func layerStackScratchTextures(width: Int,
+                                       height: Int,
+                                       count: Int) throws -> [any MTLTexture] {
+            if layerStackScratchTextureCache?.width != width ||
+                layerStackScratchTextureCache?.height != height {
+                layerStackScratchTextureCache = LayerStackScratchTextureCache(width: width,
+                                                                              height: height,
+                                                                              textures: [])
+            }
+
+            var cache = layerStackScratchTextureCache ?? LayerStackScratchTextureCache(width: width,
+                                                                                       height: height,
+                                                                                       textures: [])
+            while cache.textures.count < count {
+                guard let texture = OutputTextureFactory.makeTexture(
+                    device: device,
+                    width: width,
+                    height: height,
+                    label: "VolumeCompute.LayerStackScratch\(cache.textures.count)"
+                ) else {
+                    throw RenderingError.outputTextureUnavailable
+                }
+                cache.textures.append(texture)
+                layerStackScratchTextureAllocationCount += 1
+            }
+            layerStackScratchTextureCache = cache
+            return Array(cache.textures.prefix(count))
         }
     }
 
@@ -309,7 +417,7 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
 
         let startTime = CFAbsoluteTimeGetCurrent()
         let frame: VolumeRenderFrame
-        if try effectiveRequest.visibleScalarLayersForRendering().count > 1 {
+        if try effectiveRequest.visibleScalarLayerCountForRendering() > 1 {
             frame = try await renderLayerStackWithMetal(state: metalState,
                                                         request: effectiveRequest)
         } else {
@@ -362,6 +470,13 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
         try await renderInteractiveFrame(using: request, waitsForCompletion: false)
     }
 
+    package func enqueueInteractiveFrame(using request: VolumeRenderRequest,
+                                         volumeTexture: any MTLTexture) async throws -> VolumeRenderFrame {
+        try await renderInteractiveFrame(using: request,
+                                         volumeTexture: volumeTexture,
+                                         waitsForCompletion: false)
+    }
+
     package func prewarmInteractiveOutputTextures(width: Int,
                                                   height: Int,
                                                   count: Int = 3) async throws -> Bool {
@@ -372,6 +487,7 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
     }
 
     private func renderInteractiveFrame(using request: VolumeRenderRequest,
+                                        volumeTexture providedVolumeTexture: (any MTLTexture)? = nil,
                                         waitsForCompletion: Bool) async throws -> VolumeRenderFrame {
         try Task.checkCancellation()
 
@@ -388,12 +504,50 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
         effectiveRequest = try applyCompatibilityClippingIfNeeded(to: effectiveRequest)
         let window = try resolveWindow(for: effectiveRequest.dataset)
 
-        // Multi-layer rendering needs extra intermediate textures and a stable final
-        // frame for composition. Keep that path on renderFrame until it has a lease
-        // backed pool like MTKRenderingEngine.
-        if try effectiveRequest.visibleScalarLayersForRendering().count > 1 {
-            let frame = try await renderFrame(using: request)
-            return frame
+        if try effectiveRequest.visibleScalarLayerCountForRendering() > 1 {
+            let viewport = VolumetricMath.clampViewportSize(effectiveRequest.viewportSize)
+            guard viewport.width > 0, viewport.height > 0 else {
+                throw RenderingError.outputTextureUnavailable
+            }
+
+            if waitsForCompletion {
+                let outputTexture = try reusableInteractiveOutputTexture(width: viewport.width,
+                                                                         height: viewport.height,
+                                                                         state: metalState)
+                let frame = try await renderLayerStackWithMetal(state: metalState,
+                                                                request: effectiveRequest,
+                                                                outputTexture: outputTexture,
+                                                                waitsForCompletion: true)
+                lastSnapshot = RenderSnapshot(dataset: request.dataset,
+                                              metadata: frame.metadata,
+                                              window: window,
+                                              preset: presetResolution.preset)
+                return frame
+            }
+
+            let frameIndex = UInt64(metalState.frameIndex)
+            let lease = try await metalState.interactiveOutputPool.acquire(width: viewport.width,
+                                                                           height: viewport.height,
+                                                                           device: metalState.device,
+                                                                           frameIndex: frameIndex)
+            do {
+                let renderedFrame = try await renderLayerStackWithMetal(state: metalState,
+                                                                        request: effectiveRequest,
+                                                                        outputTexture: lease.texture,
+                                                                        waitsForCompletion: false)
+                lease.updateDebugContext(frameIndex: renderedFrame.metadata.debugFrameIndex)
+                let frame = VolumeRenderFrame(texture: renderedFrame.texture,
+                                              metadata: renderedFrame.metadata,
+                                              outputTextureLease: lease)
+                lastSnapshot = RenderSnapshot(dataset: request.dataset,
+                                              metadata: frame.metadata,
+                                              window: window,
+                                              preset: presetResolution.preset)
+                return frame
+            } catch {
+                lease.release()
+                throw error
+            }
         }
 
         let viewport = VolumetricMath.clampViewportSize(effectiveRequest.viewportSize)
@@ -404,6 +558,7 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
                                                                      state: metalState)
             frame = try await renderWithMetal(state: metalState,
                                               request: effectiveRequest,
+                                              datasetTexture: providedVolumeTexture,
                                               outputTexture: outputTexture,
                                               waitsForCompletion: true)
         } else {
@@ -415,6 +570,7 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
             do {
                 let renderedFrame = try await renderWithMetal(state: metalState,
                                                               request: effectiveRequest,
+                                                              datasetTexture: providedVolumeTexture,
                                                               outputTexture: lease.texture,
                                                               waitsForCompletion: false)
                 lease.updateDebugContext(frameIndex: renderedFrame.metadata.debugFrameIndex)
@@ -648,5 +804,15 @@ extension MetalVolumeRenderingAdapter {
     @_spi(Testing)
     public var debugTransferCacheTexture: (any MTLTexture)? {
         metalState.transferCache?.texture
+    }
+
+    @_spi(Testing)
+    public var debugLayerCompositePassCreationCount: Int {
+        metalState.layerCompositePassCreationCount
+    }
+
+    @_spi(Testing)
+    public var debugLayerStackScratchTextureAllocationCount: Int {
+        metalState.layerStackScratchTextureAllocationCount
     }
 }

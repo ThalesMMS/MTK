@@ -479,7 +479,7 @@ public final class MetalViewportSurface: ViewportPresenting {
         )
         return try enqueuePresentation(source: "mprFrame",
                                        texture: mprFrame.texture,
-                                       lease: nil,
+                                       lease: mprFrame.presentationManagedOutputTextureLease,
                                        requiredDrawablePixelFormat: .bgra8Unorm,
                                        presentationToken: presentationToken) { [commandQueue] drawable in
             if self.mprPresentationPass == nil {

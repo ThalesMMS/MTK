@@ -31,17 +31,26 @@ public final class MPRFrameCache<Key: Hashable>: @unchecked Sendable {
         return entry.frame
     }
 
+    @discardableResult
     public func store(_ frame: MPRTextureFrame,
                       for key: Key,
-                      signature: MPRFrameSignature) {
-        entries[key] = Entry(frame: frame, signature: signature)
+                      signature: MPRFrameSignature) -> MPRTextureFrame {
+        releaseStoredFrame(for: key, replacing: frame)
+        var retainedFrame = frame
+        retainedFrame.outputTextureLeaseRetainedByCache = retainedFrame.outputTextureLease != nil
+        entries[key] = Entry(frame: retainedFrame, signature: signature)
+        return retainedFrame
     }
 
     public func invalidate(_ key: Key) {
+        entries[key]?.frame.releaseOutputTextureLeaseAfterPresentationCompletes()
         entries[key] = nil
     }
 
     public func invalidateAll() {
+        for entry in entries.values {
+            entry.frame.releaseOutputTextureLeaseAfterPresentationCompletes()
+        }
         entries.removeAll()
     }
 
@@ -51,5 +60,16 @@ public final class MPRFrameCache<Key: Hashable>: @unchecked Sendable {
 
     func storedSignature(for key: Key) -> MPRFrameSignature? {
         entries[key]?.signature
+    }
+
+    private func releaseStoredFrame(for key: Key, replacing frame: MPRTextureFrame) {
+        guard let currentLease = entries[key]?.frame.outputTextureLease else {
+            return
+        }
+        if let replacementLease = frame.outputTextureLease,
+           currentLease === replacementLease {
+            return
+        }
+        currentLease.releaseAfterPresentationCompletes()
     }
 }

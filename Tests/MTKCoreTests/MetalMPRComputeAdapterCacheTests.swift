@@ -12,7 +12,7 @@ import Metal
 
 final class MetalMPRComputeAdapterCacheTests: MetalMPRComputeAdapterTestCase {
 
-    func test_makeSlabTextureReturnsCopyWhenUsingCachedOutputTexture() async throws {
+    func test_makeSlabTextureReusesReleasedOutputTextureLeaseWithoutCopy() async throws {
         var values = Array(repeating: Int16(10), count: 4 * 4 * 4)
         values[0] = 1_000
         let dataset = VolumeDataset(
@@ -33,6 +33,11 @@ final class MetalMPRComputeAdapterCacheTests: MetalMPRComputeAdapterTestCase {
             steps: 1,
             blend: .single
         )
+        let firstTextureID = ObjectIdentifier(first.texture as AnyObject)
+        let allocationsAfterFirst = await adapter.debugOutputTextureAllocationCount
+        XCTAssertEqual(allocationsAfterFirst, 1)
+        first.debugReleaseOutputTextureLease()
+
         let second = try await adapter.makeSlabTexture(
             dataset: dataset,
             volumeTexture: volumeTexture,
@@ -42,11 +47,14 @@ final class MetalMPRComputeAdapterCacheTests: MetalMPRComputeAdapterTestCase {
             blend: .single
         )
 
-        XCTAssertFalse((first.texture as AnyObject) === (second.texture as AnyObject))
+        XCTAssertEqual(ObjectIdentifier(second.texture as AnyObject), firstTextureID)
+        let allocationsAfterSecond = await adapter.debugOutputTextureAllocationCount
+        XCTAssertEqual(allocationsAfterSecond, 1)
         XCTAssertEqual(second.intensityRange, dataset.intensityRange)
         XCTAssertEqual(try MPRTestHelpers.readInputValues(Int16.self, from: second).count, 16)
         let snapshot = await adapter.debugLastSnapshot
         XCTAssertEqual(snapshot?.intensityRange, second.intensityRange)
+        second.debugReleaseOutputTextureLease()
     }
 
     func test_makeSlabTextureReusesOutputTextureAcrossIterations() async throws {
@@ -68,10 +76,11 @@ final class MetalMPRComputeAdapterCacheTests: MetalMPRComputeAdapterTestCase {
                                             expectedHeight: 64,
                                             expectedPixelFormat: dataset.pixelFormat)
             XCTAssertEqual(try MPRTestHelpers.readInputValues(Int16.self, from: frame).count, 64 * 64)
+            frame.debugReleaseOutputTextureLease()
         }
 
         let outputAllocationCount = await adapter.debugOutputTextureAllocationCount
-        XCTAssertGreaterThan(outputAllocationCount, 0)
+        XCTAssertEqual(outputAllocationCount, 1)
     }
 
     func test_outputTextureReuseAcrossBlendModes() async throws {
@@ -95,14 +104,11 @@ final class MetalMPRComputeAdapterCacheTests: MetalMPRComputeAdapterTestCase {
                                             expectedHeight: 64,
                                             expectedPixelFormat: dataset.pixelFormat)
             XCTAssertEqual(try MPRTestHelpers.readInputValues(Int16.self, from: frame).count, 64 * 64)
+            frame.debugReleaseOutputTextureLease()
         }
 
         let outputAllocationCount = await adapter.debugOutputTextureAllocationCount
-        XCTAssertGreaterThan(outputAllocationCount, 0)
-        let cachedShape = await adapter.debugCachedOutputTextureShape
-        XCTAssertEqual(cachedShape?.width, 64)
-        XCTAssertEqual(cachedShape?.height, 64)
-        XCTAssertEqual(cachedShape?.pixelFormat, dataset.pixelFormat)
+        XCTAssertEqual(outputAllocationCount, 1)
     }
 
     func test_concurrentMakeSlabTextureUsesTemporaryOutputTextureFallback() async throws {
@@ -142,13 +148,11 @@ final class MetalMPRComputeAdapterCacheTests: MetalMPRComputeAdapterTestCase {
                                         expectedPixelFormat: dataset.pixelFormat)
         XCTAssertEqual(try MPRTestHelpers.readInputValues(Int16.self, from: first).count, 96 * 96)
         XCTAssertEqual(try MPRTestHelpers.readInputValues(Int16.self, from: second).count, 96 * 96)
+        first.debugReleaseOutputTextureLease()
+        second.debugReleaseOutputTextureLease()
 
         let outputAllocationCount = await adapter.debugOutputTextureAllocationCount
         XCTAssertGreaterThanOrEqual(outputAllocationCount, 2)
-        let cachedShape = await adapter.debugCachedOutputTextureShape
-        XCTAssertEqual(cachedShape?.width, 96)
-        XCTAssertEqual(cachedShape?.height, 96)
-        XCTAssertEqual(cachedShape?.pixelFormat, dataset.pixelFormat)
     }
 
     func test_outputTextureInvalidatesOnDimensionChange() async throws {
@@ -188,13 +192,11 @@ final class MetalMPRComputeAdapterCacheTests: MetalMPRComputeAdapterTestCase {
                                         expectedPixelFormat: dataset.pixelFormat)
         XCTAssertEqual(try MPRTestHelpers.readInputValues(Int16.self, from: axialFrame).count, 48 * 32)
         XCTAssertEqual(try MPRTestHelpers.readInputValues(Int16.self, from: sagittalFrame).count, 32 * 24)
+        axialFrame.debugReleaseOutputTextureLease()
+        sagittalFrame.debugReleaseOutputTextureLease()
 
         let outputAllocationCount = await adapter.debugOutputTextureAllocationCount
         XCTAssertGreaterThanOrEqual(outputAllocationCount, 2)
-        let cachedShape = await adapter.debugCachedOutputTextureShape
-        XCTAssertEqual(cachedShape?.width, 32)
-        XCTAssertEqual(cachedShape?.height, 24)
-        XCTAssertEqual(cachedShape?.pixelFormat, dataset.pixelFormat)
     }
 
     func test_outputTextureInvalidatesOnPixelFormatChange() async throws {
@@ -237,13 +239,11 @@ final class MetalMPRComputeAdapterCacheTests: MetalMPRComputeAdapterTestCase {
 
         XCTAssertEqual(try MPRTestHelpers.readInputValues(UInt16.self, from: unsignedFrame).count, 64 * 64)
         XCTAssertEqual(try MPRTestHelpers.readInputValues(Int16.self, from: signedFrame).count, 64 * 64)
+        unsignedFrame.debugReleaseOutputTextureLease()
+        signedFrame.debugReleaseOutputTextureLease()
 
         let outputAllocationCount = await adapter.debugOutputTextureAllocationCount
         XCTAssertGreaterThanOrEqual(outputAllocationCount, 2)
-        let cachedShape = await adapter.debugCachedOutputTextureShape
-        XCTAssertEqual(cachedShape?.width, 64)
-        XCTAssertEqual(cachedShape?.height, 64)
-        XCTAssertEqual(cachedShape?.pixelFormat, .int16Signed)
     }
 
     func test_frameCorrectnessAfterTextureReuse() async throws {
@@ -282,6 +282,7 @@ final class MetalMPRComputeAdapterCacheTests: MetalMPRComputeAdapterTestCase {
         )
 
         let axialPixels = try MPRTestHelpers.readInputValues(Int16.self, from: axialFrame)
+        axialFrame.debugReleaseOutputTextureLease()
         let repeatedAxialPixels = try MPRTestHelpers.readInputValues(Int16.self, from: repeatedAxialFrame)
 
         MPRTestHelpers.assertValidFrame(axialFrame,
@@ -297,6 +298,8 @@ final class MetalMPRComputeAdapterCacheTests: MetalMPRComputeAdapterTestCase {
                                         expectedHeight: 24,
                                         expectedPixelFormat: dataset.pixelFormat)
         XCTAssertEqual(repeatedAxialPixels, axialPixels)
+        repeatedAxialFrame.debugReleaseOutputTextureLease()
+        sagittalFrame.debugReleaseOutputTextureLease()
 
         let outputAllocationCount = await adapter.debugOutputTextureAllocationCount
         XCTAssertGreaterThanOrEqual(outputAllocationCount, 2)

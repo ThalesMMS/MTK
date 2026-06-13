@@ -57,6 +57,93 @@ Viewport controllers orchestrate volumetric rendering, camera interaction, and v
 - ``VolumeViewportControlling``
 - ``VolumeViewportCoordinator``
 
+### Layout Adaptation
+
+Reusable layout classes drive how viewer chrome and grids adapt to iPhone,
+iPad, and macOS windows. Components resolve a ``ViewerLayoutClass`` through
+``ViewerLayoutClassResolver`` (or accept an explicit override via
+`viewerLayoutClass(_:)` for previews, tests, and custom shells). The
+platform support matrix, integration recipes, and migration guidance live
+in <doc:ViewerPlatformAdaptation>.
+
+- ``ViewerLayoutClass``
+- ``ViewerLayoutContext``
+- ``ViewerLayoutClassResolver``
+- ``ClinicalViewerTabletChrome``
+- ``TabletChromeDockPresentation``
+- ``ClinicalViewerDesktopChrome``
+- ``ViewerDesktopToolbar``
+- ``ViewerInspectorPanel``
+- ``ViewerInspectorSection``
+- ``ViewerCommandDescriptor``
+- ``ViewerCommandID``
+
+MPR grids gain large-screen presets (issue #1214): `MPRScreenLayout`
+adds `.primaryLeft` (large primary pane + stacked secondaries, draggable
+dividers) and `.vSplit1x3` (three desktop columns).
+`MPRScreenLayout.recommendedLayouts(for:)` maps a ``ViewerLayoutClass`` to
+the layout choices to surface — compact classes keep the historical set —
+and `ViewerChromeConfigurationFactory.configuration(for:)` accepts
+`availableMPRScreenLayouts:` so the options menu only offers what fits the
+window. Hanging protocols resolve to their declared `screenLayout`
+unchanged and fall back deterministically when they do not request the new
+presets.
+
+Previews and regression coverage (issue #1215): ``ViewerPreviewWindows``
+defines the representative window matrix (compact phone, iPad full
+landscape, iPad split/Stage Manager, macOS desktop) shared by the SwiftUI
+previews and `AdaptiveViewerUIRegressionTests`, with
+``ViewerPreviewViewportPlaceholder``/``ViewerPreviewDockControls`` standing
+in for viewports and controls so no DICOM data or GPU is needed.
+
+On macOS, compose with the desktop chrome and bridge the same command
+descriptors into your app menus:
+
+```swift
+ClinicalViewerDesktopChrome(
+    mode: coordinator.mode,
+    onCommand: { coordinator.handle($0) },
+    content: { ClinicalViewerSurface(coordinator: coordinator) },
+    inspector: {
+        ViewerInspectorSection("Window/Level") { MyWWLControls() }
+        ViewerInspectorSection("Export") { MyExportControls() }
+    }
+)
+
+// App-level menu integration:
+CommandMenu("Viewer") {
+    ForEach(ViewerCommandDescriptor.defaultViewerCommands) { command in
+        Button(command.title) { coordinator.handle(command.id) }
+            .keyboardShortcut(command.keyboardShortcut)
+    }
+}
+```
+
+Minimal iPadOS integration: wrap the clinical surface in the tablet chrome
+and supply your own dock controls. The chrome presents a trailing side dock
+on tablet/desktop windows and a bottom dock on narrow split-view windows.
+
+```swift
+ClinicalViewerTabletChrome(
+    title: study.displayName,
+    mode: coordinator.mode,
+    onSelectMode: { coordinator.mode = $0 },
+    content: { ClinicalViewerSurface(coordinator: coordinator) },
+    dock: { MyViewerControls(coordinator: coordinator) }
+)
+```
+
+```swift
+// Downstream shells can resolve a class from their own context…
+let layoutClass = ViewerLayoutClassResolver.resolve(
+    ViewerLayoutContext(size: windowSize, prefersDesktopIdioms: false)
+)
+
+// …or force one for previews/tests:
+ClinicalViewerSurface(coordinator: coordinator)
+    .viewerLayoutClass(.tablet)
+```
+
 ### SwiftUI Components
 
 SwiftUI views and containers for embedding volumetric rendering into your application.
@@ -80,6 +167,26 @@ Medical imaging overlays for user controls and visual feedback.
 - ``SlabThicknessControlView``
 - ``VolumetricHUD``
 - ``VolumetricGestureOverlay``
+
+### Pointer, Keyboard, and Context Menus
+
+Interaction primitives for iPadOS pointer/keyboard and macOS
+(issue #1213). Chrome consults ``ViewerInteractionCapabilities`` instead of
+hardcoding platform assumptions; commands bridge to local keyboard
+shortcuts and pane context menus; scroll deltas normalize through
+``ViewerScrollSliceAccumulator`` / ``ViewerScrollZoomNormalizer``.
+
+- ``ViewerInteractionCapabilities``
+- ``ViewerScrollEvent``
+- ``ViewerScrollSliceAccumulator``
+- ``ViewerScrollZoomNormalizer``
+
+```swift
+ClinicalViewerSurface(coordinator: coordinator)
+    .viewerKeyboardCommands { coordinator.handle($0) }
+    .viewerPaneContextMenu { coordinator.handle($0) }
+    .viewerInteractionCapabilities(.tabletWithPointer)
+```
 
 ### Gesture Interactions
 

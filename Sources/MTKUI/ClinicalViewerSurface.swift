@@ -15,7 +15,6 @@ public struct ClinicalViewerSurface: View {
             if !coordinator.isMetalAvailable {
                 unavailableView
             } else if coordinator.mode == .single3D, let viewport = coordinator.volumeViewport3D {
-#if os(iOS)
                 MetalViewportContainer(
                     surface: viewport.metalSurface,
                     native3DInteraction: NativeVolume3DInteraction(
@@ -24,10 +23,6 @@ public struct ClinicalViewerSurface: View {
                     )
                 )
                 .accessibilityIdentifier("MTKClinicalViewerSingle3D")
-#else
-                MetalViewportContainer(surface: viewport.metalSurface)
-                    .accessibilityIdentifier("MTKClinicalViewerSingle3D")
-#endif
             } else if coordinator.mode == .clinical, let session = coordinator.clinicalViewportSession {
                 ClinicalViewportGrid(
                     session: session,

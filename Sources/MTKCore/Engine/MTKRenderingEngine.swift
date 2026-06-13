@@ -539,7 +539,10 @@ package actor MTKRenderingEngine {
             labelmapOverlays = mprResult.labelmapOverlays
             scalarOverlays = mprResult.scalarOverlays
             texture = mprResult.frame.texture
-            outputTextureLease = nil
+            outputTextureLease = mprResult.frame.presentationManagedOutputTextureLease
+            if let outputTextureLease {
+                trackPendingOutputTextureLease(outputTextureLease, for: viewport)
+            }
 
         case .presentation, .mprPresentation, .overlay:
             throw RenderGraphError.invalidViewportConfiguration(

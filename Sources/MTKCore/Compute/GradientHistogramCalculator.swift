@@ -87,7 +87,7 @@ public final class GradientHistogramCalculator {
                                                            defaultGradientBinCount: debugOptions.histogramBinCount,
                                                            maxThreadgroupMemoryLength: device.maxThreadgroupMemoryLength)
 
-        var pipeline = pipelineState(named: plan.kernelName)
+        var pipeline = pipelineState(named: kernelName(for: texture, baseName: plan.kernelName))
 
         if pipeline == nil, plan.usesThreadgroupMemory {
             plan = GradientHistogramKernelPlanner.makePlan(intensityBins: requestedIntensityBins,
@@ -95,7 +95,7 @@ public final class GradientHistogramCalculator {
                                                            defaultIntensityBinCount: debugOptions.histogramBinCount,
                                                            defaultGradientBinCount: debugOptions.histogramBinCount,
                                                            maxThreadgroupMemoryLength: -1)
-            pipeline = pipelineState(named: plan.kernelName)
+            pipeline = pipelineState(named: kernelName(for: texture, baseName: plan.kernelName))
         }
 
         guard let resolvedPipeline = pipeline else {
@@ -128,15 +128,15 @@ public final class GradientHistogramCalculator {
 
         var encodedIntensityBins = UInt32(plan.intensityBins)
         var encodedGradientBins = UInt32(plan.gradientBins)
-        var encodedVoxelMin = Int16(voxelMin)
-        var encodedVoxelMax = Int16(voxelMax)
+        var encodedVoxelMin = voxelMin
+        var encodedVoxelMax = voxelMax
         var encodedGradientMin = gradientMin
         var encodedGradientMax = gradientMax
 
         encoder.setBytes(&encodedIntensityBins, length: MemoryLayout<UInt32>.stride, index: 0)
         encoder.setBytes(&encodedGradientBins, length: MemoryLayout<UInt32>.stride, index: 1)
-        encoder.setBytes(&encodedVoxelMin, length: MemoryLayout<Int16>.stride, index: 2)
-        encoder.setBytes(&encodedVoxelMax, length: MemoryLayout<Int16>.stride, index: 3)
+        encoder.setBytes(&encodedVoxelMin, length: MemoryLayout<Int32>.stride, index: 2)
+        encoder.setBytes(&encodedVoxelMax, length: MemoryLayout<Int32>.stride, index: 3)
         encoder.setBytes(&encodedGradientMin, length: MemoryLayout<Float>.stride, index: 4)
         encoder.setBytes(&encodedGradientMax, length: MemoryLayout<Float>.stride, index: 5)
         encoder.setBuffer(histogramBuffer, offset: 0, index: 6)
@@ -189,6 +189,10 @@ public final class GradientHistogramCalculator {
 }
 
 private extension GradientHistogramCalculator {
+    func kernelName(for texture: any MTLTexture, baseName: String) -> String {
+        texture.pixelFormat == .r16Uint ? "\(baseName)Unsigned" : baseName
+    }
+
     func pipelineState(named functionName: String) -> MTLComputePipelineState? {
         if let cached = pipelineCache[functionName] {
             return cached

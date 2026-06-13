@@ -40,7 +40,9 @@ import simd
 /// - Important: Textures created by this factory use `.type3D` with pixel formats matching the dataset's `VolumePixelFormat`.
 public final class VolumeTextureFactory {
     /// Errors that can occur during asynchronous texture upload.
-    public enum TextureUploadError: Error {
+    public enum TextureUploadError: Error, Equatable {
+        /// Dataset voxel data is shorter than the byte count required by its dimensions and pixel format.
+        case malformedData(expectedByteCount: Int, actualByteCount: Int)
         /// Failed to create the Metal 3D texture descriptor.
         case textureCreationFailed
         /// Failed to allocate the staging buffer for GPU transfer.
@@ -143,6 +145,14 @@ public final class VolumeTextureFactory {
     /// - Note: Logs errors via OSLog when texture creation fails.
     public func generate(device: any MTLDevice) -> (any MTLTexture)? {
         let startedAt = CFAbsoluteTimeGetCurrent()
+        let expectedByteCount: Int
+        do {
+            expectedByteCount = try Self.validatedUploadByteCount(for: dataset)
+        } catch {
+            logger.error("Invalid volume voxel data for texture upload")
+            return nil
+        }
+
         // StorageModePolicy.md: the synchronous CPU reference path keeps `.shared`
         // storage so tests can validate raw voxel uploads without a readback pass.
         let descriptor = Self.makeVolumeTextureDescriptor(dimensions: dataset.dimensions,
@@ -172,6 +182,7 @@ public final class VolumeTextureFactory {
 
         dataset.data.withUnsafeBytes { buffer in
             guard let baseAddress = buffer.baseAddress else { return }
+            guard dataset.data.count >= expectedByteCount else { return }
             texture.replace(
                 region: MTLRegionMake3D(0, 0, 0, descriptor.width, descriptor.height, descriptor.depth),
                 mipmapLevel: 0,
@@ -220,6 +231,8 @@ public final class VolumeTextureFactory {
     public func generateAsync(device: any MTLDevice,
                              commandQueue: any MTLCommandQueue) async throws -> any MTLTexture {
         let startedAt = CFAbsoluteTimeGetCurrent()
+        let expectedByteCount = try Self.validatedUploadByteCount(for: dataset)
+
         // StorageModePolicy.md: async volume uploads write into a final private
         // texture through a transient CPU-visible staging buffer.
         let descriptor = Self.makeVolumeTextureDescriptor(dimensions: dataset.dimensions,
@@ -234,12 +247,11 @@ public final class VolumeTextureFactory {
 
         let bytesPerRow = dataset.pixelFormat.bytesPerVoxel * descriptor.width
         let bytesPerImage = bytesPerRow * descriptor.height
-        let bufferLength = dataset.data.count
 
         // StorageModePolicy.md: staging is shared/write-combined for one-way CPU writes.
-        guard let stagingBuffer = device.makeBuffer(length: bufferLength,
+        guard let stagingBuffer = device.makeBuffer(length: expectedByteCount,
                                                     options: [.storageModeShared, .cpuCacheModeWriteCombined]) else {
-            logger.error("Failed to allocate staging buffer (\(bufferLength) bytes)")
+            logger.error("Failed to allocate staging buffer (\(expectedByteCount) bytes)")
             throw TextureUploadError.bufferAllocationFailed
         }
         stagingBuffer.label = "VolumeStagingBuffer"
@@ -259,7 +271,7 @@ public final class VolumeTextureFactory {
         let uploadStartedAt = CFAbsoluteTimeGetCurrent()
         dataset.data.withUnsafeBytes { buffer in
             guard let baseAddress = buffer.baseAddress else { return }
-            memcpy(stagingBuffer.contents(), baseAddress, bufferLength)
+            memcpy(stagingBuffer.contents(), baseAddress, expectedByteCount)
         }
 
         guard let commandBuffer = commandQueue.makeCommandBuffer() else {
@@ -341,6 +353,27 @@ extension VolumeTextureFactory {
 }
 
 private extension VolumeTextureFactory {
+    static func validatedUploadByteCount(for dataset: VolumeDataset) throws -> Int {
+        let dimensions = dataset.dimensions
+        let (area, areaOverflow) = dimensions.width.multipliedReportingOverflow(by: dimensions.height)
+        let (voxelCount, voxelOverflow) = area.multipliedReportingOverflow(by: dimensions.depth)
+        let (expectedByteCount, byteCountOverflow) = voxelCount.multipliedReportingOverflow(
+            by: dataset.pixelFormat.bytesPerVoxel
+        )
+
+        guard !areaOverflow, !voxelOverflow, !byteCountOverflow else {
+            throw TextureUploadError.malformedData(expectedByteCount: Int.max,
+                                                   actualByteCount: dataset.data.count)
+        }
+
+        guard dataset.data.count >= expectedByteCount else {
+            throw TextureUploadError.malformedData(expectedByteCount: expectedByteCount,
+                                                   actualByteCount: dataset.data.count)
+        }
+
+        return expectedByteCount
+    }
+
     static func dataset(for preset: VolumeDatasetPreset) throws -> VolumeDataset {
         switch preset {
         case .none, .dicom:

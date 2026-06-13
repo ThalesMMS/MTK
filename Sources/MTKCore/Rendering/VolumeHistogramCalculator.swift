@@ -232,14 +232,14 @@ public final class VolumeHistogramCalculator {
                                                    defaultBinCount: debugOptions.histogramBinCount,
                                                    maxThreadgroupMemoryLength: device.maxThreadgroupMemoryLength)
 
-        var pipeline = pipelineState(named: plan.kernelName)
+        var pipeline = pipelineState(named: kernelName(for: texture, baseName: plan.kernelName))
 
         if pipeline == nil, plan.usesThreadgroupMemory {
             plan = HistogramKernelPlanner.makePlan(channelCount: channelCount,
                                                    requestedBins: requestedBins,
                                                    defaultBinCount: debugOptions.histogramBinCount,
                                                    maxThreadgroupMemoryLength: -1)
-            pipeline = pipelineState(named: plan.kernelName)
+            pipeline = pipelineState(named: kernelName(for: texture, baseName: plan.kernelName))
         }
 
         guard let resolvedPipeline = pipeline else {
@@ -272,13 +272,13 @@ public final class VolumeHistogramCalculator {
 
         var encodedChannelCount = UInt8(plan.channelCount)
         var encodedBins = UInt32(plan.bins)
-        var encodedVoxelMin = Int16(voxelMin)
-        var encodedVoxelMax = Int16(voxelMax)
+        var encodedVoxelMin = voxelMin
+        var encodedVoxelMax = voxelMax
 
         encoder.setBytes(&encodedChannelCount, length: MemoryLayout<UInt8>.stride, index: 0)
         encoder.setBytes(&encodedBins, length: MemoryLayout<UInt32>.stride, index: 1)
-        encoder.setBytes(&encodedVoxelMin, length: MemoryLayout<Int16>.stride, index: 2)
-        encoder.setBytes(&encodedVoxelMax, length: MemoryLayout<Int16>.stride, index: 3)
+        encoder.setBytes(&encodedVoxelMin, length: MemoryLayout<Int32>.stride, index: 2)
+        encoder.setBytes(&encodedVoxelMax, length: MemoryLayout<Int32>.stride, index: 3)
         encoder.setBuffer(histogramBuffer, offset: 0, index: 4)
 
         if plan.usesThreadgroupMemory {
@@ -321,6 +321,10 @@ public final class VolumeHistogramCalculator {
 }
 
 private extension VolumeHistogramCalculator {
+    func kernelName(for texture: any MTLTexture, baseName: String) -> String {
+        texture.pixelFormat == .r16Uint ? "\(baseName)Unsigned" : baseName
+    }
+
     /// Retrieves or creates a cached Metal compute pipeline for the named histogram kernel.
     ///
     /// Implements lazy pipeline state creation with caching to avoid redundant compilation.

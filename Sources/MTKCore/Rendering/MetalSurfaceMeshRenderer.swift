@@ -80,11 +80,52 @@ public final class MetalSurfaceMeshRenderer: @unchecked Sendable {
         var clipPlane2: SIMD4<Float>
     }
 
+    private enum DrawBufferRole: Equatable {
+        case opaque
+        case transparent
+    }
+
+    private struct DrawBufferSignature: Equatable {
+        var role: DrawBufferRole
+        var layers: [SurfaceMeshLayer]
+        var imageData: ImageData3D
+    }
+
+    private struct DrawBufferCacheEntry {
+        var signature: DrawBufferSignature
+        var buffers: DrawBuffers?
+    }
+
+    private struct DepthTextureCacheEntry {
+        var width: Int
+        var height: Int
+        var texture: any MTLTexture
+        var isInUse: Bool
+    }
+
     private let device: any MTLDevice
     private let commandQueue: any MTLCommandQueue
     private let pipeline: any MTLRenderPipelineState
     private let opaqueDepthStencilState: any MTLDepthStencilState
     private let transparentDepthStencilState: any MTLDepthStencilState
+    private let cacheLock = NSLock()
+    private var opaqueDrawBufferCache: DrawBufferCacheEntry?
+    private var transparentDrawBufferCache: DrawBufferCacheEntry?
+    private var depthTextureCache: DepthTextureCacheEntry?
+    private var drawBufferRebuildCount = 0
+    private var depthTextureAllocationCount = 0
+
+    var debugDrawBufferRebuildCount: Int {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        return drawBufferRebuildCount
+    }
+
+    var debugDepthTextureAllocationCount: Int {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        return depthTextureAllocationCount
+    }
 
     public init(device: any MTLDevice,
                 commandQueue: (any MTLCommandQueue)? = nil,
@@ -187,20 +228,16 @@ public final class MetalSurfaceMeshRenderer: @unchecked Sendable {
             dataset: dataset,
             camera: camera
         )
-        let opaqueInput = try makeBuffersInput(from: opaqueLayers,
-                                               dataset: dataset)
-        let transparentInput = try makeBuffersInput(from: transparentLayers,
-                                                    dataset: dataset)
-        guard !opaqueInput.indices.isEmpty || !transparentInput.indices.isEmpty || clearTarget else {
+        let opaqueBuffers = try cachedDrawBuffers(for: opaqueLayers,
+                                                  role: .opaque,
+                                                  dataset: dataset)
+        let transparentBuffers = try cachedDrawBuffers(for: transparentLayers,
+                                                       role: .transparent,
+                                                       dataset: dataset)
+        guard opaqueBuffers != nil || transparentBuffers != nil || clearTarget else {
             return targetTexture
         }
 
-        let opaqueBuffers = try makeBuffers(vertices: opaqueInput.vertices,
-                                            indices: opaqueInput.indices,
-                                            label: "SurfaceMesh.opaque")
-        let transparentBuffers = try makeBuffers(vertices: transparentInput.vertices,
-                                                 indices: transparentInput.indices,
-                                                 label: "SurfaceMesh.transparent")
         let clipPlanes = try clipping.shaderClipPlanes(for: dataset)
         let cropBox = clipping.cropBox ?? .full
         var uniforms = Uniforms(
@@ -213,15 +250,9 @@ public final class MetalSurfaceMeshRenderer: @unchecked Sendable {
             clipPlane1: clipPlanes.1,
             clipPlane2: clipPlanes.2
         )
-        guard let uniformBuffer = device.makeBuffer(bytes: &uniforms,
-                                                    length: MemoryLayout<Uniforms>.stride,
-                                                    options: [.storageModeShared]) else {
-            throw MetalSurfaceMeshRendererError.bufferCreationFailed
-        }
-        uniformBuffer.label = "SurfaceMesh.uniforms"
 
-        let depthTexture = try makeDepthTexture(width: targetTexture.width,
-                                                height: targetTexture.height)
+        let depthTexture = try acquireDepthTexture(width: targetTexture.width,
+                                                   height: targetTexture.height)
         let renderPass = MTLRenderPassDescriptor()
         renderPass.colorAttachments[0].texture = targetTexture
         renderPass.colorAttachments[0].loadAction = clearTarget ? .clear : .load
@@ -243,8 +274,8 @@ public final class MetalSurfaceMeshRenderer: @unchecked Sendable {
         encoder.label = "MetalSurfaceMeshRenderer.Encoder"
         encoder.setRenderPipelineState(pipeline)
         encoder.setCullMode(.none)
-        encoder.setVertexBuffer(uniformBuffer, offset: 0, index: 1)
-        encoder.setFragmentBuffer(uniformBuffer, offset: 0, index: 1)
+        encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
+        encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 1)
         if let opaqueBuffers {
             encoder.setDepthStencilState(opaqueDepthStencilState)
             encoder.setVertexBuffer(opaqueBuffers.vertices, offset: 0, index: 0)
@@ -265,7 +296,13 @@ public final class MetalSurfaceMeshRenderer: @unchecked Sendable {
         }
         encoder.endEncoding()
 
-        try await complete(commandBuffer)
+        do {
+            try await complete(commandBuffer)
+            releaseDepthTexture(depthTexture)
+        } catch {
+            releaseDepthTexture(depthTexture)
+            throw error
+        }
         return targetTexture
     }
 
@@ -278,6 +315,55 @@ public final class MetalSurfaceMeshRenderer: @unchecked Sendable {
         var vertices: any MTLBuffer
         var indices: any MTLBuffer
         var indexCount: Int
+    }
+
+    private func cachedDrawBuffers(for layers: [SurfaceMeshLayer],
+                                   role: DrawBufferRole,
+                                   dataset: VolumeDataset) throws -> DrawBuffers? {
+        let signature = DrawBufferSignature(role: role,
+                                            layers: layers,
+                                            imageData: dataset.imageData)
+        cacheLock.lock()
+        if let cacheEntry = drawBufferCache(for: role),
+           cacheEntry.signature == signature {
+            cacheLock.unlock()
+            return cacheEntry.buffers
+        }
+        cacheLock.unlock()
+
+        let input = try makeBuffersInput(from: layers, dataset: dataset)
+        let buffers = try makeBuffers(vertices: input.vertices,
+                                      indices: input.indices,
+                                      label: role == .opaque ? "SurfaceMesh.opaque" : "SurfaceMesh.transparent")
+
+        cacheLock.lock()
+        setDrawBufferCache(DrawBufferCacheEntry(signature: signature,
+                                               buffers: buffers),
+                           for: role)
+        if buffers != nil {
+            drawBufferRebuildCount += 1
+        }
+        cacheLock.unlock()
+        return buffers
+    }
+
+    private func drawBufferCache(for role: DrawBufferRole) -> DrawBufferCacheEntry? {
+        switch role {
+        case .opaque:
+            return opaqueDrawBufferCache
+        case .transparent:
+            return transparentDrawBufferCache
+        }
+    }
+
+    private func setDrawBufferCache(_ cacheEntry: DrawBufferCacheEntry,
+                                    for role: DrawBufferRole) {
+        switch role {
+        case .opaque:
+            opaqueDrawBufferCache = cacheEntry
+        case .transparent:
+            transparentDrawBufferCache = cacheEntry
+        }
     }
 
     private func makeBuffersInput(from layers: [SurfaceMeshLayer],
@@ -426,6 +512,47 @@ public final class MetalSurfaceMeshRenderer: @unchecked Sendable {
         }
     }
 
+    private func acquireDepthTexture(width: Int, height: Int) throws -> any MTLTexture {
+        cacheLock.lock()
+        if var cacheEntry = depthTextureCache,
+           cacheEntry.width == width,
+           cacheEntry.height == height,
+           !cacheEntry.isInUse {
+            cacheEntry.isInUse = true
+            depthTextureCache = cacheEntry
+            let texture = cacheEntry.texture
+            cacheLock.unlock()
+            return texture
+        }
+        cacheLock.unlock()
+
+        let texture = try makeDepthTexture(width: width, height: height)
+
+        cacheLock.lock()
+        depthTextureAllocationCount += 1
+        if depthTextureCache?.isInUse != true ||
+            depthTextureCache?.width != width ||
+            depthTextureCache?.height != height {
+            depthTextureCache = DepthTextureCacheEntry(width: width,
+                                                       height: height,
+                                                       texture: texture,
+                                                       isInUse: true)
+        }
+        cacheLock.unlock()
+        return texture
+    }
+
+    private func releaseDepthTexture(_ texture: any MTLTexture) {
+        let textureID = ObjectIdentifier(texture as AnyObject)
+        cacheLock.lock()
+        if var cacheEntry = depthTextureCache,
+           ObjectIdentifier(cacheEntry.texture as AnyObject) == textureID {
+            cacheEntry.isInUse = false
+            depthTextureCache = cacheEntry
+        }
+        cacheLock.unlock()
+    }
+
     private func makeDepthTexture(width: Int, height: Int) throws -> any MTLTexture {
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .depth32Float,
                                                                   width: width,
@@ -498,7 +625,7 @@ public final class MetalSurfaceMeshRenderer: @unchecked Sendable {
     }
 }
 
-private extension simd_float4x4 {
+extension simd_float4x4 {
     init(surfaceMeshLookAt eye: SIMD3<Float>,
          target: SIMD3<Float>,
          up: SIMD3<Float>) throws {
@@ -516,13 +643,15 @@ private extension simd_float4x4 {
             -simd_dot(zAxis, eye)
         )
         self = simd_float4x4(columns: (
-            SIMD4<Float>(xAxis, 0),
-            SIMD4<Float>(yAxis, 0),
-            SIMD4<Float>(zAxis, 0),
+            SIMD4<Float>(xAxis.x, yAxis.x, zAxis.x, 0),
+            SIMD4<Float>(xAxis.y, yAxis.y, zAxis.y, 0),
+            SIMD4<Float>(xAxis.z, yAxis.z, zAxis.z, 0),
             SIMD4<Float>(translation, 1)
         ))
     }
+}
 
+private extension simd_float4x4 {
     init(surfaceMeshPerspectiveFovY fovY: Float,
          aspect: Float,
          nearZ: Float,

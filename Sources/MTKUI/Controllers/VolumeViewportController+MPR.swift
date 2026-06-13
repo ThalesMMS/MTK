@@ -47,10 +47,9 @@ extension VolumeViewportController {
                                                           steps: effectiveSlabConfig.steps,
                                                           blend: blend.coreBlend)
         try Task.checkCancellation()
-        mprFrameCache.store(frame,
-                            for: axisKey,
-                            signature: signature)
-        return frame
+        return mprFrameCache.store(frame,
+                                   for: axisKey,
+                                   signature: signature)
     }
 
     func renderMPRSnapshotTexture() async throws -> (texture: any MTLTexture, renderTime: CFAbsoluteTime) {

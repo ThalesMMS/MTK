@@ -426,7 +426,6 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
         argumentManager.encode(&pointSetCount, argumentIndex: .pointSetCountBuffer)
         argumentManager.encode(&pointSelectedIndex, argumentIndex: .pointSetSelectedBuffer)
         argumentManager.encode(nil, argumentIndex: .pointCoordsBuffer)
-        argumentManager.encode(nil, argumentIndex: .legacyOutputBuffer)
 
         var camera = RaycasterTestHelpers.makeTestCameraUniforms()
         memcpy(cameraBuffer.contents(), &camera, CameraUniforms.stride)
@@ -504,7 +503,6 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
         argumentManager.encode(&pointSetCount, argumentIndex: .pointSetCountBuffer)
         argumentManager.encode(&pointSelectedIndex, argumentIndex: .pointSetSelectedBuffer)
         argumentManager.encode(nil, argumentIndex: .pointCoordsBuffer)
-        argumentManager.encode(nil, argumentIndex: .legacyOutputBuffer)
 
         // Runtime sanity: option buffer must carry the acceleration flag for this render.
         if let optionBuffer = argumentManager.getBuffer(argumentIndex: .optionValue) {

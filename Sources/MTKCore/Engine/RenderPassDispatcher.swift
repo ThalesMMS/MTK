@@ -320,7 +320,8 @@ struct RenderPassDispatcher {
             plane: plane,
             thickness: state.slabThickness,
             steps: state.slabSteps,
-            blend: state.mprBlend
+            blend: state.mprBlend,
+            viewportID: viewport
         )
 
         profiler.recordMPRReslice(
@@ -339,20 +340,20 @@ struct RenderPassDispatcher {
             device: device
         )
 
-        await mprFrameCache.store(frame, for: viewport, signature: signature)
+        let retainedFrame = await mprFrameCache.store(frame, for: viewport, signature: signature)
         let labelmapOverlays = try await volumeLayerResourceCache.makeMPRLabelmapOverlays(
             for: state.volumeLayers,
-            baseFrame: frame,
+            baseFrame: retainedFrame,
             device: device,
             commandQueue: commandQueue
         )
         let scalarOverlays = try await volumeLayerResourceCache.makeMPRScalarOverlays(
             for: state.volumeLayers,
-            baseFrame: frame,
+            baseFrame: retainedFrame,
             device: device,
             commandQueue: commandQueue
         )
-        return MPRFrameResult(frame: frame,
+        return MPRFrameResult(frame: retainedFrame,
                               labelmapOverlays: labelmapOverlays,
                               scalarOverlays: scalarOverlays)
     }

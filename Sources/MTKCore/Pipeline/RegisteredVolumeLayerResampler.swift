@@ -8,6 +8,52 @@
 import Foundation
 import simd
 
+final class RegisteredVolumeLayerResampleCache: @unchecked Sendable {
+    private struct CachedPayload {
+        var data: Data
+        var intensityRange: ClosedRange<Int32>
+    }
+
+    private var payloads: [Key: CachedPayload] = [:]
+    private(set) var debugResampleMissCount = 0
+
+    func resampledLayer(_ layer: VolumeLayer,
+                        into baseDataset: VolumeDataset,
+                        interpolation: VolumeResampleInterpolation = .trilinear,
+                        fillValue: Int32 = RegisteredVolumeLayerResampler.defaultFillValue) throws -> VolumeLayer {
+        guard let scalarVolume = layer.scalarVolume else { return layer }
+        let transform = LayerTransform(baseWorldToLayerWorld: layer.baseWorldToLayerWorld)
+        guard transform.supportsCPUResampling else {
+            throw RegisteredVolumeLayerResamplingError.unsupportedTransform(layerID: layer.id,
+                                                                           classification: transform.classification)
+        }
+        guard !transform.isApproximatelyIdentity else { return layer }
+
+        let key = Key(layer: layer,
+                      scalarDataset: scalarVolume.dataset,
+                      baseDataset: baseDataset,
+                      interpolation: interpolation,
+                      fillValue: fillValue)
+        if let payload = payloads[key] {
+            return RegisteredVolumeLayerResampler.resampledLayer(layer,
+                                                                 into: baseDataset,
+                                                                 data: payload.data,
+                                                                 intensityRange: payload.intensityRange)
+        }
+
+        let resampled = try RegisteredVolumeLayerResampler.resampledLayer(layer,
+                                                                          into: baseDataset,
+                                                                          interpolation: interpolation,
+                                                                          fillValue: fillValue)
+        if let resampledDataset = resampled.scalarVolume?.dataset {
+            payloads[key] = CachedPayload(data: resampledDataset.data,
+                                          intensityRange: resampledDataset.intensityRange)
+            debugResampleMissCount += 1
+        }
+        return resampled
+    }
+}
+
 public enum RegisteredVolumeLayerResampler {
     public static let defaultFillValue: Int32 = 0
 
@@ -55,17 +101,28 @@ public enum RegisteredVolumeLayerResampler {
             }
         }
 
+        return resampledLayer(
+            layer,
+            into: baseDataset,
+            data: try VolumePipelineScalarData.encodedData(from: output,
+                                                           pixelFormat: dataset.pixelFormat),
+            intensityRange: VolumePipelineScalarData.recomputeIntensityRange(output)
+        )
+    }
+
+    static func resampledLayer(_ layer: VolumeLayer,
+                               into baseDataset: VolumeDataset,
+                               data: Data,
+                               intensityRange: ClosedRange<Int32>) -> VolumeLayer {
+        guard let scalarVolume = layer.scalarVolume else { return layer }
+        let dataset = scalarVolume.dataset
         var imageData = baseDataset.imageData
         imageData.pixelFormat = dataset.pixelFormat
         imageData.componentsPerVoxel = dataset.imageData.componentsPerVoxel
-        imageData.intensityRange = VolumePipelineScalarData.recomputeIntensityRange(output)
+        imageData.intensityRange = intensityRange
         imageData.recommendedWindow = dataset.recommendedWindow
 
-        let resampledDataset = VolumeDataset(
-            data: try VolumePipelineScalarData.encodedData(from: output,
-                                                           pixelFormat: dataset.pixelFormat),
-            imageData: imageData
-        )
+        let resampledDataset = VolumeDataset(data: data, imageData: imageData)
         let resampledScalar = ScalarVolumeLayer(dataset: resampledDataset,
                                                 transferFunction: scalarVolume.transferFunction,
                                                 quantitativeMapping: scalarVolume.quantitativeMapping)
@@ -91,6 +148,97 @@ public enum RegisteredVolumeLayerResampler {
                                       into: baseDataset,
                                       interpolation: interpolation,
                                       fillValue: fillValue)
+        }
+    }
+}
+
+private extension RegisteredVolumeLayerResampleCache {
+    struct Key: Hashable {
+        var source: DatasetKey
+        var base: DatasetKey
+        var transform: Matrix4Key
+        var interpolation: Int
+        var fillValue: Int32
+
+        init(layer: VolumeLayer,
+             scalarDataset: VolumeDataset,
+             baseDataset: VolumeDataset,
+             interpolation: VolumeResampleInterpolation,
+             fillValue: Int32) {
+            self.source = DatasetKey(dataset: scalarDataset)
+            self.base = DatasetKey(dataset: baseDataset)
+            self.transform = Matrix4Key(layer.baseWorldToLayerWorld)
+            switch interpolation {
+            case .nearest:
+                self.interpolation = 0
+            case .trilinear:
+                self.interpolation = 1
+            }
+            self.fillValue = fillValue
+        }
+    }
+
+    struct DatasetKey: Hashable {
+        var storage: DatasetIdentity.Storage
+        var spacingX: Double
+        var spacingY: Double
+        var spacingZ: Double
+        var origin: Vector3Key
+        var row: Vector3Key
+        var column: Vector3Key
+        var slice: Vector3Key
+        var componentsPerVoxel: Int
+
+        init(dataset: VolumeDataset) {
+            self.storage = DatasetIdentity.Storage(dataset: dataset)
+            self.spacingX = dataset.spacing.x
+            self.spacingY = dataset.spacing.y
+            self.spacingZ = dataset.spacing.z
+            self.origin = Vector3Key(dataset.imageData.origin)
+            self.row = Vector3Key(dataset.imageData.rowDirection)
+            self.column = Vector3Key(dataset.imageData.columnDirection)
+            self.slice = Vector3Key(dataset.imageData.sliceDirection)
+            self.componentsPerVoxel = dataset.imageData.componentsPerVoxel
+        }
+    }
+
+    struct Matrix4Key: Hashable {
+        var c0: Vector4Key
+        var c1: Vector4Key
+        var c2: Vector4Key
+        var c3: Vector4Key
+
+        init(_ matrix: simd_float4x4) {
+            self.c0 = Vector4Key(matrix.columns.0)
+            self.c1 = Vector4Key(matrix.columns.1)
+            self.c2 = Vector4Key(matrix.columns.2)
+            self.c3 = Vector4Key(matrix.columns.3)
+        }
+    }
+
+    struct Vector4Key: Hashable {
+        var x: Float
+        var y: Float
+        var z: Float
+        var w: Float
+
+        init(_ vector: SIMD4<Float>) {
+            self.x = vector.x
+            self.y = vector.y
+            self.z = vector.z
+            self.w = vector.w
+        }
+    }
+
+    struct Vector3Key: Hashable {
+        var x: Float
+        var y: Float
+        var z: Float
+
+        init(_ vector: SIMD3<Float>) {
+            self.x = vector.x
+            self.y = vector.y
+            self.z = vector.z
         }
     }
 }
