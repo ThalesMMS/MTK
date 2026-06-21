@@ -87,9 +87,13 @@ final class ClinicalViewerCoordinatorTests: XCTestCase {
                        Clinical2DTool.allCases)
         XCTAssertEqual(TwoDScreenLayout.allCases.map(\.title), [
             "Single Window",
-            "Dual (2x1)",
-            "Triple (3x1)",
-            "Quadruple (2x2)"
+            "Dual Vertical",
+            "Dual Horizontal",
+            "Triple Horizontal",
+            "Triple Vertical",
+            "One on Top",
+            "One to the Side",
+            "Quad 2x2"
         ])
         XCTAssertEqual(ThickSlabThicknessFormatter.label(thickness: 5, spacingMillimeters: 0.5), "2.50 mm")
         XCTAssertEqual(ThickSlabThicknessFormatter.label(thickness: 5, spacingMillimeters: nil), "5 slices")

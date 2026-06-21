@@ -93,4 +93,32 @@ final class AdaptiveViewerUIRegressionTests: XCTestCase {
             }
         }
     }
+
+    func test_mprGrid_tabletLayoutIsImageFirstWithoutInlineSliders() throws {
+        let packageRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let gridURL = packageRoot.appendingPathComponent("Sources/MTKUI/ClinicalViewportGrid.swift")
+        let source = try String(contentsOf: gridURL, encoding: .utf8)
+
+        [
+            "case .tablet:",
+            "tabletLayout()",
+            "private func tabletLayout() -> some View",
+            "private func compactTabletLayout() -> some View"
+        ].forEach { required in
+            XCTAssertTrue(source.contains(required), "tablet MPR layout must be split from compact layout: \(required)")
+        }
+
+        guard let tabletStart = source.range(of: "private func tabletLayout() -> some View"),
+              let desktopStart = source.range(of: "private func desktopLayout() -> some View"),
+              tabletStart.lowerBound < desktopStart.lowerBound else {
+            return XCTFail("Could not isolate tabletLayout source")
+        }
+        let tabletSource = String(source[tabletStart.lowerBound..<desktopStart.lowerBound])
+
+        XCTAssertFalse(tabletSource.contains("clinicalControls()"), "tablet MPR must not reserve space for sliders")
+        XCTAssertFalse(tabletSource.contains("aspectRatio(1"), "tablet MPR must not force a square canvas")
+    }
 }

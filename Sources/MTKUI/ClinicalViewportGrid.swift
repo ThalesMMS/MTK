@@ -403,8 +403,10 @@ private struct ClinicalViewportGridContent: View {
             switch resolvedLayoutClass {
             case .compactPhone:
                 compactPhoneLayout()
-            case .compactTablet, .tablet:
-                regularLayout()
+            case .compactTablet:
+                compactTabletLayout()
+            case .tablet:
+                tabletLayout()
             case .desktop:
                 desktopLayout()
             }
@@ -469,13 +471,20 @@ private struct ClinicalViewportGridContent: View {
         return ViewerLayoutClassResolver.resolve(context)
     }
 
-    private func regularLayout() -> some View {
+    private func compactTabletLayout() -> some View {
         VStack(spacing: 12) {
             viewportGrid()
                 .aspectRatio(1, contentMode: .fit)
             clinicalControls()
         }
         .padding()
+    }
+
+    /// Tablet: the MPR canvas owns the available area. Detailed controls live
+    /// in host chrome, not inline sliders below the diagnostic panes.
+    private func tabletLayout() -> some View {
+        viewportGrid()
+            .padding(8)
     }
 
     /// Desktop: the grid fills the window — no square aspect lock and no

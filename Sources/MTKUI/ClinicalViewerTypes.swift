@@ -55,9 +55,20 @@ public enum Clinical2DTool: String, CaseIterable, Identifiable, Sendable {
 
 public enum TwoDScreenLayout: String, CaseIterable, Identifiable, Sendable {
     case singleWindow
-    case dual2x1
-    case triple3x1
-    case quadruple2x2
+    case dualVertical
+    case dualHorizontal
+    case tripleHorizontal
+    case tripleVertical
+    case oneOnTop
+    case oneToSide
+    case quad2x2
+
+    @available(*, deprecated, renamed: "dualVertical")
+    public static let dual2x1: TwoDScreenLayout = .dualVertical
+    @available(*, deprecated, renamed: "tripleHorizontal")
+    public static let triple3x1: TwoDScreenLayout = .tripleHorizontal
+    @available(*, deprecated, renamed: "quad2x2")
+    public static let quadruple2x2: TwoDScreenLayout = .quad2x2
 
     public var id: String { rawValue }
 
@@ -65,12 +76,20 @@ public enum TwoDScreenLayout: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .singleWindow:
             return "Single Window"
-        case .dual2x1:
-            return "Dual (2x1)"
-        case .triple3x1:
-            return "Triple (3x1)"
-        case .quadruple2x2:
-            return "Quadruple (2x2)"
+        case .dualVertical:
+            return "Dual Vertical"
+        case .dualHorizontal:
+            return "Dual Horizontal"
+        case .tripleHorizontal:
+            return "Triple Horizontal"
+        case .tripleVertical:
+            return "Triple Vertical"
+        case .oneOnTop:
+            return "One on Top"
+        case .oneToSide:
+            return "One to the Side"
+        case .quad2x2:
+            return "Quad 2x2"
         }
     }
 

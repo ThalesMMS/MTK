@@ -365,7 +365,10 @@ final class ViewerChromeConfigurationTests: XCTestCase {
     }
 
     func testStack2DOptionsMenuMatchesCompactReference() throws {
-        let configuration = factory.configuration(for: .stack2D)
+        let configuration = factory.configuration(
+            for: .stack2D,
+            enabledTwoDScreenLayouts: Set(TwoDScreenLayout.allCases)
+        )
         let menu = try XCTUnwrap(configuration.optionsMenu)
 
         XCTAssertEqual(configuration.optionsAction, .openMenu(.stack2DOptions))
@@ -383,18 +386,26 @@ final class ViewerChromeConfigurationTests: XCTestCase {
         XCTAssertEqual(layout.title, "Screen Layout")
         XCTAssertEqual(layout.items.map(\.title), [
             "Single Window",
-            "Dual (2x1)",
-            "Triple (3x1)",
-            "Quadruple (2x2)"
+            "Dual Vertical",
+            "Dual Horizontal",
+            "Triple Horizontal",
+            "Triple Vertical",
+            "One on Top",
+            "One to the Side",
+            "Quad 2x2"
         ])
         XCTAssertEqual(layout.items.map(\.action), [
             .set2DScreenLayout(.singleWindow),
-            .set2DScreenLayout(.dual2x1),
-            .set2DScreenLayout(.triple3x1),
-            .set2DScreenLayout(.quadruple2x2)
+            .set2DScreenLayout(.dualVertical),
+            .set2DScreenLayout(.dualHorizontal),
+            .set2DScreenLayout(.tripleHorizontal),
+            .set2DScreenLayout(.tripleVertical),
+            .set2DScreenLayout(.oneOnTop),
+            .set2DScreenLayout(.oneToSide),
+            .set2DScreenLayout(.quad2x2)
         ])
-        XCTAssertEqual(layout.items.map(\.isSelected), [true, false, false, false])
-        XCTAssertEqual(layout.items.map(\.isEnabled), [true, true, true, true])
+        XCTAssertEqual(layout.items.map(\.isSelected), [true, false, false, false, false, false, false, false])
+        XCTAssertEqual(layout.items.map(\.isEnabled), [true, true, true, true, true, true, true, true])
 
         let annotations = try XCTUnwrap(menu.items.first { $0.id == "2d-options-image-annotations" })
         let referenceLines = try XCTUnwrap(menu.items.first { $0.id == "2d-options-reference-lines" })

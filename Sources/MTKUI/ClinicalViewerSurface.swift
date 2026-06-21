@@ -23,6 +23,12 @@ public struct ClinicalViewerSurface: View {
                     )
                 )
                 .accessibilityIdentifier("MTKClinicalViewerSingle3D")
+                .overlay {
+                    surfaceAccessibilityAnchor(
+                        identifier: "MTKClinicalViewerSingle3D",
+                        label: "3D viewport"
+                    )
+                }
             } else if coordinator.mode == .clinical, let session = coordinator.clinicalViewportSession {
                 ClinicalViewportGrid(
                     session: session,
@@ -37,6 +43,12 @@ public struct ClinicalViewerSurface: View {
                 )
                 .accessibilityIdentifier("MTKClinicalViewerGrid")
                 .accessibilityValue(coordinator.selectedMPRScreenLayout.title)
+                .overlay {
+                    surfaceAccessibilityAnchor(
+                        identifier: "MTKClinicalViewerGrid",
+                        label: "MPR viewport grid"
+                    )
+                }
             } else if coordinator.mode == .stack2D, let viewport = coordinator.stack2DViewport {
                 ZStack {
                     Color.black
@@ -81,6 +93,14 @@ public struct ClinicalViewerSurface: View {
         .task {
             coordinator.ensureActiveViewport()
         }
+    }
+
+    private func surfaceAccessibilityAnchor(identifier: String, label: String) -> some View {
+        Color.clear
+            .accessibilityElement(children: .ignore)
+            .accessibilityIdentifier(identifier)
+            .accessibilityLabel(label)
+            .allowsHitTesting(false)
     }
 
     private var unavailableView: some View {

@@ -1,6 +1,11 @@
 #if canImport(SwiftUI) && (os(iOS) || os(macOS))
 import SwiftUI
 
+public enum ViewerToolbarMenuPlacement: Sendable, Equatable {
+    case above
+    case below
+}
+
 public struct ViewerBottomToolbar: View {
     private let configuration: ViewerChromeConfiguration
     private let activeMenuToolID: ViewerToolID?
@@ -8,29 +13,27 @@ public struct ViewerBottomToolbar: View {
     private let onToolLongPress: (ViewerToolDescriptor) -> Void
     private let onMenuItemTap: (ViewerToolMenuItem) -> Void
     private let trailingAccessory: AnyView?
+    private let menuPlacement: ViewerToolbarMenuPlacement
 
     public init(configuration: ViewerChromeConfiguration,
                 activeMenuToolID: ViewerToolID?,
                 onToolTap: @escaping (ViewerToolDescriptor) -> Void,
                 onToolLongPress: @escaping (ViewerToolDescriptor) -> Void,
                 onMenuItemTap: @escaping (ViewerToolMenuItem) -> Void,
-                trailingAccessory: AnyView? = nil) {
+                trailingAccessory: AnyView? = nil,
+                menuPlacement: ViewerToolbarMenuPlacement = .above) {
         self.configuration = configuration
         self.activeMenuToolID = activeMenuToolID
         self.onToolTap = onToolTap
         self.onToolLongPress = onToolLongPress
         self.onMenuItemTap = onMenuItemTap
         self.trailingAccessory = trailingAccessory
+        self.menuPlacement = menuPlacement
     }
 
     public var body: some View {
         VStack(spacing: 8) {
-            if let activeMenu = activeMenu {
-                ViewerFloatingToolMenu(toolID: activeMenu.toolID,
-                                       menu: activeMenu.menu,
-                                       onItemTap: onMenuItemTap)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
+            if menuPlacement == .above { activeMenuView }
 
             HStack(spacing: 14) {
                 ForEach(configuration.bottomTools) { tool in
@@ -47,10 +50,22 @@ public struct ViewerBottomToolbar: View {
                 Capsule()
                     .strokeBorder(Color.white.opacity(0.16), lineWidth: 1)
             }
+
+            if menuPlacement == .below { activeMenuView }
         }
         .foregroundStyle(.white)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(toolbarAccessibilityIdentifier)
+    }
+
+    @ViewBuilder
+    private var activeMenuView: some View {
+        if let activeMenu = activeMenu {
+            ViewerFloatingToolMenu(toolID: activeMenu.toolID,
+                                   menu: activeMenu.menu,
+                                   onItemTap: onMenuItemTap)
+                .transition(.move(edge: menuPlacement == .above ? .bottom : .top).combined(with: .opacity))
+        }
     }
 
     private var toolbarAccessibilityIdentifier: String {
@@ -87,19 +102,22 @@ public struct MPRBottomToolbar: View {
     private let onToolLongPress: (ViewerToolDescriptor) -> Void
     private let onMenuItemTap: (ViewerToolMenuItem) -> Void
     private let trailingAccessory: AnyView?
+    private let menuPlacement: ViewerToolbarMenuPlacement
 
     public init(configuration: ViewerChromeConfiguration,
                 activeMenuToolID: ViewerToolID?,
                 onToolTap: @escaping (ViewerToolDescriptor) -> Void,
                 onToolLongPress: @escaping (ViewerToolDescriptor) -> Void,
                 onMenuItemTap: @escaping (ViewerToolMenuItem) -> Void,
-                trailingAccessory: AnyView? = nil) {
+                trailingAccessory: AnyView? = nil,
+                menuPlacement: ViewerToolbarMenuPlacement = .above) {
         self.configuration = configuration
         self.activeMenuToolID = activeMenuToolID
         self.onToolTap = onToolTap
         self.onToolLongPress = onToolLongPress
         self.onMenuItemTap = onMenuItemTap
         self.trailingAccessory = trailingAccessory
+        self.menuPlacement = menuPlacement
     }
 
     public var body: some View {
@@ -108,7 +126,8 @@ public struct MPRBottomToolbar: View {
                             onToolTap: onToolTap,
                             onToolLongPress: onToolLongPress,
                             onMenuItemTap: onMenuItemTap,
-                            trailingAccessory: trailingAccessory)
+                            trailingAccessory: trailingAccessory,
+                            menuPlacement: menuPlacement)
     }
 }
 

@@ -18,6 +18,8 @@ public struct ClinicalViewportModeMenu: View {
                 } label: {
                     Label(mode.displayName, systemImage: mode == currentMode ? "checkmark" : icon(for: mode))
                 }
+                .accessibilityIdentifier("ClinicalViewportModeMenu.option.\(mode.id)")
+                .accessibilityLabel(Text(mode.displayName))
             }
         } label: {
             HStack(spacing: 6) {
