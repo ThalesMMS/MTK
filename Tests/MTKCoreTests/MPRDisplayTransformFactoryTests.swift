@@ -149,14 +149,21 @@ final class MPRDisplayTransformFactoryTests: XCTestCase {
     }
 
     func test_viewportTransformClampsZoomAndPan() {
+        // Zoom-out below fit is allowed down to minimumZoom (0.25); pan is
+        // allowed at any zoom but must keep a quarter of the viewport covered.
         let belowMinimum = MPRViewportTransform(zoom: 0.1, pan: SIMD2<Float>(0.25, -0.25))
         XCTAssertEqual(belowMinimum.zoom, MPRViewportTransform.minimumZoom)
-        XCTAssertEqual(belowMinimum.pan, .zero)
+        XCTAssertEqual(belowMinimum.pan.x, 0.25, accuracy: 1e-5)
+        XCTAssertEqual(belowMinimum.pan.y, -0.25, accuracy: 1e-5)
+
+        let panBeyondLimit = MPRViewportTransform(zoom: 0.25, pan: SIMD2<Float>(10, -10))
+        XCTAssertEqual(panBeyondLimit.pan.x, 0.375, accuracy: 1e-5)
+        XCTAssertEqual(panBeyondLimit.pan.y, -0.375, accuracy: 1e-5)
 
         let aboveMaximum = MPRViewportTransform(zoom: 12, pan: SIMD2<Float>(10, -10))
         XCTAssertEqual(aboveMaximum.zoom, MPRViewportTransform.maximumZoom)
-        XCTAssertEqual(aboveMaximum.pan.x, 3.5, accuracy: 1e-5)
-        XCTAssertEqual(aboveMaximum.pan.y, -3.5, accuracy: 1e-5)
+        XCTAssertEqual(aboveMaximum.pan.x, 4.25, accuracy: 1e-5)
+        XCTAssertEqual(aboveMaximum.pan.y, -4.25, accuracy: 1e-5)
     }
 
     func test_displayAndViewportTransformsRoundTripWithOrientationAndFlips() {
@@ -179,6 +186,44 @@ final class MPRDisplayTransformFactoryTests: XCTestCase {
 
         XCTAssertEqual(roundTripTexture.x, texture.x, accuracy: 1e-5)
         XCTAssertEqual(roundTripTexture.y, texture.y, accuracy: 1e-5)
+    }
+
+    func test_viewportTransformMatchesAspectAwareShaderMappingForRotatedNonSquarePlane() {
+        let sourceAspectRatio: Float = 2.4
+        let transform = MPRViewportTransform(
+            zoom: 1.5,
+            pan: SIMD2<Float>(0.04, -0.03),
+            rotationRadians: .pi / 4
+        )
+        let imagePoint = SIMD2<Float>(0.2, 0.7)
+        let sourceSize = SIMD2<Float>(sourceAspectRatio, 1)
+        let absoluteCos = abs(cos(transform.rotationRadians))
+        let absoluteSin = abs(sin(transform.rotationRadians))
+        let rotatedBounds = SIMD2<Float>(
+            absoluteCos * sourceSize.x + absoluteSin * sourceSize.y,
+            absoluteSin * sourceSize.x + absoluteCos * sourceSize.y
+        )
+        let centered = (imagePoint - SIMD2<Float>(repeating: 0.5)) * sourceSize * transform.zoom
+        let expected = SIMD2<Float>(repeating: 0.5)
+            + transform.pan
+            + SIMD2<Float>(
+                centered.x * cos(transform.rotationRadians) - centered.y * sin(transform.rotationRadians),
+                centered.x * sin(transform.rotationRadians) + centered.y * cos(transform.rotationRadians)
+            ) / rotatedBounds
+
+        let viewportPoint = transform.screenCoordinates(
+            forImageScreen: imagePoint,
+            sourceAspectRatio: sourceAspectRatio
+        )
+        let roundTrip = transform.imageScreenCoordinates(
+            forViewportScreen: viewportPoint,
+            sourceAspectRatio: sourceAspectRatio
+        )
+
+        XCTAssertEqual(viewportPoint.x, expected.x, accuracy: 1e-5)
+        XCTAssertEqual(viewportPoint.y, expected.y, accuracy: 1e-5)
+        XCTAssertEqual(roundTrip.x, imagePoint.x, accuracy: 1e-5)
+        XCTAssertEqual(roundTrip.y, imagePoint.y, accuracy: 1e-5)
     }
 
 }

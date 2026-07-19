@@ -133,6 +133,15 @@ final class ComputeOptionFlagsTests: XCTestCase {
         let bit2Mask: UInt16 = (1 << 2)
         XCTAssertEqual(flags & ~bit2Mask, 0, "Only bit 2 should be set when adaptive is enabled")
     }
+
+    func testAccelerationEnabledSetsBit4WithoutChangingAdaptiveBit() async {
+        await adapter.setAdaptiveEnabledForTesting(true)
+
+        let flags = await adapter.computeOptionFlags(useAcceleration: true)
+
+        XCTAssertNotEqual(flags & (1 << 2), 0)
+        XCTAssertNotEqual(flags & (1 << 4), 0)
+    }
 }
 
 extension MetalVolumeRenderingAdapter {

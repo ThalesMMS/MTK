@@ -242,11 +242,11 @@ final class NoInteractiveReadbackTests: MTKRenderingEngineTestCase {
                        "CGImage display path must not reappear in production code. Violations: \(violations.joined(separator: ", "))")
     }
 
-    func test_mtkuiDoesNotReferenceCGImagePresentationSymbols() throws {
+    func test_coreSourcesDoNotReferenceCGImagePresentationSymbols() throws {
         let productionSources = try scanProductionSources(in: "")
 
-        let mtkuiFiles = productionSources.keys
-            .filter { $0.hasPrefix("Sources/MTKUI/") }
+        let mtkCoreFiles = productionSources.keys
+            .filter { $0.hasPrefix("Sources/MTKCore/") }
             .sorted()
 
         let allowedBoundaryTokens = ["snapshot", "export", "readback", "debug"]
@@ -258,7 +258,7 @@ final class NoInteractiveReadbackTests: MTKRenderingEngineTestCase {
             "Image(nsImage:"
         ]
 
-        let violations = mtkuiFiles.filter { file in
+        let violations = mtkCoreFiles.filter { file in
             guard let source = productionSources[file] else { return false }
 
             let normalizedFile = file.lowercased()
@@ -282,7 +282,7 @@ final class NoInteractiveReadbackTests: MTKRenderingEngineTestCase {
         XCTAssertEqual(
             violations,
             [],
-            "MTKUI must not reference CGImage/UIImage/NSImage presentation symbols outside snapshot/export/readback/debug boundaries. Violations: \(violations.joined(separator: ", "))"
+            "MTKCore must not reference CGImage/UIImage/NSImage presentation symbols outside snapshot/export/readback/debug boundaries. Violations: \(violations.joined(separator: ", "))"
         )
     }
 }

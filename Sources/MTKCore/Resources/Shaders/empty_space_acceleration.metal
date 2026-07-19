@@ -210,55 +210,16 @@ namespace ESS {
 
 /// Sample the acceleration structure at a specific mip level and check for visible opacity.
 /// Returns true if the region can be skipped (empty space), false if sampling is needed.
-[[maybe_unused]] static inline bool sampleAccelerationStructureAtLevel(texture3d<half, access::sample> accelerationTexture,
-                                                                       constant RenderingArguments& args,
+[[maybe_unused]] static inline bool sampleAccelerationStructureAtLevel(texture3d<half, access::read> accelerationTexture,
                                                                        float3 texCoordinate,
-                                                                       uint mipLevel,
-                                                                       sampler textureSampler)
+                                                                       uint mipLevel)
 {
-    // Sample min-max values from pyramid at the requested mip level
-    float2 minMaxRange = sampleMinMaxPyramid(accelerationTexture,
-                                             texCoordinate,
-                                             mipLevel,
-                                             textureSampler);
-
-    // Use early termination threshold as opacity cutoff
-    constant RenderingParameters& params = args.params;
-    float opacityThreshold = clamp(params.earlyTerminationThreshold, 0.001f, 0.9999f);
-
-    // Check each active channel to see if any would produce visible opacity
-    float4 channelWeights = params.intensityRatio;
-
-    // Channel 1
-    if (channelWeights.x > 0.0001f) {
-        if (!isTransparentInRange(args.transferTextureCh1, minMaxRange, opacityThreshold)) {
-            return false; // This channel has visible content, must sample
-        }
-    }
-
-    // Channel 2
-    if (channelWeights.y > 0.0001f) {
-        if (!isTransparentInRange(args.transferTextureCh2, minMaxRange, opacityThreshold)) {
-            return false;
-        }
-    }
-
-    // Channel 3
-    if (channelWeights.z > 0.0001f) {
-        if (!isTransparentInRange(args.transferTextureCh3, minMaxRange, opacityThreshold)) {
-            return false;
-        }
-    }
-
-    // Channel 4
-    if (channelWeights.w > 0.0001f) {
-        if (!isTransparentInRange(args.transferTextureCh4, minMaxRange, opacityThreshold)) {
-            return false;
-        }
-    }
-
-    // All channels are transparent in this region, can skip sampling
-    return true;
+    const uint3 mipDimensions = uint3(max(accelerationTexture.get_width(mipLevel), 1u),
+                                      max(accelerationTexture.get_height(mipLevel), 1u),
+                                      max(accelerationTexture.get_depth(mipLevel), 1u));
+    const uint3 coordinate = min(uint3(texCoordinate * float3(mipDimensions)),
+                                 mipDimensions - 1u);
+    return accelerationTexture.read(coordinate, mipLevel).r >= 0.5h;
 }
 
 } // namespace ESS

@@ -48,9 +48,9 @@ final class VolumeResourceManagerOutputTextureTests: XCTestCase {
         let resized = try manager.resizeOutputTexture(from: old, toWidth: 64, toHeight: 64)
 
         XCTAssertEqual(ObjectIdentifier(resized as AnyObject), ObjectIdentifier(available as AnyObject))
-        XCTAssertEqual(manager.debugOutputTextureIsInUse(old), false)
+        XCTAssertNil(manager.debugOutputTextureIsInUse(old))
         XCTAssertEqual(manager.debugOutputTextureIsInUse(resized), true)
-        XCTAssertEqual(manager.debugOutputTextureCount, 2)
+        XCTAssertEqual(manager.debugOutputTextureCount, 1)
         XCTAssertEqual(manager.debugOutputPoolInUseCount, 1)
     }
 

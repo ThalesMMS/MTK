@@ -85,23 +85,28 @@ final class VolumeResourceManager {
     #endif
 
     private struct StreamIdentity: Hashable, Sendable {
+        enum ContentIdentity: Hashable, Sendable {
+            case cacheKey(String)
+            case request(UUID)
+        }
+
         let dimensions: VolumeDimensions
         let spacing: VolumeSpacing
         let sourcePixelFormat: VolumePixelFormat
         let intensityRange: ClosedRange<Int32>
         let orientation: VolumeOrientation
         let recommendedWindow: ClosedRange<Int32>?
-        let contentFingerprint: UInt64
+        let contentIdentity: ContentIdentity
 
         init(descriptor: VolumeUploadDescriptor,
-             contentFingerprint: UInt64) {
+             contentIdentity: ContentIdentity) {
             self.dimensions = descriptor.dimensions
             self.spacing = descriptor.spacing
             self.sourcePixelFormat = descriptor.sourcePixelFormat
             self.intensityRange = descriptor.intensityRange
             self.orientation = descriptor.orientation
             self.recommendedWindow = descriptor.recommendedWindow
-            self.contentFingerprint = contentFingerprint
+            self.contentIdentity = contentIdentity
         }
 
         static func == (lhs: StreamIdentity, rhs: StreamIdentity) -> Bool {
@@ -111,7 +116,7 @@ final class VolumeResourceManager {
                 && lhs.intensityRange == rhs.intensityRange
                 && lhs.orientation == rhs.orientation
                 && lhs.recommendedWindow == rhs.recommendedWindow
-                && lhs.contentFingerprint == rhs.contentFingerprint
+                && lhs.contentIdentity == rhs.contentIdentity
         }
 
         func hash(into hasher: inout Hasher) {
@@ -134,7 +139,7 @@ final class VolumeResourceManager {
             } else {
                 hasher.combine(false)
             }
-            hasher.combine(contentFingerprint)
+            hasher.combine(contentIdentity)
         }
 
         private func combine(vector: SIMD3<Float>, into hasher: inout Hasher) {
@@ -212,13 +217,23 @@ final class VolumeResourceManager {
     /// Prefer `replaceDataset(oldHandle:newDataset:)` when swapping datasets so
     /// the acquire/release transition stays paired in one manager operation.
     ///
-    /// `VolumeResourceManager.acquire(dataset:device:commandQueue:)` relies on
-    /// `MTKRenderingEngine` actor isolation for thread-safety. Do not instantiate
-    /// or call `VolumeResourceManager` directly from non-actor contexts; route all
-    /// access through the engine actor so cache and handle mutations stay serialized.
+    /// The engine passes its own actor isolation to serialize cache and handle mutations
+    /// with rendering. Direct callers use the fallback-isolated overload below.
     func acquire(dataset: VolumeDataset,
                  device: any MTLDevice,
                  commandQueue: any MTLCommandQueue) async throws -> VolumeResourceHandle {
+        try await acquire(
+            isolatedTo: VolumeResourceManagerFallbackIsolation.shared,
+            dataset: dataset,
+            device: device,
+            commandQueue: commandQueue
+        )
+    }
+
+    func acquire<Isolation: Actor>(isolatedTo _: isolated Isolation,
+                                   dataset: VolumeDataset,
+                                   device: any MTLDevice,
+                                   commandQueue: any MTLCommandQueue) async throws -> VolumeResourceHandle {
         let identity = ResourceIdentity.dataset(DatasetIdentity.Content(dataset: dataset))
 
         if let handle = acquireCachedHandle(for: identity) {
@@ -326,6 +341,31 @@ final class VolumeResourceManager {
         slices: S,
         progress: ChunkedVolumeUploader.ProgressHandler? = nil
     ) async throws -> VolumeResourceHandle where S.Element == VolumeUploadSlice {
+        try await acquireFromStream(
+            isolatedTo: VolumeResourceManagerFallbackIsolation.shared,
+            descriptor: descriptor,
+            slices: slices,
+            progress: progress
+        )
+    }
+
+    func acquireFromStream<Isolation: Actor, S: AsyncSequence>(
+        isolatedTo _: isolated Isolation,
+        descriptor: VolumeUploadDescriptor,
+        slices: S,
+        progress: ChunkedVolumeUploader.ProgressHandler? = nil
+    ) async throws -> VolumeResourceHandle where S.Element == VolumeUploadSlice {
+        let keyedIdentity = descriptor.cacheKey.map { cacheKey in
+            ResourceIdentity.stream(
+                StreamIdentity(descriptor: descriptor,
+                               contentIdentity: .cacheKey(cacheKey))
+            )
+        }
+        if let keyedIdentity,
+           let cachedHandle = acquireCachedHandle(for: keyedIdentity) {
+            return cachedHandle
+        }
+
         let upload = try await textureUploader.upload(
             descriptor: descriptor,
             slices: slices,
@@ -336,25 +376,10 @@ final class VolumeResourceManager {
         #if DEBUG
         debugCounters.volumeTextureCreates += 1
         #endif
-        let identity = ResourceIdentity.stream(
+        let identity = keyedIdentity ?? ResourceIdentity.stream(
             StreamIdentity(descriptor: descriptor,
-                           contentFingerprint: upload.contentFingerprint)
+                           contentIdentity: .request(UUID()))
         )
-
-        if var cached = textureCache[identity] {
-            cached.referenceCount += 1
-            textureCache[identity] = cached
-            let handle = VolumeResourceHandle(metadata: cached.metadata)
-            handleMap[handle] = identity
-            handleReferenceCounts[handle] = 1
-            #if DEBUG
-            debugCounters.volumeCacheHits += 1
-            #endif
-            logLifecycle(resourceType: "volume",
-                         action: "acquired",
-                         estimatedBytes: cached.estimatedBytes)
-            return handle
-        }
 
         let cached = CachedResource(
             dataset: makeReferenceDataset(from: descriptor),
@@ -389,6 +414,35 @@ final class VolumeResourceManager {
         commandQueue: any MTLCommandQueue,
         progress: VolumeUploadProgressHandler? = nil
     ) async throws -> VolumeResourceHandle where S.Element == SliceData {
+        try await acquireFromStream(
+            isolatedTo: VolumeResourceManagerFallbackIsolation.shared,
+            sliceStream: sliceStream,
+            metadata: metadata,
+            device: device,
+            commandQueue: commandQueue,
+            progress: progress
+        )
+    }
+
+    func acquireFromStream<Isolation: Actor, S: AsyncSequence>(
+        isolatedTo _: isolated Isolation,
+        sliceStream: S,
+        metadata: VolumeUploadDescriptor,
+        device: any MTLDevice,
+        commandQueue: any MTLCommandQueue,
+        progress: VolumeUploadProgressHandler? = nil
+    ) async throws -> VolumeResourceHandle where S.Element == SliceData {
+        let keyedIdentity = metadata.cacheKey.map { cacheKey in
+            ResourceIdentity.stream(
+                StreamIdentity(descriptor: metadata,
+                               contentIdentity: .cacheKey(cacheKey))
+            )
+        }
+        if let keyedIdentity,
+           let cachedHandle = acquireCachedHandle(for: keyedIdentity) {
+            return cachedHandle
+        }
+
         let upload = try await textureUploader.upload(
             sliceStream: sliceStream,
             metadata: metadata,
@@ -401,25 +455,10 @@ final class VolumeResourceManager {
         debugCounters.volumeTextureCreates += 1
         #endif
 
-        let identity = ResourceIdentity.stream(
+        let identity = keyedIdentity ?? ResourceIdentity.stream(
             StreamIdentity(descriptor: metadata,
-                           contentFingerprint: upload.contentFingerprint)
+                           contentIdentity: .request(UUID()))
         )
-
-        if var cached = textureCache[identity] {
-            cached.referenceCount += 1
-            textureCache[identity] = cached
-            let handle = VolumeResourceHandle(metadata: cached.metadata)
-            handleMap[handle] = identity
-            handleReferenceCounts[handle] = 1
-            #if DEBUG
-            debugCounters.volumeCacheHits += 1
-            #endif
-            logLifecycle(resourceType: "volume",
-                         action: "acquired",
-                         estimatedBytes: cached.estimatedBytes)
-            return handle
-        }
 
         let cached = CachedResource(
             dataset: makeReferenceDataset(from: metadata),
@@ -465,7 +504,18 @@ final class VolumeResourceManager {
 
     func replaceDataset(oldHandle: VolumeResourceHandle,
                         newDataset: VolumeDataset) async throws -> VolumeResourceHandle {
-        let newHandle = try await acquire(dataset: newDataset,
+        try await replaceDataset(
+            isolatedTo: VolumeResourceManagerFallbackIsolation.shared,
+            oldHandle: oldHandle,
+            newDataset: newDataset
+        )
+    }
+
+    func replaceDataset<Isolation: Actor>(isolatedTo isolation: isolated Isolation,
+                                          oldHandle: VolumeResourceHandle,
+                                          newDataset: VolumeDataset) async throws -> VolumeResourceHandle {
+        let newHandle = try await acquire(isolatedTo: isolation,
+                                          dataset: newDataset,
                                           device: device,
                                           commandQueue: commandQueue)
         release(handle: oldHandle)
@@ -645,6 +695,10 @@ final class VolumeResourceManager {
     }
 }
 
+private actor VolumeResourceManagerFallbackIsolation {
+    static let shared = VolumeResourceManagerFallbackIsolation()
+}
+
 private final class InFlightDatasetUpload {
     private let lock = NSLock()
     private var result: Result<VolumeTextureUploader.UploadResult, Error>?
@@ -679,147 +733,6 @@ private final class InFlightDatasetUpload {
 
         for continuation in pending {
             continuation.resume(with: result)
-        }
-    }
-}
-
-private enum StreamUploadError: Error {
-    case sliceSignednessMismatch(sliceIndex: Int, expected: VolumePixelFormat, actual: VolumePixelFormat)
-}
-
-
-private final class StreamContentFingerprintAccumulator: @unchecked Sendable {
-    private static let fnvOffsetBasis: UInt64 = 14_695_981_039_346_656_037
-    private static let fnvPrime: UInt64 = 1_099_511_628_211
-
-    private let lock = NSLock()
-    private var hash = fnvOffsetBasis
-
-    var value: UInt64 {
-        lock.lock()
-        defer { lock.unlock() }
-        return hash
-    }
-
-    func mix(slice: VolumeUploadSlice) {
-        mix(integer: slice.index)
-        mix(double: slice.slope)
-        mix(double: slice.intercept)
-        mix(integer: Int(slice.minClamp))
-        mix(integer: Int(slice.maxClamp))
-        mix(data: slice.data)
-    }
-
-    private func mix(data: Data) {
-        data.withUnsafeBytes { rawBuffer in
-            let bytes = rawBuffer.bindMemory(to: UInt8.self)
-            lock.lock()
-            for byte in bytes {
-                hash ^= UInt64(byte)
-                hash &*= Self.fnvPrime
-            }
-            lock.unlock()
-        }
-    }
-
-    private func mix(integer value: Int) {
-        var encoded = UInt64(bitPattern: Int64(value)).littleEndian
-        mix(bytesOf: &encoded)
-    }
-
-    private func mix(double value: Double) {
-        var encoded = value.bitPattern.littleEndian
-        mix(bytesOf: &encoded)
-    }
-
-    private func mix(bytesOf value: inout UInt64) {
-        withUnsafeBytes(of: &value) { rawBuffer in
-            let bytes = rawBuffer.bindMemory(to: UInt8.self)
-            lock.lock()
-            for byte in bytes {
-                hash ^= UInt64(byte)
-                hash &*= Self.fnvPrime
-            }
-            lock.unlock()
-        }
-    }
-}
-
-private struct HashedVolumeUploadSliceSequence<Base: AsyncSequence>: AsyncSequence where Base.Element == VolumeUploadSlice {
-    typealias Element = VolumeUploadSlice
-
-    let base: Base
-    let intensityRange: ClosedRange<Int32>
-    let hasher: StreamContentFingerprintAccumulator
-
-    func makeAsyncIterator() -> Iterator {
-        Iterator(baseIterator: base.makeAsyncIterator(),
-                 intensityRange: intensityRange,
-                 hasher: hasher)
-    }
-
-    struct Iterator: AsyncIteratorProtocol {
-        var baseIterator: Base.AsyncIterator
-        let intensityRange: ClosedRange<Int32>
-        let hasher: StreamContentFingerprintAccumulator
-
-        mutating func next() async throws -> VolumeUploadSlice? {
-            guard let slice = try await baseIterator.next() else {
-                return nil
-            }
-            let uploadSlice = VolumeUploadSlice(index: slice.index,
-                                                data: slice.data,
-                                                slope: slice.slope,
-                                                intercept: slice.intercept,
-                                                minClamp: intensityRange.lowerBound,
-                                                maxClamp: intensityRange.upperBound)
-            hasher.mix(slice: uploadSlice)
-            return uploadSlice
-        }
-    }
-}
-
-private struct HashedSliceDataUploadSequence<Base: AsyncSequence>: AsyncSequence where Base.Element == SliceData {
-    typealias Element = VolumeUploadSlice
-
-    let base: Base
-    let expectedPixelFormat: VolumePixelFormat
-    let intensityRange: ClosedRange<Int32>
-    let hasher: StreamContentFingerprintAccumulator
-
-    func makeAsyncIterator() -> Iterator {
-        Iterator(baseIterator: base.makeAsyncIterator(),
-                 expectedPixelFormat: expectedPixelFormat,
-                 intensityRange: intensityRange,
-                 hasher: hasher)
-    }
-
-    struct Iterator: AsyncIteratorProtocol {
-        var baseIterator: Base.AsyncIterator
-        let expectedPixelFormat: VolumePixelFormat
-        let intensityRange: ClosedRange<Int32>
-        let hasher: StreamContentFingerprintAccumulator
-
-        mutating func next() async throws -> VolumeUploadSlice? {
-            guard let slice = try await baseIterator.next() else {
-                return nil
-            }
-
-            let actualPixelFormat: VolumePixelFormat = slice.isSigned ? .int16Signed : .int16Unsigned
-            guard actualPixelFormat == expectedPixelFormat else {
-                throw StreamUploadError.sliceSignednessMismatch(sliceIndex: slice.index,
-                                                               expected: expectedPixelFormat,
-                                                               actual: actualPixelFormat)
-            }
-
-            let uploadSlice = VolumeUploadSlice(index: slice.index,
-                                                data: slice.rawBytes,
-                                                slope: slice.slope,
-                                                intercept: slice.intercept,
-                                                minClamp: intensityRange.lowerBound,
-                                                maxClamp: intensityRange.upperBound)
-            hasher.mix(slice: uploadSlice)
-            return uploadSlice
         }
     }
 }

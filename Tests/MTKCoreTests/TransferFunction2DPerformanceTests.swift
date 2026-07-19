@@ -297,7 +297,7 @@ final class TransferFunction2DPerformanceTests: XCTestCase {
         var pointSetCount: UInt16 = 0
         var pointSelectedIndex: UInt16 = 0
 
-        argumentManager.encodeTexture(resources.texture, argumentIndex: .mainTexture)
+        try argumentManager.encodeFilterableVolumeTexture(resources.texture)
         argumentManager.encodeTexture(outputTexture, argumentIndex: .outputTexture)
         argumentManager.encodeTexture(transferTexture, argumentIndex: .transferTextureCh1)
         argumentManager.encodeTexture(transferTexture, argumentIndex: .transferTextureCh2)
@@ -418,7 +418,7 @@ final class TransferFunction2DPerformanceTests: XCTestCase {
         var pointSetCount: UInt16 = 0
         var pointSelectedIndex: UInt16 = 0
 
-        argumentManager.encodeTexture(resources.texture, argumentIndex: .mainTexture)
+        try argumentManager.encodeFilterableVolumeTexture(resources.texture)
         argumentManager.encodeTexture(outputTexture, argumentIndex: .outputTexture)
         argumentManager.encodeTexture(transferTexture, argumentIndex: .transferTextureCh1)
         argumentManager.encodeTexture(transferTexture, argumentIndex: .transferTextureCh2)

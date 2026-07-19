@@ -91,14 +91,20 @@ public enum MPRPlaneGeometryFactory {
         return projectedSpacings.max() ?? 0
     }
 
+    /// Transforms the physical plane normal into normalized texture space.
+    @_spi(Testing)
+    public static func textureDirectionAlongNormal(for dataset: VolumeDataset,
+                                                   plane: MPRPlaneGeometry) -> SIMD3<Float> {
+        normalized(
+            vector: textureVectorAlongNormal(for: dataset, plane: plane),
+            fallback: simd_cross(plane.axisUTexture, plane.axisVTexture)
+        )
+    }
+
     @_spi(Testing)
     public static func volumeExtentAlongNormal(for dataset: VolumeDataset,
                                                plane: MPRPlaneGeometry) -> Float {
-        let geometry = makeGeometry(for: dataset)
-        let normal = normalized(vector: plane.normalWorld, fallback: SIMD3<Float>(0, 0, 1))
-        let originTexture = geometry.worldToTex.transformPoint(plane.originWorld)
-        let targetTexture = geometry.worldToTex.transformPoint(plane.originWorld + normal)
-        let textureUnitsPerWorldUnit = simd_length(targetTexture - originTexture)
+        let textureUnitsPerWorldUnit = simd_length(textureVectorAlongNormal(for: dataset, plane: plane))
         guard textureUnitsPerWorldUnit > Float.ulpOfOne else { return 0 }
         return 1 / textureUnitsPerWorldUnit
     }
@@ -121,6 +127,15 @@ public enum MPRPlaneGeometryFactory {
 }
 
 private extension MPRPlaneGeometryFactory {
+    static func textureVectorAlongNormal(for dataset: VolumeDataset,
+                                         plane: MPRPlaneGeometry) -> SIMD3<Float> {
+        let geometry = makeGeometry(for: dataset)
+        let normal = normalized(vector: plane.normalWorld, fallback: SIMD3<Float>(0, 0, 1))
+        let originTexture = geometry.worldToTex.transformPoint(plane.originWorld)
+        let targetTexture = geometry.worldToTex.transformPoint(plane.originWorld + normal)
+        return targetTexture - originTexture
+    }
+
     static func voxelSpans(for dimensions: VolumeDimensions) -> SIMD3<Float> {
         SIMD3<Float>(
             max(Float(dimensions.width - 1), 0),

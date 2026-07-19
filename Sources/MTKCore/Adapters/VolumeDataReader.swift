@@ -117,19 +117,41 @@ struct VolumeDataReader {
         return lerp(c0, c1, tz)
     }
 
-    func forEachIntensity(_ body: (Float) -> Void) {
+    func histogram(binCount: Int,
+                   intensityRange: ClosedRange<Float>,
+                   indices: Range<Int>) -> [Float] {
+        precondition(indices.lowerBound >= 0 && indices.upperBound <= voxelCount)
+        guard binCount > 0 else { return [] }
+        let lowerBound = intensityRange.lowerBound
+        let upperBound = intensityRange.upperBound
+        if lowerBound == upperBound {
+            var histogram = [Float](repeating: 0, count: binCount)
+            histogram[0] = Float(indices.count)
+            return histogram
+        }
+        let span = max(upperBound - lowerBound, Float.leastNonzeroMagnitude)
+        let binWidth = span / Float(binCount)
+        var histogram = [Float](repeating: 0, count: binCount)
+
         switch dataset.pixelFormat {
         case .int16Signed:
             let pointer = baseAddress.assumingMemoryBound(to: Int16.self)
-            for index in 0..<voxelCount {
-                body(Float(pointer[index]))
+            for index in indices {
+                let sample = VolumetricMath.clampFloat(Float(pointer[index]),
+                                                       lower: lowerBound,
+                                                       upper: upperBound)
+                histogram[min(Int((sample - lowerBound) / binWidth), binCount - 1)] += 1
             }
         case .int16Unsigned:
             let pointer = baseAddress.assumingMemoryBound(to: UInt16.self)
-            for index in 0..<voxelCount {
-                body(Float(pointer[index]))
+            for index in indices {
+                let sample = VolumetricMath.clampFloat(Float(pointer[index]),
+                                                       lower: lowerBound,
+                                                       upper: upperBound)
+                histogram[min(Int((sample - lowerBound) / binWidth), binCount - 1)] += 1
             }
         }
+        return histogram
     }
 }
 

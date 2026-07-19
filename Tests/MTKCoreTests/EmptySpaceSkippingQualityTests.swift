@@ -25,6 +25,7 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
     private var raycaster: MetalRaycaster!
     private var volumeComputePipeline: MTLComputePipelineState!
     private var argumentManager: ArgumentEncoderManager!
+    private var visibilityCache: EmptySpaceVisibilityCache!
     private var cameraBuffer: MTLBuffer!
     private var dummyAccelerationTexture: MTLTexture!
 
@@ -72,6 +73,7 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
             mtlFunction: function,
             debugOptions: VolumeRenderingDebugOptions(isDebugMode: false, histogramBinCount: 256, enableDensityDebug: false)
         )
+        self.visibilityCache = try EmptySpaceVisibilityCache(device: device, library: library)
 
         guard let cameraBuffer = device.makeBuffer(length: CameraUniforms.stride, options: [.storageModeShared]) else {
             throw XCTSkip("Failed to allocate camera buffer")
@@ -407,7 +409,7 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
         var pointSetCount: UInt16 = 0
         var pointSelectedIndex: UInt16 = 0
 
-        argumentManager.encodeTexture(resources.texture, argumentIndex: .mainTexture)
+        try argumentManager.encodeFilterableVolumeTexture(resources.texture)
         argumentManager.encodeTexture(outputTexture, argumentIndex: .outputTexture)
         argumentManager.encodeTexture(transferTexture, argumentIndex: .transferTextureCh1)
         argumentManager.encodeTexture(transferTexture, argumentIndex: .transferTextureCh2)
@@ -454,10 +456,17 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
         method: Int32,
         accelerationTexture: any MTLTexture
     ) async throws -> MTLTexture? {
-        // Accelerated path: shader-level ZSKIP heuristic plus MPS precomputed
-        // min-max structure, with OPTION_USE_ACCELERATION enabled.
+        // Accelerated path: shader-level ZSKIP heuristic plus precomputed
+        // visibility, with OPTION_USE_ACCELERATION enabled.
         let resources = try raycaster.prepare(dataset: dataset)
         let transferTexture = try await RaycasterTestHelpers.makeTestTransferTexture(for: dataset, device: device)
+        var params = RaycasterTestHelpers.makeTestRenderingParameters(dataset: dataset, method: method)
+        let visibilityTexture = try await visibilityCache.texture(
+            minMaxTexture: accelerationTexture,
+            transferTexture: transferTexture,
+            parameters: params,
+            commandQueue: commandQueue
+        )
 
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let computeEncoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -476,7 +485,6 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
         }
 
         // Encode argument buffer for volume_compute with acceleration enabled.
-        var params = RaycasterTestHelpers.makeTestRenderingParameters(dataset: dataset, method: method)
         let optionUseAcceleration: UInt16 = 1 << 4
         var optionValue: UInt16 = optionUseAcceleration
         var quaternion = SIMD4<Float>(0, 0, 0, 1)
@@ -484,13 +492,13 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
         var pointSetCount: UInt16 = 0
         var pointSelectedIndex: UInt16 = 0
 
-        argumentManager.encodeTexture(resources.texture, argumentIndex: .mainTexture)
+        try argumentManager.encodeFilterableVolumeTexture(resources.texture)
         argumentManager.encodeTexture(outputTexture, argumentIndex: .outputTexture)
         argumentManager.encodeTexture(transferTexture, argumentIndex: .transferTextureCh1)
         argumentManager.encodeTexture(transferTexture, argumentIndex: .transferTextureCh2)
         argumentManager.encodeTexture(transferTexture, argumentIndex: .transferTextureCh3)
         argumentManager.encodeTexture(transferTexture, argumentIndex: .transferTextureCh4)
-        argumentManager.encodeTexture(accelerationTexture, argumentIndex: .accelerationTexture)
+        argumentManager.encodeTexture(visibilityTexture, argumentIndex: .accelerationTexture)
         argumentManager.encodeSampler(filter: .linear)
         argumentManager.encode(&params, argumentIndex: .renderParams)
         argumentManager.encode(&optionValue, argumentIndex: .optionValue)

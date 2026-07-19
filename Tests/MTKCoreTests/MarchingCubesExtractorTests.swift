@@ -92,6 +92,84 @@ final class MarchingCubesExtractorTests: XCTestCase {
         XCTAssertFalse(mesh.isRenderable)
     }
 
+    func test_multiLabelExtraction_matchesIndependentMeshes() throws {
+        let labelmap = try makeMultiSegmentLabelmap()
+        let extractor = MarchingCubesExtractor()
+
+        let combined = try extractor.extractSurfaces(from: labelmap)
+        let independent = try labelmap.segments.map { segment in
+            try extractor.extractSurface(from: labelmap, label: segment.label)
+        }
+
+        XCTAssertEqual(combined, independent)
+        XCTAssertEqual(combined.count, labelmap.segments.count)
+        XCTAssertTrue(combined.allSatisfy { !$0.vertices.isEmpty && $0.triangleCount > 0 })
+        XCTAssertTrue(combined.allSatisfy(\.isRenderable))
+    }
+
+    func test_checkerboardFaces_invertedInsideCorners_preserveTwoSurfaceComponents() throws {
+        let dimensions = VolumeDimensions(width: 2, height: 2, depth: 2)
+        let firstValues: [Int16] = [10, 0, 0, 10, 10, 0, 0, 10]
+        let secondValues: [Int16] = firstValues.map { 10 - $0 }
+        var triangleSignatures: [Set<Set<SIMD3<Float>>>] = []
+
+        for values in [firstValues, secondValues] {
+            let dataset = VolumeDataset(
+                data: values.withUnsafeBytes { Data($0) },
+                dimensions: dimensions,
+                spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+                pixelFormat: .int16Signed,
+                intensityRange: 0...10
+            )
+
+            let mesh = try MarchingCubesExtractor().extractSurface(from: dataset, threshold: 5)
+
+            XCTAssertTrue(mesh.isRenderable)
+            XCTAssertEqual(connectedComponentCount(in: mesh), 2)
+            triangleSignatures.append(triangleSignature(of: mesh))
+        }
+        XCTAssertNotEqual(triangleSignatures[0], triangleSignatures[1])
+    }
+
+    private func triangleSignature(of mesh: SurfaceMesh) -> Set<Set<SIMD3<Float>>> {
+        Set(stride(from: 0, to: mesh.indices.count, by: 3).map { triangleStart in
+            Set(mesh.indices[triangleStart..<(triangleStart + 3)].map { mesh.vertices[Int($0)] })
+        })
+    }
+
+    private func connectedComponentCount(in mesh: SurfaceMesh) -> Int {
+        var canonicalIDs: [SIMD3<Float>: Int] = [:]
+        var adjacency: [Int: Set<Int>] = [:]
+        for triangleStart in stride(from: 0, to: mesh.indices.count, by: 3) {
+            let triangle = mesh.indices[triangleStart..<(triangleStart + 3)].map { index in
+                let position = mesh.vertices[Int(index)]
+                if let existing = canonicalIDs[position] {
+                    return existing
+                }
+                let id = canonicalIDs.count
+                canonicalIDs[position] = id
+                return id
+            }
+            for vertex in triangle {
+                adjacency[vertex, default: []].formUnion(triangle.filter { $0 != vertex })
+            }
+        }
+
+        var remaining = Set(adjacency.keys)
+        var count = 0
+        while let seed = remaining.first {
+            count += 1
+            var stack = [seed]
+            remaining.remove(seed)
+            while let vertex = stack.popLast() {
+                for neighbor in adjacency[vertex, default: []] where remaining.remove(neighbor) != nil {
+                    stack.append(neighbor)
+                }
+            }
+        }
+        return count
+    }
+
     func testWorldCoordinatesPreserveImageDataAffine() throws {
         let dataset = makeTwoByTwoDataset(
             bottom: 0,
@@ -153,4 +231,26 @@ final class MarchingCubesExtractorTests: XCTestCase {
             segments: [LabelmapSegment(label: 1, name: "Cube", color: SIMD4<Float>(1, 0, 0, 1))]
         )
     }
+
+    private func makeMultiSegmentLabelmap() throws -> LabelmapVolume {
+        let dimensions = VolumeDimensions(width: 5, height: 4, depth: 4)
+        var labels = [UInt16](repeating: 0, count: dimensions.voxelCount)
+        labels[1 + dimensions.width + dimensions.width * dimensions.height] = 1
+        labels[3 + 2 * dimensions.width + 2 * dimensions.width * dimensions.height] = 2
+        let dataset = VolumeDataset(
+            data: labels.withUnsafeBytes { Data($0) },
+            dimensions: dimensions,
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+            pixelFormat: .int16Unsigned,
+            intensityRange: 0...2
+        )
+        return try LabelmapVolume(
+            dataset: dataset,
+            segments: [
+                LabelmapSegment(label: 1, name: "First", color: SIMD4<Float>(1, 0, 0, 1)),
+                LabelmapSegment(label: 2, name: "Second", color: SIMD4<Float>(0, 1, 0, 1))
+            ]
+        )
+    }
+
 }

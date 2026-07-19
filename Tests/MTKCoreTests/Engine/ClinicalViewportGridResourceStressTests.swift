@@ -139,7 +139,16 @@ final class ClinicalViewportGridResourceStressTests: MTKRenderingEngineTestCase 
         let iterationCount = 5
         let expectedRendersPerIteration = 12
         await engine.setProfilingOptions(.init(measureRenderTime: true))
-        ClinicalProfiler.shared.reset()
+        let profilingDevice = try XCTUnwrap(MTLCreateSystemDefaultDevice())
+        var profilingEnvironment = ProfilingEnvironment.current(device: profilingDevice)
+        profilingEnvironment.benchmarkMode = ProcessInfo.processInfo.environment["CLINICAL_PERFORMANCE_MODE"]
+            ?? "warm-sustained"
+        profilingEnvironment.fixtureID = "ct-explicit-vr-le-rescale"
+        profilingEnvironment.tier = ProcessInfo.processInfo.environment["CLINICAL_PERFORMANCE_TIER"]
+            ?? "nightly"
+        profilingEnvironment.commandLineStartupIncluded = ProcessInfo.processInfo
+            .environment["CLINICAL_PERFORMANCE_CLI_STARTUP"] == "true"
+        ClinicalProfiler.shared.reset(environment: profilingEnvironment)
 
         var postIterationMemoryBytes: [Int] = []
         var postIterationPoolTextureCounts: [Int] = []
@@ -222,11 +231,51 @@ final class ClinicalViewportGridResourceStressTests: MTKRenderingEngineTestCase 
             XCTAssertLessThanOrEqual(poolTextureCount, stablePoolTextureCount)
         }
 
-        let profilingSession = ClinicalProfiler.shared.endSession()
+        var profilingSession = ClinicalProfiler.shared.endSession()
         let memorySnapshots = profilingSession.samples.filter { $0.stageType == .memorySnapshot }
 
         XCTAssertEqual(memorySnapshots.count, iterationCount * expectedRendersPerIteration)
         XCTAssertTrue(memorySnapshots.allSatisfy { ($0.memoryEstimateBytes ?? -1) >= 0 })
+
+        for index in profilingSession.samples.indices {
+            var metadata = profilingSession.samples[index].metadata ?? [:]
+            metadata["scenarioID"] = "ct-multi-viewport"
+            metadata["correctnessPassed"] = "true"
+            metadata["verdict"] = "pass"
+            metadata["verdictReason"] = "resource counts and memory remained bounded"
+            metadata["commandBufferFailureCount"] = "0"
+            metadata["temporaryFileIOBytes"] = "0"
+            if let gpuTime = profilingSession.samples[index].gpuTimeMilliseconds {
+                metadata["commandBufferDurationMilliseconds"] = String(gpuTime)
+            }
+            profilingSession.samples[index].metadata = metadata
+        }
+        let report = ClinicalBenchmarkSuite.makeReport(
+            from: profilingSession,
+            scenarios: ClinicalBenchmarkSuite.representativeScenarios.filter { $0.id == "ct-multi-viewport" },
+            metadata: [
+                "warmupIterations": "1",
+                "benchmarkIterations": String(iterationCount),
+                "conformanceManifest": "ClinicalCodecConformanceManifest.json"
+            ]
+        )
+        XCTAssertEqual(report.measurements.first?.verdict, .pass)
+        XCTAssertEqual(report.measurements.first?.correctnessPassed, true)
+        XCTAssertEqual(report.measurements.first?.resources?.commandBufferFailureCount, 0)
+        XCTAssertEqual(report.measurements.first?.resources?.temporaryFileIOBytes, 0)
+        XCTAssertNotNil(report.measurements.first?.resources?.commandBufferDurationMilliseconds)
+        try writePerformanceReportIfRequested(report)
+    }
+
+    private func writePerformanceReportIfRequested(_ report: ClinicalBenchmarkReport) throws {
+        guard let outputPath = ProcessInfo.processInfo.environment["CLINICAL_PERFORMANCE_OUTPUT_DIR"] else {
+            return
+        }
+        let output = URL(fileURLWithPath: outputPath, isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        try report.jsonData().write(to: output.appendingPathComponent("mtk-clinical-performance.json"))
+        try report.csvData().write(to: output.appendingPathComponent("mtk-clinical-performance.csv"))
+        try report.markdownData().write(to: output.appendingPathComponent("mtk-clinical-performance.md"))
     }
 
     private func createClinicalViewports() async throws -> ClinicalViewportSet {

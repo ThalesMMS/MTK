@@ -102,7 +102,7 @@ struct CameraUniforms {
 };
 
 struct RenderingArguments {
-    texture3d<short, access::read> volumeTexture [[id(0)]];
+    texture3d<float, access::sample> volumeTexture [[id(0)]];
     constant RenderingParameters &params           [[id(1)]];
     texture2d<float, access::write> outputTexture  [[id(2)]];
     device float *toneBufferCh1                    [[id(3)]];
@@ -120,7 +120,7 @@ struct RenderingArguments {
     texture2d<float, access::sample> transferTextureCh2 [[id(16)]];
     texture2d<float, access::sample> transferTextureCh3 [[id(17)]];
     texture2d<float, access::sample> transferTextureCh4 [[id(18)]];
-    texture3d<half, access::sample> accelerationTexture [[id(19)]];
+    texture3d<half, access::read> accelerationTexture [[id(19)]];
 };
 
 #endif

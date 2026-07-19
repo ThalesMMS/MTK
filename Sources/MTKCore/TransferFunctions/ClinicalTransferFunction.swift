@@ -177,7 +177,10 @@ public struct GradientOpacityFunction: Codable, Equatable, Sendable {
     }
 
     public func opacity(at gradientMagnitude: Float) -> Float {
-        let points = sanitizedPoints()
+        opacity(at: gradientMagnitude, sanitizedPoints: sanitizedPoints())
+    }
+
+    func opacity(at gradientMagnitude: Float, sanitizedPoints points: [Point]) -> Float {
         guard let first = points.first else { return 1 }
         if gradientMagnitude <= first.gradientMagnitude {
             return first.opacity

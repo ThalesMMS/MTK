@@ -54,7 +54,11 @@ public actor MetalMPRComputeAdapter: MPRReslicePort {
     private var pipelineCache: [String: MTLComputePipelineState] = [:]
     private var unavailablePipelineNames: Set<String> = []
     private var cachedVolumeTexture: (any MTLTexture)?
-    private var cachedDatasetIdentity: DatasetIdentity.Content?
+    private var cachedDatasetIdentity: DatasetIdentity.CachedContent?
+    private var pendingVolumeTextureUpload: PendingVolumeTextureUpload?
+    private var volumeTextureUploadGeneration: UInt64 = 0
+    private var volumeTextureUploadStartHook: (@Sendable () async -> Void)?
+    private var volumeTextureUploadJoinHook: (@Sendable () async -> Void)?
     private(set) var textureUploadCount: Int = 0
     private let outputTexturePool: OutputTexturePool
     private var outputTextureAllocationCount = 0
@@ -108,7 +112,7 @@ public actor MetalMPRComputeAdapter: MPRReslicePort {
                                  thickness: Int,
                                  steps: Int,
                                  blend: MPRBlendMode) async throws -> MPRTextureFrame {
-        let volumeTexture = try provideVolumeTexture(for: dataset)
+        let volumeTexture = try await provideVolumeTexture(for: dataset)
         return try await makeSlabTexture(dataset: dataset,
                                          volumeTexture: volumeTexture,
                                          plane: plane,
@@ -230,6 +234,16 @@ extension MetalMPRComputeAdapter {
     public var debugTextureUploadCount: Int { textureUploadCount }
 
     @_spi(Testing)
+    public var debugCachedVolumeTextureStorageModeRawValue: UInt? {
+        cachedVolumeTexture?.storageMode.rawValue
+    }
+
+    @_spi(Testing)
+    public var debugCachedVolumeTextureUsageRawValue: UInt? {
+        cachedVolumeTexture?.usage.rawValue
+    }
+
+    @_spi(Testing)
     public var debugOutputTextureAllocationCount: Int { outputTextureAllocationCount }
 
     @_spi(Testing)
@@ -244,10 +258,10 @@ extension MetalMPRComputeAdapter {
     )? {
         guard let cachedDatasetIdentity else { return nil }
         return (
-            count: cachedDatasetIdentity.byteCount,
-            dimensions: cachedDatasetIdentity.dimensions,
-            pixelFormat: cachedDatasetIdentity.pixelFormat,
-            contentFingerprint: cachedDatasetIdentity.contentFingerprint
+            count: cachedDatasetIdentity.content.byteCount,
+            dimensions: cachedDatasetIdentity.content.dimensions,
+            pixelFormat: cachedDatasetIdentity.content.pixelFormat,
+            contentFingerprint: cachedDatasetIdentity.content.contentFingerprint
         )
     }
 }
@@ -255,6 +269,12 @@ extension MetalMPRComputeAdapter {
 // MARK: - Pipeline Management
 
 private extension MetalMPRComputeAdapter {
+    struct PendingVolumeTextureUpload {
+        let content: DatasetIdentity.Content
+        let generation: UInt64
+        let task: Task<any MTLTexture, Swift.Error>
+    }
+
     func getPipelineState(for pixelFormat: VolumePixelFormat) async throws -> MTLComputePipelineState {
         let functionName = pixelFormat.mprSlabKernelName
         if let cached = pipelineCache[functionName] {
@@ -295,24 +315,57 @@ private extension MetalMPRComputeAdapter {
     ///   - dataset: The volume dataset to produce a Metal 3D texture for; its identity is used to decide cache reuse.
     /// - Returns: A Metal texture representing the dataset volume.
     /// - Throws: `ComputeError.volumeTextureCreationFailed` if a new volume texture cannot be created.
-    func provideVolumeTexture(for dataset: VolumeDataset) throws -> any MTLTexture {
-        let identity = DatasetIdentity.Content(dataset: dataset)
-        if let cachedVolumeTexture, cachedDatasetIdentity == identity {
+    func provideVolumeTexture(for dataset: VolumeDataset) async throws -> any MTLTexture {
+        if let cachedVolumeTexture,
+           let identity = cachedDatasetIdentity,
+           identity.matches(dataset: dataset) {
             return cachedVolumeTexture
         }
 
+        let content = DatasetIdentity.Content(dataset: dataset)
+        if let pendingVolumeTextureUpload,
+           pendingVolumeTextureUpload.content == content {
+            do {
+                await volumeTextureUploadJoinHook?()
+                return try await pendingVolumeTextureUpload.task.value
+            } catch {
+                throw ComputeError.volumeTextureCreationFailed
+            }
+        }
+
         let factory = VolumeTextureFactory(dataset: dataset)
-        guard let texture = factory.generate(device: device) else {
+        pendingVolumeTextureUpload?.task.cancel()
+        volumeTextureUploadGeneration &+= 1
+        let generation = volumeTextureUploadGeneration
+        let uploadStartHook = volumeTextureUploadStartHook
+        let uploadTask = Task {
+            await uploadStartHook?()
+            return try await factory.generateAsync(device: device,
+                                                   commandQueue: commandQueue,
+                                                   usage: .shaderRead)
+        }
+        pendingVolumeTextureUpload = PendingVolumeTextureUpload(content: content,
+                                                                generation: generation,
+                                                                task: uploadTask)
+
+        do {
+            let texture = try await uploadTask.value
+            texture.label = "MPR.volumeTexture"
+            textureUploadCount += 1
+
+            if pendingVolumeTextureUpload?.generation == generation {
+                pendingVolumeTextureUpload = nil
+                cachedVolumeTexture = texture
+                cachedDatasetIdentity = DatasetIdentity.CachedContent(dataset: dataset)
+            }
+            return texture
+        } catch {
+            if pendingVolumeTextureUpload?.generation == generation {
+                pendingVolumeTextureUpload = nil
+            }
             logger.error("Failed to create volume texture")
             throw ComputeError.volumeTextureCreationFailed
         }
-        texture.label = "MPR.volumeTexture"
-
-        cachedVolumeTexture = texture
-        cachedDatasetIdentity = identity
-        textureUploadCount += 1
-
-        return texture
     }
 
     func provideOutputTextureLease(width: Int,
@@ -342,6 +395,17 @@ private extension MetalMPRComputeAdapter {
     }
 }
 
+extension MetalMPRComputeAdapter {
+    @_spi(Testing)
+    public func setVolumeTextureUploadTestingHooks(
+        beforeUpload: (@Sendable () async -> Void)?,
+        onJoin: (@Sendable () async -> Void)?
+    ) {
+        volumeTextureUploadStartHook = beforeUpload
+        volumeTextureUploadJoinHook = onJoin
+    }
+}
+
 // MARK: - Uniforms
 
 private extension MetalMPRComputeAdapter {
@@ -351,7 +415,10 @@ private extension MetalMPRComputeAdapter {
         var blendMode: Int32
         var numSteps: Int32
         var slabHalf: Float
-        var _pad0: SIMD3<Float>
+        var slabSpan: Float
+        var invStepsMinusOne: Float
+        var _pad0: Float
+        var planeNormal: SIMD3<Float>
 
         var planeOrigin: SIMD3<Float>
         var _pad1: Float
@@ -369,7 +436,9 @@ private extension MetalMPRComputeAdapter {
         assert(MemoryLayout<MPRSlabUniforms>.offset(of: \.blendMode) == 8)
         assert(MemoryLayout<MPRSlabUniforms>.offset(of: \.numSteps) == 12)
         assert(MemoryLayout<MPRSlabUniforms>.offset(of: \.slabHalf) == 16)
-        assert(MemoryLayout<MPRSlabUniforms>.offset(of: \._pad0) == 32)
+        assert(MemoryLayout<MPRSlabUniforms>.offset(of: \.slabSpan) == 20)
+        assert(MemoryLayout<MPRSlabUniforms>.offset(of: \.invStepsMinusOne) == 24)
+        assert(MemoryLayout<MPRSlabUniforms>.offset(of: \.planeNormal) == 32)
         assert(MemoryLayout<MPRSlabUniforms>.offset(of: \.planeOrigin) == 48)
         assert(MemoryLayout<MPRSlabUniforms>.offset(of: \.planeX) == 80)
         assert(MemoryLayout<MPRSlabUniforms>.offset(of: \.planeY) == 112)
@@ -388,6 +457,12 @@ private extension MetalMPRComputeAdapter {
             dataset: dataset,
             plane: plane
         ) / 2
+        let slabSpan = 2 * slabHalf
+        let invStepsMinusOne = 1 / Float(max(2, steps) - 1)
+        let planeNormal = MPRPlaneGeometryFactory.textureDirectionAlongNormal(
+            for: dataset,
+            plane: plane
+        )
 
         return MPRSlabUniforms(
             voxelMinValue: Int32(dataset.intensityRange.lowerBound),
@@ -395,7 +470,10 @@ private extension MetalMPRComputeAdapter {
             blendMode: Int32(blend.rawValue),
             numSteps: Int32(steps),
             slabHalf: slabHalf,
-            _pad0: SIMD3<Float>(0, 0, 0),
+            slabSpan: slabSpan,
+            invStepsMinusOne: invStepsMinusOne,
+            _pad0: 0,
+            planeNormal: planeNormal,
             planeOrigin: plane.originTexture,
             _pad1: 0,
             planeX: plane.axisUTexture,

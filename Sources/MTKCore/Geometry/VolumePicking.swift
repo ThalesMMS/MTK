@@ -310,19 +310,9 @@ public enum VolumePicking {
             throw VolumePickError.malformedData
         }
 
-        let linear = linearIndex(index, dimensions: dataset.dimensions)
-        let stored: Int32 = dataset.data.withUnsafeBytes { rawBuffer in
-            switch dataset.pixelFormat {
-            case .int16Signed:
-                return Int32(rawBuffer.bindMemory(to: Int16.self)[linear])
-            case .int16Unsigned:
-                return Int32(rawBuffer.bindMemory(to: UInt16.self)[linear])
-            }
+        return dataset.data.withUnsafeBytes { rawBuffer in
+            sampleIntensity(in: dataset, buffer: rawBuffer, atVoxelIndex: index)
         }
-        let modalityValue = Float(stored)
-        return VolumeIntensitySample(storedScalar: stored,
-                                     modalityValue: modalityValue,
-                                     hounsfieldUnits: modalityValue)
     }
 
     public static func sampleLabel(in layers: [VolumeLayer],
@@ -397,12 +387,21 @@ public enum VolumePicking {
                                layers: [VolumeLayer] = []) throws -> VolumePickResult {
         let viewport = try ViewportPoint(screenPoint: screenPoint,
                                          viewportSize: viewportSize)
-        let layout = outputAspect.layout(destinationSize: viewportSize)
+        let sourceAspectRatio = displayTransform.displayAspectRatio(
+            forSourceAspectRatio: plane.physicalAspectRatio
+        )
+        let layout = outputAspect.layout(
+            destinationSize: viewportSize,
+            viewportTransform: viewportTransform
+        )
         guard let imagePoint = layout.imagePoint(fromViewportPoint: viewport.normalizedPoint) else {
             throw VolumePickError.outsideImagedArea
         }
         let imageScreenPoint = viewportTransform
-            .imageScreenCoordinates(forViewportScreen: imagePoint)
+            .imageScreenCoordinates(
+                forViewportScreen: imagePoint,
+                sourceAspectRatio: sourceAspectRatio
+            )
         let planePoint = displayTransform.textureCoordinates(forScreen: imageScreenPoint)
         let textureCoordinate = plane.originTexture
             + planePoint.x * plane.axisUTexture
@@ -435,12 +434,17 @@ public enum VolumePicking {
                                          viewportSize: configuration.viewportSize)
         let geometry = VolumeRenderGeometry.make(for: dataset)
         let camera = geometry.renderCamera(for: configuration.camera)
-        let view = try makeLookAt(eye: camera.position,
-                                  target: camera.target,
-                                  up: camera.up)
-        let projection = makeProjection(camera: camera,
-                                        viewportSize: configuration.viewportSize)
-        let inverseViewProjection = simd_inverse(projection * view)
+        let matrices: VolumeCameraMath.Matrices
+        do {
+            matrices = try VolumeCameraMath.matrices(
+                camera: camera,
+                viewportWidth: Float(configuration.viewportSize.width),
+                viewportHeight: Float(configuration.viewportSize.height)
+            )
+        } catch {
+            throw VolumePickError.degenerateGeometry
+        }
+        let inverseViewProjection = matrices.inverseViewProjection
 
         let near = try unproject(clipPoint: SIMD4<Float>(viewport.ndcPoint.x,
                                                          viewport.ndcPoint.y,
@@ -512,78 +516,88 @@ public enum VolumePicking {
             usesTransfer = false
         }
 
-        var distance: Float = 0
-        var iterations = 0
-        let maxIterations = max(maxSteps * 4, maxSteps + 16)
-        while distance < totalDistance && iterations < maxIterations {
-            let textureCoordinate = start + ray.directionTexture * distance
-            guard isTextureCoordinateInBounds(textureCoordinate) else {
-                break
-            }
-            if isClipped(textureCoordinate: textureCoordinate,
-                         clipping: clipping,
-                         shaderPlanes: shaderPlanes) {
-                distance += baseStep
-                iterations += 1
-                continue
-            }
-
-            let continuousIndex = continuousIndex(forTextureCoordinate: textureCoordinate,
-                                                  dimensions: dataset.dimensions)
-            let voxel: VoxelIndex
-            do {
-                voxel = try voxelIndex(forContinuousIndex: continuousIndex,
-                                       dimensions: dataset.dimensions)
-            } catch VolumePickError.outsideVolume {
-                distance += baseStep
-                iterations += 1
-                continue
-            }
-            let intensity = try sampleIntensity(in: dataset,
-                                                atVoxelIndex: voxel.index)
-            let densityWindow = normalizedIntensity(Float(intensity.storedScalar),
-                                                    lower: Float(window.lowerBound),
-                                                    upper: Float(window.upperBound))
-
-            if isGatedOut(storedScalar: intensity.storedScalar,
-                          densityWindow: densityWindow,
-                          densityGate: configuration.densityGate,
-                          huGate: configuration.huGate) {
-                distance += baseStep
-                iterations += 1
-                continue
-            }
-
-            let alpha: Float
-            if usesTransfer {
-                alpha = opacity(for: intensity.modalityValue,
-                                transferFunction: transfer) * densityWindow
-            } else {
-                alpha = densityWindow
-            }
-
-            if alpha >= 0.001 {
-                let worldPoint = dataset.imageData.indexToWorld.transformPoint(continuousIndex)
-                let label = try sampleLabel(in: layers,
-                                            atBaseWorldPoint: worldPoint)
-                let scalarSamples = try sampleScalarVolumes(in: layers,
-                                                            atBaseWorldPoint: worldPoint)
-                return VolumePickResult(hitKind: .volumeVisibleSample,
-                                        viewportPoint: viewport,
-                                        worldPoint: worldPoint,
-                                        voxel: voxel,
-                                        textureCoordinate: textureCoordinate,
-                                        intensity: intensity,
-                                        label: label,
-                                        scalarSamples: scalarSamples,
-                                        worldRay: ray)
-            }
-
-            distance += baseStep
-            iterations += 1
+        guard dataset.data.count >= expectedByteCount(for: dataset) else {
+            throw VolumePickError.malformedData
         }
+        let sortedOpacityPoints = usesTransfer
+            ? transfer.opacityPoints.sorted { $0.intensity < $1.intensity }
+            : []
 
-        throw VolumePickError.noVisibleSample
+        return try dataset.data.withUnsafeBytes { rawBuffer in
+            var distance: Float = 0
+            var iterations = 0
+            let maxIterations = max(maxSteps * 4, maxSteps + 16)
+            while distance < totalDistance && iterations < maxIterations {
+                let textureCoordinate = start + ray.directionTexture * distance
+                guard isTextureCoordinateInBounds(textureCoordinate) else {
+                    break
+                }
+                if isClipped(textureCoordinate: textureCoordinate,
+                             clipping: clipping,
+                             shaderPlanes: shaderPlanes) {
+                    distance += baseStep
+                    iterations += 1
+                    continue
+                }
+
+                let continuousIndex = continuousIndex(forTextureCoordinate: textureCoordinate,
+                                                      dimensions: dataset.dimensions)
+                let voxel: VoxelIndex
+                do {
+                    voxel = try voxelIndex(forContinuousIndex: continuousIndex,
+                                           dimensions: dataset.dimensions)
+                } catch VolumePickError.outsideVolume {
+                    distance += baseStep
+                    iterations += 1
+                    continue
+                }
+                let intensity = sampleIntensity(in: dataset,
+                                                buffer: rawBuffer,
+                                                atVoxelIndex: voxel.index)
+                let densityWindow = normalizedIntensity(Float(intensity.storedScalar),
+                                                        lower: Float(window.lowerBound),
+                                                        upper: Float(window.upperBound))
+
+                if isGatedOut(storedScalar: intensity.storedScalar,
+                              densityWindow: densityWindow,
+                              densityGate: configuration.densityGate,
+                              huGate: configuration.huGate) {
+                    distance += baseStep
+                    iterations += 1
+                    continue
+                }
+
+                let alpha: Float
+                if usesTransfer {
+                    alpha = opacity(for: intensity.modalityValue,
+                                    sortedPoints: sortedOpacityPoints) * densityWindow
+                } else {
+                    alpha = densityWindow
+                }
+
+                if alpha >= 0.001 {
+                    let worldPoint = dataset.imageData.indexToWorld.transformPoint(continuousIndex)
+                    let label = try sampleLabel(in: layers,
+                                                atBaseWorldPoint: worldPoint)
+                    let scalarSamples = try sampleScalarVolumes(in: layers,
+                                                                atBaseWorldPoint: worldPoint)
+                    return VolumePickResult(hitKind: .volumeVisibleSample,
+                                            viewportPoint: viewport,
+                                            worldPoint: worldPoint,
+                                            voxel: voxel,
+                                            textureCoordinate: textureCoordinate,
+                                            intensity: intensity,
+                                            label: label,
+                                            scalarSamples: scalarSamples,
+                                            worldRay: ray)
+                }
+
+                distance += baseStep
+                iterations += 1
+            }
+
+            throw VolumePickError.noVisibleSample
+        }
     }
 
     public static func screenPoint(forWorldPoint worldPoint: SIMD3<Float>,
@@ -597,8 +611,17 @@ public enum VolumePicking {
         let uv = try planeUV(forTextureCoordinate: texture,
                              plane: plane)
         let imageScreen = displayTransform.screenCoordinates(forTexture: uv)
-        let imagePoint = viewportTransform.screenCoordinates(forImageScreen: imageScreen)
-        let layout = outputAspect.layout(destinationSize: viewportSize)
+        let sourceAspectRatio = displayTransform.displayAspectRatio(
+            forSourceAspectRatio: plane.physicalAspectRatio
+        )
+        let imagePoint = viewportTransform.screenCoordinates(
+            forImageScreen: imageScreen,
+            sourceAspectRatio: sourceAspectRatio
+        )
+        let layout = outputAspect.layout(
+            destinationSize: viewportSize,
+            viewportTransform: viewportTransform
+        )
         let normalized = layout.viewportPoint(fromImagePoint: imagePoint)
         return try ViewportPoint(normalizedPoint: normalized,
                                  viewportSize: viewportSize)
@@ -619,12 +642,17 @@ public enum VolumePicking {
         let geometry = VolumeRenderGeometry.make(for: dataset)
         let renderPoint = geometry.worldPosition(forTextureCoordinate: texture)
         let renderCamera = geometry.renderCamera(for: camera)
-        let view = try makeLookAt(eye: renderCamera.position,
-                                  target: renderCamera.target,
-                                  up: renderCamera.up)
-        let projection = makeProjection(camera: renderCamera,
-                                        viewportSize: viewportSize)
-        let clip = projection * view * SIMD4<Float>(renderPoint, 1)
+        let matrices: VolumeCameraMath.Matrices
+        do {
+            matrices = try VolumeCameraMath.matrices(
+                camera: renderCamera,
+                viewportWidth: Float(viewportSize.width),
+                viewportHeight: Float(viewportSize.height)
+            )
+        } catch {
+            throw VolumePickError.degenerateGeometry
+        }
+        let clip = matrices.projection * matrices.view * SIMD4<Float>(renderPoint, 1)
         guard abs(clip.w) > Float.ulpOfOne else {
             throw VolumePickError.degenerateGeometry
         }
@@ -633,6 +661,24 @@ public enum VolumePicking {
                                       1 - ((ndc.y + 1) * 0.5))
         return try ViewportPoint(normalizedPoint: normalized,
                                  viewportSize: viewportSize)
+    }
+
+    static func sampleIntensity(in dataset: VolumeDataset,
+                                buffer: UnsafeRawBufferPointer,
+                                atVoxelIndex index: SIMD3<Int32>) -> VolumeIntensitySample {
+        let linear = linearIndex(index, dimensions: dataset.dimensions)
+        let byteOffset = linear * dataset.pixelFormat.bytesPerVoxel
+        let stored: Int32
+        switch dataset.pixelFormat {
+        case .int16Signed:
+            stored = Int32(buffer.loadUnaligned(fromByteOffset: byteOffset, as: Int16.self))
+        case .int16Unsigned:
+            stored = Int32(buffer.loadUnaligned(fromByteOffset: byteOffset, as: UInt16.self))
+        }
+        let modalityValue = Float(stored)
+        return VolumeIntensitySample(storedScalar: stored,
+                                     modalityValue: modalityValue,
+                                     hounsfieldUnits: modalityValue)
     }
 }
 
@@ -724,10 +770,7 @@ private extension VolumePicking {
     }
 
     static func opacity(for intensity: Float,
-                        transferFunction: VolumeTransferFunction) -> Float {
-        let points = transferFunction.opacityPoints.sorted { lhs, rhs in
-            lhs.intensity < rhs.intensity
-        }
+                        sortedPoints points: [VolumeTransferFunction.OpacityControlPoint]) -> Float {
         guard let first = points.first else { return 0 }
         guard let last = points.last else { return first.opacity }
         if intensity <= first.intensity {
@@ -811,89 +854,6 @@ private extension VolumePicking {
             throw VolumePickError.rayMissedVolume
         }
         return tMin...tMax
-    }
-
-    static func centered(camera: VolumeRenderRequest.Camera) -> VolumeRenderRequest.Camera {
-        let originShift = SIMD3<Float>(repeating: 0.5)
-        return VolumeRenderRequest.Camera(position: camera.position - originShift,
-                                          target: camera.target - originShift,
-                                          up: camera.up,
-                                          fieldOfView: camera.fieldOfView,
-                                          projectionType: camera.projectionType)
-    }
-
-    static func makeLookAt(eye: SIMD3<Float>,
-                           target: SIMD3<Float>,
-                           up: SIMD3<Float>) throws -> simd_float4x4 {
-        let zAxis = try normalized(eye - target)
-        let xAxis = try normalized(simd_cross(up, zAxis))
-        let yAxis = simd_cross(zAxis, xAxis)
-        guard zAxis.isFinite, xAxis.isFinite, yAxis.isFinite else {
-            throw VolumePickError.degenerateGeometry
-        }
-        let translation = SIMD3<Float>(
-            -simd_dot(xAxis, eye),
-            -simd_dot(yAxis, eye),
-            -simd_dot(zAxis, eye)
-        )
-        return simd_float4x4(columns: (
-            SIMD4<Float>(xAxis.x, yAxis.x, zAxis.x, 0),
-            SIMD4<Float>(xAxis.y, yAxis.y, zAxis.y, 0),
-            SIMD4<Float>(xAxis.z, yAxis.z, zAxis.z, 0),
-            SIMD4<Float>(translation, 1)
-        ))
-    }
-
-    static func makeProjection(camera: VolumeRenderRequest.Camera,
-                               viewportSize: CGSize) -> simd_float4x4 {
-        let aspect = max(Float(viewportSize.width / viewportSize.height), 1e-3)
-        let center = SIMD3<Float>.zero
-        let distanceToCenter = simd_length(camera.position - center)
-        let farPadding = distanceToCenter * 0.1 + 1
-        let nearZ: Float = 0.01
-        let farZ = max(distanceToCenter + farPadding, nearZ + 100)
-
-        if camera.projectionType == .orthographic {
-            let viewHeight: Float = 2
-            let viewWidth = viewHeight * aspect
-            return makeOrthographic(width: viewWidth,
-                                    height: viewHeight,
-                                    nearZ: nearZ,
-                                    farZ: farZ)
-        }
-        return makePerspective(fovY: max(camera.fieldOfView * .pi / 180, 0.01),
-                               aspect: aspect,
-                               nearZ: nearZ,
-                               farZ: farZ)
-    }
-
-    static func makePerspective(fovY: Float,
-                                aspect: Float,
-                                nearZ: Float,
-                                farZ: Float) -> simd_float4x4 {
-        let yScale = 1 / tan(fovY * 0.5)
-        let xScale = yScale / max(aspect, 1e-3)
-        let z = farZ / (nearZ - farZ)
-        let wz = (farZ * nearZ) / (nearZ - farZ)
-        return simd_float4x4(columns: (
-            SIMD4<Float>(xScale, 0, 0, 0),
-            SIMD4<Float>(0, yScale, 0, 0),
-            SIMD4<Float>(0, 0, z, -1),
-            SIMD4<Float>(0, 0, wz, 0)
-        ))
-    }
-
-    static func makeOrthographic(width: Float,
-                                 height: Float,
-                                 nearZ: Float,
-                                 farZ: Float) -> simd_float4x4 {
-        let range = nearZ - farZ
-        return simd_float4x4(columns: (
-            SIMD4<Float>(2 / width, 0, 0, 0),
-            SIMD4<Float>(0, 2 / height, 0, 0),
-            SIMD4<Float>(0, 0, 1 / range, 0),
-            SIMD4<Float>(0, 0, nearZ / range, 1)
-        ))
     }
 
     static func unproject(clipPoint: SIMD4<Float>,

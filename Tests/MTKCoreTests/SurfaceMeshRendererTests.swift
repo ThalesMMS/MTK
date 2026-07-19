@@ -234,6 +234,53 @@ final class SurfaceMeshRendererTests: XCTestCase {
         XCTAssertGreaterThan(pixel.r, pixel.b)
     }
 
+    func test_transparentLayerOrder_changesWithoutRebuildingMeshBuffers() async throws {
+        let device = try makeTestMetalDevice()
+        guard let queue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal command queue unavailable on this test runner")
+        }
+        let renderer = try MetalSurfaceMeshRenderer(device: device, commandQueue: queue)
+        let target = try makeRenderTarget(device: device, width: 64, height: 64)
+        let dataset = makeDataset()
+        let near = SurfaceMeshLayer(
+            id: "near",
+            mesh: makeQuadMesh(z: 0.75),
+            material: SurfaceMeshMaterial(color: SIMD4<Float>(1, 0, 0, 1)),
+            opacity: 0.5
+        )
+        let far = SurfaceMeshLayer(
+            id: "far",
+            mesh: makeQuadMesh(z: 0.25),
+            material: SurfaceMeshMaterial(color: SIMD4<Float>(0, 0, 1, 1)),
+            opacity: 0.5
+        )
+        let frontCamera = makeCamera()
+        let backCamera = VolumeRenderRequest.Camera(position: SIMD3<Float>(0.5, 0.5, -1),
+                                                    target: SIMD3<Float>(repeating: 0.5),
+                                                    up: SIMD3<Float>(0, 1, 0),
+                                                    fieldOfView: 45,
+                                                    projectionType: .orthographic)
+
+        try await renderer.render(layers: [near, far],
+                                  dataset: dataset,
+                                  camera: frontCamera,
+                                  targetTexture: target,
+                                  clearTarget: true)
+        let frontPixel = try centerPixel(from: target, device: device, commandQueue: queue)
+        let rebuildCount = renderer.debugDrawBufferRebuildCount
+
+        try await renderer.render(layers: [near, far],
+                                  dataset: dataset,
+                                  camera: backCamera,
+                                  targetTexture: target,
+                                  clearTarget: true)
+        let backPixel = try centerPixel(from: target, device: device, commandQueue: queue)
+
+        XCTAssertGreaterThan(frontPixel.r, frontPixel.b)
+        XCTAssertGreaterThan(backPixel.b, backPixel.r)
+        XCTAssertEqual(renderer.debugDrawBufferRebuildCount, rebuildCount)
+    }
+
     func testUnlitSurfaceMaterialBypassesDirectionalShading() async throws {
         let device = try makeTestMetalDevice()
         guard let queue = device.makeCommandQueue() else {

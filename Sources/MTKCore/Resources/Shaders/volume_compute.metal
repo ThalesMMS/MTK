@@ -165,6 +165,7 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
                                any(abs(args.params.clipPlane2.xyz) > float3(1.0e-6f));
     const bool adaptiveEnabled = ((args.optionValue & VolumeCompute::OPTION_ADAPTIVE) != 0) &&
                                  (args.params.adaptiveGradientThreshold > 1.0e-4f);
+    const bool unsignedVolume = (args.optionValue & VolumeCompute::OPTION_UNSIGNED_VOLUME) != 0;
     const bool alphaRunSkipEnabled = adaptiveEnabled;
     const float windowMinValue = float(material.voxelMinValue);
     const float windowRange = float(material.voxelMaxValue - material.voxelMinValue);
@@ -177,6 +178,16 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
     int iteration = 0;
     const int maxIterations = max(march.numSteps * 4, march.numSteps + 16);
     constexpr float kVolumeBoundsEpsilon = 1.0e-4f;
+    const bool accelerationEnabled = isDVR &&
+                                     ((args.optionValue & VolumeCompute::OPTION_USE_ACCELERATION) != 0) &&
+                                     args.accelerationTexture.get_width() > 0;
+    const uint accelerationMaxMipLevel = accelerationEnabled
+        ? args.accelerationTexture.get_num_mip_levels() - 1
+        : 0;
+    const uint accelerationCoarseMip = min(3u, accelerationMaxMipLevel);
+    float previousHuValue = 0.0f;
+    float3 previousSamplePos = float3(0.0f);
+    bool hasPreviousHuValue = false;
 
     while (distanceTravelled < totalDistance && iteration < maxIterations) {
         float stepDistance = baseStep;
@@ -199,6 +210,7 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
             if (hasTrimBounds) {
                 clipContext = VolumeCompute::prepareClipSample(samplePos, args.params);
                 if (VolumeCompute::isOutsideTrimBounds(clipContext.orientedCoordinate, args.params)) {
+                    hasPreviousHuValue = false;
                     distanceTravelled += stepDistance;
                     iteration++;
                     continue;
@@ -209,57 +221,52 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
             }
 
             if (hasClipPlanes && VolumeCompute::isClippedByPlanes(clipContext, args.params)) {
+                hasPreviousHuValue = false;
                 distanceTravelled += stepDistance;
                 iteration++;
                 continue;
             }
         }
 
-        // MPS-accelerated empty space skipping (if available)
-        const bool accelerationEnabled = ((args.optionValue & VolumeCompute::OPTION_USE_ACCELERATION) != 0);
-        if (isDVR && accelerationEnabled && args.accelerationTexture.get_width() > 0) {
-            uint maxMipLevel = args.accelerationTexture.get_num_mip_levels() - 1;
-            
-            // Two-level hierarchical DDA skipping (coarse: level 3, fine: level 1)
-            uint coarseMip = min(3u, maxMipLevel);
-            uint fineMip = min(1u, maxMipLevel);
-            
+        // Compute-built visibility-pyramid empty-space skipping (if available)
+        if (accelerationEnabled) {
             bool canSkip = ESS::sampleAccelerationStructureAtLevel(args.accelerationTexture,
-                                                                   args,
                                                                    samplePos,
-                                                                   coarseMip,
-                                                                   args.volumeSampler);
+                                                                   accelerationCoarseMip);
             if (canSkip) {
                 float exitDist = ESS::calculateBlockExitDistance(samplePos,
                                                                  ray.direction,
-                                                                 coarseMip,
+                                                                 accelerationCoarseMip,
                                                                  dimension);
                 float skipStep = max(exitDist + 1.0e-4f, baseStep);
+                hasPreviousHuValue = false;
                 distanceTravelled += skipStep;
                 distanceTravelled = min(distanceTravelled, totalDistance);
                 iteration++;
                 continue;
-            } else if (coarseMip > fineMip) {
-                canSkip = ESS::sampleAccelerationStructureAtLevel(args.accelerationTexture,
-                                                                 args,
-                                                                 samplePos,
-                                                                 fineMip,
-                                                                 args.volumeSampler);
-                if (canSkip) {
-                    float exitDist = ESS::calculateBlockExitDistance(samplePos,
-                                                                     ray.direction,
-                                                                     fineMip,
-                                                                     dimension);
-                    float skipStep = max(exitDist + 1.0e-4f, baseStep);
-                    distanceTravelled += skipStep;
-                    distanceTravelled = min(distanceTravelled, totalDistance);
-                    iteration++;
-                    continue;
-                }
             }
         }
 
-        const float huValue = VR::getDensityTrilinear(args.volumeTexture, samplePos);
+        const float huValue = VR::getDensityTrilinear(args.volumeTexture,
+                                                      args.volumeSampler,
+                                                      samplePos,
+                                                      unsignedVolume);
+        float adaptiveGradientMagnitude = 0.0f;
+        bool hasAdaptiveGradientEstimate = false;
+        if (adaptiveEnabled && hasPreviousHuValue) {
+            const float densityDifference = abs(huValue - previousHuValue);
+            const float3 voxelScale = max(dimension - float3(1.0f), float3(1.0f));
+            const float voxelDistance = length((samplePos - previousSamplePos) * voxelScale);
+            if (voxelDistance > 1.0e-4f) {
+                adaptiveGradientMagnitude = 2.0f * densityDifference / voxelDistance;
+                hasAdaptiveGradientEstimate = true;
+            }
+        }
+        if (adaptiveEnabled) {
+            previousHuValue = huValue;
+            previousSamplePos = samplePos;
+            hasPreviousHuValue = true;
+        }
         const short hu = VR::decodeInt16SampleToShort(huValue);
         float densityWindow = clamp((huValue - windowMinValue) * invWindowRange, 0.0f, 1.0f);
         float densityDataset = clamp((huValue - datasetMinValue) * invDatasetRange, 0.0f, 1.0f);
@@ -293,15 +300,18 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
 
         float3 gradient = float3(0.0f);
         const bool need2DTF = (material.use2DTF != 0);
-        const bool needsGradientBeforeOpacity = adaptiveEnabled || need2DTF || (!isDVR && lightingEnabled);
+        const bool needsGradientBeforeOpacity = need2DTF || (!isDVR && lightingEnabled);
         if (needsGradientBeforeOpacity) {
-            gradient = VR::calGradientWithStep(args.volumeTexture, samplePos, gradientStep);
+            gradient = VR::calGradientWithStep(args.volumeTexture,
+                                               args.volumeSampler,
+                                               samplePos,
+                                               gradientStep,
+                                               unsignedVolume);
         }
 
-        if (adaptiveEnabled) {
-            float gradMagnitude = length(gradient);
+        if (adaptiveEnabled && hasAdaptiveGradientEstimate) {
             float threshold = max(args.params.adaptiveGradientThreshold, 1.0e-4f);
-            float normalizedGradient = clamp(gradMagnitude / threshold, 0.0f, 1.0f);
+            float normalizedGradient = clamp(adaptiveGradientMagnitude / threshold, 0.0f, 1.0f);
             float adaptFactor = mix(2.0f, 0.5f, normalizedGradient);
             stepDistance = baseStep * adaptFactor;
         }
@@ -379,6 +389,7 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
             if (zeroCount >= kZeroRun) {
                 distanceTravelled += baseStep * float(kZeroSkip);
                 distanceTravelled = min(distanceTravelled, totalDistance);
+                hasPreviousHuValue = false;
                 zeroCount = 0;
             }
             distanceTravelled += stepDistance;
@@ -390,7 +401,11 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
 
         if (lightingEnabled) {
             if (!needsGradientBeforeOpacity) {
-                gradient = VR::calGradientWithStep(args.volumeTexture, samplePos, gradientStep);
+                gradient = VR::calGradientWithStep(args.volumeTexture,
+                                                   args.volumeSampler,
+                                                   samplePos,
+                                                   gradientStep,
+                                                   unsignedVolume);
             }
             float lengthSq = dot(gradient, gradient);
             float3 normal = lengthSq > 1.0e-6f

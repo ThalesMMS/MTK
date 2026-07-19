@@ -429,9 +429,9 @@ package final class InteractiveOutputTextureLifecycle: @unchecked Sendable {
         )
     }
 
-    private static func logEvent(_ message: String) {
+    private static func logEvent(_ message: @autoclosure () -> String) {
         guard Logger.performanceLoggingEnabled else { return }
-        Logger.info("[MTK3DInteraction] \(message)",
+        Logger.info("[MTK3DInteraction] \(message())",
                     category: "com.mtk.volumerendering.MetalVolumeRenderingAdapter")
     }
 

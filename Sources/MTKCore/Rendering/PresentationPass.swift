@@ -240,12 +240,14 @@ public struct PresentationPass: Sendable {
             throw PresentationPassError.blitEncoderCreationFailed
         }
 
-        let commandBufferID = Self.objectIdentifier(commandBuffer)
-        let commandQueueID = Self.objectIdentifier(commandQueue)
-        let sourceTextureID = Self.objectIdentifier(sourceTexture)
-        let drawableTextureID = Self.objectIdentifier(drawable.texture)
+        let interactionIDs = Logger.performanceLoggingEnabled
+            ? (commandBuffer: Self.objectIdentifier(commandBuffer),
+               commandQueue: Self.objectIdentifier(commandQueue),
+               sourceTexture: Self.objectIdentifier(sourceTexture),
+               drawableTexture: Self.objectIdentifier(drawable.texture))
+            : nil
         Self.logInteractionInfo(
-            "[MTK3DInteraction] presentation.copy.commit source=\(metadata.debugSource ?? "unknown") token=\(metadata.debugPresentationToken ?? "nil") frameIndex=\(Self.describe(metadata.debugFrameIndex)) slotID=\(Self.describe(lease?.debugSlotID)) leaseID=\(lease?.leaseIdentifier.uuidString ?? "nil") commandBufferID=\(commandBufferID) commandQueueID=\(commandQueueID) sourceTextureID=\(sourceTextureID) drawableTextureID=\(drawableTextureID) sourceLabel=\(sourceTexture.label ?? "nil") source=\(sourceTexture.width)x\(sourceTexture.height) drawable=\(drawable.texture.width)x\(drawable.texture.height) quality=\(metadata.quality) renderMode=\(metadata.renderMode)"
+            "[MTK3DInteraction] presentation.copy.commit source=\(metadata.debugSource ?? "unknown") token=\(metadata.debugPresentationToken ?? "nil") frameIndex=\(Self.describe(metadata.debugFrameIndex)) slotID=\(Self.describe(lease?.debugSlotID)) leaseID=\(lease?.leaseIdentifier.uuidString ?? "nil") commandBufferID=\(interactionIDs?.commandBuffer ?? "nil") commandQueueID=\(interactionIDs?.commandQueue ?? "nil") sourceTextureID=\(interactionIDs?.sourceTexture ?? "nil") drawableTextureID=\(interactionIDs?.drawableTexture ?? "nil") sourceLabel=\(sourceTexture.label ?? "nil") source=\(sourceTexture.width)x\(sourceTexture.height) drawable=\(drawable.texture.width)x\(drawable.texture.height) quality=\(metadata.quality) renderMode=\(metadata.renderMode)"
         )
         encoder.copy(from: sourceTexture,
                      sourceSlice: 0,
@@ -320,7 +322,7 @@ public struct PresentationPass: Sendable {
                 )
             }
             Self.logInteractionInfo(
-                "[MTK3DInteraction] presentation.copy.complete source=\(metadata.debugSource ?? "unknown") token=\(metadata.debugPresentationToken ?? "nil") frameIndex=\(Self.describe(metadata.debugFrameIndex)) slotID=\(Self.describe(lease?.debugSlotID)) leaseID=\(lease?.leaseIdentifier.uuidString ?? "nil") commandBufferID=\(commandBufferID) commandQueueID=\(commandQueueID) sourceTextureID=\(sourceTextureID) drawableTextureID=\(drawableTextureID) status=completed sourceLabel=\(sourceTexture.label ?? "nil") drawable=\(drawableWidth)x\(drawableHeight) pixelFormat=\(sourceTexture.pixelFormat)"
+                "[MTK3DInteraction] presentation.copy.complete source=\(metadata.debugSource ?? "unknown") token=\(metadata.debugPresentationToken ?? "nil") frameIndex=\(Self.describe(metadata.debugFrameIndex)) slotID=\(Self.describe(lease?.debugSlotID)) leaseID=\(lease?.leaseIdentifier.uuidString ?? "nil") commandBufferID=\(interactionIDs?.commandBuffer ?? "nil") commandQueueID=\(interactionIDs?.commandQueue ?? "nil") sourceTextureID=\(interactionIDs?.sourceTexture ?? "nil") drawableTextureID=\(interactionIDs?.drawableTexture ?? "nil") status=completed sourceLabel=\(sourceTexture.label ?? "nil") drawable=\(drawableWidth)x\(drawableHeight) pixelFormat=\(sourceTexture.pixelFormat)"
             )
             onCommandBufferCompleted?()
         }

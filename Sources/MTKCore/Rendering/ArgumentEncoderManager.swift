@@ -24,6 +24,8 @@ public final class ArgumentEncoderManager {
     private var textures: [Int: ObjectIdentifier] = [:]
     private var textureObjects: [Int: MTLTexture] = [:]
     private var needsUpdate: [Int: Bool] = [:]
+    private var volumeDensityViewSourceID: ObjectIdentifier?
+    private var volumeDensityView: MTLTexture?
 
     var currentPxByteSize: Int = 0
     var currentOutputWidth: Int = 0
@@ -158,6 +160,56 @@ public final class ArgumentEncoderManager {
         } else if debugOptions.isDebugMode {
             print("arg texture index:\(index) (\(argumentIndex.description)), \(String(describing: type(of: texture))), reuse")
         }
+    }
+
+    @discardableResult
+    func encodeFilterableVolumeTexture(_ texture: MTLTexture) throws -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+
+        let densityTexture: MTLTexture
+        let isUnsigned: Bool
+        switch texture.pixelFormat {
+        case .r16Snorm:
+            densityTexture = texture
+            isUnsigned = false
+        case .r16Unorm:
+            densityTexture = texture
+            isUnsigned = true
+        case .r16Sint:
+            let sourceID = ObjectIdentifier(texture as AnyObject)
+            if volumeDensityViewSourceID == sourceID, let cachedView = volumeDensityView {
+                densityTexture = cachedView
+            } else {
+                guard let view = texture.makeTextureView(pixelFormat: .r16Snorm) else {
+                    throw VolumeDensityTextureBindingError.viewCreationFailed
+                }
+                view.label = "\(texture.label ?? "VolumeTexture3D").DensitySNORM"
+                volumeDensityViewSourceID = sourceID
+                volumeDensityView = view
+                densityTexture = view
+            }
+            isUnsigned = false
+        case .r16Uint:
+            let sourceID = ObjectIdentifier(texture as AnyObject)
+            if volumeDensityViewSourceID == sourceID, let cachedView = volumeDensityView {
+                densityTexture = cachedView
+            } else {
+                guard let view = texture.makeTextureView(pixelFormat: .r16Unorm) else {
+                    throw VolumeDensityTextureBindingError.viewCreationFailed
+                }
+                view.label = "\(texture.label ?? "VolumeTexture3D").DensityUNORM"
+                volumeDensityViewSourceID = sourceID
+                volumeDensityView = view
+                densityTexture = view
+            }
+            isUnsigned = true
+        default:
+            throw VolumeDensityTextureBindingError.unsupportedPixelFormat(texture.pixelFormat)
+        }
+
+        encodeTexture(densityTexture, argumentIndex: .mainTexture)
+        return isUnsigned
     }
 
     public func encodeTexture(_ texture: MTLTexture?, argumentIndex: ArgumentIndex) {
@@ -477,6 +529,13 @@ public final class ArgumentEncoderManager {
 
         return buffers[argumentIndex.rawValue]
     }
+
+    func debugBoundTexture(for argumentIndex: ArgumentIndex) -> MTLTexture? {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+
+        return textureObjects[argumentIndex.rawValue]
+    }
 #endif
 
     private func makeSampler(filter: MTLSamplerMinMagFilter) -> MTLSamplerState? {
@@ -484,9 +543,9 @@ public final class ArgumentEncoderManager {
         descriptor.minFilter = filter
         descriptor.magFilter = filter
         descriptor.mipFilter = .notMipmapped
-        descriptor.sAddressMode = .clampToZero
-        descriptor.tAddressMode = .clampToZero
-        descriptor.rAddressMode = .clampToZero
+        descriptor.sAddressMode = .clampToEdge
+        descriptor.tAddressMode = .clampToEdge
+        descriptor.rAddressMode = .clampToEdge
         descriptor.normalizedCoordinates = true
         descriptor.supportArgumentBuffers = true
         descriptor.lodMinClamp = 0

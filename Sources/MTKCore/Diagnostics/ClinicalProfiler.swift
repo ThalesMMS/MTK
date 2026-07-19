@@ -7,9 +7,13 @@
 
 import Foundation
 @preconcurrency import Metal
+#if canImport(Darwin)
+import Darwin
+#endif
 
 public final class ClinicalProfiler: @unchecked Sendable {
     public static let shared = ClinicalProfiler()
+    static let maximumSampleCount = 10_000
 
     private let lock = NSLock()
     private var activeSession: ProfilingSession?
@@ -19,7 +23,7 @@ public final class ClinicalProfiler: @unchecked Sendable {
     public var isRecordingEnabled: Bool {
         lock.lock()
         defer { lock.unlock() }
-        return activeSession != nil || Logger.performanceLoggingEnabled
+        return activeSession.map { $0.samples.count < Self.maximumSampleCount } ?? false
     }
 
     @discardableResult
@@ -44,7 +48,7 @@ public final class ClinicalProfiler: @unchecked Sendable {
                              viewport: ProfilingViewportContext = .unknown,
                              routeName: String? = nil,
                              metadata: [String: String]? = nil,
-                             device: (any MTLDevice)? = nil) {
+                             device _: (any MTLDevice)? = nil) {
         let mergedMetadata = Self.mergedMetadata(metadata, routeName: routeName)
         recordSample(
             ProfilingSample(stageType: stage,
@@ -52,17 +56,19 @@ public final class ClinicalProfiler: @unchecked Sendable {
                             gpuTimeMilliseconds: gpuTime,
                             memoryEstimateBytes: memory,
                             viewportContext: viewport,
-                            metadata: mergedMetadata),
-            environment: device.map { ProfilingEnvironment.current(device: $0) }
+                            metadata: mergedMetadata)
         )
     }
 
     public func recordSample(_ sample: ProfilingSample,
-                             environment: ProfilingEnvironment? = nil) {
+                             environment _: ProfilingEnvironment? = nil) {
         lock.lock()
         defer { lock.unlock() }
 
-        ensureSessionLocked(environment: environment)
+        guard let sampleCount = activeSession?.samples.count,
+              sampleCount < Self.maximumSampleCount else {
+            return
+        }
         activeSession?.addSample(sample)
     }
 
@@ -107,6 +113,9 @@ public final class ClinicalProfiler: @unchecked Sendable {
     func recordMemorySnapshot(from resourceManager: VolumeResourceManager,
                               viewport: ProfilingViewportContext = .unknown,
                               metadata: [String: String] = [:]) {
+        guard isRecordingEnabled else {
+            return
+        }
         // VolumeResourceManager.resourceMetrics() is a best-effort diagnostic snapshot.
         // It may observe slightly inconsistent counts during concurrent rendering; adding
         // synchronization here would put profiler reads on the render hot path.
@@ -119,8 +128,13 @@ public final class ClinicalProfiler: @unchecked Sendable {
         mergedMetadata["transferTextureBytes"] = String(metrics.breakdown.transferTextures)
         mergedMetadata["outputTextureBytes"] = String(metrics.breakdown.outputTextures)
         mergedMetadata["totalBytes"] = String(metrics.breakdown.total)
+        mergedMetadata["metalAllocatedBytes"] = String(metrics.breakdown.total)
+        if let peakRSSBytes = Self.peakResidentMemoryBytes() {
+            mergedMetadata["peakRSSBytes"] = String(peakRSSBytes)
+        }
         if let uploadPeakMemoryBytes = metrics.uploadPeakMemoryBytes {
             mergedMetadata["uploadPeakMemoryBytes"] = String(uploadPeakMemoryBytes)
+            mergedMetadata["metalPeakBytes"] = String(uploadPeakMemoryBytes)
         }
 
         recordSample(stage: .memorySnapshot,
@@ -135,12 +149,6 @@ public final class ClinicalProfiler: @unchecked Sendable {
         max(0, (end - start) * 1000.0)
     }
 
-    private func ensureSessionLocked(environment: ProfilingEnvironment?) {
-        if activeSession == nil {
-            activeSession = ProfilingSession(environment: environment ?? .unknown)
-        }
-    }
-
     private static func mergedMetadata(_ metadata: [String: String]?,
                                        routeName: String?) -> [String: String]? {
         guard routeName != nil || metadata != nil else {
@@ -151,5 +159,15 @@ public final class ClinicalProfiler: @unchecked Sendable {
             merged["routeName"] = routeName
         }
         return merged
+    }
+
+    private static func peakResidentMemoryBytes() -> Int? {
+#if canImport(Darwin)
+        var usage = rusage()
+        guard getrusage(RUSAGE_SELF, &usage) == 0 else { return nil }
+        return Int(usage.ru_maxrss)
+#else
+        return nil
+#endif
     }
 }

@@ -10,6 +10,28 @@ import XCTest
 
 final class VolumeDatasetFactoryTests: XCTestCase {
 
+    func test_directInitializers_withoutProvenanceFlags_defaultToUnverified() {
+        let dimensions = VolumeDimensions(width: 1, height: 1, depth: 1)
+        let spacing = VolumeSpacing(x: 1, y: 1, z: 1)
+        let imageData = ImageData3D(
+            dimensions: dimensions,
+            spacing: spacing,
+            orientation: .canonical,
+            pixelFormat: .int16Signed
+        )
+        let dataset = VolumeDataset(
+            data: voxelData([0]),
+            dimensions: dimensions,
+            spacing: spacing,
+            pixelFormat: .int16Signed
+        )
+
+        XCTAssertFalse(imageData.isInPlaneSpacingCalibrated)
+        XCTAssertFalse(imageData.isOrientationVerified)
+        XCTAssertFalse(dataset.isInPlaneSpacingCalibrated)
+        XCTAssertFalse(dataset.isOrientationVerified)
+    }
+
     func test_directDTOInput_mapsAllFieldsToVolumeDataset() {
         let voxels = voxelData([-12, 42, 512, 1_024])
         let dimensions = VolumetricDimensions(width: 2, height: 2, depth: 1)
@@ -40,6 +62,8 @@ final class VolumeDatasetFactoryTests: XCTestCase {
             orientation: orientation,
             recommendedWindow: 0...400
         )
+        XCTAssertFalse(dataset.isInPlaneSpacingCalibrated)
+        XCTAssertFalse(dataset.isOrientationVerified)
     }
 
     func test_volumetricSeriesData_preservesLoaderProvidedVolumeContract() {
@@ -69,6 +93,31 @@ final class VolumeDatasetFactoryTests: XCTestCase {
             orientation: seriesData.orientation,
             recommendedWindow: seriesData.recommendedWindow
         )
+        XCTAssertFalse(seriesData.isInPlaneSpacingCalibrated)
+        XCTAssertFalse(seriesData.isOrientationVerified)
+        XCTAssertFalse(dataset.isInPlaneSpacingCalibrated)
+        XCTAssertFalse(dataset.isOrientationVerified)
+    }
+
+    func test_explicitCalibrationFlags_preservesProvidedValues() {
+        let dataset = VolumeDatasetFactory.makeVolumeDataset(
+            voxels: voxelData([0]),
+            dimensions: VolumetricDimensions(width: 1, height: 1, depth: 1),
+            spacing: VolumetricSpacing(x: 1, y: 1, z: 1),
+            isInPlaneSpacingCalibrated: true,
+            isOrientationVerified: true,
+            pixelFormat: .int16Signed,
+            intensityRange: 0...0,
+            orientation: VolumetricOrientation(
+                row: SIMD3<Float>(1, 0, 0),
+                column: SIMD3<Float>(0, 1, 0),
+                origin: .zero
+            ),
+            recommendedWindow: nil
+        )
+
+        XCTAssertTrue(dataset.isInPlaneSpacingCalibrated)
+        XCTAssertTrue(dataset.isOrientationVerified)
     }
 
     func test_providerBoundary_acceptsAppSideAdapterWithMTKDTOs() {

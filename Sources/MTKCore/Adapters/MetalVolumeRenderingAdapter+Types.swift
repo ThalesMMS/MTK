@@ -61,10 +61,10 @@ public struct ExtendedRenderingState: Sendable {
     /// Optional HU gate that filters out voxels outside this raw intensity range.
     var huGate: ClosedRange<Int32>?
 
-    /// Whether adaptive sampling is enabled (adjusts step size based on gradient).
+    /// Whether adaptive sampling is enabled (adjusts step size from raywise intensity variation).
     var adaptiveEnabled: Bool = false
 
-    /// Gradient threshold for adaptive sampling trigger.
+    /// Estimated intensity-gradient threshold for adaptive sampling.
     var adaptiveThreshold: Float = 0
 
     /// Amount of temporal jitter to reduce aliasing artifacts.

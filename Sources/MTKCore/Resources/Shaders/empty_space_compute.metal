@@ -2,10 +2,10 @@
 //  empty_space_compute.metal
 //  MTK
 //
-//  Compute kernels for building min-max mipmap acceleration structures used in
-//  empty space skipping during volumetric ray marching. These kernels replace
-//  the previous MPS-based approach that incorrectly attempted 2D texture views
-//  from 3D textures.
+//  Compute kernels for building min-max mipmaps and cached visibility pyramids
+//  used in empty space skipping during volumetric ray marching. These kernels
+//  replace the previous MPS-based approach that incorrectly attempted 2D texture
+//  views from 3D textures.
 //
 //  Thales Matheus Mendonca Santos — February 2026
 //
@@ -108,4 +108,81 @@ kernel void computeMinMaxDownsample(texture3d<half, access::read> source [[textu
     }
 
     destination.write(half4(minVal, maxVal, 0.0h, 0.0h), gid);
+}
+
+/// Bake transfer-function visibility for one min-max mip level.
+///
+/// The ray marcher consumes the resulting r8Unorm pyramid with one discrete read per
+/// hierarchy level. Transfer-function evaluation therefore runs only when the cached
+/// visibility signature changes, rather than for every ray step.
+kernel void computeEmptySpaceVisibility(
+    texture3d<half, access::read> minMaxSource [[texture(0)]],
+    texture3d<half, access::write> visibilityDestination [[texture(1)]],
+    texture2d<float, access::sample> transferTextureCh1 [[texture(2)]],
+    texture2d<float, access::sample> transferTextureCh2 [[texture(3)]],
+    texture2d<float, access::sample> transferTextureCh3 [[texture(4)]],
+    texture2d<float, access::sample> transferTextureCh4 [[texture(5)]],
+    constant float4 &channelWeights [[buffer(0)]],
+    constant float &opacityThreshold [[buffer(1)]],
+    constant float4 &intensityParameters [[buffer(2)]],
+    constant float2 &densityRange [[buffer(3)]],
+    constant int2 &gateRange [[buffer(4)]],
+    constant int &useHuGate [[buffer(5)]],
+    device atomic_uint &containsTransparentBlocks [[buffer(6)]],
+    constant uint &collectSkippingFlag [[buffer(7)]],
+    uint3 gid [[thread_position_in_grid]])
+{
+    const uint width = visibilityDestination.get_width();
+    const uint height = visibilityDestination.get_height();
+    const uint depth = visibilityDestination.get_depth();
+    if (gid.x >= width || gid.y >= height || gid.z >= depth) {
+        return;
+    }
+
+    const half2 minMaxHalf = minMaxSource.read(gid).rg;
+    const float lo = float(minMaxHalf.r);
+    const float hi = float(minMaxHalf.g);
+    constexpr sampler transferSampler(coord::normalized,
+                                      address::clamp_to_edge,
+                                      filter::linear);
+
+    bool transparent = true;
+    const uint sampleCount = lo >= hi ? 1 : 5;
+    const float samplePositions[5] = {0.0f, 0.25f, 0.5f, 0.75f, 1.0f};
+    for (uint sampleIndex = 0; sampleIndex < sampleCount && transparent; ++sampleIndex) {
+        const float density = mix(lo, hi, samplePositions[sampleIndex]);
+        const float huValue = intensityParameters.x + density * intensityParameters.y;
+        const float densityWindow = clamp((huValue - intensityParameters.z) * intensityParameters.w,
+                                          0.0f,
+                                          1.0f);
+        if (densityWindow <= densityRange.x || densityWindow > densityRange.y) {
+            continue;
+        }
+        if (useHuGate != 0 && (huValue < float(gateRange.x) || huValue > float(gateRange.y))) {
+            continue;
+        }
+
+        const float2 coordinate = float2(density, 0.5f);
+        float combinedAlpha = 0.0f;
+        if (channelWeights.x > 0.0001f) {
+            combinedAlpha += transferTextureCh1.sample(transferSampler, coordinate).a * channelWeights.x;
+        }
+        if (channelWeights.y > 0.0001f) {
+            combinedAlpha += transferTextureCh2.sample(transferSampler, coordinate).a * channelWeights.y;
+        }
+        if (channelWeights.z > 0.0001f) {
+            combinedAlpha += transferTextureCh3.sample(transferSampler, coordinate).a * channelWeights.z;
+        }
+        if (channelWeights.w > 0.0001f) {
+            combinedAlpha += transferTextureCh4.sample(transferSampler, coordinate).a * channelWeights.w;
+        }
+        if (clamp(combinedAlpha, 0.0f, 1.0f) * densityWindow > opacityThreshold) {
+            transparent = false;
+        }
+    }
+
+    visibilityDestination.write(half4(transparent ? 1.0h : 0.0h), gid);
+    if (collectSkippingFlag != 0 && transparent) {
+        atomic_store_explicit(&containsTransparentBlocks, 1u, memory_order_relaxed);
+    }
 }

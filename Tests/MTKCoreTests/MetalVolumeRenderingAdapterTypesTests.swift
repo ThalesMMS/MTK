@@ -342,6 +342,97 @@ final class DatasetIdentityTests: XCTestCase {
         XCTAssertNotEqual(initialIdentity, mutatedIdentity)
         XCTAssertEqual(initialIdentity.byteCount, byteCount)
     }
+
+    func test_contentIdentity_differsForDifferentIntensityRanges() {
+        let dimensions = VolumeDimensions(width: 2, height: 2, depth: 2)
+        let data = Data(repeating: 0, count: dimensions.voxelCount * MemoryLayout<UInt16>.size)
+        let datasetA = VolumeDataset(
+            data: data,
+            dimensions: dimensions,
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+            pixelFormat: .int16Unsigned,
+            intensityRange: 0...255
+        )
+        let datasetB = VolumeDataset(
+            data: data,
+            dimensions: dimensions,
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+            pixelFormat: .int16Unsigned,
+            intensityRange: 0...4_095
+        )
+
+        XCTAssertNotEqual(
+            DatasetIdentity.Content(dataset: datasetA),
+            DatasetIdentity.Content(dataset: datasetB)
+        )
+    }
+
+    func test_cachedContentIdentity_revalidatesEquivalentAndChangedData() {
+        let dimensions = VolumeDimensions(width: 2, height: 2, depth: 2)
+        let values = Array<UInt16>(0..<UInt16(dimensions.voxelCount))
+        let datasetA = VolumeDataset(
+            data: values.withUnsafeBytes { Data($0) },
+            dimensions: dimensions,
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+            pixelFormat: .int16Unsigned
+        )
+        let datasetB = VolumeDataset(
+            data: Array(values).withUnsafeBytes { Data($0) },
+            dimensions: dimensions,
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+            pixelFormat: .int16Unsigned
+        )
+        let datasetC = VolumeDataset(
+            data: Array(values.reversed()).withUnsafeBytes { Data($0) },
+            dimensions: dimensions,
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+            pixelFormat: .int16Unsigned
+        )
+        let identity = DatasetIdentity.CachedContent(dataset: datasetA)
+
+        XCTAssertTrue(identity.matches(dataset: datasetA))
+        XCTAssertTrue(identity.matches(dataset: datasetB))
+        XCTAssertFalse(identity.matches(dataset: datasetC))
+    }
+
+    func test_cachedContentIdentity_rejectsUnsampledChangeAfterAliasRelease() {
+        let dimensions = VolumeDimensions(width: 100, height: 100, depth: 60)
+        let byteCount = dimensions.voxelCount * MemoryLayout<UInt16>.size
+        let originalData = Data(repeating: 0, count: byteCount)
+        let dataset = VolumeDataset(
+            data: originalData,
+            dimensions: dimensions,
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+            pixelFormat: .int16Unsigned
+        )
+        let identity = DatasetIdentity.CachedContent(dataset: dataset)
+
+        do {
+            let equivalentAlias = VolumeDataset(
+                data: Data(originalData),
+                dimensions: dimensions,
+                spacing: dataset.spacing,
+                pixelFormat: dataset.pixelFormat
+            )
+            XCTAssertTrue(identity.matches(dataset: equivalentAlias))
+        }
+
+        var changedData = originalData
+        changedData[65_537] = 1
+        let changedDataset = VolumeDataset(
+            data: changedData,
+            dimensions: dimensions,
+            spacing: dataset.spacing,
+            pixelFormat: dataset.pixelFormat
+        )
+
+        XCTAssertEqual(
+            DatasetIdentity.Content(dataset: dataset),
+            DatasetIdentity.Content(dataset: changedDataset),
+            "Fixture change must remain outside the sampled fingerprint positions"
+        )
+        XCTAssertFalse(identity.matches(dataset: changedDataset))
+    }
 }
 
 // MARK: - RenderSnapshot (moved to +Types.swift)

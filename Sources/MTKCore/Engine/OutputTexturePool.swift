@@ -45,6 +45,7 @@ final class OutputTexturePool {
 
     private var entries: [ObjectIdentifier: PooledTexture] = [:]
     private var activeLeaseTextureIDs: Set<ObjectIdentifier> = []
+    private var preferredKey: OutputTextureKey?
     private let poolIdentifier = UUID()
     private let stateLock = NSLock()
     private let featureFlags: FeatureFlags
@@ -122,7 +123,7 @@ final class OutputTexturePool {
     func release(texture: any MTLTexture) {
         let id = ObjectIdentifier(texture as AnyObject)
         let estimatedBytes: Int?
-        let didRelease: Bool
+        let action: String?
 
         stateLock.lock()
         guard var entry = entries[id] else {
@@ -147,20 +148,25 @@ final class OutputTexturePool {
         }
 
         if entry.inUse {
-            entry.inUse = false
-            entries[id] = entry
             activeLeaseTextureIDs.remove(id)
-            didRelease = true
+            if entry.key == preferredKey {
+                entry.inUse = false
+                entries[id] = entry
+                action = "released"
+            } else {
+                entries.removeValue(forKey: id)
+                action = "releasedAndEvicted"
+            }
         } else {
-            didRelease = false
+            action = nil
         }
         stateLock.unlock()
 
-        guard didRelease, let estimatedBytes else {
+        guard let action, let estimatedBytes else {
             return
         }
 
-        recordLifecycleEvent(action: "released",
+        recordLifecycleEvent(action: action,
                              estimatedBytes: estimatedBytes,
                              textureID: id,
                              leaseID: nil,
@@ -276,6 +282,12 @@ final class OutputTexturePool {
         var action: String
     }
 
+    private struct Eviction {
+        var textureID: ObjectIdentifier
+        var estimatedBytes: Int
+        var device: any MTLDevice
+    }
+
     private func acquireTexture(width: Int,
                                 height: Int,
                                 pixelFormat: MTLPixelFormat,
@@ -286,21 +298,31 @@ final class OutputTexturePool {
         }
 
         let key = OutputTextureKey(width: width, height: height, pixelFormat: pixelFormat)
+        let cachedAcquisition: Acquisition?
+        let cachedEvictions: [Eviction]
         stateLock.lock()
         if let existingID = entries.first(where: { $0.value.key == key && !$0.value.inUse })?.key,
            var entry = entries[existingID] {
+            preferredKey = key
+            cachedEvictions = evictIdleEntries(except: key)
             entry.inUse = true
             entries[existingID] = entry
             if reserveLease {
                 activeLeaseTextureIDs.insert(existingID)
             }
-            stateLock.unlock()
-            return Acquisition(texture: entry.texture,
-                               textureID: existingID,
-                               estimatedBytes: entry.estimatedBytes,
-                               action: "reused")
+            cachedAcquisition = Acquisition(texture: entry.texture,
+                                            textureID: existingID,
+                                            estimatedBytes: entry.estimatedBytes,
+                                            action: "reused")
+        } else {
+            cachedAcquisition = nil
+            cachedEvictions = []
         }
         stateLock.unlock()
+        recordEvictions(cachedEvictions)
+        if let cachedAcquisition {
+            return cachedAcquisition
+        }
 
         // StorageModePolicy.md: output render targets are GPU-only and private.
         guard let texture = OutputTextureFactory.makeTexture(
@@ -317,6 +339,8 @@ final class OutputTexturePool {
         let estimatedBytes = ResourceMemoryEstimator.estimate(for: texture)
 
         stateLock.lock()
+        preferredKey = key
+        let allocationEvictions = evictIdleEntries(except: key)
         let acquisition: Acquisition
         if let existingID = entries.first(where: { $0.value.key == key && !$0.value.inUse })?.key,
            var entry = entries[existingID] {
@@ -343,8 +367,35 @@ final class OutputTexturePool {
                                       action: "newAllocation")
         }
         stateLock.unlock()
+        recordEvictions(allocationEvictions)
 
         return acquisition
+    }
+
+    /// Called while `stateLock` is held.
+    private func evictIdleEntries(except key: OutputTextureKey) -> [Eviction] {
+        let evictedIDs = entries.compactMap { id, entry in
+            entry.key != key && entry.inUse == false ? id : nil
+        }
+        return evictedIDs.compactMap { id in
+            guard let entry = entries.removeValue(forKey: id) else {
+                return nil
+            }
+            activeLeaseTextureIDs.remove(id)
+            return Eviction(textureID: id,
+                            estimatedBytes: entry.estimatedBytes,
+                            device: entry.texture.device)
+        }
+    }
+
+    private func recordEvictions(_ evictions: [Eviction]) {
+        for eviction in evictions {
+            recordLifecycleEvent(action: "evicted.idleResize",
+                                 estimatedBytes: eviction.estimatedBytes,
+                                 textureID: eviction.textureID,
+                                 leaseID: nil,
+                                 device: eviction.device)
+        }
     }
 
     private func recordPresentation(for lease: OutputTextureLease) {
@@ -397,11 +448,16 @@ final class OutputTexturePool {
         if var entry = entries[textureID] {
             estimatedBytes = entry.estimatedBytes
             if entry.inUse {
-                entry.inUse = false
-                entries[textureID] = entry
                 activeLeaseTextureIDs.remove(textureID)
                 debugLeaseReleasedCountStorage += 1
-                action = "released"
+                if entry.key == preferredKey {
+                    entry.inUse = false
+                    entries[textureID] = entry
+                    action = "released"
+                } else {
+                    entries.removeValue(forKey: textureID)
+                    action = "releasedAndEvicted"
+                }
             } else {
                 action = "release.duplicateIgnored"
             }

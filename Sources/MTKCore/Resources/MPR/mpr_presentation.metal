@@ -17,7 +17,7 @@ struct MPRPresentationUniforms {
     int flipHorizontal;
     int flipVertical;
     int bitShift;
-    int _pad0;
+    int transposeUV;
     float viewportZoom;
     float viewportPanX;
     float viewportPanY;
@@ -55,13 +55,13 @@ struct MPRLabelmapOverlayUniforms {
     float _pad3;
     int flipHorizontal;
     int flipVertical;
+    int transposeUV;
     float viewportZoom;
     float viewportPanX;
     float viewportPanY;
     float viewportRotationCos;
     float viewportRotationSin;
     float sourceAspectRatio;
-    float _pad5;
     float _pad6;
     float imageOriginX;
     float imageOriginY;
@@ -82,13 +82,13 @@ struct MPRScalarOverlayUniforms {
     float _pad2;
     int flipHorizontal;
     int flipVertical;
+    int transposeUV;
     float viewportZoom;
     float viewportPanX;
     float viewportPanY;
     float viewportRotationCos;
     float viewportRotationSin;
     float sourceAspectRatio;
-    float _pad4;
     float _pad5;
     float imageOriginX;
     float imageOriginY;
@@ -116,7 +116,9 @@ inline float2 inverseViewportTransform(float2 outputUV,
                                        float rotationCos,
                                        float rotationSin,
                                        float sourceAspectRatio) {
-    float safeZoom = max(zoom, 1.0f);
+    // Keep this inverse identical to MPRViewportTransform's aspect-aware rotated-bounds mapping.
+    // 0.25 mirrors MPRViewportTransform.minimumZoom (zoom-out below fit is allowed).
+    float safeZoom = max(zoom, 0.25f);
     float safeSourceAspectRatio = max(sourceAspectRatio, 1e-6f);
     float2 sourceSize = float2(safeSourceAspectRatio, 1.0f);
     float2 rotatedBounds = float2(
@@ -159,6 +161,7 @@ inline float2 imageCoordinates(float2 outputUV,
 inline float2 sourceCoordinates(float2 outputUV,
                                 int flipHorizontal,
                                 int flipVertical,
+                                int transposeUV,
                                 float viewportZoom,
                                 float2 viewportPan,
                                 float viewportRotationCos,
@@ -167,10 +170,6 @@ inline float2 sourceCoordinates(float2 outputUV,
                                 float2 imageOrigin,
                                 float2 imageSize) {
     float2 imageUV = imageCoordinates(outputUV, imageOrigin, imageSize);
-    if (!isInUnitSquare(imageUV)) {
-        return imageUV;
-    }
-
     float2 sourceUV = inverseViewportTransform(imageUV,
                                                viewportZoom,
                                                viewportPan,
@@ -187,6 +186,9 @@ inline float2 sourceCoordinates(float2 outputUV,
     if (flipVertical != 0) {
         sourceUV.y = 1.0f - sourceUV.y;
     }
+    if (transposeUV != 0) {
+        sourceUV = sourceUV.yx;
+    }
     return sourceUV;
 }
 
@@ -197,6 +199,7 @@ inline float2 sourceCoordinates(uint2 outputGid,
     return sourceCoordinates(normalizedCoordinates(outputGid, width, height),
                              uniforms.flipHorizontal,
                              uniforms.flipVertical,
+                             uniforms.transposeUV,
                              uniforms.viewportZoom,
                              float2(uniforms.viewportPanX, uniforms.viewportPanY),
                              uniforms.viewportRotationCos,
@@ -213,6 +216,7 @@ inline float2 sourceCoordinates(uint2 outputGid,
     return sourceCoordinates(normalizedCoordinates(outputGid, width, height),
                              uniforms.flipHorizontal,
                              uniforms.flipVertical,
+                             uniforms.transposeUV,
                              uniforms.viewportZoom,
                              float2(uniforms.viewportPanX, uniforms.viewportPanY),
                              uniforms.viewportRotationCos,
@@ -229,6 +233,7 @@ inline float2 sourceCoordinates(uint2 outputGid,
     return sourceCoordinates(normalizedCoordinates(outputGid, width, height),
                              uniforms.flipHorizontal,
                              uniforms.flipVertical,
+                             uniforms.transposeUV,
                              uniforms.viewportZoom,
                              float2(uniforms.viewportPanX, uniforms.viewportPanY),
                              uniforms.viewportRotationCos,

@@ -10,6 +10,11 @@ import Foundation
 @preconcurrency import Metal
 import simd
 
+enum VolumeRenderOptionBits {
+    static let adaptiveStepping: UInt16 = 1 << 2
+    static let acceleration: UInt16 = 1 << 4
+}
+
 struct VolumeRaycastPassRenderingParameters: Sendable {
     var quality: VolumeRenderRequest.Quality
     var samplingDistance: Float
@@ -146,18 +151,22 @@ enum VolumeRaycastPassError: Error, Equatable {
 /// multi-viewport scheduling observable without adding legacy view glue or CPU image readback
 /// to the canonical rendering path.
 final class VolumeRaycastPass: @unchecked Sendable {
+    private static let optionUnsignedVolume: UInt16 = 1 << 5
     let argumentManager: ArgumentEncoderManager
 
     private let device: any MTLDevice
     private let pipeline: any MTLComputePipelineState
+    private let featureFlags: FeatureFlags
     private let cameraBuffer: any MTLBuffer
+    private let emptySpaceVisibilityCache: EmptySpaceVisibilityCache?
     private let inFlightLock = VolumeRaycastPassLock()
     private let perfLogger = Logger(subsystem: "com.mtk.volumerendering",
                                     category: "Benchmark.perf")
 
     init(device: any MTLDevice,
          library: any MTLLibrary,
-         debugOptions: VolumeRenderingDebugOptions = VolumeRenderingDebugOptions()) throws {
+         debugOptions: VolumeRenderingDebugOptions = VolumeRenderingDebugOptions(),
+         makeEmptySpaceVisibilityCache: ((any MTLDevice, any MTLLibrary) throws -> EmptySpaceVisibilityCache)? = nil) throws {
         guard library.device === device else {
             throw MetalVolumeRenderingAdapter.InitializationError.shaderLibraryDeviceMismatch
         }
@@ -184,11 +193,20 @@ final class VolumeRaycastPass: @unchecked Sendable {
 
         self.device = device
         self.pipeline = pipeline
+        self.featureFlags = device.evaluatedFeatureFlags()
         self.argumentManager = ArgumentEncoderManager(
             device: device,
             mtlFunction: function,
             debugOptions: debugOptions
         )
+        do {
+            self.emptySpaceVisibilityCache = try makeEmptySpaceVisibilityCache?(device, library)
+                ?? EmptySpaceVisibilityCache(device: device, library: library)
+        } catch {
+            Logger(subsystem: "com.mtk.volumerendering", category: "VolumeRaycastPass")
+                .error("Empty-space acceleration unavailable: \(error.localizedDescription)")
+            self.emptySpaceVisibilityCache = nil
+        }
         self.cameraBuffer = cameraBuffer
         self.cameraBuffer.label = "VolumeRaycastPass.CameraUniforms"
     }
@@ -197,6 +215,14 @@ final class VolumeRaycastPass: @unchecked Sendable {
                      debugOptions: VolumeRenderingDebugOptions = VolumeRenderingDebugOptions()) throws {
         let library = try ShaderLibraryLoader.loadLibrary(for: device)
         try self.init(device: device, library: library, debugOptions: debugOptions)
+    }
+
+    var debugDispatchConfiguration: ThreadgroupDispatchConfiguration {
+        ThreadgroupDispatchConfiguration.default(for: pipeline)
+    }
+
+    var debugPipelineLimits: ThreadgroupPipelineLimits {
+        ThreadgroupPipelineLimits(pipeline: pipeline)
     }
 
     func execute(input: VolumeRaycastPassInput,
@@ -224,8 +250,13 @@ final class VolumeRaycastPass: @unchecked Sendable {
                 height: viewport.height,
                 device: device
             )
+            let acceleration = try await preparedAcceleration(for: input,
+                                                               commandQueue: commandQueue)
 
-            encode(input: input, outputTexture: outputTexture)
+            try encode(input: input,
+                       outputTexture: outputTexture,
+                       accelerationTexture: acceleration.texture,
+                       optionValue: acceleration.optionValue)
 
             guard let commandBuffer = commandQueue.makeCommandBuffer() else {
                 throw VolumeRaycastPassError.commandBufferCreationFailed
@@ -241,11 +272,9 @@ final class VolumeRaycastPass: @unchecked Sendable {
             encoder.setBuffer(cameraBuffer, offset: 0, index: 1)
             argumentManager.registerResources(on: encoder)
 
-            let threadsPerThreadgroup = MTLSize(width: 8, height: 8, depth: 1)
-            let groups = MTLSize(width: (viewport.width + threadsPerThreadgroup.width - 1) / threadsPerThreadgroup.width,
-                                 height: (viewport.height + threadsPerThreadgroup.height - 1) / threadsPerThreadgroup.height,
-                                 depth: 1)
-            encoder.dispatchThreadgroups(groups, threadsPerThreadgroup: threadsPerThreadgroup)
+            let dispatch = dispatch(encoder: encoder, viewport: viewport)
+            let groups = dispatch.threadgroups
+            let threadsPerThreadgroup = dispatch.threadsPerThreadgroup
             encoder.endEncoding()
 
             let encodeMilliseconds = Self.milliseconds(from: encodeStartedAt)
@@ -255,11 +284,8 @@ final class VolumeRaycastPass: @unchecked Sendable {
                                                    label: "raycast",
                                                    category: input.renderingParameters.quality.profilerCategory)
             }
-            let commandBufferID = Self.objectIdentifier(commandBuffer)
-            let commandQueueID = Self.objectIdentifier(commandQueue)
-            let outputTextureID = Self.objectIdentifier(outputTexture)
             logInteractionInfo(
-                "[MTK3DInteraction] raycast.execute.commit frameIndex=\(Self.describe(input.debugFrameIndex)) commandBufferID=\(commandBufferID) commandQueueID=\(commandQueueID) outputTextureID=\(outputTextureID) output=\(outputTexture.width)x\(outputTexture.height) quality=\(input.renderingParameters.quality) preCommitMs=\(Self.formatMilliseconds(Self.milliseconds(from: cpuStart, to: commitStartedAt))) encodeMs=\(Self.formatMilliseconds(encodeMilliseconds))"
+                "[MTK3DInteraction] raycast.execute.commit frameIndex=\(Self.describe(input.debugFrameIndex)) commandBufferID=\(Self.objectIdentifier(commandBuffer)) commandQueueID=\(Self.objectIdentifier(commandQueue)) outputTextureID=\(Self.objectIdentifier(outputTexture)) output=\(outputTexture.width)x\(outputTexture.height) quality=\(input.renderingParameters.quality) preCommitMs=\(Self.formatMilliseconds(Self.milliseconds(from: cpuStart, to: commitStartedAt))) encodeMs=\(Self.formatMilliseconds(encodeMilliseconds))"
             )
             let timing = try await complete(commandBuffer: commandBuffer,
                                             totalCpuStart: cpuStart,
@@ -296,7 +322,7 @@ final class VolumeRaycastPass: @unchecked Sendable {
                                threadsPerThreadgroup: threadsPerThreadgroup)
             }
             logInteractionInfo(
-                "[MTK3DInteraction] raycast.execute.complete frameIndex=\(Self.describe(input.debugFrameIndex)) commandBufferID=\(commandBufferID) commandQueueID=\(commandQueueID) outputTextureID=\(outputTextureID) status=completed cpuMs=\(Self.formatMilliseconds(timing.cpuDurationMilliseconds)) gpuMs=\(Self.describeMilliseconds(timing.gpuDurationMilliseconds)) kernelMs=\(Self.describeMilliseconds(timing.kernelDurationMilliseconds))"
+                "[MTK3DInteraction] raycast.execute.complete frameIndex=\(Self.describe(input.debugFrameIndex)) commandBufferID=\(Self.objectIdentifier(commandBuffer)) commandQueueID=\(Self.objectIdentifier(commandQueue)) outputTextureID=\(Self.objectIdentifier(outputTexture)) status=completed cpuMs=\(Self.formatMilliseconds(timing.cpuDurationMilliseconds)) gpuMs=\(Self.describeMilliseconds(timing.gpuDurationMilliseconds)) kernelMs=\(Self.describeMilliseconds(timing.kernelDurationMilliseconds))"
             )
             let output = VolumeRaycastPassOutput(outputTexture: outputTexture,
                                                  compositingMode: input.renderingParameters.compositingMode,
@@ -336,8 +362,13 @@ final class VolumeRaycastPass: @unchecked Sendable {
                 height: viewport.height,
                 device: device
             )
+            let acceleration = try await preparedAcceleration(for: input,
+                                                               commandQueue: commandQueue)
 
-            encode(input: input, outputTexture: outputTexture)
+            try encode(input: input,
+                       outputTexture: outputTexture,
+                       accelerationTexture: acceleration.texture,
+                       optionValue: acceleration.optionValue)
 
             guard let commandBuffer = commandQueue.makeCommandBuffer() else {
                 throw VolumeRaycastPassError.commandBufferCreationFailed
@@ -353,11 +384,9 @@ final class VolumeRaycastPass: @unchecked Sendable {
             encoder.setBuffer(cameraBuffer, offset: 0, index: 1)
             argumentManager.registerResources(on: encoder)
 
-            let threadsPerThreadgroup = MTLSize(width: 8, height: 8, depth: 1)
-            let groups = MTLSize(width: (viewport.width + threadsPerThreadgroup.width - 1) / threadsPerThreadgroup.width,
-                                 height: (viewport.height + threadsPerThreadgroup.height - 1) / threadsPerThreadgroup.height,
-                                 depth: 1)
-            encoder.dispatchThreadgroups(groups, threadsPerThreadgroup: threadsPerThreadgroup)
+            let dispatch = dispatch(encoder: encoder, viewport: viewport)
+            let groups = dispatch.threadgroups
+            let threadsPerThreadgroup = dispatch.threadsPerThreadgroup
             encoder.endEncoding()
 
             let encodeMilliseconds = Self.milliseconds(from: encodeStartedAt)
@@ -378,11 +407,13 @@ final class VolumeRaycastPass: @unchecked Sendable {
                 kernelDurationMilliseconds: nil
             )
 
-            let commandBufferID = Self.objectIdentifier(commandBuffer)
-            let commandQueueID = Self.objectIdentifier(commandQueue)
-            let outputTextureID = Self.objectIdentifier(outputTexture)
+            let interactionIDs = Logger.performanceLoggingEnabled
+                ? (commandBuffer: Self.objectIdentifier(commandBuffer),
+                   commandQueue: Self.objectIdentifier(commandQueue),
+                   outputTexture: Self.objectIdentifier(outputTexture))
+                : nil
             logInteractionInfo(
-                "[MTK3DInteraction] raycast.enqueue.commit frameIndex=\(Self.describe(input.debugFrameIndex)) commandBufferID=\(commandBufferID) commandQueueID=\(commandQueueID) outputTextureID=\(outputTextureID) output=\(outputTexture.width)x\(outputTexture.height) quality=\(input.renderingParameters.quality) preCommitMs=\(Self.formatMilliseconds(preCommitMilliseconds)) encodeMs=\(Self.formatMilliseconds(encodeMilliseconds))"
+                "[MTK3DInteraction] raycast.enqueue.commit frameIndex=\(Self.describe(input.debugFrameIndex)) commandBufferID=\(interactionIDs?.commandBuffer ?? "nil") commandQueueID=\(interactionIDs?.commandQueue ?? "nil") outputTextureID=\(interactionIDs?.outputTexture ?? "nil") output=\(outputTexture.width)x\(outputTexture.height) quality=\(input.renderingParameters.quality) preCommitMs=\(Self.formatMilliseconds(preCommitMilliseconds)) encodeMs=\(Self.formatMilliseconds(encodeMilliseconds))"
             )
             commandBuffer.addCompletedHandler { [self, inFlightLock] buffer in
                 let cpuEnd = CFAbsoluteTimeGetCurrent()
@@ -393,6 +424,9 @@ final class VolumeRaycastPass: @unchecked Sendable {
                 }
 
                 if let error = buffer.error {
+                    let commandBufferID = interactionIDs?.commandBuffer ?? Self.objectIdentifier(buffer)
+                    let commandQueueID = interactionIDs?.commandQueue ?? "disabled"
+                    let outputTextureID = interactionIDs?.outputTexture ?? "disabled"
                     Logger.error("CommandBuffer [raycast] failed: \(String(describing: buffer.status)) \(error.localizedDescription)",
                                  category: "com.mtk.volumerendering.Benchmark.perf")
                     Logger.info(
@@ -401,6 +435,9 @@ final class VolumeRaycastPass: @unchecked Sendable {
                     )
                     return
                 } else if buffer.status == .error {
+                    let commandBufferID = interactionIDs?.commandBuffer ?? Self.objectIdentifier(buffer)
+                    let commandQueueID = interactionIDs?.commandQueue ?? "disabled"
+                    let outputTextureID = interactionIDs?.outputTexture ?? "disabled"
                     Logger.error("CommandBuffer [raycast] failed with error status and no error object.",
                                  category: "com.mtk.volumerendering.Benchmark.perf")
                     Logger.info(
@@ -450,7 +487,7 @@ final class VolumeRaycastPass: @unchecked Sendable {
                                         threadgroups: groups,
                                         threadsPerThreadgroup: threadsPerThreadgroup)
                     Logger.info(
-                        "[MTK3DInteraction] raycast.enqueue.complete frameIndex=\(Self.describe(input.debugFrameIndex)) commandBufferID=\(commandBufferID) commandQueueID=\(commandQueueID) outputTextureID=\(outputTextureID) status=completed cpuMs=\(Self.formatMilliseconds(timing.cpuDurationMilliseconds)) gpuMs=\(Self.describeMilliseconds(timing.gpuDurationMilliseconds)) kernelMs=\(Self.describeMilliseconds(timing.kernelDurationMilliseconds))",
+                        "[MTK3DInteraction] raycast.enqueue.complete frameIndex=\(Self.describe(input.debugFrameIndex)) commandBufferID=\(interactionIDs?.commandBuffer ?? "nil") commandQueueID=\(interactionIDs?.commandQueue ?? "nil") outputTextureID=\(interactionIDs?.outputTexture ?? "nil") status=completed cpuMs=\(Self.formatMilliseconds(timing.cpuDurationMilliseconds)) gpuMs=\(Self.describeMilliseconds(timing.gpuDurationMilliseconds)) kernelMs=\(Self.describeMilliseconds(timing.kernelDurationMilliseconds))",
                         category: "com.mtk.volumerendering.VolumeRaycastPass"
                     )
                 }
@@ -466,6 +503,60 @@ final class VolumeRaycastPass: @unchecked Sendable {
             await inFlightLock.release()
             throw error
         }
+    }
+
+    func encode(input: VolumeRaycastPassInput,
+                into commandBuffer: any MTLCommandBuffer,
+                commandQueue: any MTLCommandQueue) async throws -> VolumeRaycastPassOutput {
+        guard commandQueue.device === device,
+              commandBuffer.commandQueue === commandQueue else {
+            throw VolumeRaycastPassError.commandQueueDeviceMismatch
+        }
+
+        let viewport = try validate(input: input)
+        let outputTexture = try input.outputTexture ?? prepareOutputTexture(
+            width: viewport.width,
+            height: viewport.height,
+            device: device
+        )
+        let acceleration = try await preparedAcceleration(for: input,
+                                                           commandQueue: commandQueue)
+        try encode(input: input,
+                   outputTexture: outputTexture,
+                   accelerationTexture: acceleration.texture,
+                   optionValue: acceleration.optionValue)
+
+        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+            throw VolumeRaycastPassError.commandEncodingFailed
+        }
+        encoder.label = "VolumeRaycastPass.CommandEncoder"
+        encoder.setComputePipelineState(pipeline)
+        encoder.setBuffer(argumentManager.argumentBuffer, offset: 0, index: 0)
+        encoder.setBuffer(cameraBuffer, offset: 0, index: 1)
+        argumentManager.registerResources(on: encoder)
+
+        _ = dispatch(encoder: encoder, viewport: viewport)
+        encoder.endEncoding()
+
+        let timing = VolumeRaycastPassTiming(
+            cpuDurationMilliseconds: 0,
+            preCommitMilliseconds: 0,
+            validationMilliseconds: 0,
+            lockWaitMilliseconds: 0,
+            encodeMilliseconds: 0,
+            commandBufferCpuMilliseconds: 0,
+            gpuStartTime: nil,
+            gpuEndTime: nil,
+            gpuDurationMilliseconds: nil,
+            kernelStartTime: nil,
+            kernelEndTime: nil,
+            kernelDurationMilliseconds: nil
+        )
+        return VolumeRaycastPassOutput(outputTexture: outputTexture,
+                                       compositingMode: input.renderingParameters.compositingMode,
+                                       quality: input.renderingParameters.quality,
+                                       viewportSize: input.viewportSize,
+                                       timing: timing)
     }
 
     func prepareOutputTexture(width: Int,
@@ -520,6 +611,21 @@ final class VolumeRaycastPass: @unchecked Sendable {
         return (width, height)
     }
 
+    private func dispatch(
+        encoder: any MTLComputeCommandEncoder,
+        viewport: (width: Int, height: Int)
+    ) -> (threadgroups: MTLSize, threadsPerThreadgroup: MTLSize) {
+        let configuration = debugDispatchConfiguration
+        let threadsPerGrid = MTLSize(width: viewport.width, height: viewport.height, depth: 1)
+        MetalDispatch.dispatch(encoder: encoder,
+                               threadsPerGrid: threadsPerGrid,
+                               configuration: configuration,
+                               featureFlags: featureFlags)
+        return (MetalDispatch.threadgroups(for: threadsPerGrid,
+                                           threadsPerThreadgroup: configuration.threadsPerThreadgroup),
+                configuration.threadsPerThreadgroup)
+    }
+
     private func validateOutputTextureContract(_ texture: any MTLTexture) throws {
         guard texture.device === device else {
             throw VolumeRaycastPassError.invalidOutputTexture("Output texture must belong to the pass device.")
@@ -539,19 +645,26 @@ final class VolumeRaycastPass: @unchecked Sendable {
     }
 
     private func encode(input: VolumeRaycastPassInput,
-                        outputTexture: any MTLTexture) {
+                        outputTexture: any MTLTexture,
+                        accelerationTexture: (any MTLTexture)?,
+                        optionValue resolvedOptionValue: UInt16) throws {
         var parameters = input.shaderParameters
-        var optionValue = input.optionValue
+        var optionValue = resolvedOptionValue
         var targetViewSize = input.targetViewSize
         var quaternion = input.quaternion
         var camera = input.cameraUniforms
 
-        argumentManager.encodeTexture(input.volumeTexture, argumentIndex: .mainTexture)
+        let isUnsigned = try argumentManager.encodeFilterableVolumeTexture(input.volumeTexture)
+        if isUnsigned {
+            optionValue |= Self.optionUnsignedVolume
+        } else {
+            optionValue &= ~Self.optionUnsignedVolume
+        }
         argumentManager.encodeTexture(input.transferFunctionTexture, argumentIndex: .transferTextureCh1)
         argumentManager.encodeTexture(input.transferFunctionTexture, argumentIndex: .transferTextureCh2)
         argumentManager.encodeTexture(input.transferFunctionTexture, argumentIndex: .transferTextureCh3)
         argumentManager.encodeTexture(input.transferFunctionTexture, argumentIndex: .transferTextureCh4)
-        argumentManager.encodeTexture(input.accelerationTexture, argumentIndex: .accelerationTexture)
+        argumentManager.encodeTexture(accelerationTexture, argumentIndex: .accelerationTexture)
         argumentManager.setOutputTexture(outputTexture)
         argumentManager.encodeSampler(filter: .linear)
         argumentManager.encode(&parameters, argumentIndex: .renderParams)
@@ -564,6 +677,28 @@ final class VolumeRaycastPass: @unchecked Sendable {
         argumentManager.encode(input.toneBuffers.channel4, argumentIndex: .toneBufferCh4)
 
         memcpy(cameraBuffer.contents(), &camera, CameraUniforms.stride)
+    }
+
+    private func preparedAcceleration(
+        for input: VolumeRaycastPassInput,
+        commandQueue: any MTLCommandQueue
+    ) async throws -> (texture: (any MTLTexture)?, optionValue: UInt16) {
+        let optionUseAcceleration = VolumeRenderOptionBits.acceleration
+        guard input.optionValue & optionUseAcceleration != 0,
+              let minMaxTexture = input.accelerationTexture,
+              let emptySpaceVisibilityCache else {
+            return (input.accelerationTexture, input.optionValue & ~optionUseAcceleration)
+        }
+        let visibilityTexture = try await emptySpaceVisibilityCache.texture(
+            minMaxTexture: minMaxTexture,
+            transferTexture: input.transferFunctionTexture,
+            parameters: input.shaderParameters,
+            commandQueue: commandQueue
+        )
+        let optionValue = emptySpaceVisibilityCache.isSkippingUseful
+            ? input.optionValue
+            : input.optionValue & ~optionUseAcceleration
+        return (visibilityTexture, optionValue)
     }
 
     private func complete(commandBuffer: any MTLCommandBuffer,

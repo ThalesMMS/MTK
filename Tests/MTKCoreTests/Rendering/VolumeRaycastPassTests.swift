@@ -6,7 +6,238 @@ import XCTest
 @_spi(Testing) @testable import MTKCore
 
 final class VolumeRaycastPassTests: XCTestCase {
+    func test_raycastDispatchConfiguration_pipelineLimits_usesDefaultConfiguration() async throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("Metal device unavailable on this test runner")
+        }
+        let setup = try await makeDirectPassSetup(device: device,
+                                                  compositing: .frontToBack)
+
+        let configuration = setup.pass.debugDispatchConfiguration
+        let limits = setup.pass.debugPipelineLimits
+
+        XCTAssertEqual(configuration, .default(for: limits))
+        XCTAssertEqual(configuration.width, limits.threadExecutionWidth)
+        XCTAssertLessThanOrEqual(configuration.threadCount,
+                                 limits.maxTotalThreadsPerThreadgroup)
+    }
+
+    func test_accelerationCacheCreationFails_constructsPlainDVRPass() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("Metal device unavailable on this test runner")
+        }
+        let library = try ShaderLibraryLoader.loadLibrary(for: device)
+
+        let pass = try VolumeRaycastPass(
+            device: device,
+            library: library,
+            makeEmptySpaceVisibilityCache: { _, _ in
+                throw NSError(domain: "VolumeRaycastPassTests", code: 1)
+            }
+        )
+
+        XCTAssertNotNil(pass)
+    }
+
     private let debugDensityOptionBit: UInt16 = 1 << 3
+
+    func test_raycast_filterableVolumeView_reusesBinding() async throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("Metal device unavailable on this test runner")
+        }
+        let setup = try await makeDirectPassSetup(device: device, compositing: .frontToBack)
+
+        _ = try await setup.pass.execute(input: setup.input, commandQueue: setup.commandQueue)
+        let firstView = try XCTUnwrap(setup.pass.argumentManager.debugBoundTexture(for: .mainTexture))
+        _ = try await setup.pass.execute(input: setup.input, commandQueue: setup.commandQueue)
+        let secondView = try XCTUnwrap(setup.pass.argumentManager.debugBoundTexture(for: .mainTexture))
+
+        XCTAssertEqual(setup.input.volumeTexture.pixelFormat, .r16Sint)
+        XCTAssertEqual(firstView.pixelFormat, .r16Snorm)
+        XCTAssertEqual(ObjectIdentifier(firstView as AnyObject), ObjectIdentifier(secondView as AnyObject))
+    }
+
+    func test_raycast_unsignedNormalizedView_bindsFormatFlag() async throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("Metal device unavailable on this test runner")
+        }
+        let dimensions = VolumeDimensions(width: 4, height: 4, depth: 4)
+        let values = [UInt16](repeating: 1_000, count: dimensions.voxelCount)
+        let dataset = VolumeDataset(
+            data: values.withUnsafeBytes { Data($0) },
+            dimensions: dimensions,
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+            pixelFormat: .int16Unsigned,
+            intensityRange: 0...4_095,
+            recommendedWindow: 0...4_095
+        )
+        let setup = try await makeDirectPassSetup(
+            device: device,
+            compositing: .frontToBack,
+            dataset: dataset
+        )
+
+        _ = try await setup.pass.execute(input: setup.input, commandQueue: setup.commandQueue)
+        let view = try XCTUnwrap(setup.pass.argumentManager.debugBoundTexture(for: .mainTexture))
+        let optionBuffer = try XCTUnwrap(setup.pass.argumentManager.getBuffer(argumentIndex: .optionValue))
+        let optionValue = optionBuffer.contents().assumingMemoryBound(to: UInt16.self).pointee
+
+        XCTAssertEqual(setup.input.volumeTexture.pixelFormat, .r16Uint)
+        XCTAssertEqual(view.pixelFormat, .r16Unorm)
+        XCTAssertNotEqual(optionValue & (1 << 5), 0)
+    }
+
+    func test_signedNormalizedVolumeView_clinicalHUValues_roundTrips() async throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("Metal device unavailable on this test runner")
+        }
+        let values: [Int16] = [.min, -32_000, -2_048, -1_024, -1, 0, 1, 2_048, 3_071, 32_767]
+        let dataset = VolumeDataset(
+            data: values.withUnsafeBytes { Data($0) },
+            dimensions: VolumeDimensions(width: values.count, height: 1, depth: 1),
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+            pixelFormat: .int16Signed,
+            intensityRange: Int32(Int16.min)...Int32(Int16.max)
+        )
+        let queue = try XCTUnwrap(device.makeCommandQueue())
+        let source = try await VolumeTextureFactory(dataset: dataset)
+            .generateAsync(device: device,
+                           commandQueue: queue,
+                           usage: [.shaderRead, .pixelFormatView])
+        let view = try XCTUnwrap(source.makeTextureView(pixelFormat: .r16Snorm))
+        let output = try XCTUnwrap(device.makeBuffer(
+            length: values.count * MemoryLayout<Int16>.stride,
+            options: .storageModeShared
+        ))
+        let library = try await device.makeLibrary(source: Self.signedNormalizedRoundTripShader, options: nil)
+        let function = try XCTUnwrap(library.makeFunction(name: "roundTripSignedNormalizedVolume"))
+        let pipeline = try await device.makeComputePipelineState(function: function)
+        let commandBuffer = try XCTUnwrap(queue.makeCommandBuffer())
+        let encoder = try XCTUnwrap(commandBuffer.makeComputeCommandEncoder())
+        encoder.setComputePipelineState(pipeline)
+        encoder.setTexture(view, index: 0)
+        encoder.setBuffer(output, offset: 0, index: 0)
+        encoder.dispatchThreads(
+            MTLSize(width: values.count, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: min(values.count, pipeline.maxTotalThreadsPerThreadgroup),
+                                           height: 1,
+                                           depth: 1)
+        )
+        encoder.endEncoding()
+        commandBuffer.commit()
+        await commandBuffer.completed()
+
+        XCTAssertEqual(commandBuffer.status, .completed)
+        let decoded = Array(UnsafeBufferPointer(
+            start: output.contents().assumingMemoryBound(to: Int16.self),
+            count: values.count
+        ))
+        XCTAssertEqual(decoded, values)
+    }
+
+    func test_signedNormalizedVolumeView_manualTrilinearInterpolation_matches() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("Metal device unavailable on this test runner")
+        }
+        let values: [Int16] = [-2_000, -1_000, 0, 1_000, 2_000, 3_000, 4_000, 5_000]
+        let coordinates: [SIMD3<Float>] = [
+            SIMD3(0, 0, 0),
+            SIMD3(1, 1, 1),
+            SIMD3(0.5, 0.5, 0.5),
+            SIMD3(0.25, 0.75, 0.5)
+        ]
+        let descriptor = MTLTextureDescriptor()
+        descriptor.textureType = .type3D
+        descriptor.pixelFormat = .r16Sint
+        descriptor.width = 2
+        descriptor.height = 2
+        descriptor.depth = 2
+        descriptor.storageMode = .shared
+        descriptor.usage = [.shaderRead, .pixelFormatView]
+        let source = try XCTUnwrap(device.makeTexture(descriptor: descriptor))
+        values.withUnsafeBytes { bytes in
+            source.replace(
+                region: MTLRegionMake3D(0, 0, 0, 2, 2, 2),
+                mipmapLevel: 0,
+                slice: 0,
+                withBytes: bytes.baseAddress!,
+                bytesPerRow: 2 * MemoryLayout<Int16>.stride,
+                bytesPerImage: 4 * MemoryLayout<Int16>.stride
+            )
+        }
+        let view = try XCTUnwrap(source.makeTextureView(pixelFormat: .r16Snorm))
+        let coordinateBuffer = try XCTUnwrap(device.makeBuffer(
+            bytes: coordinates,
+            length: coordinates.count * MemoryLayout<SIMD3<Float>>.stride,
+            options: .storageModeShared
+        ))
+        let output = try XCTUnwrap(device.makeBuffer(
+            length: coordinates.count * MemoryLayout<Float>.stride,
+            options: .storageModeShared
+        ))
+        let library = try device.makeLibrary(source: Self.signedNormalizedRoundTripShader, options: nil)
+        let function = try XCTUnwrap(library.makeFunction(name: "sampleSignedNormalizedVolume"))
+        let pipeline = try device.makeComputePipelineState(function: function)
+        let queue = try XCTUnwrap(device.makeCommandQueue())
+        let commandBuffer = try XCTUnwrap(queue.makeCommandBuffer())
+        let encoder = try XCTUnwrap(commandBuffer.makeComputeCommandEncoder())
+        encoder.setComputePipelineState(pipeline)
+        encoder.setTexture(view, index: 0)
+        encoder.setBuffer(coordinateBuffer, offset: 0, index: 0)
+        encoder.setBuffer(output, offset: 0, index: 1)
+        encoder.dispatchThreads(
+            MTLSize(width: coordinates.count, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: coordinates.count, height: 1, depth: 1)
+        )
+        encoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+
+        XCTAssertEqual(commandBuffer.status, .completed)
+        let sampled = Array(UnsafeBufferPointer(
+            start: output.contents().assumingMemoryBound(to: Float.self),
+            count: coordinates.count
+        ))
+        let expected: [Float] = [-2_000, 5_000, 1_500, 1_750]
+        for (actual, expectedValue) in zip(sampled, expected) {
+            XCTAssertEqual(actual, expectedValue, accuracy: 0.1)
+        }
+    }
+
+    func test_densitySamplingShader_hardwareSampling_avoidsManualReads() throws {
+        let packageRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = packageRoot
+            .appendingPathComponent("Sources/MTKCore/Resources/Shaders/volume_shader_common.metal")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let functionStart = try XCTUnwrap(source.range(of: "static float sampleTrilinearDensity"))
+        let functionEnd = try XCTUnwrap(
+            source.range(of: "static float3 calGradient", range: functionStart.upperBound..<source.endIndex)
+        )
+        let functionSource = source[functionStart.lowerBound..<functionEnd.lowerBound]
+
+        XCTAssertEqual(functionSource.components(separatedBy: ".sample(").count - 1, 1)
+        XCTAssertFalse(functionSource.contains(".read("))
+    }
+
+    func test_transferFunctionSampling_uniformFlag_avoidsTextureHeightQuery() throws {
+        let packageRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = packageRoot
+            .appendingPathComponent("Sources/MTKCore/Resources/Shaders/volume_shader_common.metal")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let functionStart = try XCTUnwrap(source.range(of: "static float4 getTfColour"))
+        let functionSource = source[functionStart.lowerBound..<source.endIndex]
+
+        XCTAssertTrue(functionSource.contains("bool use2DTransferFunction"))
+        XCTAssertFalse(functionSource.contains("tf.get_height()"))
+    }
 
     func testDVRCompositingProducesValidOutput() async throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
@@ -112,7 +343,7 @@ final class VolumeRaycastPassTests: XCTestCase {
                       "texture summary: \(textureSummary), image summary: \(imageSummary)")
     }
 
-    func testHardAndSoftShadowModesProduceDistinctDVRReadback() async throws {
+    func test_nearestShadowSampling_keepsReadbackWithinTrilinearGoldenTolerance() async throws {
         guard let device = MTLCreateSystemDefaultDevice() else {
             throw XCTSkip("Metal device unavailable on this test runner")
         }
@@ -123,13 +354,13 @@ final class VolumeRaycastPassTests: XCTestCase {
                                                 fieldOfView: 45)
         let setup = try await makeDirectPassSetup(device: device,
                                                   compositing: .frontToBack,
-                                                  viewportSize: CGSize(width: 96, height: 96),
+                                                  viewportSize: CGSize(width: 160, height: 160),
                                                   requestCamera: camera)
         var hardInput = setup.input
         hardInput.shaderParameters.material.isLightingOn = 1
         hardInput.shaderParameters.material.shadowMode = VolumeShadowMode.hard.shaderValue
-        hardInput.shaderParameters.material.renderingQuality = 384
-        hardInput.shaderParameters.renderingStep = 1.0 / 384.0
+        hardInput.shaderParameters.material.renderingQuality = 512
+        hardInput.shaderParameters.renderingStep = 1.0 / 512.0
         hardInput.shaderParameters.light = 1.8
         hardInput.shaderParameters.shade = 0.15
         var softInput = hardInput
@@ -147,6 +378,154 @@ final class VolumeRaycastPassTests: XCTestCase {
         XCTAssertGreaterThan(abs(hardEnergy - softEnergy),
                              10,
                              "hard and soft shadow readbacks should differ, got \(hardEnergy) and \(softEnergy)")
+        XCTAssertEqual(Double(hardEnergy),
+                       785_766,
+                       accuracy: 785_766 * 0.02,
+                       "hard-shadow readback drifted from the trilinear golden")
+        XCTAssertEqual(Double(softEnergy),
+                       954_273,
+                       accuracy: 954_273 * 0.02,
+                       "soft-shadow readback drifted from the trilinear golden")
+    }
+
+    func test_accelerationInput_buildsVisibilityAndPreservesDVRReadback() async throws {
+        #if canImport(MetalPerformanceShaders)
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("Metal device unavailable on this test runner")
+        }
+        let dataset = VolumeRenderRegressionFixture.dataset()
+        let setup = try await makeDirectPassSetup(device: device,
+                                                  compositing: .frontToBack,
+                                                  dataset: dataset)
+        guard case .success(let accelerator) = MPSEmptySpaceAccelerator.create(
+            device: device,
+            commandQueue: setup.commandQueue
+        ) else {
+            throw XCTSkip("Empty-space acceleration is unavailable on this test runner")
+        }
+        let structure = try accelerator.generateAccelerationStructure(
+            from: setup.input.volumeTexture,
+            intensityRange: dataset.intensityRange
+        )
+
+        let baseline = try await setup.pass.execute(input: setup.input,
+                                                    commandQueue: setup.commandQueue)
+        var acceleratedInput = setup.input
+        acceleratedInput.accelerationTexture = structure.texture
+        acceleratedInput.optionValue |= VolumeRenderOptionBits.acceleration
+        let accelerated = try await setup.pass.execute(input: acceleratedInput,
+                                                       commandQueue: setup.commandQueue)
+
+        let baselineEnergy = try await rgbEnergy(from: baseline)
+        let acceleratedEnergy = try await rgbEnergy(from: accelerated)
+        XCTAssertEqual(Double(acceleratedEnergy),
+                       Double(baselineEnergy),
+                       accuracy: Double(max(baselineEnergy, 1)) * 0.02)
+        #else
+        throw XCTSkip("MetalPerformanceShaders unavailable on this platform")
+        #endif
+    }
+
+    func test_fullyOccupiedVisibility_disablesAccelerationBeforeDispatch() async throws {
+        #if canImport(MetalPerformanceShaders)
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("Metal device unavailable on this test runner")
+        }
+        let dimensions = VolumeDimensions(width: 8, height: 8, depth: 8)
+        let dataset = makeSolidSignedDataset(dimensions: dimensions,
+                                             spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+                                             value: 1_024,
+                                             intensityRange: (-1024)...3071)
+        let setup = try await makeDirectPassSetup(device: device,
+                                                  compositing: .frontToBack,
+                                                  viewportSize: CGSize(width: 64, height: 64),
+                                                  dataset: dataset)
+        guard case .success(let accelerator) = MPSEmptySpaceAccelerator.create(
+            device: device,
+            commandQueue: setup.commandQueue
+        ) else {
+            throw XCTSkip("Empty-space acceleration is unavailable on this test runner")
+        }
+        let structure = try accelerator.generateAccelerationStructure(
+            from: setup.input.volumeTexture,
+            intensityRange: dataset.intensityRange
+        )
+        let transferTexture = try await RaycasterTestHelpers.makeTestTransferTexture(for: dataset,
+                                                                                      device: device)
+        var input = setup.input
+        input.transferFunctionTexture = transferTexture
+        input.accelerationTexture = structure.texture
+        input.optionValue |= VolumeRenderOptionBits.acceleration
+
+        _ = try await setup.pass.execute(input: input,
+                                         commandQueue: setup.commandQueue)
+
+        let optionBuffer = try XCTUnwrap(
+            setup.pass.argumentManager.getBuffer(argumentIndex: .optionValue)
+        )
+        let optionValue = optionBuffer.contents().bindMemory(to: UInt16.self, capacity: 1).pointee
+        XCTAssertEqual(optionValue & VolumeRenderOptionBits.acceleration, 0)
+        #else
+        throw XCTSkip("MetalPerformanceShaders unavailable on this platform")
+        #endif
+    }
+
+    func test_adaptiveStepping_matchesPreOptimizationGolden() async throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("Metal device unavailable on this test runner")
+        }
+        let setup = try await makeDirectPassSetup(device: device,
+                                                  compositing: .frontToBack)
+        var input = setup.input
+        input.shaderParameters.material.isLightingOn = 0
+        input.shaderParameters.adaptiveGradientThreshold = 100
+        input.optionValue |= VolumeRenderOptionBits.adaptiveStepping
+
+        let output = try await setup.pass.execute(input: input,
+                                                  commandQueue: setup.commandQueue)
+        let energy = try await rgbEnergy(from: output)
+
+        XCTAssertEqual(
+            Double(energy),
+            1_381_104,
+            accuracy: 1_381_104 * 0.02,
+            "Adaptive DVR readback drifted from the pre-optimization golden"
+        )
+    }
+
+    func test_adaptiveStepping_isNotSlowerThanFixedSteppingForSparseCT() async throws {
+        if ProcessInfo.processInfo.environment["CI"] != nil {
+            throw XCTSkip("Kernel timing is validated only on stable local hardware")
+        }
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("Metal device unavailable on this test runner")
+        }
+        let dataset = makeSparseCTDataset()
+        let setup = try await makeDirectPassSetup(device: device,
+                                                  compositing: .frontToBack,
+                                                  viewportSize: CGSize(width: 1_024, height: 1_024),
+                                                  dataset: dataset,
+                                                  samplingDistance: 1.0 / 256.0)
+        var fixedInput = setup.input
+        fixedInput.shaderParameters.material.isLightingOn = 0
+        fixedInput.shaderParameters.adaptiveGradientThreshold = 100
+        var adaptiveInput = fixedInput
+        adaptiveInput.optionValue |= VolumeRenderOptionBits.adaptiveStepping
+
+        _ = try await setup.pass.execute(input: fixedInput,
+                                         commandQueue: setup.commandQueue)
+        _ = try await setup.pass.execute(input: adaptiveInput,
+                                         commandQueue: setup.commandQueue)
+        let fixedMilliseconds = try await medianKernelDuration(input: fixedInput,
+                                                               setup: setup,
+                                                               iterations: 9)
+        let adaptiveMilliseconds = try await medianKernelDuration(input: adaptiveInput,
+                                                                  setup: setup,
+                                                                  iterations: 9)
+
+        XCTAssertLessThanOrEqual(adaptiveMilliseconds,
+                                 fixedMilliseconds * 1.05,
+                                 "Adaptive stepping should stay within the established 5% tolerance for sparse CT")
     }
 
     func testAnisotropicDatasetRendersWithPhysicalSideViewBounds() async throws {
@@ -390,14 +769,18 @@ final class VolumeRaycastPassTests: XCTestCase {
                                      viewportSize: CGSize = VolumeRenderRegressionFixture.viewportSize,
                                      camera: CameraUniforms? = nil,
                                      dataset: VolumeDataset = VolumeRenderRegressionFixture.dataset(),
-                                     requestCamera: VolumeRenderRequest.Camera = VolumeRenderRegressionFixture.camera()) async throws -> DirectPassSetup {
+                                     requestCamera: VolumeRenderRequest.Camera = VolumeRenderRegressionFixture.camera(),
+                                     samplingDistance: Float = VolumeRenderRegressionFixture.samplingDistance)
+        async throws -> DirectPassSetup {
         guard let commandQueue = device.makeCommandQueue() else {
             throw XCTSkip("Metal command queue unavailable on this test runner")
         }
 
         let pass = try VolumeRaycastPass(device: device)
         let volumeTexture = try await VolumeTextureFactory(dataset: dataset)
-            .generateAsync(device: device, commandQueue: commandQueue)
+            .generateAsync(device: device,
+                           commandQueue: commandQueue,
+                           usage: [.shaderRead, .pixelFormatView])
         let transferTextureOptional = await MainActor.run(body: {
             VolumeRenderRegressionFixture.transferTexture(for: dataset, device: device)
         })
@@ -408,7 +791,7 @@ final class VolumeRaycastPassTests: XCTestCase {
             transferFunction: VolumeRenderRegressionFixture.volumeTransferFunction(for: dataset),
             viewportSize: viewportSize,
             camera: requestCamera,
-            samplingDistance: VolumeRenderRegressionFixture.samplingDistance,
+            samplingDistance: samplingDistance,
             compositing: compositing,
             quality: .interactive
         )
@@ -429,7 +812,7 @@ final class VolumeRaycastPassTests: XCTestCase {
         )
         let renderingParameters = VolumeRaycastPassRenderingParameters(
             quality: .interactive,
-            samplingDistance: VolumeRenderRegressionFixture.samplingDistance,
+            samplingDistance: samplingDistance,
             compositingMode: compositing
         )
         let input = VolumeRaycastPassInput(
@@ -485,6 +868,86 @@ final class VolumeRaycastPassTests: XCTestCase {
                              pixelFormat: .int16Signed,
                              intensityRange: intensityRange,
                              recommendedWindow: intensityRange)
+    }
+
+    private static let signedNormalizedRoundTripShader = """
+    #include <metal_stdlib>
+    using namespace metal;
+
+    kernel void roundTripSignedNormalizedVolume(
+        texture3d<float, access::sample> volume [[texture(0)]],
+        device short *output [[buffer(0)]],
+        uint index [[thread_position_in_grid]])
+    {
+        constexpr sampler nearestSampler(coord::normalized,
+                                         filter::nearest,
+                                         address::clamp_to_edge);
+        if (index >= volume.get_width()) {
+            return;
+        }
+        const float x = (float(index) + 0.5f) / float(volume.get_width());
+        const float sampleValue = volume.sample(nearestSampler, float3(x, 0.5f, 0.5f)).r;
+        const float decoded = sampleValue <= -1.0f ? -32768.0f : sampleValue * 32767.0f;
+        output[index] = short(round(clamp(decoded, -32768.0f, 32767.0f)));
+    }
+
+    kernel void sampleSignedNormalizedVolume(
+        texture3d<float, access::sample> volume [[texture(0)]],
+        device const float3 *coordinates [[buffer(0)]],
+        device float *output [[buffer(1)]],
+        uint index [[thread_position_in_grid]])
+    {
+        constexpr sampler linearSampler(coord::normalized,
+                                        filter::linear,
+                                        address::clamp_to_edge);
+        const float3 dimension = float3(volume.get_width(), volume.get_height(), volume.get_depth());
+        const float3 sampleCoordinate = (coordinates[index] * (dimension - 1.0f) + 0.5f) / dimension;
+        const float sampleValue = volume.sample(linearSampler, sampleCoordinate).r;
+        output[index] = sampleValue <= -1.0f ? -32768.0f : sampleValue * 32767.0f;
+    }
+    """
+
+    private func makeSparseCTDataset() -> VolumeDataset {
+        let dimensions = VolumeDimensions(width: 64, height: 64, depth: 64)
+        var values = [Int16](repeating: -1_024, count: dimensions.voxelCount)
+        let centerX = dimensions.width / 2
+        let centerY = dimensions.height / 2
+        let centerZ = dimensions.depth / 2
+        let radiusSquared = 14 * 14
+
+        for z in 0..<dimensions.depth {
+            for y in 0..<dimensions.height {
+                for x in 0..<dimensions.width {
+                    let dx = x - centerX
+                    let dy = y - centerY
+                    let dz = z - centerZ
+                    guard dx * dx + dy * dy + dz * dz < radiusSquared else { continue }
+                    let index = z * dimensions.width * dimensions.height + y * dimensions.width + x
+                    values[index] = Int16(((x * 13 + y * 7 + z * 5) % 401) - 200)
+                }
+            }
+        }
+
+        return VolumeDataset(data: values.withUnsafeBytes { Data($0) },
+                             dimensions: dimensions,
+                             spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+                             pixelFormat: .int16Signed,
+                             intensityRange: (-1_024)...3_071,
+                             recommendedWindow: (-1_024)...3_071)
+    }
+
+    private func medianKernelDuration(input: VolumeRaycastPassInput,
+                                      setup: DirectPassSetup,
+                                      iterations: Int) async throws -> Double {
+        var durations = [Double]()
+        durations.reserveCapacity(iterations)
+        for _ in 0..<iterations {
+            let output = try await setup.pass.execute(input: input,
+                                                      commandQueue: setup.commandQueue)
+            durations.append(try XCTUnwrap(output.timing.kernelDurationMilliseconds))
+        }
+        durations.sort()
+        return durations[durations.count / 2]
     }
 
     private func visiblePixelBounds(in image: CGImage) -> PixelBounds? {

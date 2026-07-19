@@ -14,14 +14,13 @@ import OSLog
 /// Metal ray marching renderer backed exclusively by Metal compute.
 ///
 /// `MetalVolumeRenderingAdapter` is the primary interface for volumetric rendering in MTK.
-/// This adapter has no MPS dependency and is guaranteed to work on any Metal-capable
-/// device that satisfies the package's Metal feature requirements. Metal device,
+/// This adapter uses Metal for rendering and opportunistically uses Metal Performance
+/// Shaders to build empty-space acceleration for DVR. Metal device,
 /// command queue, shader library, compute pipeline, and buffer allocation failures
 /// are reported as explicit errors instead of being hidden behind another backend.
 ///
-/// Acceleration structures are intentionally unsupported here: argument index 19
-/// (`accelerationTexture`) is never populated by this adapter. That preserves this
-/// type as the Metal-only rendering contract.
+/// Empty-space acceleration is optional: unsupported devices and generation failures
+/// continue through the baseline Metal raymarch path.
 ///
 /// ## Overview
 ///
@@ -82,11 +81,12 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
     var overrides = Overrides()
     internal var extendedState = ExtendedRenderingState()
     var currentPreset: VolumeRenderingPreset?
-    var currentPresetDatasetIdentity: DatasetIdentity.Content?
+    var currentPresetDatasetIdentity: DatasetIdentity.CachedContent?
     var lastSnapshot: RenderSnapshot?
-    private let metalState: MetalState
+    let metalState: MetalState
     var diagnosticLoggingEnabled: Bool = false
     var clipPlaneApproximationLogged = false
+    var windowCommandCount = 0
 
     final class MetalState: @unchecked Sendable {
         struct TransferCache {
@@ -94,6 +94,11 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
             var intensityRange: ClosedRange<Int32>
             var shift: Float
             var texture: any MTLTexture
+        }
+
+        struct AccelerationCache {
+            var datasetIdentity: DatasetIdentity.Content
+            var texture: (any MTLTexture)?
         }
 
         struct ToneBufferCacheEntry {
@@ -161,10 +166,19 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
         let device: any MTLDevice
         let commandQueue: any MTLCommandQueue
         let raycastPass: VolumeRaycastPass
-        let dispatchOptimizer: ThreadgroupDispatchOptimizer
+        let library: any MTLLibrary
+        let debugOptions: VolumeRenderingDebugOptions
+        let emptySpaceAccelerator: MPSEmptySpaceAccelerator?
         var datasetIdentity: DatasetIdentity.Storage?
+        var datasetContentIdentity: DatasetIdentity.Content?
         var volumeTexture: (any MTLTexture)?
         var transferCache: TransferCache?
+        var accelerationCache: AccelerationCache?
+        var accelerationCaches: [DatasetIdentity.Content: any MTLTexture] = [:]
+        var accelerationCacheOrder: [DatasetIdentity.Content] = []
+        let accelerationCacheLimit = 4
+        var accelerationBuildCount = 0
+        var lastRequestedOptionValue: UInt16 = 0
         var toneBufferCache: [Int: ToneBufferCacheEntry] = [:]
         var interactiveOutputTexture: (any MTLTexture)?
         let interactiveOutputPool: MetalInteractiveOutputTexturePool
@@ -175,16 +189,38 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
         var layerCompositePassCreationCount = 0
         var layerStackScratchTextureAllocationCount = 0
         var frameIndex: UInt32 = 0
+        var frameRaycastPasses: [VolumeRaycastPass] = []
 
         init(device: any MTLDevice,
              commandQueue: any MTLCommandQueue,
              raycastPass: VolumeRaycastPass,
-             dispatchOptimizer: ThreadgroupDispatchOptimizer) {
+             library: any MTLLibrary,
+             debugOptions: VolumeRenderingDebugOptions) {
             self.device = device
             self.commandQueue = commandQueue
             self.raycastPass = raycastPass
-            self.dispatchOptimizer = dispatchOptimizer
+            self.library = library
+            self.debugOptions = debugOptions
+            switch MPSEmptySpaceAccelerator.create(device: device,
+                                                   commandQueue: commandQueue,
+                                                   library: library) {
+            case .success(let accelerator):
+                self.emptySpaceAccelerator = accelerator
+            case .unavailable:
+                self.emptySpaceAccelerator = nil
+            }
             self.interactiveOutputPool = MetalInteractiveOutputTexturePool(capacity: 3)
+        }
+
+        func frameRaycastPass(at index: Int) throws -> VolumeRaycastPass {
+            while frameRaycastPasses.count <= index {
+                frameRaycastPasses.append(
+                    try VolumeRaycastPass(device: device,
+                                          library: library,
+                                          debugOptions: debugOptions)
+                )
+            }
+            return frameRaycastPasses[index]
         }
 
         var argumentManager: ArgumentEncoderManager {
@@ -307,12 +343,11 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
         let raycastPass = try VolumeRaycastPass(device: device,
                                                 library: lib,
                                                 debugOptions: debugOptions)
-        let dispatchOptimizer = ThreadgroupDispatchOptimizer(debugOptions: debugOptions)
-
         self.metalState = MetalState(device: device,
                                      commandQueue: queue,
                                      raycastPass: raycastPass,
-                                     dispatchOptimizer: dispatchOptimizer)
+                                     library: lib,
+                                     debugOptions: debugOptions)
     }
 
     /// Enables or disables diagnostic logging for debugging rendering issues.
@@ -619,7 +654,7 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
             logger.info("[DIAG] updatePreset called - preset: \(preset.name)")
         }
         currentPreset = preset
-        currentPresetDatasetIdentity = DatasetIdentity.Content(dataset: dataset)
+        currentPresetDatasetIdentity = DatasetIdentity.CachedContent(dataset: dataset)
         return [preset]
     }
 
@@ -627,7 +662,7 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
         -> (request: VolumeRenderRequest, preset: VolumeRenderingPreset?) {
         guard let preset = currentPreset,
               let presetDatasetIdentity = currentPresetDatasetIdentity,
-              presetDatasetIdentity == DatasetIdentity.Content(dataset: request.dataset) else {
+              presetDatasetIdentity.matches(dataset: request.dataset) else {
             return (request, nil)
         }
 
@@ -637,7 +672,7 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
         effectiveRequest.compositing = preset.compositing
         effectiveRequest.layers = request.layers.map { layer in
             guard var scalarVolume = layer.scalarVolume,
-                  DatasetIdentity.Content(dataset: scalarVolume.dataset) == presetDatasetIdentity else {
+                  presetDatasetIdentity.matches(dataset: scalarVolume.dataset) else {
                 return layer
             }
             scalarVolume.transferFunction = preset.transferFunction
@@ -702,39 +737,43 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
         }
 
         let bins = try await Task.detached(priority: .userInitiated) {
-            try dataset.data.withUnsafeBytes { buffer throws -> [Float] in
-                guard let reader = VolumeDataReader(dataset: dataset, buffer: buffer) else {
-                    throw AdapterError.datasetReadFailed
-                }
-
-                let binCount = descriptor.binCount
-                var histogram = [Float](repeating: 0, count: binCount)
-
-                let lowerBound = descriptor.intensityRange.lowerBound
-                let upperBound = descriptor.intensityRange.upperBound
-                let span = max(upperBound - lowerBound, Float.leastNonzeroMagnitude)
-                let binWidth = span / Float(binCount)
-
-                reader.forEachIntensity { sample in
-                    let clamped = VolumetricMath.clampFloat(sample, lower: lowerBound, upper: upperBound)
-                    var index = Int((clamped - lowerBound) / binWidth)
-                    if index >= binCount {
-                        index = binCount - 1
-                    }
-                    histogram[index] += 1
-                }
-
-                if descriptor.normalize {
-                    let total = histogram.reduce(0, +)
-                    if total > 0 {
-                        for index in histogram.indices {
-                            histogram[index] /= total
+            let voxelCount = dataset.dimensions.voxelCount
+            let workerCount = min(max(ProcessInfo.processInfo.activeProcessorCount, 1),
+                                  max(voxelCount, 1))
+            var histogram = try await withThrowingTaskGroup(of: [Float].self) { group in
+                for worker in 0..<workerCount {
+                    let lowerIndex = voxelCount * worker / workerCount
+                    let upperIndex = voxelCount * (worker + 1) / workerCount
+                    group.addTask {
+                        try dataset.data.withUnsafeBytes { buffer throws -> [Float] in
+                            guard let reader = VolumeDataReader(dataset: dataset, buffer: buffer) else {
+                                throw AdapterError.datasetReadFailed
+                            }
+                            return reader.histogram(binCount: descriptor.binCount,
+                                                    intensityRange: descriptor.intensityRange,
+                                                    indices: lowerIndex..<upperIndex)
                         }
                     }
                 }
 
-                return histogram
+                var merged = [Float](repeating: 0, count: descriptor.binCount)
+                for try await partial in group {
+                    for index in merged.indices {
+                        merged[index] += partial[index]
+                    }
+                }
+                return merged
             }
+
+            if descriptor.normalize {
+                let total = histogram.reduce(0, +)
+                if total > 0 {
+                    for index in histogram.indices {
+                        histogram[index] /= total
+                    }
+                }
+            }
+            return histogram
         }.value
 
         return VolumeHistogram(descriptor: descriptor, bins: bins)
@@ -782,6 +821,7 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
                 logger.info("[DIAG] Set compositing: \(String(describing: compositing))")
             }
         case .setWindow(let minValue, let maxValue):
+            windowCommandCount += 1
             overrides.window = minValue...maxValue
             if diagnosticLoggingEnabled {
                 logger.info("[DIAG] Set window: \(minValue)...\(maxValue)")
@@ -802,8 +842,33 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
 
 extension MetalVolumeRenderingAdapter {
     @_spi(Testing)
+    public var debugVolumeTextureUsageRawValue: UInt? {
+        metalState.volumeTexture.map { UInt($0.usage.rawValue) }
+    }
+
+    @_spi(Testing)
     public var debugTransferCacheTexture: (any MTLTexture)? {
         metalState.transferCache?.texture
+    }
+
+    @_spi(Testing)
+    public var debugAccelerationAvailable: Bool {
+        metalState.emptySpaceAccelerator != nil
+    }
+
+    @_spi(Testing)
+    public var debugAccelerationCacheTexture: (any MTLTexture)? {
+        metalState.accelerationCache?.texture
+    }
+
+    @_spi(Testing)
+    public var debugAccelerationBuildCount: Int {
+        metalState.accelerationBuildCount
+    }
+
+    @_spi(Testing)
+    public var debugLastRequestedOptionValue: UInt16 {
+        metalState.lastRequestedOptionValue
     }
 
     @_spi(Testing)
@@ -814,5 +879,10 @@ extension MetalVolumeRenderingAdapter {
     @_spi(Testing)
     public var debugLayerStackScratchTextureAllocationCount: Int {
         metalState.layerStackScratchTextureAllocationCount
+    }
+
+    @_spi(Testing)
+    public var debugWindowCommandCount: Int {
+        windowCommandCount
     }
 }

@@ -34,6 +34,8 @@ final class VolumeTextureFactoryAsyncTests: XCTestCase {
         XCTAssertEqual(texture.depth, dataset.dimensions.depth)
         XCTAssertEqual(texture.textureType, .type3D)
         XCTAssertEqual(texture.pixelFormat, .r16Uint)
+        XCTAssertEqual(texture.storageMode, .private)
+        XCTAssertEqual(texture.usage, .shaderRead)
     }
 
     func testAsyncTextureHasCorrectLabel() async throws {
@@ -161,6 +163,8 @@ final class VolumeTextureFactoryAsyncTests: XCTestCase {
         XCTAssertEqual(syncTexture.depth, asyncTexture.depth)
         XCTAssertEqual(syncTexture.pixelFormat, asyncTexture.pixelFormat)
         XCTAssertEqual(syncTexture.textureType, asyncTexture.textureType)
+        XCTAssertEqual(syncTexture.storageMode, .shared)
+        XCTAssertEqual(syncTexture.usage, .shaderRead)
     }
 
     // MARK: - Multiple Uploads

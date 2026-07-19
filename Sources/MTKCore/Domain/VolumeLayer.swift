@@ -597,9 +597,12 @@ public final class VolumeLayerResourceCache {
 
     private let lock = NSLock()
     private var cacheGeneration: UInt64 = 0
-    private var labelmapTextures: [DatasetIdentity.Content: any MTLTexture] = [:]
+    // Storage keys accelerate stable-buffer lookups; content keys let identical replacement storage share textures.
+    private var labelmapTexturesByStorage: [DatasetIdentity.Storage: any MTLTexture] = [:]
+    private var labelmapTexturesByContent: [DatasetIdentity.Content: any MTLTexture] = [:]
     private var colorLUTTextures: [LUTKey: any MTLTexture] = [:]
-    private var scalarTextures: [DatasetIdentity.Content: any MTLTexture] = [:]
+    private var scalarTexturesByStorage: [DatasetIdentity.Storage: any MTLTexture] = [:]
+    private var scalarTexturesByContent: [DatasetIdentity.Content: any MTLTexture] = [:]
     private var scalarColorLUTTextures: [ScalarLUTKey: any MTLTexture] = [:]
 
     public init() {}
@@ -658,25 +661,38 @@ public final class VolumeLayerResourceCache {
         lock.lock()
         defer { lock.unlock() }
         cacheGeneration &+= 1
-        labelmapTextures.removeAll()
+        labelmapTexturesByStorage.removeAll()
+        labelmapTexturesByContent.removeAll()
         colorLUTTextures.removeAll()
-        scalarTextures.removeAll()
+        scalarTexturesByStorage.removeAll()
+        scalarTexturesByContent.removeAll()
         scalarColorLUTTextures.removeAll()
     }
 
     private func texture(for labelmap: LabelmapVolume,
                          device: any MTLDevice,
                          commandQueue: any MTLCommandQueue) async throws -> any MTLTexture {
-        let key = DatasetIdentity.Content(dataset: labelmap.dataset)
-        let cacheState = cachedLabelmapTexture(for: key, device: device)
-        if let texture = cacheState.texture {
+        let storageIdentity = DatasetIdentity.Storage(dataset: labelmap.dataset)
+        let storageCacheState = cachedLabelmapTexture(for: storageIdentity, device: device)
+        if let texture = storageCacheState.texture {
+            return texture
+        }
+
+        let contentIdentity = DatasetIdentity.Content(dataset: labelmap.dataset)
+        let contentCacheState = cachedLabelmapTexture(for: contentIdentity,
+                                                      aliasing: storageIdentity,
+                                                      device: device)
+        if let texture = contentCacheState.texture {
             return texture
         }
 
         let texture = try await VolumeTextureFactory(dataset: labelmap.dataset)
             .generateAsync(device: device, commandQueue: commandQueue)
         texture.label = "Labelmap.volumeTexture"
-        storeLabelmapTexture(texture, for: key, generation: cacheState.generation)
+        storeLabelmapTexture(texture,
+                             storageIdentity: storageIdentity,
+                             contentIdentity: contentIdentity,
+                             generation: contentCacheState.generation)
         return texture
     }
 
@@ -697,16 +713,27 @@ public final class VolumeLayerResourceCache {
     private func texture(for scalarVolume: ScalarVolumeLayer,
                          device: any MTLDevice,
                          commandQueue: any MTLCommandQueue) async throws -> any MTLTexture {
-        let key = DatasetIdentity.Content(dataset: scalarVolume.dataset)
-        let cacheState = cachedScalarTexture(for: key, device: device)
-        if let texture = cacheState.texture {
+        let storageIdentity = DatasetIdentity.Storage(dataset: scalarVolume.dataset)
+        let storageCacheState = cachedScalarTexture(for: storageIdentity, device: device)
+        if let texture = storageCacheState.texture {
+            return texture
+        }
+
+        let contentIdentity = DatasetIdentity.Content(dataset: scalarVolume.dataset)
+        let contentCacheState = cachedScalarTexture(for: contentIdentity,
+                                                    aliasing: storageIdentity,
+                                                    device: device)
+        if let texture = contentCacheState.texture {
             return texture
         }
 
         let texture = try await VolumeTextureFactory(dataset: scalarVolume.dataset)
             .generateAsync(device: device, commandQueue: commandQueue)
         texture.label = "ScalarVolume.volumeTexture"
-        storeScalarTexture(texture, for: key, generation: cacheState.generation)
+        storeScalarTexture(texture,
+                           storageIdentity: storageIdentity,
+                           contentIdentity: contentIdentity,
+                           generation: contentCacheState.generation)
         return texture
     }
 
@@ -727,11 +754,35 @@ public final class VolumeLayerResourceCache {
         return texture
     }
 
-    private func cachedLabelmapTexture(for key: DatasetIdentity.Content,
+    private func cachedLabelmapTexture(for key: DatasetIdentity.Storage,
                                        device: any MTLDevice) -> (texture: (any MTLTexture)?, generation: UInt64) {
         lock.lock()
         defer { lock.unlock() }
-        if let texture = labelmapTextures[key],
+        if let texture = labelmapTexturesByStorage[key],
+           texture.device === device {
+            return (texture, cacheGeneration)
+        }
+        return (nil, cacheGeneration)
+    }
+
+    private func cachedLabelmapTexture(for key: DatasetIdentity.Content,
+                                       aliasing storageIdentity: DatasetIdentity.Storage,
+                                       device: any MTLDevice) -> (texture: (any MTLTexture)?, generation: UInt64) {
+        lock.lock()
+        defer { lock.unlock() }
+        if let texture = labelmapTexturesByContent[key],
+           texture.device === device {
+            labelmapTexturesByStorage[storageIdentity] = texture
+            return (texture, cacheGeneration)
+        }
+        return (nil, cacheGeneration)
+    }
+
+    private func cachedScalarTexture(for key: DatasetIdentity.Storage,
+                                     device: any MTLDevice) -> (texture: (any MTLTexture)?, generation: UInt64) {
+        lock.lock()
+        defer { lock.unlock() }
+        if let texture = scalarTexturesByStorage[key],
            texture.device === device {
             return (texture, cacheGeneration)
         }
@@ -739,36 +790,42 @@ public final class VolumeLayerResourceCache {
     }
 
     private func cachedScalarTexture(for key: DatasetIdentity.Content,
+                                     aliasing storageIdentity: DatasetIdentity.Storage,
                                      device: any MTLDevice) -> (texture: (any MTLTexture)?, generation: UInt64) {
         lock.lock()
         defer { lock.unlock() }
-        if let texture = scalarTextures[key],
+        if let texture = scalarTexturesByContent[key],
            texture.device === device {
+            scalarTexturesByStorage[storageIdentity] = texture
             return (texture, cacheGeneration)
         }
         return (nil, cacheGeneration)
     }
 
     private func storeLabelmapTexture(_ texture: any MTLTexture,
-                                      for key: DatasetIdentity.Content,
+                                      storageIdentity: DatasetIdentity.Storage,
+                                      contentIdentity: DatasetIdentity.Content,
                                       generation: UInt64) {
         lock.lock()
         defer { lock.unlock() }
         guard generation == cacheGeneration else {
             return
         }
-        labelmapTextures[key] = texture
+        labelmapTexturesByStorage[storageIdentity] = texture
+        labelmapTexturesByContent[contentIdentity] = texture
     }
 
     private func storeScalarTexture(_ texture: any MTLTexture,
-                                    for key: DatasetIdentity.Content,
+                                    storageIdentity: DatasetIdentity.Storage,
+                                    contentIdentity: DatasetIdentity.Content,
                                     generation: UInt64) {
         lock.lock()
         defer { lock.unlock() }
         guard generation == cacheGeneration else {
             return
         }
-        scalarTextures[key] = texture
+        scalarTexturesByStorage[storageIdentity] = texture
+        scalarTexturesByContent[contentIdentity] = texture
     }
 
     private func cachedColorLUTTexture(for key: LUTKey,

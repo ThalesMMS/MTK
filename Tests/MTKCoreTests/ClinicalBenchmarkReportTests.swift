@@ -59,7 +59,33 @@ final class ClinicalBenchmarkReportTests: XCTestCase {
                            memory: 524_288,
                            viewportType: "volume3D",
                            renderMode: "frontToBack",
-                           metadata: ["volumeTextureCount": "1", "outputTexturePoolSize": "1"]),
+                           metadata: [
+                               "volumeTextureCount": "1",
+                               "outputTexturePoolSize": "1",
+                               "usefulBytes": "4096",
+                               "cachedBytes": "1024",
+                               "discardedBytes": "128",
+                               "bytesAvoided": "8192",
+                               "pixelsAvoided": "65536",
+                               "cacheHits": "3",
+                               "cacheMisses": "1",
+                               "provisionalToFinalTransitions": "1",
+                               "metalAllocatedBytes": "524288",
+                               "metalPeakBytes": "600000",
+                               "peakRSSBytes": "1048576",
+                               "newTextureCount": "1",
+                               "reusedTextureCount": "2",
+                               "cpuCopyCount": "1",
+                               "gpuCopyCount": "1",
+                               "commandBufferDurationMilliseconds": "2.5",
+                               "commandBufferFailureCount": "0",
+                               "energyImpact": "1.25",
+                               "thermalState": "nominal",
+                               "correctnessPassed": "true",
+                               "baselineDeltaPercent": "8.5",
+                               "verdict": "warning",
+                               "verdictReason": "same-host p95 warning"
+                           ]),
                 makeSample(scenarioID: "ct-multi-viewport",
                            stage: .mprReslice,
                            cpuTime: 2.5,
@@ -105,11 +131,30 @@ final class ClinicalBenchmarkReportTests: XCTestCase {
         XCTAssertEqual(ct.stageMeasurements.first { $0.stage == .textureUpload }?.cpuTimeMilliseconds, 7.5)
         XCTAssertEqual(ct.stageMeasurements.first { $0.stage == .textureUpload }?.gpuTimeMilliseconds, 3.0)
         XCTAssertEqual(ct.stageMeasurements.first { $0.stage == .textureUpload }?.peakMemoryBytes, 524_288)
+        XCTAssertEqual(ct.stageMeasurements.first { $0.stage == .textureUpload }?.meanCPUTimeMilliseconds, 7.5)
+        XCTAssertEqual(ct.stageMeasurements.first { $0.stage == .textureUpload }?.p50CPUTimeMilliseconds, 7.5)
+        XCTAssertEqual(ct.stageMeasurements.first { $0.stage == .textureUpload }?.p95CPUTimeMilliseconds, 7.5)
+        XCTAssertEqual(ct.stageMeasurements.first { $0.stage == .textureUpload }?.p99CPUTimeMilliseconds, 7.5)
         XCTAssertEqual(ct.stageMeasurements.first { $0.stage == .mprReslice }?.cpuTimeMilliseconds, 2.5)
         XCTAssertEqual(ct.peakVolumeTextureCount, 1)
         XCTAssertEqual(ct.peakOutputTexturePoolSize, 1)
         XCTAssertEqual(ct.observedViewportTypes, ["mpr.axial", "volume3D"])
         XCTAssertEqual(ct.observedRenderModes, ["frontToBack", "single"])
+        XCTAssertEqual(ct.work?.usefulBytes, 4_096)
+        XCTAssertEqual(ct.work?.bytesAvoided, 8_192)
+        XCTAssertEqual(ct.work?.pixelsAvoided, 65_536)
+        XCTAssertEqual(ct.resources?.metalAllocatedBytes, 524_288)
+        XCTAssertEqual(ct.resources?.metalPeakBytes, 600_000)
+        XCTAssertEqual(ct.resources?.peakRSSBytes, 1_048_576)
+        XCTAssertEqual(ct.resources?.reusedTextureCount, 2)
+        XCTAssertEqual(ct.resources?.commandBufferFailureCount, 0)
+        XCTAssertEqual(ct.resources?.commandBufferDurationMilliseconds, 2.5)
+        XCTAssertEqual(ct.resources?.energyImpact, 1.25)
+        XCTAssertEqual(ct.resources?.thermalState, "nominal")
+        XCTAssertEqual(ct.correctnessPassed, true)
+        XCTAssertEqual(ct.baselineDeltaPercent, 8.5)
+        XCTAssertEqual(ct.verdict, .warning)
+        XCTAssertEqual(ct.verdictReason, "same-host p95 warning")
 
         XCTAssertEqual(overlay.volumeLayerCount, 1)
         XCTAssertEqual(overlay.peakVolumeTextureCount, 2)
@@ -120,6 +165,10 @@ final class ClinicalBenchmarkReportTests: XCTestCase {
         XCTAssertTrue(json.contains("Unit Test GPU"))
         XCTAssertTrue(json.contains("ci-scaled"))
         XCTAssertTrue(json.contains("ct-multi-viewport"))
+        XCTAssertTrue(json.contains("pixelsAvoided"))
+        XCTAssertTrue(json.contains("commandBufferFailureCount"))
+        XCTAssertTrue(json.contains("\"schemaVersion\" : 2"))
+        XCTAssertTrue(json.contains("\"verdict\" : \"warning\""))
 
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
@@ -136,7 +185,14 @@ final class ClinicalBenchmarkReportTests: XCTestCase {
         XCTAssertTrue(csv.contains("one shared volume texture"))
         XCTAssertTrue(csv.contains("stageBreakdown"))
         XCTAssertTrue(csv.contains("textureUpload:samples=1"))
+        XCTAssertTrue(csv.contains("p95="))
         XCTAssertTrue(csv.contains("ci-scaled"))
+
+        let markdown = report.markdownString()
+        XCTAssertTrue(markdown.contains("MTK Clinical Performance Report"))
+        XCTAssertTrue(markdown.contains("Baseline delta"))
+        XCTAssertTrue(markdown.contains("warm-sustained"))
+        XCTAssertTrue(markdown.contains("Correctness is a prerequisite"))
     }
 
     func testPerformanceBudgetManifestCoversClinicalRenderingStages() throws {
@@ -157,12 +213,29 @@ final class ClinicalBenchmarkReportTests: XCTestCase {
         XCTAssertEqual(Set(manifest.requiredStages), requiredStages)
         XCTAssertTrue(stages.isSuperset(of: requiredStages))
         XCTAssertEqual(Set(manifest.buildConfigurations), ["debug", "release"])
+        XCTAssertEqual(manifest.version, 2)
+        XCTAssertEqual(manifest.issue, 1436)
+        XCTAssertEqual(Set(manifest.benchmarkModes), [
+            "cold-sdk-first-call",
+            "prewarmed-first-clinical-call",
+            "warm-isolated",
+            "warm-sustained",
+            "concurrent-clinical-workload",
+            "fallback-path"
+        ])
+        XCTAssertEqual(Set(manifest.tiers), ["pr-smoke", "nightly", "release", "manual-device"])
+        XCTAssertEqual(Set(manifest.reportFormats), ["json", "csv", "markdown"])
+        XCTAssertTrue(manifest.privacyPolicy.contains("no PHI or pixel payloads"))
 
         let mtkScenario = try XCTUnwrap(manifest.scenarios.first { $0.component == "MTK" })
         let mtkStages = Set(mtkScenario.budgets.map(\.stage))
         XCTAssertTrue(mtkStages.isSuperset(of: ["gpuUpload", "mprRender", "volumeRender", "snapshot", "peakMemory"]))
-        XCTAssertEqual(mtkScenario.benchmarkMode, "clinical-render")
+        XCTAssertEqual(mtkScenario.benchmarkMode, "warm-sustained")
         XCTAssertTrue(mtkScenario.fixturePolicy.contains("local"))
+        XCTAssertTrue(Set(mtkScenario.backends).isSuperset(of: ["metal-shared-volume", "cpu-reference"]))
+        XCTAssertTrue(Set(mtkScenario.workflowMetrics).isSuperset(of: [
+            "firstInteractiveMPR", "firstVolumeRender", "finalVolumeQuality", "sustainedResourceBounds"
+        ]))
 
         let environmentFields = Set(manifest.comparisonProfile.requiredResultEnvironmentFields)
         XCTAssertTrue(environmentFields.isSuperset(of: [
@@ -172,8 +245,12 @@ final class ClinicalBenchmarkReportTests: XCTestCase {
             "modelIdentifier",
             "buildConfiguration",
             "benchmarkMode",
-            "fixtureID"
+            "fixtureID",
+            "tier",
+            "commandLineStartupIncluded"
         ]))
+        XCTAssertGreaterThan(manifest.comparisonProfile.relativeFailurePercent,
+                             manifest.comparisonProfile.relativeWarningPercent)
     }
 
     func testProfilingStagesMapToPerformanceBudgetStages() {
@@ -208,7 +285,14 @@ final class ClinicalBenchmarkReportTests: XCTestCase {
             maxThreadsPerThreadgroupDimensions: ProfilingThreadgroupDimensions(width: 1024, height: 1024, depth: 64),
             recommendedMaxWorkingSetSize: 8_589_934_592,
             appVersion: "1.0",
-            buildNumber: "100"
+            buildNumber: "100",
+            architecture: "arm64",
+            modelIdentifier: "TestMac1,1",
+            buildConfiguration: "release",
+            benchmarkMode: "warm-sustained",
+            fixtureID: "ct-explicit-vr-le-rescale",
+            tier: "pr-smoke",
+            commandLineStartupIncluded: false
         )
     }
 
@@ -274,13 +358,21 @@ final class ClinicalBenchmarkReportTests: XCTestCase {
 }
 
 private struct TestPerformanceBudgetManifest: Decodable {
+    var version: Int
+    var issue: Int
+    var privacyPolicy: String
     var requiredStages: [String]
     var buildConfigurations: [String]
+    var benchmarkModes: [String]
+    var tiers: [String]
+    var reportFormats: [String]
     var comparisonProfile: TestPerformanceBudgetComparisonProfile
     var scenarios: [TestPerformanceBudgetScenario]
 }
 
 private struct TestPerformanceBudgetComparisonProfile: Decodable {
+    var relativeWarningPercent: Double
+    var relativeFailurePercent: Double
     var requiredResultEnvironmentFields: [String]
 }
 
@@ -288,6 +380,8 @@ private struct TestPerformanceBudgetScenario: Decodable {
     var component: String
     var fixturePolicy: String
     var benchmarkMode: String
+    var backends: [String]
+    var workflowMetrics: [String]
     var budgets: [TestPerformanceBudgetEntry]
 }
 

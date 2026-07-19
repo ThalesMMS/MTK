@@ -89,31 +89,13 @@ final class VolumeLayerCompositePass: @unchecked Sendable {
         guard let commandBuffer = commandQueue.makeCommandBuffer() else {
             throw VolumeLayerCompositePassError.commandBufferCreationFailed
         }
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
-            throw VolumeLayerCompositePassError.encoderCreationFailed
-        }
-
-        var uniforms = Uniforms(overlayOpacity: Self.clamp01(overlayOpacity),
-                                blendMode: blendMode.shaderValue)
-
         commandBuffer.label = "VolumeLayerCompositePass.Composite"
-        encoder.label = "VolumeLayerCompositePass.CommandEncoder"
-        encoder.setComputePipelineState(pipeline)
-        encoder.setTexture(baseTexture, index: 0)
-        encoder.setTexture(overlayTexture, index: 1)
-        encoder.setTexture(destinationTexture, index: 2)
-        encoder.setBytes(&uniforms,
-                         length: MemoryLayout<Uniforms>.stride,
-                         index: 0)
-
-        let threadsPerThreadgroup = MTLSize(width: 16, height: 16, depth: 1)
-        let groups = MTLSize(
-            width: (destinationTexture.width + threadsPerThreadgroup.width - 1) / threadsPerThreadgroup.width,
-            height: (destinationTexture.height + threadsPerThreadgroup.height - 1) / threadsPerThreadgroup.height,
-            depth: 1
-        )
-        encoder.dispatchThreadgroups(groups, threadsPerThreadgroup: threadsPerThreadgroup)
-        encoder.endEncoding()
+        try encode(baseTexture: baseTexture,
+                   overlayTexture: overlayTexture,
+                   destinationTexture: destinationTexture,
+                   overlayOpacity: overlayOpacity,
+                   blendMode: blendMode,
+                   into: commandBuffer)
 
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
             commandBuffer.addCompletedHandler { buffer in
@@ -133,6 +115,44 @@ final class VolumeLayerCompositePass: @unchecked Sendable {
             }
             commandBuffer.commit()
         }
+    }
+
+    func encode(baseTexture: any MTLTexture,
+                overlayTexture: any MTLTexture,
+                destinationTexture: any MTLTexture,
+                overlayOpacity: Float,
+                blendMode: VolumeLayerBlendMode,
+                into commandBuffer: any MTLCommandBuffer) throws {
+        guard commandBuffer.commandQueue.device === device else {
+            throw VolumeLayerCompositePassError.commandQueueDeviceMismatch
+        }
+        try validate(baseTexture: baseTexture,
+                     overlayTexture: overlayTexture,
+                     destinationTexture: destinationTexture)
+        guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+            throw VolumeLayerCompositePassError.encoderCreationFailed
+        }
+
+        var uniforms = Uniforms(overlayOpacity: Self.clamp01(overlayOpacity),
+                                blendMode: blendMode.shaderValue)
+
+        encoder.label = "VolumeLayerCompositePass.CommandEncoder"
+        encoder.setComputePipelineState(pipeline)
+        encoder.setTexture(baseTexture, index: 0)
+        encoder.setTexture(overlayTexture, index: 1)
+        encoder.setTexture(destinationTexture, index: 2)
+        encoder.setBytes(&uniforms,
+                         length: MemoryLayout<Uniforms>.stride,
+                         index: 0)
+
+        let threadsPerThreadgroup = MTLSize(width: 16, height: 16, depth: 1)
+        let groups = MTLSize(
+            width: (destinationTexture.width + threadsPerThreadgroup.width - 1) / threadsPerThreadgroup.width,
+            height: (destinationTexture.height + threadsPerThreadgroup.height - 1) / threadsPerThreadgroup.height,
+            depth: 1
+        )
+        encoder.dispatchThreadgroups(groups, threadsPerThreadgroup: threadsPerThreadgroup)
+        encoder.endEncoding()
     }
 
     private func validate(baseTexture: any MTLTexture,

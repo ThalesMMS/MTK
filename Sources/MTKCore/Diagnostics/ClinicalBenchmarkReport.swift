@@ -44,6 +44,60 @@ public enum ClinicalBenchmarkMeasurementStatus: String, Codable, Sendable {
     case notRun
 }
 
+public enum ClinicalBenchmarkVerdict: String, Codable, Comparable, Sendable {
+    case notEvaluated
+    case pass
+    case warning
+    case failure
+
+    public static func < (lhs: ClinicalBenchmarkVerdict,
+                          rhs: ClinicalBenchmarkVerdict) -> Bool {
+        rank(lhs) < rank(rhs)
+    }
+
+    private static func rank(_ verdict: ClinicalBenchmarkVerdict) -> Int {
+        switch verdict {
+        case .notEvaluated: return -1
+        case .pass: return 0
+        case .warning: return 1
+        case .failure: return 2
+        }
+    }
+}
+
+public struct ClinicalBenchmarkWorkMeasurement: Codable, Equatable, Sendable {
+    public var usefulBytes: Int
+    public var cachedBytes: Int
+    public var duplicatedBytes: Int
+    public var staleBytes: Int
+    public var discardedBytes: Int
+    public var bytesAvoided: Int
+    public var pixelsAvoided: Int
+    public var cacheHits: Int
+    public var cacheMisses: Int
+    public var provisionalToFinalTransitions: Int
+}
+
+public struct ClinicalBenchmarkResourceMeasurement: Codable, Equatable, Sendable {
+    public var peakRSSBytes: Int?
+    public var residentDeltaBytes: Int?
+    public var metalAllocatedBytes: Int?
+    public var metalLeasedBytes: Int?
+    public var metalReclaimableBytes: Int?
+    public var metalPeakBytes: Int?
+    public var newBufferCount: Int?
+    public var reusedBufferCount: Int?
+    public var newTextureCount: Int?
+    public var reusedTextureCount: Int?
+    public var cpuCopyCount: Int?
+    public var gpuCopyCount: Int?
+    public var temporaryFileIOBytes: Int?
+    public var commandBufferDurationMilliseconds: Double?
+    public var commandBufferFailureCount: Int?
+    public var energyImpact: Double?
+    public var thermalState: String?
+}
+
 public struct ClinicalBenchmarkMeasurement: Codable, Equatable, Sendable {
     public var scenarioID: String
     public var status: ClinicalBenchmarkMeasurementStatus
@@ -59,6 +113,12 @@ public struct ClinicalBenchmarkMeasurement: Codable, Equatable, Sendable {
     public var surfaceLayerCount: Int?
     public var observedViewportTypes: [String]
     public var observedRenderModes: [String]
+    public var work: ClinicalBenchmarkWorkMeasurement?
+    public var resources: ClinicalBenchmarkResourceMeasurement?
+    public var correctnessPassed: Bool?
+    public var baselineDeltaPercent: Double?
+    public var verdict: ClinicalBenchmarkVerdict
+    public var verdictReason: String?
 
     public init(scenarioID: String,
                 status: ClinicalBenchmarkMeasurementStatus,
@@ -73,7 +133,13 @@ public struct ClinicalBenchmarkMeasurement: Codable, Equatable, Sendable {
                 volumeLayerCount: Int? = nil,
                 surfaceLayerCount: Int? = nil,
                 observedViewportTypes: [String] = [],
-                observedRenderModes: [String] = []) {
+                observedRenderModes: [String] = [],
+                work: ClinicalBenchmarkWorkMeasurement? = nil,
+                resources: ClinicalBenchmarkResourceMeasurement? = nil,
+                correctnessPassed: Bool? = nil,
+                baselineDeltaPercent: Double? = nil,
+                verdict: ClinicalBenchmarkVerdict = .notEvaluated,
+                verdictReason: String? = nil) {
         self.scenarioID = scenarioID
         self.status = status
         self.sampleCount = sampleCount
@@ -88,6 +154,12 @@ public struct ClinicalBenchmarkMeasurement: Codable, Equatable, Sendable {
         self.surfaceLayerCount = surfaceLayerCount
         self.observedViewportTypes = observedViewportTypes
         self.observedRenderModes = observedRenderModes
+        self.work = work
+        self.resources = resources
+        self.correctnessPassed = correctnessPassed
+        self.baselineDeltaPercent = baselineDeltaPercent
+        self.verdict = verdict
+        self.verdictReason = verdictReason
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -105,6 +177,12 @@ public struct ClinicalBenchmarkMeasurement: Codable, Equatable, Sendable {
         case surfaceLayerCount
         case observedViewportTypes
         case observedRenderModes
+        case work
+        case resources
+        case correctnessPassed
+        case baselineDeltaPercent
+        case verdict
+        case verdictReason
     }
 
     public init(from decoder: any Decoder) throws {
@@ -124,6 +202,12 @@ public struct ClinicalBenchmarkMeasurement: Codable, Equatable, Sendable {
         self.surfaceLayerCount = try container.decodeIfPresent(Int.self, forKey: .surfaceLayerCount)
         self.observedViewportTypes = try container.decode([String].self, forKey: .observedViewportTypes)
         self.observedRenderModes = try container.decode([String].self, forKey: .observedRenderModes)
+        self.work = try container.decodeIfPresent(ClinicalBenchmarkWorkMeasurement.self, forKey: .work)
+        self.resources = try container.decodeIfPresent(ClinicalBenchmarkResourceMeasurement.self, forKey: .resources)
+        self.correctnessPassed = try container.decodeIfPresent(Bool.self, forKey: .correctnessPassed)
+        self.baselineDeltaPercent = try container.decodeIfPresent(Double.self, forKey: .baselineDeltaPercent)
+        self.verdict = try container.decodeIfPresent(ClinicalBenchmarkVerdict.self, forKey: .verdict) ?? .notEvaluated
+        self.verdictReason = try container.decodeIfPresent(String.self, forKey: .verdictReason)
     }
 }
 
@@ -133,37 +217,109 @@ public struct ClinicalBenchmarkStageMeasurement: Codable, Equatable, Sendable {
     public var cpuTimeMilliseconds: Double
     public var gpuTimeMilliseconds: Double?
     public var peakMemoryBytes: Int?
+    public var meanCPUTimeMilliseconds: Double
+    public var standardDeviationCPUTimeMilliseconds: Double
+    public var coefficientOfVariationPercent: Double
+    public var p50CPUTimeMilliseconds: Double
+    public var p95CPUTimeMilliseconds: Double
+    public var p99CPUTimeMilliseconds: Double
 
     public init(stage: ProfilingStage,
                 sampleCount: Int,
                 cpuTimeMilliseconds: Double,
                 gpuTimeMilliseconds: Double? = nil,
-                peakMemoryBytes: Int? = nil) {
+                peakMemoryBytes: Int? = nil,
+                meanCPUTimeMilliseconds: Double? = nil,
+                standardDeviationCPUTimeMilliseconds: Double = 0,
+                coefficientOfVariationPercent: Double = 0,
+                p50CPUTimeMilliseconds: Double? = nil,
+                p95CPUTimeMilliseconds: Double? = nil,
+                p99CPUTimeMilliseconds: Double? = nil) {
         self.stage = stage
         self.sampleCount = sampleCount
         self.cpuTimeMilliseconds = cpuTimeMilliseconds
         self.gpuTimeMilliseconds = gpuTimeMilliseconds
         self.peakMemoryBytes = peakMemoryBytes
+        let fallbackMean = sampleCount > 0 ? cpuTimeMilliseconds / Double(sampleCount) : 0
+        self.meanCPUTimeMilliseconds = meanCPUTimeMilliseconds ?? fallbackMean
+        self.standardDeviationCPUTimeMilliseconds = standardDeviationCPUTimeMilliseconds
+        self.coefficientOfVariationPercent = coefficientOfVariationPercent
+        self.p50CPUTimeMilliseconds = p50CPUTimeMilliseconds ?? fallbackMean
+        self.p95CPUTimeMilliseconds = p95CPUTimeMilliseconds ?? fallbackMean
+        self.p99CPUTimeMilliseconds = p99CPUTimeMilliseconds ?? fallbackMean
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case stage
+        case sampleCount
+        case cpuTimeMilliseconds
+        case gpuTimeMilliseconds
+        case peakMemoryBytes
+        case meanCPUTimeMilliseconds
+        case standardDeviationCPUTimeMilliseconds
+        case coefficientOfVariationPercent
+        case p50CPUTimeMilliseconds
+        case p95CPUTimeMilliseconds
+        case p99CPUTimeMilliseconds
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        stage = try container.decode(ProfilingStage.self, forKey: .stage)
+        sampleCount = try container.decode(Int.self, forKey: .sampleCount)
+        cpuTimeMilliseconds = try container.decode(Double.self, forKey: .cpuTimeMilliseconds)
+        gpuTimeMilliseconds = try container.decodeIfPresent(Double.self, forKey: .gpuTimeMilliseconds)
+        peakMemoryBytes = try container.decodeIfPresent(Int.self, forKey: .peakMemoryBytes)
+        let fallbackMean = sampleCount > 0 ? cpuTimeMilliseconds / Double(sampleCount) : 0
+        meanCPUTimeMilliseconds = try container.decodeIfPresent(
+            Double.self,
+            forKey: .meanCPUTimeMilliseconds
+        ) ?? fallbackMean
+        standardDeviationCPUTimeMilliseconds = try container.decodeIfPresent(
+            Double.self,
+            forKey: .standardDeviationCPUTimeMilliseconds
+        ) ?? 0
+        coefficientOfVariationPercent = try container.decodeIfPresent(
+            Double.self,
+            forKey: .coefficientOfVariationPercent
+        ) ?? 0
+        p50CPUTimeMilliseconds = try container.decodeIfPresent(
+            Double.self,
+            forKey: .p50CPUTimeMilliseconds
+        ) ?? fallbackMean
+        p95CPUTimeMilliseconds = try container.decodeIfPresent(
+            Double.self,
+            forKey: .p95CPUTimeMilliseconds
+        ) ?? fallbackMean
+        p99CPUTimeMilliseconds = try container.decodeIfPresent(
+            Double.self,
+            forKey: .p99CPUTimeMilliseconds
+        ) ?? fallbackMean
     }
 }
 
 public struct ClinicalBenchmarkReport: Codable, Equatable, Sendable {
+    public var schemaVersion: Int
     public var generatedAt: Date
     public var environment: ProfilingEnvironment
     public var scenarios: [ClinicalBenchmarkScenario]
     public var measurements: [ClinicalBenchmarkMeasurement]
     public var metadata: [String: String]
+    public var verdict: ClinicalBenchmarkVerdict
 
-    public init(generatedAt: Date = Date(),
+    public init(schemaVersion: Int = 2,
+                generatedAt: Date = Date(),
                 environment: ProfilingEnvironment,
                 scenarios: [ClinicalBenchmarkScenario],
                 measurements: [ClinicalBenchmarkMeasurement],
                 metadata: [String: String] = [:]) {
+        self.schemaVersion = schemaVersion
         self.generatedAt = generatedAt
         self.environment = environment
         self.scenarios = scenarios
         self.measurements = measurements
         self.metadata = metadata
+        self.verdict = measurements.map(\.verdict).max() ?? .notEvaluated
     }
 }
 
@@ -185,11 +341,23 @@ public extension ClinicalBenchmarkReport {
         "renderModes",
         "volumeDescription",
         "viewportLayout",
-        "benchmarkMode",
+        "scenarioMode",
         "expectedLimit",
         "deviceName",
         "osVersion",
+        "architecture",
+        "modelIdentifier",
+        "buildConfiguration",
+        "benchmarkMode",
+        "tier",
+        "commandLineStartupIncluded",
         "gpuFamily",
+        "correctnessPassed",
+        "baselineDeltaPercent",
+        "verdict",
+        "verdictReason",
+        "workMetrics",
+        "resourceMetrics",
         "stageBreakdown",
         "metadata"
     ]
@@ -247,13 +415,68 @@ public extension ClinicalBenchmarkReport {
                 scenario?.expectedLimit ?? "",
                 environment.deviceName,
                 environment.osVersion,
+                environment.architecture,
+                environment.modelIdentifier,
+                environment.buildConfiguration,
+                environment.benchmarkMode,
+                environment.tier,
+                String(environment.commandLineStartupIncluded),
                 environment.gpuFamily,
+                measurement.correctnessPassed.map(String.init) ?? "",
+                measurement.baselineDeltaPercent.map(Self.format) ?? "",
+                measurement.verdict.rawValue,
+                measurement.verdictReason ?? "",
+                Self.format(work: measurement.work),
+                Self.format(resources: measurement.resources),
                 Self.format(stageMeasurements: measurement.stageMeasurements),
                 Self.format(metadata: metadata)
             ]
             return values.map(Self.escapeCSV).joined(separator: ",")
         }
         return ([Self.csvHeaders.joined(separator: ",")] + rows).joined(separator: "\n")
+    }
+
+    func markdownData() -> Data {
+        Data(markdownString().utf8)
+    }
+
+    func markdownString() -> String {
+        let scenariosByID = Dictionary(uniqueKeysWithValues: scenarios.map { ($0.id, $0) })
+        var lines = [
+            "# MTK Clinical Performance Report",
+            "",
+            "- **Verdict**: \(verdict.rawValue)",
+            "- **Device**: \(environment.deviceName)",
+            "- **OS / architecture**: \(environment.osVersion) / \(environment.architecture)",
+            "- **Build / tier**: \(environment.buildConfiguration) / \(environment.tier)",
+            "- **Mode / fixture**: \(environment.benchmarkMode) / \(environment.fixtureID)",
+            "- **CLI startup included**: \(environment.commandLineStartupIncluded)",
+            "",
+            "| Scenario | Samples | CPU total | Peak RSS / Metal | P50 / P95 / P99 stages | Baseline delta | Verdict |",
+            "|---|---:|---:|---:|---|---:|---|"
+        ]
+        for measurement in measurements {
+            let scenarioName = scenariosByID[measurement.scenarioID]?.name ?? measurement.scenarioID
+            let stagePercentiles = measurement.stageMeasurements.map {
+                "\($0.stage.rawValue): \(Self.format($0.p50CPUTimeMilliseconds))/"
+                    + "\(Self.format($0.p95CPUTimeMilliseconds))/"
+                    + "\(Self.format($0.p99CPUTimeMilliseconds)) ms"
+            }.joined(separator: "<br>")
+            let peakMetal = measurement.resources?.metalPeakBytes.map(String.init) ?? "n/a"
+            let peakMemory = measurement.peakMemoryBytes.map(String.init) ?? "n/a"
+            let baselineDelta = measurement.baselineDeltaPercent.map { Self.format($0) + "%" } ?? "n/a"
+            let row = "| \(scenarioName) | \(measurement.sampleCount) | "
+                + "\(Self.format(measurement.totalCPUTimeMilliseconds)) ms | "
+                + "\(peakMemory) / \(peakMetal) B | \(stagePercentiles) | "
+                + "\(baselineDelta) | \(measurement.verdict.rawValue) |"
+            lines.append(row)
+        }
+        lines.append("")
+        lines.append(
+            "Correctness is a prerequisite for performance qualification; "
+                + "faster incorrect output cannot select the default backend."
+        )
+        return lines.joined(separator: "\n")
     }
 
     private static func format(_ value: Double) -> String {
@@ -272,11 +495,61 @@ public extension ClinicalBenchmarkReport {
         return string
     }
 
+    private static func format(work: ClinicalBenchmarkWorkMeasurement?) -> String {
+        guard let work else { return "" }
+        return [
+            "useful=\(work.usefulBytes)",
+            "cached=\(work.cachedBytes)",
+            "duplicated=\(work.duplicatedBytes)",
+            "stale=\(work.staleBytes)",
+            "discarded=\(work.discardedBytes)",
+            "bytesAvoided=\(work.bytesAvoided)",
+            "pixelsAvoided=\(work.pixelsAvoided)",
+            "cacheHits=\(work.cacheHits)",
+            "cacheMisses=\(work.cacheMisses)",
+            "previewFinal=\(work.provisionalToFinalTransitions)"
+        ].joined(separator: ";")
+    }
+
+    private static func format(resources: ClinicalBenchmarkResourceMeasurement?) -> String {
+        guard let resources else { return "" }
+        return [
+            "metalAllocated=\(resources.metalAllocatedBytes.map(String.init) ?? "")",
+            "metalLeased=\(resources.metalLeasedBytes.map(String.init) ?? "")",
+            "metalReclaimable=\(resources.metalReclaimableBytes.map(String.init) ?? "")",
+            "metalPeak=\(resources.metalPeakBytes.map(String.init) ?? "")",
+            "buffersNew=\(resources.newBufferCount.map(String.init) ?? "")",
+            "buffersReused=\(resources.reusedBufferCount.map(String.init) ?? "")",
+            "texturesNew=\(resources.newTextureCount.map(String.init) ?? "")",
+            "texturesReused=\(resources.reusedTextureCount.map(String.init) ?? "")",
+            "cpuCopies=\(resources.cpuCopyCount.map(String.init) ?? "")",
+            "gpuCopies=\(resources.gpuCopyCount.map(String.init) ?? "")",
+            "temporaryIO=\(resources.temporaryFileIOBytes.map(String.init) ?? "")",
+            "peakRSS=\(resources.peakRSSBytes.map(String.init) ?? "")",
+            "residentDelta=\(resources.residentDeltaBytes.map(String.init) ?? "")",
+            "commandBufferDuration=\(resources.commandBufferDurationMilliseconds.map { format($0) } ?? "")",
+            "commandBufferFailures=\(resources.commandBufferFailureCount.map(String.init) ?? "")",
+            "energyImpact=\(resources.energyImpact.map { format($0) } ?? "")",
+            "thermalState=\(resources.thermalState ?? "")"
+        ].joined(separator: ";")
+    }
+
     private static func format(stageMeasurements: [ClinicalBenchmarkStageMeasurement]) -> String {
         stageMeasurements.map { measurement in
             let gpu = measurement.gpuTimeMilliseconds.map { "gpu=\(format($0))" } ?? "gpu="
             let memory = measurement.peakMemoryBytes.map { "mem=\($0)" } ?? "mem="
-            return "\(measurement.stage.rawValue):samples=\(measurement.sampleCount);cpu=\(format(measurement.cpuTimeMilliseconds));\(gpu);\(memory)"
+            return [
+                "\(measurement.stage.rawValue):samples=\(measurement.sampleCount)",
+                "cpu=\(format(measurement.cpuTimeMilliseconds))",
+                "mean=\(format(measurement.meanCPUTimeMilliseconds))",
+                "stddev=\(format(measurement.standardDeviationCPUTimeMilliseconds))",
+                "cv=\(format(measurement.coefficientOfVariationPercent))",
+                "p50=\(format(measurement.p50CPUTimeMilliseconds))",
+                "p95=\(format(measurement.p95CPUTimeMilliseconds))",
+                "p99=\(format(measurement.p99CPUTimeMilliseconds))",
+                gpu,
+                memory
+            ].joined(separator: ";")
         }.joined(separator: "|")
     }
 
@@ -440,7 +713,13 @@ public enum ClinicalBenchmarkSuite {
             volumeLayerCount: maxMetadataInteger("volumeLayerCount", in: samples),
             surfaceLayerCount: maxMetadataInteger("surfaceLayerCount", in: samples),
             observedViewportTypes: sortedUnique(samples.map(\.viewportContext.viewportType)),
-            observedRenderModes: sortedUnique(samples.map(\.viewportContext.renderMode))
+            observedRenderModes: sortedUnique(samples.map(\.viewportContext.renderMode)),
+            work: workMeasurement(for: samples),
+            resources: resourceMeasurement(for: samples),
+            correctnessPassed: correctnessVerdict(in: samples),
+            baselineDeltaPercent: metadataDoubles("baselineDeltaPercent", in: samples).last,
+            verdict: performanceVerdict(in: samples),
+            verdictReason: samples.compactMap { $0.metadata?["verdictReason"] }.last
         )
     }
 
@@ -448,12 +727,28 @@ public enum ClinicalBenchmarkSuite {
         Dictionary(grouping: samples, by: \.stageType)
             .map { stage, stageSamples in
                 let totalGPU = stageSamples.compactMap(\.gpuTimeMilliseconds).reduce(0, +)
+                let cpuSamples = stageSamples.map(\.cpuTimeMilliseconds)
+                let mean = cpuSamples.reduce(0, +) / Double(cpuSamples.count)
+                let standardDeviation: Double
+                if cpuSamples.count > 1 {
+                    let variance = cpuSamples.map { pow($0 - mean, 2) }.reduce(0, +)
+                        / Double(cpuSamples.count - 1)
+                    standardDeviation = sqrt(variance)
+                } else {
+                    standardDeviation = 0
+                }
                 return ClinicalBenchmarkStageMeasurement(
                     stage: stage,
                     sampleCount: stageSamples.count,
                     cpuTimeMilliseconds: stageSamples.map(\.cpuTimeMilliseconds).reduce(0, +),
                     gpuTimeMilliseconds: stageSamples.contains { $0.gpuTimeMilliseconds != nil } ? totalGPU : nil,
-                    peakMemoryBytes: stageSamples.compactMap(\.memoryEstimateBytes).max()
+                    peakMemoryBytes: stageSamples.compactMap(\.memoryEstimateBytes).max(),
+                    meanCPUTimeMilliseconds: mean,
+                    standardDeviationCPUTimeMilliseconds: standardDeviation,
+                    coefficientOfVariationPercent: mean > 0 ? standardDeviation / mean * 100 : 0,
+                    p50CPUTimeMilliseconds: percentile(50, values: cpuSamples),
+                    p95CPUTimeMilliseconds: percentile(95, values: cpuSamples),
+                    p99CPUTimeMilliseconds: percentile(99, values: cpuSamples)
                 )
             }
             .sorted { $0.stage.rawValue < $1.stage.rawValue }
@@ -465,6 +760,109 @@ public enum ClinicalBenchmarkSuite {
             .compactMap { $0.metadata?[key] }
             .compactMap(Int.init)
             .max()
+    }
+
+    private static func sumMetadataInteger(_ key: String,
+                                           in samples: [ProfilingSample]) -> Int {
+        samples
+            .compactMap { $0.metadata?[key] }
+            .compactMap(Int.init)
+            .reduce(0, +)
+    }
+
+    private static func sumMetadataIntegerIfPresent(_ key: String,
+                                                    in samples: [ProfilingSample]) -> Int? {
+        let values = samples
+            .compactMap { $0.metadata?[key] }
+            .compactMap(Int.init)
+        return values.isEmpty ? nil : values.reduce(0, +)
+    }
+
+    private static func metadataDoubles(_ key: String,
+                                        in samples: [ProfilingSample]) -> [Double] {
+        samples
+            .compactMap { $0.metadata?[key] }
+            .compactMap(Double.init)
+    }
+
+    private static func workMeasurement(for samples: [ProfilingSample]) -> ClinicalBenchmarkWorkMeasurement? {
+        let keys = [
+            "usefulBytes", "cachedBytes", "duplicatedBytes", "staleBytes", "discardedBytes",
+            "bytesAvoided", "pixelsAvoided", "cacheHits", "cacheMisses", "provisionalToFinalTransitions"
+        ]
+        guard samples.contains(where: { sample in keys.contains(where: { sample.metadata?[$0] != nil }) }) else {
+            return nil
+        }
+        return ClinicalBenchmarkWorkMeasurement(
+            usefulBytes: sumMetadataInteger("usefulBytes", in: samples),
+            cachedBytes: sumMetadataInteger("cachedBytes", in: samples),
+            duplicatedBytes: sumMetadataInteger("duplicatedBytes", in: samples),
+            staleBytes: sumMetadataInteger("staleBytes", in: samples),
+            discardedBytes: sumMetadataInteger("discardedBytes", in: samples),
+            bytesAvoided: sumMetadataInteger("bytesAvoided", in: samples),
+            pixelsAvoided: sumMetadataInteger("pixelsAvoided", in: samples),
+            cacheHits: sumMetadataInteger("cacheHits", in: samples),
+            cacheMisses: sumMetadataInteger("cacheMisses", in: samples),
+            provisionalToFinalTransitions: sumMetadataInteger("provisionalToFinalTransitions", in: samples)
+        )
+    }
+
+    private static func resourceMeasurement(for samples: [ProfilingSample]) -> ClinicalBenchmarkResourceMeasurement? {
+        let keys = [
+            "peakRSSBytes", "residentDeltaBytes",
+            "metalAllocatedBytes", "metalLeasedBytes", "metalReclaimableBytes", "metalPeakBytes",
+            "newBufferCount", "reusedBufferCount", "newTextureCount", "reusedTextureCount",
+            "cpuCopyCount", "gpuCopyCount", "temporaryFileIOBytes", "commandBufferDurationMilliseconds",
+            "commandBufferFailureCount", "energyImpact", "thermalState"
+        ]
+        guard samples.contains(where: { sample in keys.contains(where: { sample.metadata?[$0] != nil }) }) else {
+            return nil
+        }
+        return ClinicalBenchmarkResourceMeasurement(
+            peakRSSBytes: maxMetadataInteger("peakRSSBytes", in: samples),
+            residentDeltaBytes: maxMetadataInteger("residentDeltaBytes", in: samples),
+            metalAllocatedBytes: maxMetadataInteger("metalAllocatedBytes", in: samples),
+            metalLeasedBytes: maxMetadataInteger("metalLeasedBytes", in: samples),
+            metalReclaimableBytes: maxMetadataInteger("metalReclaimableBytes", in: samples),
+            metalPeakBytes: maxMetadataInteger("metalPeakBytes", in: samples),
+            newBufferCount: sumMetadataIntegerIfPresent("newBufferCount", in: samples),
+            reusedBufferCount: sumMetadataIntegerIfPresent("reusedBufferCount", in: samples),
+            newTextureCount: sumMetadataIntegerIfPresent("newTextureCount", in: samples),
+            reusedTextureCount: sumMetadataIntegerIfPresent("reusedTextureCount", in: samples),
+            cpuCopyCount: sumMetadataIntegerIfPresent("cpuCopyCount", in: samples),
+            gpuCopyCount: sumMetadataIntegerIfPresent("gpuCopyCount", in: samples),
+            temporaryFileIOBytes: sumMetadataIntegerIfPresent("temporaryFileIOBytes", in: samples),
+            commandBufferDurationMilliseconds: metadataDoubles(
+                "commandBufferDurationMilliseconds",
+                in: samples
+            ).max(),
+            commandBufferFailureCount: sumMetadataIntegerIfPresent("commandBufferFailureCount", in: samples),
+            energyImpact: metadataDoubles("energyImpact", in: samples).last,
+            thermalState: samples.compactMap { $0.metadata?["thermalState"] }.last
+        )
+    }
+
+    private static func correctnessVerdict(in samples: [ProfilingSample]) -> Bool? {
+        let values = samples.compactMap { sample -> Bool? in
+            guard let value = sample.metadata?["correctnessPassed"] else { return nil }
+            return Bool(value)
+        }
+        return values.isEmpty ? nil : values.allSatisfy { $0 }
+    }
+
+    private static func performanceVerdict(in samples: [ProfilingSample]) -> ClinicalBenchmarkVerdict {
+        samples
+            .compactMap { $0.metadata?["verdict"] }
+            .compactMap(ClinicalBenchmarkVerdict.init(rawValue:))
+            .max() ?? .notEvaluated
+    }
+
+    private static func percentile(_ percentile: Double,
+                                   values: [Double]) -> Double {
+        guard !values.isEmpty else { return 0 }
+        let sorted = values.sorted()
+        let index = Int(ceil(percentile / 100 * Double(sorted.count))) - 1
+        return sorted[max(0, min(index, sorted.count - 1))]
     }
 
     private static func sortedUnique(_ values: [String]) -> [String] {

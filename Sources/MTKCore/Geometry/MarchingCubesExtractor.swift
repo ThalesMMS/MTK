@@ -31,162 +31,295 @@ public struct MarchingCubesExtractor: Sendable {
     public func extractSurface(from labelmap: LabelmapVolume,
                                label: UInt16,
                                coordinateSpace: SurfaceMeshCoordinateSpace = .worldMillimeters) throws -> SurfaceMesh {
-        let dataset = labelmap.dataset
-        try validate(dataset)
-        let reader = try ScalarReader(dataset: dataset)
-        let segment = labelmap.segmentsByLabel[label]
-        var metadata = [
-            SurfaceMeshMetadataKey.source: SurfaceMeshMetadataSource.labelmap,
-            SurfaceMeshMetadataKey.label: String(label),
-            SurfaceMeshMetadataKey.labelmapLabel: String(label),
-            SurfaceMeshMetadataKey.segmentID: "labelmap-\(label)"
-        ]
-        if let name = segment?.name, !name.isEmpty {
-            metadata[SurfaceMeshMetadataKey.segmentName] = name
-        }
-        return try extractSurface(
-            dataset: dataset,
-            isoLevel: 0.5,
-            coordinateSpace: coordinateSpace,
-            id: "labelmap-\(label)",
-            metadata: metadata,
-            insideValue: { x, y, z in
-                reader.unsignedValue(x: x, y: y, z: z) == label ? 1 : 0
-            },
-            name: segment?.name
-        )
+        try extractLabelSurfaces(from: labelmap,
+                                 labels: [label],
+                                 coordinateSpace: coordinateSpace)[0]
+    }
+
+    public func extractSurfaces(
+        from labelmap: LabelmapVolume,
+        coordinateSpace: SurfaceMeshCoordinateSpace = .worldMillimeters
+    ) throws -> [SurfaceMesh] {
+        try extractLabelSurfaces(from: labelmap,
+                                 labels: labelmap.segments.map(\.label),
+                                 coordinateSpace: coordinateSpace)
     }
 
     public func extractSurface(from dataset: VolumeDataset,
                                threshold: Int32,
                                coordinateSpace: SurfaceMeshCoordinateSpace = .worldMillimeters) throws -> SurfaceMesh {
         try validate(dataset)
-        let reader = try ScalarReader(dataset: dataset)
-        return try extractSurface(
-            dataset: dataset,
-            isoLevel: Float(threshold),
-            coordinateSpace: coordinateSpace,
-            id: "scalar-threshold-\(threshold)",
-            metadata: [
-                SurfaceMeshMetadataKey.source: SurfaceMeshMetadataSource.scalarThreshold,
-                SurfaceMeshMetadataKey.threshold: String(threshold)
-            ],
-            insideValue: { x, y, z in
-                reader.floatValue(x: x, y: y, z: z)
-            },
-            name: "Threshold \(threshold)"
-        )
+        return dataset.data.withUnsafeBytes { rawBuffer in
+            switch dataset.pixelFormat {
+            case .int16Signed:
+                return extractScalarSurface(dataset: dataset,
+                                            values: rawBuffer.bindMemory(to: Int16.self),
+                                            threshold: threshold,
+                                            coordinateSpace: coordinateSpace)
+            case .int16Unsigned:
+                return extractScalarSurface(dataset: dataset,
+                                            values: rawBuffer.bindMemory(to: UInt16.self),
+                                            threshold: threshold,
+                                            coordinateSpace: coordinateSpace)
+            }
+        }
     }
 
-    private func extractSurface(dataset: VolumeDataset,
-                                isoLevel: Float,
-                                coordinateSpace: SurfaceMeshCoordinateSpace,
-                                id: String,
-                                metadata: [String: String],
-                                insideValue: (Int, Int, Int) -> Float,
-                                name: String?) throws -> SurfaceMesh {
-        let dimensions = dataset.dimensions
-        var vertices: [SIMD3<Float>] = []
-        var normals: [SIMD3<Float>] = []
-        var indices: [UInt32] = []
+    private func extractLabelSurfaces(from labelmap: LabelmapVolume,
+                                      labels: [UInt16],
+                                      coordinateSpace: SurfaceMeshCoordinateSpace) throws -> [SurfaceMesh] {
+        guard !labels.isEmpty else { return [] }
+        let dataset = labelmap.dataset
+        try validate(dataset)
+        guard dataset.pixelFormat == .int16Unsigned else {
+            throw MarchingCubesExtractorError.unsupportedPixelFormat(dataset.pixelFormat)
+        }
 
-        for z in 0..<(dimensions.depth - 1) {
-            for y in 0..<(dimensions.height - 1) {
-                for x in 0..<(dimensions.width - 1) {
-                    var values = [Float](repeating: 0, count: Self.cornerOffsets.count)
-                    var positions = [SIMD3<Float>](repeating: .zero, count: Self.cornerOffsets.count)
-                    var inside = [Bool](repeating: false, count: Self.cornerOffsets.count)
+        var accumulators = labels.map {
+            labelAccumulator(label: $0,
+                             labelmap: labelmap,
+                             coordinateSpace: coordinateSpace)
+        }
+        var accumulatorIndexByLabel: [UInt16: Int] = [:]
+        accumulatorIndexByLabel.reserveCapacity(labels.count)
+        for (index, label) in labels.enumerated() where accumulatorIndexByLabel[label] == nil {
+            accumulatorIndexByLabel[label] = index
+        }
 
-                    for corner in Self.cornerOffsets.indices {
-                        let offset = Self.cornerOffsets[corner]
-                        let vx = x + Int(offset.x)
-                        let vy = y + Int(offset.y)
-                        let vz = z + Int(offset.z)
-                        let value = insideValue(vx, vy, vz)
-                        values[corner] = value
-                        inside[corner] = value >= isoLevel
-                        positions[corner] = SIMD3<Float>(Float(vx), Float(vy), Float(vz))
-                    }
+        dataset.data.withUnsafeBytes { rawBuffer in
+            let values = rawBuffer.bindMemory(to: UInt16.self)
+            let dimensions = dataset.dimensions
+            var scratch = CubeScratch()
+            var cornerLabels = SIMD8<UInt16>(repeating: 0)
+            var candidateAccumulatorIndices = SIMD8<Int32>(repeating: -1)
 
-                    let insideCount = inside.filter { $0 }.count
-                    guard insideCount > 0, insideCount < Self.cornerOffsets.count else {
-                        continue
-                    }
+            for z in 0..<(dimensions.depth - 1) {
+                for y in 0..<(dimensions.height - 1) {
+                    for x in 0..<(dimensions.width - 1) {
+                        var candidateCount = 0
+                        for corner in Self.cornerOffsets.indices {
+                            let offset = Self.cornerOffsets[corner]
+                            let index = Self.linearIndex(x: x + Int(offset.x),
+                                                         y: y + Int(offset.y),
+                                                         z: z + Int(offset.z),
+                                                         dimensions: dimensions)
+                            let label = values[index]
+                            cornerLabels[corner] = label
+                            guard let accumulatorIndex = accumulatorIndexByLabel[label] else { continue }
+                            var isDuplicate = false
+                            for candidate in 0..<candidateCount where
+                                candidateAccumulatorIndices[candidate] == Int32(accumulatorIndex) {
+                                isDuplicate = true
+                            }
+                            if !isDuplicate {
+                                candidateAccumulatorIndices[candidateCount] = Int32(accumulatorIndex)
+                                candidateCount += 1
+                            }
+                        }
 
-                    var intersections: [Int: SIMD3<Float>] = [:]
-                    for edge in Self.edges.indices {
-                        let endpoints = Self.edges[edge]
-                        let a = endpoints.0
-                        let b = endpoints.1
-                        guard inside[a] != inside[b] else { continue }
-                        intersections[edge] = Self.interpolate(
-                            from: positions[a],
-                            valueA: values[a],
-                            to: positions[b],
-                            valueB: values[b],
-                            isoLevel: isoLevel
-                        )
-                    }
-
-                    let connections = Self.faceConnections(inside: inside,
-                                                           intersections: intersections)
-                    let polygons = Self.connectedPolygons(from: connections)
-                    let insideCenter = Self.center(of: positions.enumerated().compactMap { index, position in
-                        inside[index] ? position : nil
-                    })
-
-                    for polygon in polygons where polygon.count >= 3 {
-                        let polygonPositions = polygon.compactMap { intersections[$0] }
-                        guard polygonPositions.count == polygon.count else { continue }
-                        appendTriangulatedPolygon(
-                            polygonPositions,
-                            insideCenter: insideCenter,
-                            dataset: dataset,
-                            coordinateSpace: coordinateSpace,
-                            vertices: &vertices,
-                            normals: &normals,
-                            indices: &indices
-                        )
+                        for candidate in 0..<candidateCount {
+                            let accumulatorIndex = Int(candidateAccumulatorIndices[candidate])
+                            let label = labels[accumulatorIndex]
+                            for corner in Self.cornerOffsets.indices {
+                                scratch.values[corner] = cornerLabels[corner] == label ? 1 : 0
+                            }
+                            appendCubeSurface(x: x,
+                                              y: y,
+                                              z: z,
+                                              isoLevel: 0.5,
+                                              dataset: dataset,
+                                              coordinateSpace: coordinateSpace,
+                                              accumulator: &accumulators[accumulatorIndex],
+                                              scratch: &scratch)
+                        }
                     }
                 }
             }
         }
 
-        return SurfaceMesh(id: id,
-                           name: name,
-                           vertices: vertices,
-                           normals: normals,
-                           indices: indices,
-                           coordinateSpace: coordinateSpace,
-                           metadata: metadata)
+        return accumulators.map(\.mesh)
     }
 
-    private func appendTriangulatedPolygon(_ polygon: [SIMD3<Float>],
+    private func extractScalarSurface<Scalar: BinaryInteger>(
+        dataset: VolumeDataset,
+        values: UnsafeBufferPointer<Scalar>,
+        threshold: Int32,
+        coordinateSpace: SurfaceMeshCoordinateSpace
+    ) -> SurfaceMesh {
+        let dimensions = dataset.dimensions
+        var accumulator = MeshAccumulator(
+            id: "scalar-threshold-\(threshold)",
+            name: "Threshold \(threshold)",
+            metadata: [
+                SurfaceMeshMetadataKey.source: SurfaceMeshMetadataSource.scalarThreshold,
+                SurfaceMeshMetadataKey.threshold: String(threshold)
+            ],
+            coordinateSpace: coordinateSpace
+        )
+        var scratch = CubeScratch()
+
+        for z in 0..<(dimensions.depth - 1) {
+            for y in 0..<(dimensions.height - 1) {
+                for x in 0..<(dimensions.width - 1) {
+                    for corner in Self.cornerOffsets.indices {
+                        let offset = Self.cornerOffsets[corner]
+                        let index = Self.linearIndex(x: x + Int(offset.x),
+                                                     y: y + Int(offset.y),
+                                                     z: z + Int(offset.z),
+                                                     dimensions: dimensions)
+                        scratch.values[corner] = Float(values[index])
+                    }
+                    appendCubeSurface(x: x,
+                                      y: y,
+                                      z: z,
+                                      isoLevel: Float(threshold),
+                                      dataset: dataset,
+                                      coordinateSpace: coordinateSpace,
+                                      accumulator: &accumulator,
+                                      scratch: &scratch)
+                }
+            }
+        }
+
+        return accumulator.mesh
+    }
+
+    private func appendCubeSurface(x: Int,
+                                   y: Int,
+                                   z: Int,
+                                   isoLevel: Float,
+                                   dataset: VolumeDataset,
+                                   coordinateSpace: SurfaceMeshCoordinateSpace,
+                                   accumulator: inout MeshAccumulator,
+                                   scratch: inout CubeScratch) {
+        var insideMask: UInt8 = 0
+        var insidePositionSum = SIMD3<Float>.zero
+        var insideCount = 0
+        for corner in Self.cornerOffsets.indices where scratch.values[corner] >= isoLevel {
+            insideMask |= UInt8(1 << corner)
+            insidePositionSum += Self.cornerPosition(x: x, y: y, z: z, corner: corner)
+            insideCount += 1
+        }
+        guard insideMask != 0, insideMask != UInt8.max else { return }
+
+        scratch.resetGraph()
+        for edge in Self.edges.indices {
+            let endpoints = Self.edges[edge]
+            let a = endpoints.0
+            let b = endpoints.1
+            let aIsInside = insideMask & UInt8(1 << a) != 0
+            let bIsInside = insideMask & UInt8(1 << b) != 0
+            guard aIsInside != bIsInside else { continue }
+            scratch.intersections[edge] = Self.interpolate(
+                from: Self.cornerPosition(x: x, y: y, z: z, corner: a),
+                valueA: scratch.values[a],
+                to: Self.cornerPosition(x: x, y: y, z: z, corner: b),
+                valueB: scratch.values[b],
+                isoLevel: isoLevel
+            )
+            scratch.intersectionMask |= UInt16(1 << edge)
+        }
+
+        for face in Self.faceEdgeLoops {
+            var crossingEdges = SIMD4<Int32>(repeating: -1)
+            var crossingCount = 0
+            for edge in face where scratch.intersectionMask & UInt16(1 << edge) != 0 {
+                crossingEdges[crossingCount] = Int32(edge)
+                crossingCount += 1
+            }
+            if crossingCount == 2 {
+                scratch.addConnection(Int(crossingEdges[0]), Int(crossingEdges[1]))
+            } else if crossingCount == 4 {
+                let firstEdge = Int(crossingEdges[0])
+                let secondEdge = Int(crossingEdges[1])
+                let thirdEdge = Int(crossingEdges[2])
+                let fourthEdge = Int(crossingEdges[3])
+                let sharedCorner = Self.sharedCorner(between: firstEdge, and: secondEdge)
+                let sharedCornerIsInside = insideMask & UInt8(1 << sharedCorner) != 0
+                if sharedCornerIsInside {
+                    scratch.addConnection(firstEdge, secondEdge)
+                    scratch.addConnection(thirdEdge, fourthEdge)
+                } else {
+                    scratch.addConnection(firstEdge, fourthEdge)
+                    scratch.addConnection(secondEdge, thirdEdge)
+                }
+            }
+        }
+
+        let insideCenter = insidePositionSum / Float(insideCount)
+        for start in Self.edges.indices {
+            guard let first = scratch.firstNeighbor(of: start),
+                  !scratch.isConnectionVisited(first.connection) else {
+                continue
+            }
+
+            var polygonCount = 1
+            scratch.polygon[0] = Int32(start)
+            var previous = start
+            var current = first.neighbor
+            scratch.markConnectionVisited(first.connection)
+
+            while current != start, polygonCount < Self.edges.count {
+                scratch.polygon[polygonCount] = Int32(current)
+                polygonCount += 1
+                guard let next = scratch.nextNeighbor(of: current, excluding: previous) else {
+                    break
+                }
+                if scratch.isConnectionVisited(next.connection), next.neighbor != start {
+                    break
+                }
+                scratch.markConnectionVisited(next.connection)
+                previous = current
+                current = next.neighbor
+            }
+
+            if polygonCount >= 3 {
+                appendTriangulatedPolygon(scratch.polygon,
+                                          count: polygonCount,
+                                          intersections: scratch.intersections,
+                                          insideCenter: insideCenter,
+                                          dataset: dataset,
+                                          coordinateSpace: coordinateSpace,
+                                          accumulator: &accumulator)
+            }
+        }
+    }
+
+    private func appendTriangulatedPolygon(_ polygon: SIMD16<Int32>,
+                                           count: Int,
+                                           intersections: [SIMD3<Float>],
                                            insideCenter: SIMD3<Float>,
                                            dataset: VolumeDataset,
                                            coordinateSpace: SurfaceMeshCoordinateSpace,
-                                           vertices: inout [SIMD3<Float>],
-                                           normals: inout [SIMD3<Float>],
-                                           indices: inout [UInt32]) {
-        let mappedPolygon = polygon.map { map($0, dataset: dataset, coordinateSpace: coordinateSpace) }
+                                           accumulator: inout MeshAccumulator) {
+        let first = map(intersections[Int(polygon[0])],
+                        dataset: dataset,
+                        coordinateSpace: coordinateSpace)
         let mappedInsideCenter = map(insideCenter, dataset: dataset, coordinateSpace: coordinateSpace)
 
-        for index in 1..<(mappedPolygon.count - 1) {
-            var triangle = [
-                mappedPolygon[0],
-                mappedPolygon[index],
-                mappedPolygon[index + 1]
-            ]
-            var normal = Self.normal(for: triangle)
-            let centroid = Self.center(of: triangle)
+        for index in 1..<(count - 1) {
+            var second = map(intersections[Int(polygon[index])],
+                             dataset: dataset,
+                             coordinateSpace: coordinateSpace)
+            var third = map(intersections[Int(polygon[index + 1])],
+                            dataset: dataset,
+                            coordinateSpace: coordinateSpace)
+            var normal = Self.normal(first, second, third)
+            let centroid = (first + second + third) / 3
             if simd_dot(normal, mappedInsideCenter - centroid) > 0 {
-                triangle.swapAt(1, 2)
+                swap(&second, &third)
                 normal = -normal
             }
-            let start = UInt32(vertices.count)
-            vertices.append(contentsOf: triangle)
-            normals.append(contentsOf: [normal, normal, normal])
-            indices.append(contentsOf: [start, start + 1, start + 2])
+            let start = UInt32(accumulator.vertices.count)
+            accumulator.vertices.append(first)
+            accumulator.vertices.append(second)
+            accumulator.vertices.append(third)
+            accumulator.normals.append(normal)
+            accumulator.normals.append(normal)
+            accumulator.normals.append(normal)
+            accumulator.indices.append(start)
+            accumulator.indices.append(start + 1)
+            accumulator.indices.append(start + 2)
         }
     }
 
@@ -212,6 +345,123 @@ public struct MarchingCubesExtractor: Sendable {
         guard dataset.data.count == expectedSize else {
             throw MarchingCubesExtractorError.invalidDataSize(expected: expectedSize,
                                                               actual: dataset.data.count)
+        }
+    }
+
+    private func labelAccumulator(label: UInt16,
+                                  labelmap: LabelmapVolume,
+                                  coordinateSpace: SurfaceMeshCoordinateSpace) -> MeshAccumulator {
+        let segment = labelmap.segmentsByLabel[label]
+        var metadata = [
+            SurfaceMeshMetadataKey.source: SurfaceMeshMetadataSource.labelmap,
+            SurfaceMeshMetadataKey.label: String(label),
+            SurfaceMeshMetadataKey.labelmapLabel: String(label),
+            SurfaceMeshMetadataKey.segmentID: "labelmap-\(label)"
+        ]
+        if let name = segment?.name, !name.isEmpty {
+            metadata[SurfaceMeshMetadataKey.segmentName] = name
+        }
+        return MeshAccumulator(id: "labelmap-\(label)",
+                               name: segment?.name,
+                               metadata: metadata,
+                               coordinateSpace: coordinateSpace)
+    }
+}
+
+private struct MeshAccumulator {
+    let id: String
+    let name: String?
+    let metadata: [String: String]
+    let coordinateSpace: SurfaceMeshCoordinateSpace
+    var vertices: [SIMD3<Float>] = []
+    var normals: [SIMD3<Float>] = []
+    var indices: [UInt32] = []
+
+    var mesh: SurfaceMesh {
+        SurfaceMesh(id: id,
+                    name: name,
+                    vertices: vertices,
+                    normals: normals,
+                    indices: indices,
+                    coordinateSpace: coordinateSpace,
+                    metadata: metadata)
+    }
+}
+
+private struct CubeScratch {
+    var values = SIMD8<Float>(repeating: 0)
+    var intersections = [SIMD3<Float>](repeating: .zero, count: 12)
+    var intersectionMask: UInt16 = 0
+    var firstNeighbors = SIMD16<Int32>(repeating: -1)
+    var secondNeighbors = SIMD16<Int32>(repeating: -1)
+    var firstConnectionIndices = SIMD16<Int32>(repeating: -1)
+    var secondConnectionIndices = SIMD16<Int32>(repeating: -1)
+    var polygon = SIMD16<Int32>(repeating: -1)
+    var connectionCount = 0
+    var visitedConnections: UInt16 = 0
+
+    mutating func resetGraph() {
+        intersectionMask = 0
+        firstNeighbors = SIMD16<Int32>(repeating: -1)
+        secondNeighbors = SIMD16<Int32>(repeating: -1)
+        firstConnectionIndices = SIMD16<Int32>(repeating: -1)
+        secondConnectionIndices = SIMD16<Int32>(repeating: -1)
+        connectionCount = 0
+        visitedConnections = 0
+    }
+
+    mutating func addConnection(_ first: Int, _ second: Int) {
+        let connection = connectionCount
+        connectionCount += 1
+        addNeighbor(second, connection: connection, to: first)
+        addNeighbor(first, connection: connection, to: second)
+    }
+
+    func firstNeighbor(of node: Int) -> (neighbor: Int, connection: Int)? {
+        let first = Int(firstNeighbors[node])
+        guard first >= 0 else { return nil }
+        let second = Int(secondNeighbors[node])
+        if second >= 0, second < first {
+            return (second, Int(secondConnectionIndices[node]))
+        }
+        return (first, Int(firstConnectionIndices[node]))
+    }
+
+    func nextNeighbor(of node: Int, excluding previous: Int) -> (neighbor: Int, connection: Int)? {
+        let first = Int(firstNeighbors[node])
+        let second = Int(secondNeighbors[node])
+        let firstIsCandidate = first >= 0 && first != previous
+        let secondIsCandidate = second >= 0 && second != previous
+        if firstIsCandidate, secondIsCandidate {
+            if first <= second {
+                return (first, Int(firstConnectionIndices[node]))
+            }
+            return (second, Int(secondConnectionIndices[node]))
+        }
+        if firstIsCandidate {
+            return (first, Int(firstConnectionIndices[node]))
+        }
+        if secondIsCandidate {
+            return (second, Int(secondConnectionIndices[node]))
+        }
+        return nil
+    }
+
+    func isConnectionVisited(_ connection: Int) -> Bool {
+        visitedConnections & UInt16(1 << connection) != 0
+    }
+
+    mutating func markConnectionVisited(_ connection: Int) {
+        visitedConnections |= UInt16(1 << connection)
+    }
+
+    private mutating func addNeighbor(_ neighbor: Int, connection: Int, to node: Int) {
+        if firstNeighbors[node] < 0 {
+            firstNeighbors[node] = Int32(neighbor)
+            firstConnectionIndices[node] = Int32(connection)
+        } else {
+            secondNeighbors[node] = Int32(neighbor)
+            secondConnectionIndices[node] = Int32(connection)
         }
     }
 }
@@ -243,6 +493,26 @@ private extension MarchingCubesExtractor {
         [1, 10, 5, 9]
     ]
 
+    static func linearIndex(x: Int,
+                            y: Int,
+                            z: Int,
+                            dimensions: VolumeDimensions) -> Int {
+        x + y * dimensions.width + z * dimensions.width * dimensions.height
+    }
+
+    static func sharedCorner(between firstEdge: Int, and secondEdge: Int) -> Int {
+        let first = edges[firstEdge]
+        let second = edges[secondEdge]
+        return first.0 == second.0 || first.0 == second.1 ? first.0 : first.1
+    }
+
+    static func cornerPosition(x: Int, y: Int, z: Int, corner: Int) -> SIMD3<Float> {
+        let offset = cornerOffsets[corner]
+        return SIMD3<Float>(Float(x + Int(offset.x)),
+                            Float(y + Int(offset.y)),
+                            Float(z + Int(offset.z)))
+    }
+
     static func interpolate(from a: SIMD3<Float>,
                             valueA: Float,
                             to b: SIMD3<Float>,
@@ -256,126 +526,14 @@ private extension MarchingCubesExtractor {
         return a + (b - a) * t
     }
 
-    static func faceConnections(inside: [Bool],
-                                intersections: [Int: SIMD3<Float>]) -> [(Int, Int)] {
-        var connections: [(Int, Int)] = []
-        for face in faceEdgeLoops {
-            let crossingEdges = face.filter { intersections[$0] != nil }
-            switch crossingEdges.count {
-            case 2:
-                connections.append((crossingEdges[0], crossingEdges[1]))
-            case 4:
-                connections.append((crossingEdges[0], crossingEdges[1]))
-                connections.append((crossingEdges[2], crossingEdges[3]))
-            default:
-                continue
-            }
-        }
-        return connections
-    }
-
-    static func connectedPolygons(from connections: [(Int, Int)]) -> [[Int]] {
-        var adjacency: [Int: [Int]] = [:]
-        for connection in connections {
-            adjacency[connection.0, default: []].append(connection.1)
-            adjacency[connection.1, default: []].append(connection.0)
-        }
-
-        var visitedEdges = Set<EdgeKey>()
-        var polygons: [[Int]] = []
-        for start in adjacency.keys.sorted() {
-            guard let firstNeighbor = adjacency[start]?.sorted().first else { continue }
-            let firstEdge = EdgeKey(start, firstNeighbor)
-            guard !visitedEdges.contains(firstEdge) else { continue }
-
-            var polygon = [start]
-            var previous = start
-            var current = firstNeighbor
-            visitedEdges.insert(firstEdge)
-
-            while current != start {
-                polygon.append(current)
-                let neighbors = adjacency[current, default: []].sorted()
-                guard let next = neighbors.first(where: { $0 != previous }) else {
-                    break
-                }
-                let edge = EdgeKey(current, next)
-                if visitedEdges.contains(edge), next != start {
-                    break
-                }
-                visitedEdges.insert(edge)
-                previous = current
-                current = next
-            }
-
-            if polygon.count >= 3 {
-                polygons.append(polygon)
-            }
-        }
-        return polygons
-    }
-
-    static func center(of points: [SIMD3<Float>]) -> SIMD3<Float> {
-        guard !points.isEmpty else { return .zero }
-        let sum = points.reduce(SIMD3<Float>.zero, +)
-        return sum / Float(points.count)
-    }
-
-    static func normal(for triangle: [SIMD3<Float>]) -> SIMD3<Float> {
-        let raw = simd_cross(triangle[1] - triangle[0],
-                             triangle[2] - triangle[0])
+    static func normal(_ first: SIMD3<Float>,
+                       _ second: SIMD3<Float>,
+                       _ third: SIMD3<Float>) -> SIMD3<Float> {
+        let raw = simd_cross(second - first, third - first)
         let length = simd_length(raw)
         guard length > Float.ulpOfOne else {
             return SIMD3<Float>(0, 0, 1)
         }
         return raw / length
-    }
-}
-
-private struct EdgeKey: Hashable {
-    let a: Int
-    let b: Int
-
-    init(_ lhs: Int, _ rhs: Int) {
-        a = min(lhs, rhs)
-        b = max(lhs, rhs)
-    }
-}
-
-private struct ScalarReader: Sendable {
-    let dataset: VolumeDataset
-
-    init(dataset: VolumeDataset) throws {
-        switch dataset.pixelFormat {
-        case .int16Signed, .int16Unsigned:
-            self.dataset = dataset
-        }
-    }
-
-    func floatValue(x: Int, y: Int, z: Int) -> Float {
-        switch dataset.pixelFormat {
-        case .int16Signed:
-            return Float(signedValue(x: x, y: y, z: z))
-        case .int16Unsigned:
-            return Float(unsignedValue(x: x, y: y, z: z))
-        }
-    }
-
-    func signedValue(x: Int, y: Int, z: Int) -> Int16 {
-        let byteOffset = linearIndex(x: x, y: y, z: z) * MemoryLayout<Int16>.stride
-        return dataset.data.withUnsafeBytes { raw in
-            raw.loadUnaligned(fromByteOffset: byteOffset, as: Int16.self)
-        }
-    }
-
-    func unsignedValue(x: Int, y: Int, z: Int) -> UInt16 {
-        let byteOffset = linearIndex(x: x, y: y, z: z) * MemoryLayout<UInt16>.stride
-        return dataset.data.withUnsafeBytes { raw in
-            raw.loadUnaligned(fromByteOffset: byteOffset, as: UInt16.self)
-        }
-    }
-
-    private func linearIndex(x: Int, y: Int, z: Int) -> Int {
-        x + y * dataset.dimensions.width + z * dataset.dimensions.width * dataset.dimensions.height
     }
 }

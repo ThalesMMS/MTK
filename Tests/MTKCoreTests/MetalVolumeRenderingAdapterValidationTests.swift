@@ -91,6 +91,28 @@ final class MetalVolumeRenderingAdapterValidationTests: XCTestCase {
         }
     }
 
+    func test_refreshHistogram_concurrentChunks_preservesBins() async throws {
+        let adapter = try makeTestAdapter()
+        let dimensions = VolumeDimensions(width: 2, height: 2, depth: 2)
+        let values: [UInt16] = [0, 1, 2, 3, 4, 5, 6, 7]
+        let dataset = VolumeDataset(
+            data: values.withUnsafeBytes { Data($0) },
+            dimensions: dimensions,
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+            pixelFormat: .int16Unsigned,
+            recommendedWindow: 0...8
+        )
+        let descriptor = VolumeHistogramDescriptor(binCount: 4,
+                                                   intensityRange: 0...8,
+                                                   normalize: false)
+
+        let histogram = try await adapter.refreshHistogram(for: dataset,
+                                                           descriptor: descriptor,
+                                                           transferFunction: validTransferFunction())
+
+        XCTAssertEqual(histogram.bins, [2, 2, 2, 2])
+    }
+
     private func makeDataset(recommendedWindow: ClosedRange<Int32>?) -> VolumeDataset {
         let dimensions = VolumeDimensions(width: 8, height: 8, depth: 8)
         let values: [UInt16] = Array(repeating: 1_000, count: dimensions.voxelCount)

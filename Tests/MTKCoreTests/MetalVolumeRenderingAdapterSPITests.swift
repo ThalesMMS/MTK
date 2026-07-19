@@ -139,6 +139,15 @@ final class MetalVolumeRenderingAdapterSPIPropertiesTests: XCTestCase {
                       "pixel summary: \(summary)")
     }
 
+    func testRenderFramePreparesVolumeTextureForPixelFormatViews() async throws {
+        _ = try await adapter.renderFrame(using: makeRenderRequest())
+        let rawValue = await adapter.debugVolumeTextureUsageRawValue
+        let usageRawValue = try XCTUnwrap(rawValue)
+        let usage = MTLTextureUsage(rawValue: usageRawValue)
+
+        XCTAssertTrue(usage.contains(.pixelFormatView))
+    }
+
     func testShiftChangesRenderedOutputAndTransferCache() async throws {
         let request = makeShiftSensitiveRenderRequest()
         let baselineFrame = try await adapter.renderFrame(using: request)

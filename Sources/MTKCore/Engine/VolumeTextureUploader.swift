@@ -23,7 +23,6 @@ final class VolumeTextureUploader {
 
     struct StreamUploadResult {
         let result: UploadResult
-        let contentFingerprint: UInt64
     }
 
     private let device: any MTLDevice
@@ -37,7 +36,9 @@ final class VolumeTextureUploader {
     func upload(dataset: VolumeDataset) async throws -> UploadResult {
         let startedAt = CFAbsoluteTimeGetCurrent()
         let texture = try await VolumeTextureFactory(dataset: dataset)
-            .generateAsync(device: device, commandQueue: commandQueue)
+            .generateAsync(device: device,
+                           commandQueue: commandQueue,
+                           usage: [.shaderRead, .pixelFormatView])
         let uploadTime = CFAbsoluteTimeGetCurrent() - startedAt
         return UploadResult(texture: texture, uploadTime: uploadTime, peakMemoryBytes: nil)
     }
@@ -47,11 +48,9 @@ final class VolumeTextureUploader {
         slices: S,
         progress: VolumeUploadProgressHandler? = nil
     ) async throws -> StreamUploadResult where S.Element == VolumeUploadSlice {
-        let hasher = StreamContentFingerprintAccumulator()
-        let hashingSlices = HashedVolumeUploadSliceSequence(
+        let validatedSlices = ValidatedVolumeUploadSliceSequence(
             base: slices,
-            intensityRange: descriptor.intensityRange,
-            hasher: hasher
+            intensityRange: descriptor.intensityRange
         )
 
         let startedAt = CFAbsoluteTimeGetCurrent()
@@ -60,7 +59,7 @@ final class VolumeTextureUploader {
         let forwardingProgress = makeForwardingProgress(progress, metricsRecorder: metricsRecorder)
 
         let texture = try await uploader.upload(
-            slices: hashingSlices,
+            slices: validatedSlices,
             descriptor: descriptor,
             progress: forwardingProgress
         )
@@ -71,7 +70,7 @@ final class VolumeTextureUploader {
             uploadTime: uploadTime,
             peakMemoryBytes: metricsRecorder.metrics?.peakMemoryBytes
         )
-        return StreamUploadResult(result: result, contentFingerprint: hasher.value)
+        return StreamUploadResult(result: result)
     }
 
     func upload<S: AsyncSequence>(
@@ -79,12 +78,10 @@ final class VolumeTextureUploader {
         metadata: VolumeUploadDescriptor,
         progress: VolumeUploadProgressHandler? = nil
     ) async throws -> StreamUploadResult where S.Element == SliceData {
-        let hasher = StreamContentFingerprintAccumulator()
-        let uploadSlices = HashedSliceDataUploadSequence(
+        let uploadSlices = ValidatedSliceDataUploadSequence(
             base: sliceStream,
             expectedPixelFormat: metadata.sourcePixelFormat,
-            intensityRange: metadata.intensityRange,
-            hasher: hasher
+            intensityRange: metadata.intensityRange
         )
 
         let startedAt = CFAbsoluteTimeGetCurrent()
@@ -104,7 +101,7 @@ final class VolumeTextureUploader {
             uploadTime: uploadTime,
             peakMemoryBytes: metricsRecorder.metrics?.peakMemoryBytes
         )
-        return StreamUploadResult(result: result, contentFingerprint: hasher.value)
+        return StreamUploadResult(result: result)
     }
 
     private func makeForwardingProgress(
@@ -137,73 +134,15 @@ final class VolumeUploadMetricsRecorder: @unchecked Sendable {
     }
 }
 
-private final class StreamContentFingerprintAccumulator: @unchecked Sendable {
-    private static let fnvOffsetBasis: UInt64 = 14_695_981_039_346_656_037
-    private static let fnvPrime: UInt64 = 1_099_511_628_211
-
-    private let lock = NSLock()
-    private var hash = fnvOffsetBasis
-
-    var value: UInt64 {
-        lock.lock()
-        defer { lock.unlock() }
-        return hash
-    }
-
-    func mix(slice: VolumeUploadSlice) {
-        lock.lock()
-        defer { lock.unlock() }
-
-        mixIntegerUnlocked(slice.index)
-        mixDoubleUnlocked(slice.slope)
-        mixDoubleUnlocked(slice.intercept)
-        mixIntegerUnlocked(Int(slice.minClamp))
-        mixIntegerUnlocked(Int(slice.maxClamp))
-        mixDataUnlocked(slice.data)
-    }
-
-    private func mixDataUnlocked(_ data: Data) {
-        data.withUnsafeBytes { rawBuffer in
-            let bytes = rawBuffer.bindMemory(to: UInt8.self)
-            for byte in bytes {
-                hash ^= UInt64(byte)
-                hash &*= Self.fnvPrime
-            }
-        }
-    }
-
-    private func mixIntegerUnlocked(_ value: Int) {
-        var encoded = UInt64(bitPattern: Int64(value)).littleEndian
-        mixBytesUnlocked(&encoded)
-    }
-
-    private func mixDoubleUnlocked(_ value: Double) {
-        var encoded = value.bitPattern.littleEndian
-        mixBytesUnlocked(&encoded)
-    }
-
-    private func mixBytesUnlocked(_ value: inout UInt64) {
-        withUnsafeBytes(of: &value) { rawBuffer in
-            let bytes = rawBuffer.bindMemory(to: UInt8.self)
-            for byte in bytes {
-                hash ^= UInt64(byte)
-                hash &*= Self.fnvPrime
-            }
-        }
-    }
-}
-
-private struct HashedVolumeUploadSliceSequence<Base: AsyncSequence>: AsyncSequence where Base.Element == VolumeUploadSlice {
+private struct ValidatedVolumeUploadSliceSequence<Base: AsyncSequence>: AsyncSequence where Base.Element == VolumeUploadSlice {
     typealias Element = VolumeUploadSlice
 
     let base: Base
     let intensityRange: ClosedRange<Int32>
-    let hasher: StreamContentFingerprintAccumulator
 
     struct AsyncIterator: AsyncIteratorProtocol {
         var iterator: Base.AsyncIterator
         let intensityRange: ClosedRange<Int32>
-        let hasher: StreamContentFingerprintAccumulator
 
         mutating func next() async throws -> VolumeUploadSlice? {
             guard let slice = try await iterator.next() else {
@@ -217,31 +156,26 @@ private struct HashedVolumeUploadSliceSequence<Base: AsyncSequence>: AsyncSequen
                                                                 actual: slice.minClamp...slice.maxClamp)
             }
 
-            hasher.mix(slice: slice)
             return slice
         }
     }
 
     func makeAsyncIterator() -> AsyncIterator {
-        AsyncIterator(iterator: base.makeAsyncIterator(),
-                      intensityRange: intensityRange,
-                      hasher: hasher)
+        AsyncIterator(iterator: base.makeAsyncIterator(), intensityRange: intensityRange)
     }
 }
 
-private struct HashedSliceDataUploadSequence<Base: AsyncSequence>: AsyncSequence where Base.Element == SliceData {
+private struct ValidatedSliceDataUploadSequence<Base: AsyncSequence>: AsyncSequence where Base.Element == SliceData {
     typealias Element = VolumeUploadSlice
 
     let base: Base
     let expectedPixelFormat: VolumePixelFormat
     let intensityRange: ClosedRange<Int32>
-    let hasher: StreamContentFingerprintAccumulator
 
     struct AsyncIterator: AsyncIteratorProtocol {
         var iterator: Base.AsyncIterator
         let expectedPixelFormat: VolumePixelFormat
         let intensityRange: ClosedRange<Int32>
-        let hasher: StreamContentFingerprintAccumulator
 
         mutating func next() async throws -> VolumeUploadSlice? {
             guard let slice = try await iterator.next() else {
@@ -261,7 +195,6 @@ private struct HashedSliceDataUploadSequence<Base: AsyncSequence>: AsyncSequence
                                                 intercept: slice.intercept,
                                                 minClamp: intensityRange.lowerBound,
                                                 maxClamp: intensityRange.upperBound)
-            hasher.mix(slice: uploadSlice)
             return uploadSlice
         }
     }
@@ -269,8 +202,7 @@ private struct HashedSliceDataUploadSequence<Base: AsyncSequence>: AsyncSequence
     func makeAsyncIterator() -> AsyncIterator {
         AsyncIterator(iterator: base.makeAsyncIterator(),
                       expectedPixelFormat: expectedPixelFormat,
-                      intensityRange: intensityRange,
-                      hasher: hasher)
+                      intensityRange: intensityRange)
     }
 }
 

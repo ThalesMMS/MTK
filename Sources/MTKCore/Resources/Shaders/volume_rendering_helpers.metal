@@ -14,6 +14,7 @@ constant float kToneLookupScale = 2550.0f;
 [[maybe_unused]] constant ushort OPTION_ADAPTIVE = 1u << 2;
 [[maybe_unused]] constant ushort OPTION_DEBUG_DENSITY = 1u << 3;
 [[maybe_unused]] constant ushort OPTION_USE_ACCELERATION = 1u << 4;
+[[maybe_unused]] constant ushort OPTION_UNSIGNED_VOLUME = 1u << 5;
 [[maybe_unused]] constant int SHADOW_OFF = 0;
 [[maybe_unused]] constant int SHADOW_HARD = 1;
 [[maybe_unused]] constant int SHADOW_SOFT = 2;
@@ -50,12 +51,13 @@ constant float kToneLookupScale = 2550.0f;
 static inline float4 sampleTransfer(texture2d<float, access::sample> transfer,
                                     float density,
                                     float gradient,
-                                    bool useTransfer)
+                                    bool useTransfer,
+                                    bool use2DTransferFunction)
 {
     if (!useTransfer) {
         return float4(density, density, density, density);
     }
-    return VR::getTfColour(transfer, density, gradient);
+    return VR::getTfColour(transfer, density, gradient, use2DTransferFunction);
 }
 
 static inline float sampleTone(device float *toneBuffer,
@@ -89,13 +91,18 @@ static inline float4 sampleChannel(texture2d<float, access::sample> transfer,
                                    float density,
                                    float gradient,
                                    bool useTransfer,
+                                   bool use2DTransferFunction,
                                    float weight)
 {
     if (weight <= 0.0001f) {
         return float4(0.0f);
     }
     float tone = sampleTone(toneBuffer, density);
-    float4 colour = sampleTransfer(transfer, density, gradient, useTransfer);
+    float4 colour = sampleTransfer(transfer,
+                                   density,
+                                   gradient,
+                                   useTransfer,
+                                   use2DTransferFunction);
     colour.rgb *= weight;
     colour.a = clamp(colour.a * weight * tone, 0.0f, 1.0f);
     return clamp(colour, float4(0.0f), float4(1.0f));
@@ -108,6 +115,7 @@ static inline float4 sampleChannel(texture2d<float, access::sample> transfer,
                                                         bool useTransfer)
 {
     const float4 weights = params.intensityRatio;
+    const bool use2DTransferFunction = params.material.use2DTF != 0;
 
     if (weights.y <= 0.0001f &&
         weights.z <= 0.0001f &&
@@ -116,21 +124,23 @@ static inline float4 sampleChannel(texture2d<float, access::sample> transfer,
             return sampleTransfer(args.transferTextureCh1,
                                   density,
                                   gradient,
-                                  useTransfer);
+                                  useTransfer,
+                                  use2DTransferFunction);
         }
         return sampleChannel(args.transferTextureCh1,
                              args.toneBufferCh1,
                              density,
                              gradient,
                              useTransfer,
+                             use2DTransferFunction,
                              weights.x);
     }
 
     float4 channels[4];
-    channels[0] = sampleChannel(args.transferTextureCh1, args.toneBufferCh1, density, gradient, useTransfer, weights.x);
-    channels[1] = sampleChannel(args.transferTextureCh2, args.toneBufferCh2, density, gradient, useTransfer, weights.y);
-    channels[2] = sampleChannel(args.transferTextureCh3, args.toneBufferCh3, density, gradient, useTransfer, weights.z);
-    channels[3] = sampleChannel(args.transferTextureCh4, args.toneBufferCh4, density, gradient, useTransfer, weights.w);
+    channels[0] = sampleChannel(args.transferTextureCh1, args.toneBufferCh1, density, gradient, useTransfer, use2DTransferFunction, weights.x);
+    channels[1] = sampleChannel(args.transferTextureCh2, args.toneBufferCh2, density, gradient, useTransfer, use2DTransferFunction, weights.y);
+    channels[2] = sampleChannel(args.transferTextureCh3, args.toneBufferCh3, density, gradient, useTransfer, use2DTransferFunction, weights.z);
+    channels[3] = sampleChannel(args.transferTextureCh4, args.toneBufferCh4, density, gradient, useTransfer, use2DTransferFunction, weights.w);
 
     float alpha = 0.0f;
     float3 premult = float3(0.0f);
@@ -326,10 +336,13 @@ struct ProjectionState {
                                                        float windowMinValue,
                                                        float invWindowRange)
 {
-    const float huValue = VR::getDensityTrilinear(args.volumeTexture, position);
-    const short hu = VR::decodeInt16SampleToShort(huValue);
+    const bool unsignedVolume = (args.optionValue & OPTION_UNSIGNED_VOLUME) != 0;
+    const float huValue = VR::getDensityTrilinear(args.volumeTexture,
+                                                  args.volumeSampler,
+                                                  position,
+                                                  unsignedVolume);
     const float densityWindow = clamp((huValue - windowMinValue) * invWindowRange, 0.0f, 1.0f);
-    if (gateDensity(densityWindow, args.params, hu)) {
+    if (gateDensity(densityWindow, args.params, short(round(huValue)))) {
         return 0.0f;
     }
     const float densityFloor = clamp(args.params.material.densityFloor, 0.0f, 1.0f);

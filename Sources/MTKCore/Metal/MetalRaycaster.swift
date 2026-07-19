@@ -94,7 +94,8 @@ import MetalPerformanceShaders
 /// - ``Technique``
 /// - ``DatasetResources``
 /// - ``Error``
-public final class MetalRaycaster {
+// Legacy wrapper retained only as an internal GPU regression-test harness.
+final class MetalRaycaster {
     /// Volume rendering techniques supported by compute pipelines.
     public enum Technique: CaseIterable {
         /// Direct Volume Rendering (front-to-back alpha compositing).
@@ -518,7 +519,8 @@ public final class MetalRaycaster {
                         texture: (any MTLTexture)? = nil,
                         includeAccelerationStructure: Bool) throws -> DatasetResources {
         let factory = VolumeTextureFactory(dataset: dataset)
-        guard let texture = texture ?? factory.generate(device: device) else {
+        guard let texture = texture ?? factory.generate(device: device,
+                                                        usage: [.shaderRead, .pixelFormatView]) else {
             throw Error.datasetUnavailable
         }
 
@@ -631,9 +633,9 @@ public final class MetalRaycaster {
     /// - **G channel**: Maximum intensity in the region
     /// - **Mip levels**: Up to 8 levels (1→1/2→1/4→...→1/128)
     ///
-    /// During ray marching, the shader queries the pyramid at the current step's mip level.
-    /// If the transfer function opacity is zero for the entire intensity range `[min, max]`,
-    /// the ray advances with 2× step size.
+    /// The raycast pass converts the min-max pyramid into cached `r8Unorm` visibility when
+    /// transfer-function or window state changes. During ray marching, one discrete visibility
+    /// read determines whether the ray can advance to the next coarse block boundary.
     ///
     /// ## Performance Characteristics
     ///

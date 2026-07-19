@@ -10,9 +10,10 @@ import Foundation
 import simd
 
 extension MetalVolumeRenderingAdapter {
-    func buildRenderingParameters(for request: VolumeRenderRequest) throws -> RenderingParameters {
+    func buildRenderingParameters(for request: VolumeRenderRequest,
+                                  window: ClosedRange<Int32>? = nil) throws -> RenderingParameters {
         var params = RenderingParameters()
-        params.material = try buildVolumeUniforms(for: request)
+        params.material = try buildVolumeUniforms(for: request, window: window)
         let renderQualitySettings = request.renderQualitySettings.sanitized
         params.scale = renderQualitySettings.depthGradientScale
         params.light = Float(renderQualitySettings.directionalLightIntensity)
@@ -46,10 +47,11 @@ extension MetalVolumeRenderingAdapter {
         }
     }
 
-    func buildVolumeUniforms(for request: VolumeRenderRequest) throws -> VolumeUniforms {
+    func buildVolumeUniforms(for request: VolumeRenderRequest,
+                             window providedWindow: ClosedRange<Int32>? = nil) throws -> VolumeUniforms {
         var uniforms = VolumeUniforms()
         let dataset = request.dataset
-        let window = try resolveWindow(for: dataset)
+        let window = try providedWindow ?? resolveWindow(for: dataset)
 
         uniforms.voxelMinValue = window.lowerBound
         uniforms.voxelMaxValue = window.upperBound
@@ -156,8 +158,12 @@ extension MetalVolumeRenderingAdapter {
         return resolved
     }
 
-    func computeOptionFlags() -> UInt16 {
-        extendedState.adaptiveEnabled ? (1 << 2) : 0
+    func computeOptionFlags(useAcceleration: Bool = false) -> UInt16 {
+        var flags: UInt16 = extendedState.adaptiveEnabled ? VolumeRenderOptionBits.adaptiveStepping : 0
+        if useAcceleration {
+            flags |= VolumeRenderOptionBits.acceleration
+        }
+        return flags
     }
 
     func makeCameraUniforms(for request: VolumeRenderRequest,
@@ -260,109 +266,24 @@ extension MetalVolumeRenderingAdapter {
 
     func makeInverseViewProjectionMatrix(camera: VolumeRenderRequest.Camera,
                                          viewportSize: (width: Int, height: Int)) throws -> simd_float4x4 {
-        let aspect = max(Float(viewportSize.width) / Float(viewportSize.height), 1e-3)
-        let view = try simd_float4x4(lookAt: camera.position,
-                                     target: camera.target,
-                                     up: camera.up)
-
-        let center = SIMD3<Float>.zero
-        let distanceToCenter = simd_length(camera.position - center)
-        let farPadding = distanceToCenter * 0.1 + 1.0
-        let nearZ: Float = 0.01
-        let farZ = max(distanceToCenter + farPadding, nearZ + 100.0)
-
-        let projection: simd_float4x4
-        if camera.projectionType == .orthographic {
-            let viewHeight: Float = 2.0
-            let viewWidth = viewHeight * aspect
-            projection = simd_float4x4(orthographicWidth: viewWidth,
-                                       height: viewHeight,
-                                       nearZ: nearZ,
-                                       farZ: farZ)
-        } else {
-            projection = simd_float4x4(perspectiveFovY: max(camera.fieldOfView * .pi / 180, 0.01),
-                                       aspect: aspect,
-                                       nearZ: nearZ,
-                                       farZ: farZ)
+        let matrices: VolumeCameraMath.Matrices
+        do {
+            matrices = try VolumeCameraMath.matrices(
+                camera: camera,
+                viewportWidth: Float(viewportSize.width),
+                viewportHeight: Float(viewportSize.height)
+            )
+        } catch {
+            throw AdapterError.degenerateCameraMatrix
         }
-        let matrix = projection * view
 
         if diagnosticLoggingEnabled {
-            logger.info("[DIAG] View Matrix:\n\(view.debugDescription)")
-            logger.info("[DIAG] Projection Matrix:\n\(projection.debugDescription)")
-            logger.info("[DIAG] InvViewProj Matrix:\n\(simd_inverse(matrix).debugDescription)")
+            logger.info("[DIAG] View Matrix:\n\(matrices.view.debugDescription)")
+            logger.info("[DIAG] Projection Matrix:\n\(matrices.projection.debugDescription)")
+            logger.info("[DIAG] InvViewProj Matrix:\n\(matrices.inverseViewProjection.debugDescription)")
         }
 
-        return simd_inverse(matrix)
-    }
-
-    func centered(camera: VolumeRenderRequest.Camera) -> VolumeRenderRequest.Camera {
-        let originShift = SIMD3<Float>(repeating: 0.5)
-        return VolumeRenderRequest.Camera(
-            position: camera.position - originShift,
-            target: camera.target - originShift,
-            up: camera.up,
-            fieldOfView: camera.fieldOfView,
-            projectionType: camera.projectionType
-        )
-    }
-}
-
-private extension simd_float4x4 {
-    init(lookAt eye: SIMD3<Float>,
-         target: SIMD3<Float>,
-         up: SIMD3<Float>) throws {
-        let zAxis = simd_normalize(eye - target)
-        let xAxis = simd_normalize(simd_cross(up, zAxis))
-        let yAxis = simd_cross(zAxis, xAxis)
-
-        guard zAxis.allFinite, xAxis.allFinite, yAxis.allFinite else {
-            throw MetalVolumeRenderingAdapter.AdapterError.degenerateCameraMatrix
-        }
-
-        let translation = SIMD3<Float>(
-            -simd_dot(xAxis, eye),
-            -simd_dot(yAxis, eye),
-            -simd_dot(zAxis, eye)
-        )
-
-        self = simd_float4x4(columns: (
-            SIMD4<Float>(xAxis.x, yAxis.x, zAxis.x, 0),
-            SIMD4<Float>(xAxis.y, yAxis.y, zAxis.y, 0),
-            SIMD4<Float>(xAxis.z, yAxis.z, zAxis.z, 0),
-            SIMD4<Float>(translation, 1)
-        ))
-    }
-
-    init(perspectiveFovY fovY: Float,
-         aspect: Float,
-         nearZ: Float,
-         farZ: Float) {
-        let yScale = 1 / tan(fovY * 0.5)
-        let xScale = yScale / max(aspect, 1e-3)
-        let z = farZ / (nearZ - farZ)
-        let wz = (farZ * nearZ) / (nearZ - farZ)
-
-        self = simd_float4x4(columns: (
-            SIMD4<Float>(xScale, 0, 0, 0),
-            SIMD4<Float>(0, yScale, 0, 0),
-            SIMD4<Float>(0, 0, z, -1),
-            SIMD4<Float>(0, 0, wz, 0)
-        ))
-    }
-
-    init(orthographicWidth width: Float,
-         height: Float,
-         nearZ: Float,
-         farZ: Float) {
-        let range = nearZ - farZ
-
-        self = simd_float4x4(columns: (
-            SIMD4<Float>(2.0 / width, 0, 0, 0),
-            SIMD4<Float>(0, 2.0 / height, 0, 0),
-            SIMD4<Float>(0, 0, 1.0 / range, 0),
-            SIMD4<Float>(0, 0, nearZ / range, 1)
-        ))
+        return matrices.inverseViewProjection
     }
 }
 

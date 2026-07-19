@@ -14,6 +14,11 @@ import Foundation
 /// Note: `MTKRenderingEngine.render(_:)` owns route resolution and frame assembly,
 /// then delegates volume and MPR GPU dispatch to this service.
 struct RenderPassDispatcher {
+    private final class DebugMetrics {
+        var volumeFrameSubmissionCount = 0
+        var lastVolumeFrameEncoderCount = 0
+    }
+
     struct VolumeRenderFrameResult {
         let texture: any MTLTexture
         let lease: OutputTextureLease
@@ -35,6 +40,22 @@ struct RenderPassDispatcher {
     private let mprFrameCache: MPRFrameCache<ViewportID>
     private let volumeLayerResourceCache = VolumeLayerResourceCache()
     private let profiler: RenderProfiler
+    private let debugMetrics = DebugMetrics()
+
+    var debugVolumeFrameSubmissionCount: Int {
+        debugMetrics.volumeFrameSubmissionCount
+    }
+
+    var debugLastVolumeFrameEncoderCount: Int {
+        debugMetrics.lastVolumeFrameEncoderCount
+    }
+
+    func debugVolumeWindowCommandCount(isolatedTo _: isolated MTKRenderingEngine) async -> Int? {
+        guard let adapter = try? await volumeAdapterProvider.adapter() else {
+            return nil
+        }
+        return await adapter.debugWindowCommandCount
+    }
 
     init(device: any MTLDevice,
          commandQueue: any MTLCommandQueue,
@@ -55,7 +76,8 @@ struct RenderPassDispatcher {
         self.profiler = profiler
     }
 
-    func renderVolume(state: MTKRenderingEngine.ViewportState,
+    func renderVolume(isolatedTo _: isolated MTKRenderingEngine,
+                      state: MTKRenderingEngine.ViewportState,
                       dataset: VolumeDataset,
                       volumeTexture: any MTLTexture,
                       surfaceMeshLayers: [SurfaceMeshLayer],
@@ -79,9 +101,15 @@ struct RenderPassDispatcher {
             if let debugPostAcquireRenderFailure {
                 throw debugPostAcquireRenderFailure
             }
+            guard let commandBuffer = commandQueue.makeCommandBuffer() else {
+                throw VolumeRaycastPassError.commandBufferCreationFailed
+            }
+            commandBuffer.label = "RenderPassDispatcher.VolumeFrame"
 
+            // Empty-space pyramid generation owns a synchronous command buffer today.
+            // Fusion keeps that optional optimization off so every layer remains in this frame buffer.
             var currentLease = outputTextureLease
-            _ = try await renderLayer(
+            _ = try await encodeLayer(
                 renderLayers[0],
                 viewportSize: viewportSize,
                 volumeAdapter: volumeAdapter,
@@ -91,19 +119,22 @@ struct RenderPassDispatcher {
                 quality: state.quality,
                 renderQualitySettings: state.renderQualitySettings,
                 clipping: state.clipping,
-                outputTexture: currentLease.texture
+                outputTexture: currentLease.texture,
+                commandBuffer: commandBuffer,
+                batchIndex: 0,
+                usesAcceleration: renderLayers.count == 1
             )
 
             if renderLayers.count > 1 {
                 let compositePass = try volumeLayerCompositePassProvider.pass()
-                for layer in renderLayers.dropFirst() {
+                for (layerIndex, layer) in renderLayers.dropFirst().enumerated() {
                     let layerLease = try resourceManager.acquireOutputTextureWithLease(
                         width: viewport.width,
                         height: viewport.height,
                         pixelFormat: .bgra8Unorm
                     )
                     acquiredLeases.append(layerLease)
-                    _ = try await renderLayer(
+                    _ = try await encodeLayer(
                         layer,
                         viewportSize: viewportSize,
                         volumeAdapter: volumeAdapter,
@@ -113,7 +144,10 @@ struct RenderPassDispatcher {
                         quality: state.quality,
                         renderQualitySettings: state.renderQualitySettings,
                         clipping: state.clipping,
-                        outputTexture: layerLease.texture
+                        outputTexture: layerLease.texture,
+                        commandBuffer: commandBuffer,
+                        batchIndex: layerIndex + 1,
+                        usesAcceleration: false
                     )
 
                     let destinationLease = try resourceManager.acquireOutputTextureWithLease(
@@ -122,13 +156,13 @@ struct RenderPassDispatcher {
                         pixelFormat: .bgra8Unorm
                     )
                     acquiredLeases.append(destinationLease)
-                    try await compositePass.composite(
+                    try compositePass.encode(
                         baseTexture: currentLease.texture,
                         overlayTexture: layerLease.texture,
                         destinationTexture: destinationLease.texture,
                         overlayOpacity: layer.opacity,
                         blendMode: layer.blendMode,
-                        commandQueue: commandQueue
+                        into: commandBuffer
                     )
                     currentLease = destinationLease
                 }
@@ -139,14 +173,21 @@ struct RenderPassDispatcher {
                                         compositing: compositing)
             }
 
-            if !surfaceMeshLayers.isEmpty {
+            let hasRenderableSurfaceMesh = surfaceMeshLayers.contains(where: isRenderableSurfaceMesh)
+            if hasRenderableSurfaceMesh {
                 let surfaceMeshRenderer = try surfaceMeshRendererProvider.renderer()
-                try await surfaceMeshRenderer.render(layers: surfaceMeshLayers,
-                                                     dataset: dataset,
-                                                     camera: state.camera,
-                                                     targetTexture: currentLease.texture,
-                                                     clipping: state.clipping)
+                try surfaceMeshRenderer.encode(layers: surfaceMeshLayers,
+                                               dataset: dataset,
+                                               camera: state.camera,
+                                               targetTexture: currentLease.texture,
+                                               clipping: state.clipping,
+                                               into: commandBuffer)
             }
+            try await complete(commandBuffer)
+            debugMetrics.lastVolumeFrameEncoderCount = renderLayers.count
+                + max(renderLayers.count - 1, 0)
+                + (hasRenderableSurfaceMesh ? 1 : 0)
+            debugMetrics.volumeFrameSubmissionCount += 1
             release(acquiredLeases, except: currentLease)
             return VolumeRenderFrameResult(texture: currentLease.texture, lease: currentLease)
         } catch {
@@ -206,7 +247,7 @@ struct RenderPassDispatcher {
         return layers
     }
 
-    private func renderLayer(_ layer: RaycastLayer,
+    private func encodeLayer(_ layer: RaycastLayer,
                              viewportSize: CGSize,
                              volumeAdapter: MetalVolumeRenderingAdapter,
                              camera: Camera,
@@ -215,10 +256,10 @@ struct RenderPassDispatcher {
                              quality: VolumeRenderRequest.Quality,
                              renderQualitySettings: VolumeRenderQualitySettings,
                              clipping: VolumeClippingState,
-                             outputTexture: any MTLTexture) async throws -> VolumeRenderFrame {
-        let window = layer.dataset.recommendedWindow ?? layer.dataset.intensityRange
-        try await volumeAdapter.send(.setWindow(min: window.lowerBound, max: window.upperBound))
-
+                             outputTexture: any MTLTexture,
+                             commandBuffer: any MTLCommandBuffer,
+                             batchIndex: Int,
+                             usesAcceleration: Bool) async throws -> VolumeRenderFrame {
         let request = VolumeRenderRequest(
             dataset: layer.dataset,
             transferFunction: layer.transferFunction,
@@ -231,11 +272,37 @@ struct RenderPassDispatcher {
             renderQualitySettings: renderQualitySettings,
             layers: [layer.requestLayer]
         )
-        return try await volumeAdapter.renderTexture(
+        return try await volumeAdapter.encodeTexture(
             using: request,
             volumeTexture: layer.volumeTexture,
-            outputTexture: outputTexture
+            outputTexture: outputTexture,
+            into: commandBuffer,
+            batchIndex: batchIndex,
+            usesAcceleration: usesAcceleration
         )
+    }
+
+    private func complete(_ commandBuffer: any MTLCommandBuffer) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+            commandBuffer.addCompletedHandler { completed in
+                if let error = completed.error {
+                    continuation.resume(throwing: VolumeRaycastPassError.commandBufferExecutionFailed(
+                        underlyingDescription: error.localizedDescription
+                    ))
+                } else if completed.status == .error {
+                    continuation.resume(throwing: VolumeRaycastPassError.commandBufferExecutionFailed(
+                        underlyingDescription: "Metal command buffer finished with error status"
+                    ))
+                } else {
+                    continuation.resume()
+                }
+            }
+            commandBuffer.commit()
+        }
+    }
+
+    private func isRenderableSurfaceMesh(_ layer: SurfaceMeshLayer) -> Bool {
+        layer.isVisible && layer.clampedOpacity > 0 && layer.mesh.isRenderable
     }
 
     private func release(_ leases: [OutputTextureLease],
@@ -251,6 +318,9 @@ struct RenderPassDispatcher {
                                          viewport: (width: Int, height: Int),
                                          quality: VolumeRenderRequest.Quality,
                                          compositing: VolumeRenderRequest.Compositing) {
+        guard ClinicalProfiler.shared.isRecordingEnabled else {
+            return
+        }
         let metrics = resourceManager.resourceMetrics()
         ClinicalProfiler.shared.recordSample(
             stage: .volumeRaycast,
@@ -275,7 +345,8 @@ struct RenderPassDispatcher {
         )
     }
 
-    func renderMPR(viewport: ViewportID,
+    func renderMPR(isolatedTo _: isolated MTKRenderingEngine,
+                   viewport: ViewportID,
                    state: MTKRenderingEngine.ViewportState,
                    axis: Axis,
                    dataset: VolumeDataset,
@@ -295,7 +366,7 @@ struct RenderPassDispatcher {
             blend: state.mprBlend
         )
 
-        if let cached = await mprFrameCache.cachedFrame(for: viewport, matching: signature) {
+        if let cached = mprFrameCache.cachedFrame(for: viewport, matching: signature) {
             let labelmapOverlays = try await volumeLayerResourceCache.makeMPRLabelmapOverlays(
                 for: state.volumeLayers,
                 baseFrame: cached,
@@ -340,7 +411,7 @@ struct RenderPassDispatcher {
             device: device
         )
 
-        let retainedFrame = await mprFrameCache.store(frame, for: viewport, signature: signature)
+        let retainedFrame = mprFrameCache.store(frame, for: viewport, signature: signature)
         let labelmapOverlays = try await volumeLayerResourceCache.makeMPRLabelmapOverlays(
             for: state.volumeLayers,
             baseFrame: retainedFrame,

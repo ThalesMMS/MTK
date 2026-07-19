@@ -53,7 +53,6 @@ public enum TransferFunctions {
         }
     }
 
-    @MainActor
     public static func texture(for preset: VolumeRenderingBuiltinPreset,
                                device: any MTLDevice,
                                options: TextureOptions = .default,
@@ -63,7 +62,6 @@ public enum TransferFunctions {
         return texture(for: transfer, device: device, options: options, logger: logger)
     }
 
-    @MainActor
     public static func texture(for transferFunction: TransferFunction,
                                device: any MTLDevice,
                                options: TextureOptions = .default,
@@ -90,6 +88,29 @@ public enum TransferFunctions {
             logger: logger
         )
     }
+
+    @_spi(Testing)
+    public static var debugTextureCacheCapacity: Int {
+        TransferFunctionTextureCache.capacity
+    }
+
+    @_spi(Testing)
+    public static var debugTextureCacheEntryCount: Int {
+        TransferFunctionTextureCache.shared.entryCount
+    }
+
+    @MainActor
+    @_spi(Testing)
+    public static var debugTexture2DCacheEntryCount: Int {
+        TransferFunctionTextureCache2D.shared.entryCount
+    }
+
+    @MainActor
+    @_spi(Testing)
+    public static func debugResetTextureCaches() {
+        TransferFunctionTextureCache.shared.removeAll()
+        TransferFunctionTextureCache2D.shared.removeAll()
+    }
 }
 
 private extension TransferFunctions {
@@ -105,6 +126,8 @@ private extension TransferFunctions {
 
         let colourPoints = prepareColourPoints(for: transfer)
         let alphaPoints = prepareAlphaPoints(for: transfer)
+        let gradientOpacityMultipliers = gradientOpacityMultipliers(for: transfer.gradientOpacity,
+                                                                    height: height)
 
         // StorageModePolicy.md: transfer functions are small CPU-authored lookup textures.
         let descriptor = MTLTextureDescriptor()
@@ -129,11 +152,9 @@ private extension TransferFunctions {
             let sampleValue = transfer.minimumValue + (transfer.maximumValue - transfer.minimumValue) * t
 
             let colour = interpolateColour(at: sampleValue, points: colourPoints)
+            let scalarAlpha = interpolateAlpha(at: sampleValue, points: alphaPoints)
             for y in 0..<height {
-                let gradientOpacity = opacityMultiplier(for: transfer.gradientOpacity,
-                                                        y: y,
-                                                        height: height)
-                let alpha = interpolateAlpha(at: sampleValue, points: alphaPoints) * gradientOpacity
+                let alpha = scalarAlpha * gradientOpacityMultipliers[y]
                 let finalColour = SIMD4<Float>(
                     colour.r,
                     colour.g,
@@ -218,14 +239,18 @@ private extension TransferFunctions {
         return points.last?.alphaValue ?? first.alphaValue
     }
 
-    static func opacityMultiplier(for gradientOpacity: GradientOpacityFunction?,
-                                  y: Int,
-                                  height: Int) -> Float {
-        guard let gradientOpacity else { return 1 }
-        let gradientT = height > 1 ? Float(y) / Float(height - 1) : 0
-        let gradientValue = gradientOpacity.minimumGradient +
-            (gradientOpacity.maximumGradient - gradientOpacity.minimumGradient) * gradientT
-        return gradientOpacity.opacity(at: gradientValue)
+    static func gradientOpacityMultipliers(for gradientOpacity: GradientOpacityFunction?,
+                                           height: Int) -> [Float] {
+        guard let gradientOpacity else {
+            return [Float](repeating: 1, count: height)
+        }
+        let points = gradientOpacity.sanitizedPoints()
+        return (0..<height).map { y in
+            let gradientT = height > 1 ? Float(y) / Float(height - 1) : 0
+            let gradientValue = gradientOpacity.minimumGradient +
+                (gradientOpacity.maximumGradient - gradientOpacity.minimumGradient) * gradientT
+            return gradientOpacity.opacity(at: gradientValue, sanitizedPoints: points)
+        }
     }
 
     static func linearize(colour: TransferFunction.RGBAColor,
@@ -394,9 +419,10 @@ private extension TransferFunctions {
     }
 }
 
-@MainActor
-private final class TransferFunctionTextureCache {
+private final class TransferFunctionTextureCache: @unchecked Sendable {
     static let shared = TransferFunctionTextureCache()
+    // A default gradient-opacity texture is 4 MiB, bounding this cache to about 32 MiB.
+    static let capacity = 8
 
     private struct CacheKey: Hashable {
         let deviceID: UInt64
@@ -404,12 +430,20 @@ private final class TransferFunctionTextureCache {
         let options: TransferFunctions.TextureOptions
     }
 
-    private struct Entry {
-        let texture: any MTLTexture
+    private let lock = NSLock()
+    private var storage = TransferTextureLRU<CacheKey>(capacity: capacity)
+
+    var entryCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.count
     }
 
-    private let lock = NSLock()
-    private var storage: [CacheKey: Entry] = [:]
+    func removeAll() {
+        lock.lock()
+        storage.removeAll()
+        lock.unlock()
+    }
 
     func texture(for transfer: TransferFunction,
                  options: TransferFunctions.TextureOptions,
@@ -420,8 +454,7 @@ private final class TransferFunctionTextureCache {
         let key = CacheKey(deviceID: deviceID, signature: signature, options: options)
 
         lock.lock()
-        if let entry = storage[key] {
-            let cached = entry.texture
+        if let cached = storage.texture(for: key) {
             lock.unlock()
             return cached
         }
@@ -435,7 +468,11 @@ private final class TransferFunctionTextureCache {
         }
 
         lock.lock()
-        storage[key] = Entry(texture: texture)
+        if let cached = storage.texture(for: key) {
+            lock.unlock()
+            return cached
+        }
+        storage.insert(texture, for: key)
         lock.unlock()
         return texture
     }
@@ -451,12 +488,15 @@ private final class TransferFunctionTextureCache2D {
         let options: TransferFunctions.TextureOptions
     }
 
-    private struct Entry {
-        let texture: any MTLTexture
+    private var storage = TransferTextureLRU<CacheKey>(capacity: TransferFunctionTextureCache.capacity)
+
+    var entryCount: Int {
+        storage.count
     }
 
-    private let lock = NSLock()
-    private var storage: [CacheKey: Entry] = [:]
+    func removeAll() {
+        storage.removeAll()
+    }
 
     func texture(for transfer: TransferFunction2D,
                  options: TransferFunctions.TextureOptions,
@@ -466,13 +506,9 @@ private final class TransferFunctionTextureCache2D {
         let deviceID = device.registryID
         let key = CacheKey(deviceID: deviceID, signature: signature, options: options)
 
-        lock.lock()
-        if let entry = storage[key] {
-            let cached = entry.texture
-            lock.unlock()
+        if let cached = storage.texture(for: key) {
             return cached
         }
-        lock.unlock()
 
         guard let texture = TransferFunctions.buildTexture2D(for: transfer,
                                                               options: options,
@@ -481,9 +517,7 @@ private final class TransferFunctionTextureCache2D {
             return nil
         }
 
-        lock.lock()
-        storage[key] = Entry(texture: texture)
-        lock.unlock()
+        storage.insert(texture, for: key)
         return texture
     }
 }

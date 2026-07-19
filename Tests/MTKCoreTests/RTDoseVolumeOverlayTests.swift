@@ -76,6 +76,78 @@ final class RTDoseVolumeOverlayTests: XCTestCase {
         XCTAssertEqual(stats.standardDeviation, 0.5, accuracy: 1e-6)
     }
 
+    func test_doseStatistics_transformedROI_preservesSampling() throws {
+        let dimensions = VolumeDimensions(width: 3, height: 1, depth: 1)
+        let doseDataset = VolumeDataset(
+            data: littleEndianData([10, 20, 30]),
+            dimensions: dimensions,
+            spacing: VolumeSpacing(x: 2, y: 1, z: 1),
+            pixelFormat: .int16Unsigned,
+            intensityRange: 10...30,
+            orientation: VolumeOrientation(
+                row: SIMD3<Float>(1, 0, 0),
+                column: SIMD3<Float>(0, 1, 0),
+                origin: SIMD3<Float>(10, 0, 0)
+            )
+        )
+        var baseWorldToDoseWorld = matrix_identity_float4x4
+        baseWorldToDoseWorld.columns.3.x = 8
+        let overlay = RTDoseVolumeOverlay(
+            id: "dose",
+            dataset: doseDataset,
+            doseUnits: "GY",
+            doseGridScaling: 0.1,
+            baseWorldToLayerWorld: baseWorldToDoseWorld
+        )
+        let labelmap = try LabelmapVolume(
+            dataset: makeLabelmapDataset(values: [7, 0, 7], dimensions: dimensions),
+            segments: [LabelmapSegment(label: 7,
+                                       name: "Target",
+                                       color: SIMD4<Float>(1, 0, 0, 1))]
+        )
+        var baseWorldToLabelWorld = matrix_identity_float4x4
+        baseWorldToLabelWorld.columns.3.x = -2
+        let roiLayer = VolumeLayer(id: "roi",
+                                   labelmap: labelmap,
+                                   baseWorldToLayerWorld: baseWorldToLabelWorld)
+
+        let stats = try overlay.doseStatistics(in: roiLayer, label: 7)
+
+        XCTAssertEqual(stats.sampleCount, 2)
+        XCTAssertEqual(stats.minimumDose, 1.0, accuracy: 1e-6)
+        XCTAssertEqual(stats.maximumDose, 2.0, accuracy: 1e-6)
+        XCTAssertEqual(stats.meanDose, 1.5, accuracy: 1e-6)
+        XCTAssertEqual(stats.standardDeviation, 0.5, accuracy: 1e-6)
+    }
+
+    func test_doseStatistics_whenDoseBufferIsTruncated_throwsMalformedData() throws {
+        let dimensions = VolumeDimensions(width: 2, height: 1, depth: 1)
+        let doseDataset = VolumeDataset(
+            data: Data([0x01, 0x00]),
+            dimensions: dimensions,
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+            pixelFormat: .int16Unsigned,
+            intensityRange: 0...1
+        )
+        let overlay = RTDoseVolumeOverlay(
+            id: "dose",
+            dataset: doseDataset,
+            doseUnits: "GY",
+            doseGridScaling: 1
+        )
+        let labelmap = try LabelmapVolume(
+            dataset: makeLabelmapDataset(values: [7, 7], dimensions: dimensions),
+            segments: [LabelmapSegment(label: 7, name: "Target", color: SIMD4<Float>(1, 0, 0, 1))]
+        )
+
+        XCTAssertThrowsError(try overlay.doseStatistics(
+            in: VolumeLayer(id: "roi", labelmap: labelmap),
+            label: 7
+        )) { error in
+            XCTAssertEqual(error as? VolumePickError, .malformedData)
+        }
+    }
+
     private func makeDoseDataset(values: [UInt16],
                                  dimensions: VolumeDimensions,
                                  intensityRange: ClosedRange<Int32>) -> VolumeDataset {

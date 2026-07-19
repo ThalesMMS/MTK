@@ -288,57 +288,126 @@ public enum RTDoseVolumePicking {
               labelmap.dataset.data.count >= labelmap.dataset.dimensions.voxelCount * MemoryLayout<UInt16>.size else {
             throw RTDoseVolumePickingError.malformedLabelmap(roiLayer.id)
         }
+        guard let doseDataset = overlay.doseDataset else {
+            throw RTDoseVolumePickingError.missingDoseDataset(overlay.id)
+        }
+        guard doseDataset.data.count >= doseDataset.dimensions.voxelCount * doseDataset.pixelFormat.bytesPerVoxel else {
+            throw VolumePickError.malformedData
+        }
 
         let labelWorldToBaseWorld = simd_inverse(roiLayer.baseWorldToLayerWorld)
-        var count = 0
-        var total = 0.0
-        var totalSquares = 0.0
-        var minDose = Double.greatestFiniteMagnitude
-        var maxDose = -Double.greatestFiniteMagnitude
-        let dimensions = labelmap.dataset.dimensions
+        let labelIndexToDoseIndex = doseDataset.imageData.worldToIndex
+            * overlay.volumeLayer.baseWorldToLayerWorld
+            * labelWorldToBaseWorld
+            * labelmap.dataset.imageData.indexToWorld
+        let labelDimensions = labelmap.dataset.dimensions
         let labelData = labelmap.dataset.data
-        for z in 0..<dimensions.depth {
-            for y in 0..<dimensions.height {
-                for x in 0..<dimensions.width {
-                    let linear = z * dimensions.width * dimensions.height + y * dimensions.width + x
-                    let storedLabel = readUInt16LittleEndian(labelData, atLinearIndex: linear)
-                    guard storedLabel > 0,
-                          label == nil || storedLabel == label else {
-                        continue
-                    }
-                    let labelIndex = SIMD3<Float>(Float(x), Float(y), Float(z))
-                    let labelWorld = labelmap.dataset.imageData.indexToWorld.transformPoint(labelIndex)
-                    let baseWorld = labelWorldToBaseWorld.transformPoint(labelWorld)
-                    guard let sample = try? sampleDose(in: overlay, atBaseWorldPoint: baseWorld) else {
-                        continue
-                    }
-                    count += 1
-                    total += sample.doseValue
-                    totalSquares += sample.doseValue * sample.doseValue
-                    minDose = min(minDose, sample.doseValue)
-                    maxDose = max(maxDose, sample.doseValue)
+        let doseData = doseDataset.data
+        let totals = labelData.withUnsafeBytes { labelRawBuffer in
+            let labels = labelRawBuffer.bindMemory(to: UInt16.self)
+            return doseData.withUnsafeBytes { doseRawBuffer in
+                switch doseDataset.pixelFormat {
+                case .int16Signed:
+                    return accumulateDoseStatistics(
+                        labels: labels,
+                        doseValues: doseRawBuffer.bindMemory(to: Int16.self),
+                        labelDimensions: labelDimensions,
+                        doseDimensions: doseDataset.dimensions,
+                        labelIndexToDoseIndex: labelIndexToDoseIndex,
+                        selectedLabel: label,
+                        doseGridScaling: overlay.doseGridScaling
+                    )
+                case .int16Unsigned:
+                    return accumulateDoseStatistics(
+                        labels: labels,
+                        doseValues: doseRawBuffer.bindMemory(to: UInt16.self),
+                        labelDimensions: labelDimensions,
+                        doseDimensions: doseDataset.dimensions,
+                        labelIndexToDoseIndex: labelIndexToDoseIndex,
+                        selectedLabel: label,
+                        doseGridScaling: overlay.doseGridScaling
+                    )
                 }
             }
         }
 
-        guard count > 0 else {
+        guard totals.count > 0 else {
             throw RTDoseVolumePickingError.emptySelection
         }
-        let mean = total / Double(count)
-        let variance = max(0, totalSquares / Double(count) - mean * mean)
+        let mean = totals.total / Double(totals.count)
+        let variance = max(0, totals.totalSquares / Double(totals.count) - mean * mean)
         return RTDoseStatistics(layerID: overlay.volumeLayer.id,
                                 doseUnits: overlay.doseUnits,
-                                sampleCount: count,
-                                minimumDose: minDose,
-                                maximumDose: maxDose,
+                                sampleCount: totals.count,
+                                minimumDose: totals.minimum,
+                                maximumDose: totals.maximum,
                                 meanDose: mean,
                                 standardDeviation: variance.squareRoot())
     }
 
-    private static func readUInt16LittleEndian(_ data: Data, atLinearIndex linearIndex: Int) -> UInt16 {
-        let byteOffset = linearIndex * MemoryLayout<UInt16>.size
-        let low = UInt16(data[byteOffset])
-        let high = UInt16(data[byteOffset + 1]) << 8
-        return low | high
+    private static func accumulateDoseStatistics<StoredScalar: BinaryInteger>(
+        labels: UnsafeBufferPointer<UInt16>,
+        doseValues: UnsafeBufferPointer<StoredScalar>,
+        labelDimensions: VolumeDimensions,
+        doseDimensions: VolumeDimensions,
+        labelIndexToDoseIndex: simd_float4x4,
+        selectedLabel: UInt16?,
+        doseGridScaling: Double
+    ) -> DoseStatisticsAccumulator {
+        var totals = DoseStatisticsAccumulator()
+        let labelSliceStride = labelDimensions.width * labelDimensions.height
+
+        for z in 0..<labelDimensions.depth {
+            for y in 0..<labelDimensions.height {
+                for x in 0..<labelDimensions.width {
+                    let labelLinear = z * labelSliceStride + y * labelDimensions.width + x
+                    let storedLabel = UInt16(littleEndian: labels[labelLinear])
+                    guard storedLabel > 0,
+                          selectedLabel == nil || storedLabel == selectedLabel else {
+                        continue
+                    }
+
+                    let doseIndex = labelIndexToDoseIndex.transformPoint(
+                        SIMD3<Float>(Float(x), Float(y), Float(z))
+                    )
+                    guard doseIndex.x.isFinite, doseIndex.y.isFinite, doseIndex.z.isFinite else {
+                        continue
+                    }
+                    let nearest = SIMD3<Int32>(
+                        Int32(floor(doseIndex.x + 0.5)),
+                        Int32(floor(doseIndex.y + 0.5)),
+                        Int32(floor(doseIndex.z + 0.5))
+                    )
+                    guard nearest.x >= 0, nearest.x < Int32(doseDimensions.width),
+                          nearest.y >= 0, nearest.y < Int32(doseDimensions.height),
+                          nearest.z >= 0, nearest.z < Int32(doseDimensions.depth) else {
+                        continue
+                    }
+
+                    let doseLinear = Int(nearest.z) * doseDimensions.width * doseDimensions.height
+                        + Int(nearest.y) * doseDimensions.width
+                        + Int(nearest.x)
+                    let dose = Double(Int32(doseValues[doseLinear])) * doseGridScaling
+                    totals.append(dose)
+                }
+            }
+        }
+        return totals
+    }
+
+    private struct DoseStatisticsAccumulator {
+        var count = 0
+        var total = 0.0
+        var totalSquares = 0.0
+        var minimum = Double.greatestFiniteMagnitude
+        var maximum = -Double.greatestFiniteMagnitude
+
+        mutating func append(_ dose: Double) {
+            count += 1
+            total += dose
+            totalSquares += dose * dose
+            minimum = min(minimum, dose)
+            maximum = max(maximum, dose)
+        }
     }
 }

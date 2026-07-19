@@ -19,16 +19,21 @@ extension MetalVolumeRenderingAdapter {
         let identity = DatasetIdentity.Storage(dataset: dataset)
         if let existing = state.volumeTexture,
            state.datasetIdentity == identity {
+            if state.datasetContentIdentity?.intensityRange != dataset.intensityRange {
+                state.datasetContentIdentity = DatasetIdentity.Content(dataset: dataset)
+            }
             return DatasetTexturePreparationResult(texture: existing,
                                                    cacheHit: true)
         }
 
         let factory = VolumeTextureFactory(dataset: dataset)
         let texture = try await factory.generateAsync(device: state.device,
-                                                      commandQueue: state.commandQueue)
+                                                      commandQueue: state.commandQueue,
+                                                      usage: [.shaderRead, .pixelFormatView])
         texture.label = "VolumeCompute.Dataset"
         state.volumeTexture = texture
         state.datasetIdentity = identity
+        state.datasetContentIdentity = DatasetIdentity.Content(dataset: dataset)
         state.argumentManager.markAsNeedsUpdate(argumentIndex: .mainTexture)
         return DatasetTexturePreparationResult(texture: texture,
                                                cacheHit: false)
@@ -43,6 +48,9 @@ extension MetalVolumeRenderingAdapter {
         } ?? false
 
         if sameTexture, state.datasetIdentity == identity {
+            if state.datasetContentIdentity?.intensityRange != dataset.intensityRange {
+                state.datasetContentIdentity = DatasetIdentity.Content(dataset: dataset)
+            }
             return DatasetTexturePreparationResult(texture: texture,
                                                    cacheHit: true)
         }
@@ -50,6 +58,7 @@ extension MetalVolumeRenderingAdapter {
         texture.label = texture.label ?? "VolumeCompute.Dataset"
         state.volumeTexture = texture
         state.datasetIdentity = identity
+        state.datasetContentIdentity = DatasetIdentity.Content(dataset: dataset)
         state.argumentManager.markAsNeedsUpdate(argumentIndex: .mainTexture)
         return DatasetTexturePreparationResult(texture: texture,
                                                cacheHit: false)
@@ -81,10 +90,8 @@ extension MetalVolumeRenderingAdapter {
 
         let resolvedTransfer = try makeTransferFunction(from: transfer,
                                                         dataset: dataset)
-        let texture = await MainActor.run {
-            TransferFunctions.texture(for: resolvedTransfer,
-                                      device: state.device)
-        }
+        let texture = TransferFunctions.texture(for: resolvedTransfer,
+                                                device: state.device)
 
         guard let texture else {
             throw RenderingError.transferTextureUnavailable
@@ -95,6 +102,50 @@ extension MetalVolumeRenderingAdapter {
                                                        shift: shift,
                                                        texture: texture)
         return texture
+    }
+
+    func prepareAccelerationTexture(for dataset: VolumeDataset,
+                                    state: MetalState) -> (any MTLTexture)? {
+        let identity = state.datasetContentIdentity ?? DatasetIdentity.Content(dataset: dataset)
+        state.datasetContentIdentity = identity
+        if let texture = state.accelerationCaches[identity] {
+            state.accelerationCacheOrder.removeAll { $0 == identity }
+            state.accelerationCacheOrder.append(identity)
+            state.accelerationCache = MetalState.AccelerationCache(
+                datasetIdentity: identity,
+                texture: texture
+            )
+            return texture
+        }
+        guard let accelerator = state.emptySpaceAccelerator,
+              let volumeTexture = state.volumeTexture else {
+            return nil
+        }
+
+        do {
+            let structure = try accelerator.generateAccelerationStructure(
+                from: volumeTexture,
+                intensityRange: dataset.intensityRange
+            )
+            structure.texture.label = "VolumeCompute.EmptySpaceMinMax"
+            state.accelerationCaches[identity] = structure.texture
+            state.accelerationCacheOrder.removeAll { $0 == identity }
+            state.accelerationCacheOrder.append(identity)
+            while state.accelerationCacheOrder.count > state.accelerationCacheLimit {
+                let evicted = state.accelerationCacheOrder.removeFirst()
+                state.accelerationCaches[evicted] = nil
+            }
+            state.accelerationCache = MetalState.AccelerationCache(
+                datasetIdentity: identity,
+                texture: structure.texture
+            )
+            state.accelerationBuildCount += 1
+            return structure.texture
+        } catch {
+            state.accelerationCache = nil
+            logger.error("Empty-space acceleration generation failed: \(error.localizedDescription)")
+            return nil
+        }
     }
 
     func makeTransferFunction(from transfer: VolumeTransferFunction,

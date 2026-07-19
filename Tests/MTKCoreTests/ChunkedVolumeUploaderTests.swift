@@ -91,6 +91,50 @@ final class ChunkedVolumeUploaderTests: XCTestCase {
         XCTAssertEqual(values, [-1024, 0, 1024, 3071])
     }
 
+    func test_uploadUsesBoundedStagingRingAndAggregatesHUProfiling() async throws {
+        let dimensions = VolumeDimensions(width: 1, height: 1, depth: 5)
+        let slices = SliceSequence((0..<dimensions.depth).map { index in
+            makeSignedSlice(index: index, values: [Int16(index)])
+        })
+        let descriptor = VolumeUploadDescriptor(
+            dimensions: dimensions,
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+            sourcePixelFormat: .int16Signed
+        )
+        let progressRecorder = ProgressRecorder()
+        let uploader = try ChunkedVolumeUploader(device: device,
+                                                 commandQueue: commandQueue)
+        ClinicalProfiler.shared.reset(environment: .unknown)
+        defer { _ = ClinicalProfiler.shared.endSession() }
+
+        let texture = try await uploader.upload(slices: slices,
+                                                descriptor: descriptor) { event in
+            progressRecorder.append(event)
+        }
+        let values = try await readBackSignedValues(from: texture)
+        let metrics = try XCTUnwrap(progressRecorder.events.compactMap { event -> VolumeUploadMetrics? in
+            guard case .completed(let metrics) = event else { return nil }
+            return metrics
+        }.first)
+        let huSamples = ClinicalProfiler.shared.sessionSnapshot()?.samples.filter {
+            $0.stageType == .huConversion
+        } ?? []
+        let uploadedSliceCounts = progressRecorder.events.compactMap { event -> Int? in
+            guard case .uploadingSlice(let current, _) = event else { return nil }
+            return current
+        }
+        let sliceByteCount = dimensions.width * dimensions.height * MemoryLayout<Int16>.stride
+
+        XCTAssertEqual(values, [0, 1, 2, 3, 4])
+        XCTAssertEqual(uploadedSliceCounts, [1, 2, 3, 4, 5])
+        XCTAssertEqual(metrics.peakMemoryBytes,
+                       ResourceMemoryEstimator.estimate(for: texture) + (sliceByteCount * 3))
+        XCTAssertEqual(huSamples.count, 1)
+        XCTAssertEqual(huSamples.first?.metadata?["slicesProcessed"], "5")
+        XCTAssertEqual(huSamples.first?.metadata?["effectiveStagingBufferCount"], "3")
+        XCTAssertNil(huSamples.first?.metadata?["sliceIndex"])
+    }
+
     func test_resourceManagerAcquireFromStreamStoresPrivateTextureMetadata() async throws {
         let dimensions = VolumeDimensions(width: 2, height: 2, depth: 1)
         let slices = SliceSequence([
@@ -116,7 +160,32 @@ final class ChunkedVolumeUploaderTests: XCTestCase {
     }
 
 #if DEBUG
-    func test_resourceManagerAcquireFromStreamUpdatesDebugUploadCounters() async throws {
+    func test_resourceManagerAcquireFromStreamCacheKeySkipsSecondUpload() async throws {
+        let dimensions = VolumeDimensions(width: 2, height: 2, depth: 1)
+        let descriptor = VolumeUploadDescriptor(
+            dimensions: dimensions,
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+            sourcePixelFormat: .int16Signed,
+            cacheKey: "chunked-resource-manager-cache-hit-test"
+        )
+        let manager = VolumeResourceManager(device: device,
+                                            commandQueue: commandQueue)
+        let slices = [
+            makeSignedSlice(index: 0, values: [1, 2, 3, 4])
+        ]
+
+        let firstHandle = try await manager.acquireFromStream(descriptor: descriptor,
+                                                              slices: SliceSequence(slices))
+        let secondHandle = try await manager.acquireFromStream(descriptor: descriptor,
+                                                               slices: FailingIfConsumedSliceSequence())
+
+        XCTAssertEqual(manager.debugCounters.volumeTextureCreates, 1)
+        XCTAssertEqual(manager.debugCounters.volumeCacheHits, 1)
+        XCTAssertEqual(manager.debugTextureCount, 1)
+        XCTAssertTrue(manager.texture(for: firstHandle) === manager.texture(for: secondHandle))
+    }
+
+    func test_resourceManagerAcquireFromStreamWithoutCacheKey_doesNotReuseSampledIdentity() async throws {
         let dimensions = VolumeDimensions(width: 2, height: 2, depth: 1)
         let descriptor = VolumeUploadDescriptor(
             dimensions: dimensions,
@@ -125,18 +194,56 @@ final class ChunkedVolumeUploaderTests: XCTestCase {
         )
         let manager = VolumeResourceManager(device: device,
                                             commandQueue: commandQueue)
-        let slices = [
+        let firstSlices = [
             makeSignedSlice(index: 0, values: [1, 2, 3, 4])
         ]
+        let changedSlices = [
+            makeSignedSlice(index: 0, values: [1, 2, 3, 5])
+        ]
 
-        _ = try await manager.acquireFromStream(descriptor: descriptor,
-                                                slices: SliceSequence(slices))
-        _ = try await manager.acquireFromStream(descriptor: descriptor,
-                                                slices: SliceSequence(slices))
+        let firstHandle = try await manager.acquireFromStream(descriptor: descriptor,
+                                                              slices: SliceSequence(firstSlices))
+        let secondHandle = try await manager.acquireFromStream(descriptor: descriptor,
+                                                               slices: SliceSequence(changedSlices))
 
         XCTAssertEqual(manager.debugCounters.volumeTextureCreates, 2)
+        XCTAssertEqual(manager.debugCounters.volumeCacheHits, 0)
+        XCTAssertEqual(manager.debugTextureCount, 2)
+        XCTAssertFalse(manager.texture(for: firstHandle) === manager.texture(for: secondHandle))
+    }
+
+    func test_resourceManagerAcquireFromSliceDataStreamCacheKeySkipsSecondUpload() async throws {
+        let dimensions = VolumeDimensions(width: 2, height: 2, depth: 1)
+        let descriptor = VolumeUploadDescriptor(
+            dimensions: dimensions,
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+            sourcePixelFormat: .int16Signed,
+            cacheKey: "slice-data-resource-manager-cache-hit-test"
+        )
+        let manager = VolumeResourceManager(device: device,
+                                            commandQueue: commandQueue)
+        let slice = makeSignedSlice(index: 0, values: [1, 2, 3, 4])
+        let slices = SliceDataSequence([
+            SliceData(index: slice.index,
+                      rawBytes: slice.data,
+                      slope: slice.slope,
+                      intercept: slice.intercept,
+                      isSigned: true)
+        ])
+
+        let firstHandle = try await manager.acquireFromStream(sliceStream: slices,
+                                                              metadata: descriptor,
+                                                              device: device,
+                                                              commandQueue: commandQueue)
+        let secondHandle = try await manager.acquireFromStream(sliceStream: FailingIfConsumedSliceDataSequence(),
+                                                               metadata: descriptor,
+                                                               device: device,
+                                                               commandQueue: commandQueue)
+
+        XCTAssertEqual(manager.debugCounters.volumeTextureCreates, 1)
         XCTAssertEqual(manager.debugCounters.volumeCacheHits, 1)
         XCTAssertEqual(manager.debugTextureCount, 1)
+        XCTAssertTrue(manager.texture(for: firstHandle) === manager.texture(for: secondHandle))
     }
 #endif
 
@@ -400,3 +507,58 @@ private struct DelayedSliceSequence: AsyncSequence {
         }
     }
 }
+
+private struct FailingIfConsumedSliceSequence: AsyncSequence {
+    typealias Element = VolumeUploadSlice
+
+    func makeAsyncIterator() -> Iterator {
+        Iterator()
+    }
+
+    struct Iterator: AsyncIteratorProtocol {
+        mutating func next() async throws -> VolumeUploadSlice? {
+            throw UnexpectedSliceConsumptionError()
+        }
+    }
+}
+
+private struct SliceDataSequence: AsyncSequence {
+    typealias Element = SliceData
+
+    let slices: [SliceData]
+
+    init(_ slices: [SliceData]) {
+        self.slices = slices
+    }
+
+    func makeAsyncIterator() -> Iterator {
+        Iterator(slices: slices)
+    }
+
+    struct Iterator: AsyncIteratorProtocol {
+        let slices: [SliceData]
+        var index = 0
+
+        mutating func next() async -> SliceData? {
+            guard index < slices.count else { return nil }
+            defer { index += 1 }
+            return slices[index]
+        }
+    }
+}
+
+private struct FailingIfConsumedSliceDataSequence: AsyncSequence {
+    typealias Element = SliceData
+
+    func makeAsyncIterator() -> Iterator {
+        Iterator()
+    }
+
+    struct Iterator: AsyncIteratorProtocol {
+        mutating func next() async throws -> SliceData? {
+            throw UnexpectedSliceConsumptionError()
+        }
+    }
+}
+
+private struct UnexpectedSliceConsumptionError: Error {}

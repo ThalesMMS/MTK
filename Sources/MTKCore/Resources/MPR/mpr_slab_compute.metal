@@ -24,7 +24,10 @@ struct MPRSlabUniforms {
     int blendMode;
     int numSteps;
     float slabHalf;
-    float3 _pad0;
+    float slabSpan;
+    float invStepsMinusOne;
+    float _pad0;
+    float3 planeNormal;
 
     float3 planeOrigin;
     float _pad1;
@@ -154,10 +157,7 @@ kernel void computeMPRSlab(texture3d<short, access::sample> volume   [[texture(0
         return;
     }
 
-    float3 normal = normalize(cross(uniforms.planeX, uniforms.planeY));
     int steps = max(2, uniforms.numSteps);
-    float invStepsMinusOne = 1.0f / float(steps - 1);
-    float slabSpan = 2.0f * uniforms.slabHalf;
 
     float maxDensity = 0.0f;
     float minDensity = 1.0f;
@@ -165,9 +165,9 @@ kernel void computeMPRSlab(texture3d<short, access::sample> volume   [[texture(0
     int validSamples = 0;
 
     for (int i = 0; i < steps; ++i) {
-        float normalizedIndex = float(i) * invStepsMinusOne;
-        float offset = (normalizedIndex - 0.5f) * slabSpan;
-        float3 samplePosition = planePosition + offset * normal;
+        float normalizedIndex = float(i) * uniforms.invStepsMinusOne;
+        float offset = (normalizedIndex - 0.5f) * uniforms.slabSpan;
+        float3 samplePosition = planePosition + offset * uniforms.planeNormal;
 
         if (!isInBounds(samplePosition)) {
             continue;
@@ -242,10 +242,7 @@ kernel void computeMPRSlabUnsigned(texture3d<ushort, access::sample> volume [[te
         return;
     }
 
-    float3 normal = normalize(cross(uniforms.planeX, uniforms.planeY));
     int steps = max(2, uniforms.numSteps);
-    float invStepsMinusOne = 1.0f / float(steps - 1);
-    float slabSpan = 2.0f * uniforms.slabHalf;
 
     float maxDensity = 0.0f;
     float minDensity = 1.0f;
@@ -253,9 +250,9 @@ kernel void computeMPRSlabUnsigned(texture3d<ushort, access::sample> volume [[te
     int validSamples = 0;
 
     for (int i = 0; i < steps; ++i) {
-        float normalizedIndex = float(i) * invStepsMinusOne;
-        float offset = (normalizedIndex - 0.5f) * slabSpan;
-        float3 samplePosition = planePosition + offset * normal;
+        float normalizedIndex = float(i) * uniforms.invStepsMinusOne;
+        float offset = (normalizedIndex - 0.5f) * uniforms.slabSpan;
+        float3 samplePosition = planePosition + offset * uniforms.planeNormal;
 
         if (!isInBounds(samplePosition)) {
             continue;

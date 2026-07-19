@@ -11,9 +11,10 @@
 import CoreGraphics
 import simd
 
-/// Normalized layout describing where an aspect-fit image is placed inside a
-/// rectangular destination (e.g., a Metal drawable). `origin` and `size` are
-/// expressed in the destination's normalized coordinates `[0, 1]`.
+/// Normalized layout describing where an image is placed relative to a
+/// rectangular destination (e.g., a Metal drawable). `origin` and `size` use
+/// destination-normalized coordinates; rotation-preserving layouts may extend
+/// beyond `[0, 1]` and be clipped by the destination.
 public struct MPRPresentationLayout: Equatable, Sendable {
     public var origin: SIMD2<Float>
     public var size: SIMD2<Float>
@@ -101,5 +102,34 @@ public enum MPROutputAspect: Sendable, Equatable {
         let width = max(Int(destinationSize.width.rounded()), 1)
         let height = max(Int(destinationSize.height.rounded()), 1)
         return layout(destinationWidth: width, destinationHeight: height)
+    }
+
+    /// Resolves a rotation-aware layout while preserving the unrotated aspect-fit scale.
+    public func layout(destinationSize: CGSize,
+                       viewportTransform: MPRViewportTransform) -> MPRPresentationLayout {
+        switch self {
+        case .fill:
+            return .fill
+        case let .aspectFit(sourceAspectRatio):
+            let width = max(Int(destinationSize.width.rounded()), 1)
+            let height = max(Int(destinationSize.height.rounded()), 1)
+            let sourceAspect = sourceAspectRatio.isFinite
+                ? max(sourceAspectRatio, Float.ulpOfOne)
+                : 1
+            let baseLayout = MPRPresentationLayout.aspectFit(
+                contentAspectRatio: sourceAspect,
+                destinationWidth: width,
+                destinationHeight: height
+            )
+            let rotatedBounds = viewportTransform.rotatedBounds(sourceAspectRatio: sourceAspect)
+            let rotatedSize = SIMD2<Float>(
+                rotatedBounds.x * baseLayout.size.x / sourceAspect,
+                rotatedBounds.y * baseLayout.size.y
+            )
+            return MPRPresentationLayout(
+                origin: (SIMD2<Float>(repeating: 1) - rotatedSize) * 0.5,
+                size: rotatedSize
+            )
+        }
     }
 }

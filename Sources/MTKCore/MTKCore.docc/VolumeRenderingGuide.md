@@ -44,19 +44,21 @@ The Metal path keeps a fast path for a single visible scalar layer. When multipl
 
 ``VolumeResourceManager`` reuses scalar volume textures by resource handle. Assigning the same scalar layer dataset to multiple viewports retains the existing handle instead of uploading duplicate 3D textures, and resource metrics include the shared layer textures and output texture pool memory.
 
+For streamed uploads, callers should provide a stable content revision in `VolumeUploadDescriptor.cacheKey` whenever one is available. The revision must change when voxel bytes or per-slice conversion metadata such as slope and intercept change. A matching key and descriptor let the resource manager return a cached texture before consuming or uploading the stream. Without a key, MTK disables cross-request texture reuse. Stream fingerprints remain useful for diagnostics, but fingerprints for payloads larger than 1 MiB are sampled and are never authoritative cache identities. Callers that need reuse must provide either a stable revision or a collision-safe full-stream digest as the cache key.
+
 MTK does not solve DICOM registration. Scalar fusion accepts layers that are already in base texture space and externally supplied axis-aligned scale/translation transforms that can be CPU-resampled into base geometry. Unsupported affine, rotation, shear, perspective, and non-finite scalar transforms fail with a structured error. Existing labelmap MPR affine handling remains supported for segmentation overlays. The registration and resampling contract is tracked in [Architecture/MultiVolumeRegistration.md](../../../Architecture/MultiVolumeRegistration.md); PET/CT, CT plus dose, MR T1/T2, and prior/current overlays still require an external registration source before entering MTK.
 
 ## Storage Mode Policy
 
 MTKCore keeps interactive resources GPU-native and uses CPU-visible storage only at explicit ingestion or readback boundaries:
 
-- **Volume textures**: use `.private` storage in the async and chunked upload paths. CPU voxel data is staged through shared buffers, then copied or converted into the final 3D texture for rendering.
+- **Volume textures**: use `.private` storage in the async and chunked upload paths. CPU voxel data is staged through shared buffers, then copied or converted into the final 3D texture for rendering. Read-only MPR textures declare only `.shaderRead`; conversion targets and normalized sampling views opt into their additional usage flags explicitly.
 - **Transfer function textures**: use `.shared` storage because they are small, CPU-authored lookup tables updated from UI state.
 - **Output textures**: use `.private` storage. Render passes write them on the GPU and presentation copies or samples them without CPU access.
 - **Staging buffers**: use `.storageModeShared` with `.cpuCacheModeWriteCombined` for one-way CPU writes during upload.
 - **Readback resources**: use `.shared` or `.managed` only for snapshot, export, debug, and tests. Readback is not part of the interactive rendering path.
 
-The synchronous ``VolumeTextureFactory/generate(device:)`` path remains a CPU reference path for tests and small debug uploads. Prefer ``VolumeTextureFactory/generateAsync(device:commandQueue:)`` or ``ChunkedVolumeUploader`` when the final rendering resource should be private.
+The synchronous ``VolumeTextureFactory/generate(device:usage:)`` path remains a CPU reference path for tests and small debug uploads. Prefer ``VolumeTextureFactory/generateAsync(device:commandQueue:usage:)`` or ``ChunkedVolumeUploader`` when the final rendering resource should be private.
 
 ## Core Concepts
 
@@ -467,6 +469,5 @@ Memory scales with **volume dimensions**, not rendering technique.
 
 - ``VolumeRenderingMode`` — Enumeration of available rendering modes
 - ``MetalVolumeRenderingAdapter`` — Main rendering interface
-- ``MetalRaycaster`` — Low-level ray marching implementation
 - <doc:TransferFunctionsGuide> — Configuring color and opacity mappings
 - <doc:GettingStarted> — Setup and initialization

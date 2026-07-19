@@ -111,7 +111,7 @@ final class VolumePickingTests: XCTestCase {
         let dataset = makeSignedPhantom(
             dimensions: VolumeDimensions(width: 5, height: 7, depth: 9)
         )
-        let target = SIMD3<Int32>(1, 2, 4)
+        let target = SIMD3<Int32>(2, 3, 4)
         let world = VolumePicking.worldPoint(forVoxelIndex: SIMD3<Float>(Float(target.x),
                                                                          Float(target.y),
                                                                          Float(target.z)),
@@ -128,26 +128,48 @@ final class VolumePickingTests: XCTestCase {
             topLabel: .anterior,
             bottomLabel: .posterior
         )
-        let viewport = MPRViewportTransform(zoom: 1.5, pan: SIMD2<Float>(0.1, -0.05))
+        let viewport = MPRViewportTransform(
+            zoom: 1.5,
+            pan: SIMD2<Float>(0.1, -0.05),
+            rotationRadians: .pi / 6
+        )
+        let sourceAspectRatio = display.displayAspectRatio(
+            forSourceAspectRatio: plane.physicalAspectRatio
+        )
+        let outputAspect = MPROutputAspect.aspectFit(physicalAspectRatio: sourceAspectRatio)
+        let viewportSize = CGSize(width: 240, height: 180)
 
         let screen = try VolumePicking.screenPoint(forWorldPoint: world,
                                                    dataset: dataset,
                                                    plane: plane,
                                                    displayTransform: display,
                                                    viewportTransform: viewport,
-                                                   outputAspect: .fill,
-                                                   viewportSize: CGSize(width: 200, height: 200))
+                                                   outputAspect: outputAspect,
+                                                   viewportSize: viewportSize)
+        let imageScreen = display.screenCoordinates(
+            forTexture: SIMD2<Float>(Float(target.x) / 4, Float(target.y) / 6)
+        )
+        let viewportImage = viewport.screenCoordinates(
+            forImageScreen: imageScreen,
+            sourceAspectRatio: sourceAspectRatio
+        )
+        let expectedNormalized = outputAspect.layout(
+            destinationSize: viewportSize,
+            viewportTransform: viewport
+        ).viewportPoint(fromImagePoint: viewportImage)
         let pick = try VolumePicking.pickMPR(screenPoint: screen.screenPoint,
                                              viewportSize: screen.viewportSize,
                                              dataset: dataset,
                                              plane: plane,
                                              displayTransform: display,
                                              viewportTransform: viewport,
-                                             outputAspect: .fill,
+                                             outputAspect: outputAspect,
                                              axis: .z)
 
+        XCTAssertEqual(screen.normalizedPoint.x, expectedNormalized.x, accuracy: 1e-5)
+        XCTAssertEqual(screen.normalizedPoint.y, expectedNormalized.y, accuracy: 1e-5)
         XCTAssertEqual(pick.voxel.index, target)
-        XCTAssertEqual(pick.intensity.storedScalar, 421)
+        XCTAssertEqual(pick.intensity.storedScalar, 432)
     }
 
     func testScreenPointAppliesAspectFitLetterbox() throws {
@@ -294,6 +316,27 @@ final class VolumePickingTests: XCTestCase {
         XCTAssertEqual(try VolumePicking.sampleIntensity(in: unsigned,
                                                          atVoxelIndex: SIMD3<Int32>(1, 0, 0)).storedScalar,
                        65_000)
+    }
+
+    func test_intensitySamplingWithUnalignedStorage_readsSignedVoxel() {
+        let allocation = UnsafeMutableRawPointer.allocate(byteCount: 4, alignment: 1)
+        defer { allocation.deallocate() }
+        let unaligned = allocation.advanced(by: 1)
+        unaligned.storeBytes(of: UInt8(0xFE), as: UInt8.self)
+        unaligned.advanced(by: 1).storeBytes(of: UInt8(0xFF), as: UInt8.self)
+        let buffer = UnsafeRawBufferPointer(start: unaligned, count: 2)
+        let dataset = makeSignedDataset(
+            values: [0],
+            dimensions: VolumeDimensions(width: 1, height: 1, depth: 1)
+        )
+
+        let sample = VolumePicking.sampleIntensity(
+            in: dataset,
+            buffer: buffer,
+            atVoxelIndex: SIMD3<Int32>(0, 0, 0)
+        )
+
+        XCTAssertEqual(sample.storedScalar, -2)
     }
 
     func testLabelSamplingAppliesLayerAffineAndVisibility() throws {

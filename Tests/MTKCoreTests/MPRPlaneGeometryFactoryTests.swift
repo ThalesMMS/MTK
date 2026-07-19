@@ -232,6 +232,34 @@ final class MPRPlaneGeometryFactoryTests: XCTestCase {
         assertVector(planeWorldToTex.axisVT, manualV, accuracy: 1e-5)
     }
 
+    func test_textureDirectionAlongNormalUsesWorldNormalForAnisotropicObliquePlane() {
+        let dataset = VolumeDatasetTestFactory.makeTestDataset(
+            dimensions: VolumeDimensions(width: 17, height: 13, depth: 9),
+            spacing: VolumeSpacing(x: 0.5, y: 1.5, z: 4)
+        )
+        let rotation = simd_quatf(
+            angle: .pi / 5,
+            axis: simd_normalize(SIMD3<Float>(1, 1, 0))
+        )
+        let plane = MPRGeometryDisplayMapper.makePlane(
+            for: dataset,
+            axis: .z,
+            sliceIndex: 4,
+            rotation: rotation
+        )
+        let originTexture = dataset.imageData.worldToTexture.transformPoint(plane.originWorld)
+        let targetTexture = dataset.imageData.worldToTexture.transformPoint(
+            plane.originWorld + simd_normalize(plane.normalWorld)
+        )
+        let expected = simd_normalize(targetTexture - originTexture)
+        let tangentCross = simd_normalize(simd_cross(plane.axisUTexture, plane.axisVTexture))
+
+        let actual = MPRPlaneGeometryFactory.textureDirectionAlongNormal(for: dataset, plane: plane)
+
+        assertVector(actual, expected)
+        XCTAssertLessThan(abs(simd_dot(actual, tangentCross)), 0.99)
+    }
+
     func test_sizedForOutputChangesPixelDimensionsWithoutChangingPhysicalBasis() {
         let dataset = VolumeDatasetTestFactory.makeTestDataset(
             dimensions: VolumeDimensions(width: 5, height: 7, depth: 9),

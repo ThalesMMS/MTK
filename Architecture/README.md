@@ -1,5 +1,11 @@
 # MTK Architecture
 
+- [Headless package architecture](HeadlessArchitectureADR.md) is the accepted
+  repository and package decision.
+- [Clinical rendering architecture](ClinicalRenderingADR.md) is retained as a
+  superseded historical decision.
+- [Public interface](PublicAPI.md) records the supported `MTKCore` surface.
+
 This directory contains Architecture Decision Records (ADRs) for the MTK Swift
 package. ADRs document decisions that affect the package architecture, public
 integration model, and enforcement boundaries.

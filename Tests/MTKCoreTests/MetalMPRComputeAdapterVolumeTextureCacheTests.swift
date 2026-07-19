@@ -22,6 +22,10 @@ final class MetalMPRComputeAdapterVolumeTextureCacheTests: MetalMPRComputeAdapte
         XCTAssertEqual(cachedIdentity?.count, dataset.data.count)
         XCTAssertEqual(cachedIdentity?.dimensions, dataset.dimensions)
         XCTAssertEqual(cachedIdentity?.pixelFormat, dataset.pixelFormat)
+        let storageMode = await adapter.debugCachedVolumeTextureStorageModeRawValue
+        let usage = await adapter.debugCachedVolumeTextureUsageRawValue
+        XCTAssertEqual(storageMode, MTLStorageMode.private.rawValue)
+        XCTAssertEqual(usage, MTLTextureUsage.shaderRead.rawValue)
 
         _ = try await adapter.makeTextureFrame(dataset: dataset, plane: plane, thickness: 5, steps: 5, blend: .maximum)
 
@@ -46,6 +50,94 @@ final class MetalMPRComputeAdapterVolumeTextureCacheTests: MetalMPRComputeAdapte
         XCTAssertEqual(uploadCount, 1)
         let outputAllocationCount = await adapter.debugOutputTextureAllocationCount
         XCTAssertGreaterThan(outputAllocationCount, 0)
+    }
+
+    func test_concurrentMakeTextureFrame_coalescesVolumeUpload() async throws {
+        let dimensions = VolumeDimensions(width: 128, height: 128, depth: 128)
+        let dataset = VolumeDatasetTestFactory.makeTestDataset(dimensions: dimensions,
+                                                               pixelFormat: .int16Signed)
+        let plane = MPRTestHelpers.makeTestPlaneGeometry(for: dataset)
+        let gate = VolumeTextureUploadTestGate()
+        await adapter.setVolumeTextureUploadTestingHooks(
+            beforeUpload: { await gate.holdUpload() },
+            onJoin: { await gate.recordJoin() }
+        )
+
+        let firstFrame = Task {
+            try await adapter.makeTextureFrame(dataset: dataset,
+                                               plane: plane,
+                                               thickness: 3,
+                                               steps: 3,
+                                               blend: .single)
+        }
+        try await gate.waitUntilUploadStarts()
+        let secondFrame = Task {
+            try await adapter.makeTextureFrame(dataset: dataset,
+                                               plane: plane,
+                                               thickness: 3,
+                                               steps: 3,
+                                               blend: .maximum)
+        }
+        try await gate.waitUntilRequestJoins()
+        await gate.releaseUpload()
+        let frames = try await [firstFrame.value, secondFrame.value]
+        defer { frames.forEach { $0.outputTextureLease?.release() } }
+        await adapter.setVolumeTextureUploadTestingHooks(beforeUpload: nil, onJoin: nil)
+
+        let uploadCount = await adapter.debugTextureUploadCount
+        XCTAssertEqual(uploadCount, 1)
+    }
+
+    func test_newDatasetUpload_cancelsSupersededUpload() async throws {
+        let dataset = VolumeDatasetTestFactory.makeTestDataset(pixelFormat: .int16Signed)
+        let replacement = VolumeDatasetTestFactory.makeDataChangedDataset(from: dataset)
+        let gate = VolumeTextureUploadTestGate()
+        await adapter.setVolumeTextureUploadTestingHooks(
+            beforeUpload: { await gate.holdUpload() },
+            onJoin: nil
+        )
+
+        let firstFrame = Task {
+            try await adapter.makeTextureFrame(
+                dataset: dataset,
+                plane: MPRTestHelpers.makeTestPlaneGeometry(for: dataset),
+                thickness: 3,
+                steps: 3,
+                blend: .single
+            )
+        }
+        try await gate.waitUntilUploadStarts(count: 1)
+        let replacementFrame = Task {
+            try await adapter.makeTextureFrame(
+                dataset: replacement,
+                plane: MPRTestHelpers.makeTestPlaneGeometry(for: replacement),
+                thickness: 3,
+                steps: 3,
+                blend: .single
+            )
+        }
+        try await gate.waitUntilUploadStarts(count: 2)
+        await gate.releaseUploads()
+
+        do {
+            _ = try await firstFrame.value
+            XCTFail("Expected the superseded upload to fail after cancellation")
+        } catch {
+            guard let computeError = error as? MetalMPRComputeAdapter.ComputeError else {
+                return XCTFail("Expected ComputeError, got \(error)")
+            }
+            guard case .volumeTextureCreationFailed = computeError else {
+                return XCTFail("Expected volumeTextureCreationFailed, got \(computeError)")
+            }
+        }
+        let frame = try await replacementFrame.value
+        defer { frame.outputTextureLease?.release() }
+
+        let uploadCount = await adapter.debugTextureUploadCount
+        let cachedIdentity = await adapter.debugCachedDatasetIdentity
+        XCTAssertEqual(uploadCount, 1)
+        XCTAssertEqual(cachedIdentity?.contentFingerprint,
+                       DatasetIdentity.Content(dataset: replacement).contentFingerprint)
     }
 
     func test_cacheInvalidatesOnDimensionChange() async throws {
@@ -95,6 +187,29 @@ final class MetalMPRComputeAdapterVolumeTextureCacheTests: MetalMPRComputeAdapte
         XCTAssertNotEqual(updatedIdentity?.contentFingerprint, initialIdentity?.contentFingerprint)
     }
 
+    func test_cacheReusesTextureForEquivalentContentInDifferentStorage() async throws {
+        let datasetA = VolumeDatasetTestFactory.makeTestDataset()
+        let copiedData = datasetA.data.withUnsafeBytes { buffer in
+            Data(bytes: buffer.baseAddress!, count: buffer.count)
+        }
+        let datasetB = VolumeDataset(data: copiedData, imageData: datasetA.imageData)
+        let plane = MPRTestHelpers.makeTestPlaneGeometry(for: datasetA)
+
+        _ = try await adapter.makeTextureFrame(dataset: datasetA,
+                                               plane: plane,
+                                               thickness: 3,
+                                               steps: 3,
+                                               blend: .single)
+        _ = try await adapter.makeTextureFrame(dataset: datasetB,
+                                               plane: plane,
+                                               thickness: 3,
+                                               steps: 3,
+                                               blend: .single)
+
+        let uploadCount = await adapter.debugTextureUploadCount
+        XCTAssertEqual(uploadCount, 1)
+    }
+
     func test_cacheInvalidatesOnPixelFormatChange() async throws {
         let dimensions = VolumeDimensions(width: 64, height: 64, depth: 64)
         let sharedData = try VolumeDatasetTestFactory.makeSharedTestData(
@@ -122,7 +237,7 @@ final class MetalMPRComputeAdapterVolumeTextureCacheTests: MetalMPRComputeAdapte
         XCTAssertEqual(updatedIdentity?.contentFingerprint, initialIdentity?.contentFingerprint)
     }
 
-    func test_cacheInvalidatesOnInPlaceDataMutation() async throws {
+    func test_cacheInvalidatesForExternallyMutatedData() async throws {
         let sharedData = try VolumeDatasetTestFactory.makeSharedTestData(
             pixelFormat: .int16Signed,
             seed: 31
@@ -143,5 +258,53 @@ final class MetalMPRComputeAdapterVolumeTextureCacheTests: MetalMPRComputeAdapte
         XCTAssertEqual(updatedIdentity?.dimensions, initialIdentity?.dimensions)
         XCTAssertEqual(updatedIdentity?.pixelFormat, initialIdentity?.pixelFormat)
         XCTAssertNotEqual(updatedIdentity?.contentFingerprint, initialIdentity?.contentFingerprint)
+    }
+}
+
+private actor VolumeTextureUploadTestGate {
+    private enum TimeoutError: Error {
+        case conditionNotReached
+    }
+
+    private var uploadStartCount = 0
+    private var requestJoined = false
+    private var releaseContinuations: [CheckedContinuation<Void, Never>] = []
+
+    func holdUpload() async {
+        uploadStartCount += 1
+        await withCheckedContinuation { continuation in
+            releaseContinuations.append(continuation)
+        }
+    }
+
+    func recordJoin() {
+        requestJoined = true
+    }
+
+    func waitUntilUploadStarts(count: Int = 1) async throws {
+        try await waitUntil { uploadStartCount >= count }
+    }
+
+    func waitUntilRequestJoins() async throws {
+        try await waitUntil { requestJoined }
+    }
+
+    func releaseUpload() {
+        releaseUploads()
+    }
+
+    func releaseUploads() {
+        let continuations = releaseContinuations
+        releaseContinuations.removeAll()
+        continuations.forEach { $0.resume() }
+    }
+
+    private func waitUntil(_ condition: () -> Bool) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(2))
+        while !condition() {
+            guard clock.now < deadline else { throw TimeoutError.conditionNotReached }
+            await Task.yield()
+        }
     }
 }

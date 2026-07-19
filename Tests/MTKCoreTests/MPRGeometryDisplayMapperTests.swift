@@ -103,6 +103,76 @@ final class MPRGeometryDisplayMapperTests: XCTestCase {
         XCTAssertEqual(updates[1].position, 4.0 / 8.0, accuracy: 1e-4)
     }
 
+    func testGSPSRotatedCoronalContextPreservesUnrotatedAspectFitScale() throws {
+        let dataset = makeDataset()
+        let viewportTransform = MPRViewportTransform(rotationRadians: .pi / 2)
+        let viewportSize = CGSize(width: 240, height: 180)
+        let unrotatedContext = try MPRGeometryDisplayMapper.makeContext(
+            dataset: dataset,
+            axis: .y,
+            slicePosition: 0.5,
+            viewportSize: viewportSize
+        )
+        let rotatedContext = try MPRGeometryDisplayMapper.makeContext(
+            dataset: dataset,
+            axis: .y,
+            slicePosition: 0.5,
+            viewportTransform: viewportTransform,
+            viewportSize: viewportSize
+        )
+        let centerVoxel = unrotatedContext.plane.originVoxel
+            + unrotatedContext.plane.axisUVoxel * 0.5
+            + unrotatedContext.plane.axisVVoxel * 0.5
+        let referenceVoxel = centerVoxel + unrotatedContext.plane.axisUVoxel * 0.25
+
+        func screenDistance(in context: MPRGeometryDisplayContext) throws -> CGFloat {
+            let center = try context.viewportPoint(forVoxel: centerVoxel).screenPoint
+            let reference = try context.viewportPoint(forVoxel: referenceVoxel).screenPoint
+            return hypot(reference.x - center.x, reference.y - center.y)
+        }
+
+        XCTAssertEqual(
+            try screenDistance(in: rotatedContext),
+            try screenDistance(in: unrotatedContext),
+            accuracy: 1e-4
+        )
+    }
+
+    func testQuarterTurnPreservesLinearScaleAtOneHundredPercentZoom() {
+        let sourceAspectRatio: Float = 2.4
+        let viewportSize = CGSize(width: 240, height: 180)
+        let outputAspect = MPROutputAspect.aspectFit(physicalAspectRatio: sourceAspectRatio)
+        let center = SIMD2<Float>(0.5, 0.5)
+        let horizontalReference = SIMD2<Float>(0.75, 0.5)
+
+        func screenDistance(rotationRadians: Float) -> Float {
+            let transform = MPRViewportTransform(rotationRadians: rotationRadians)
+            let layout = outputAspect.layout(
+                destinationSize: viewportSize,
+                viewportTransform: transform
+            )
+            let centerInViewport = layout.viewportPoint(
+                fromImagePoint: transform.screenCoordinates(
+                    forImageScreen: center,
+                    sourceAspectRatio: sourceAspectRatio
+                )
+            )
+            let referenceInViewport = layout.viewportPoint(
+                fromImagePoint: transform.screenCoordinates(
+                    forImageScreen: horizontalReference,
+                    sourceAspectRatio: sourceAspectRatio
+                )
+            )
+            let destinationSize = SIMD2<Float>(Float(viewportSize.width), Float(viewportSize.height))
+            return simd_distance(centerInViewport * destinationSize, referenceInViewport * destinationSize)
+        }
+
+        let unrotatedDistance = screenDistance(rotationRadians: 0)
+
+        XCTAssertEqual(screenDistance(rotationRadians: .pi / 2), unrotatedDistance, accuracy: 1e-4)
+        XCTAssertEqual(screenDistance(rotationRadians: -.pi / 2), unrotatedDistance, accuracy: 1e-4)
+    }
+
     func testNormalizedPositionUpdatesMapVoxelComponentsForAllViewingAxes() {
         let dimensions = VolumeDimensions(width: 5, height: 7, depth: 9)
         let voxel = SIMD3<Float>(1, 2, 6)

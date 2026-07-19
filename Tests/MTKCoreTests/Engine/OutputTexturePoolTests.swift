@@ -32,7 +32,7 @@ final class OutputTexturePoolTests: XCTestCase {
         XCTAssertEqual(pool.debugIsInUse(second), true)
     }
 
-    func test_acquireCreatesNewTextureWhenSizeDoesNotMatch() throws {
+    func test_acquireEvictsReleasedTextureWhenSizeDoesNotMatch() throws {
         let device = try makeDevice()
         let pool = OutputTexturePool()
 
@@ -41,8 +41,8 @@ final class OutputTexturePoolTests: XCTestCase {
         let second = try pool.acquire(width: 64, height: 32, pixelFormat: .bgra8Unorm, device: device)
 
         XCTAssertNotEqual(ObjectIdentifier(first as AnyObject), ObjectIdentifier(second as AnyObject))
-        XCTAssertEqual(pool.debugTextureCount, 2)
-        XCTAssertEqual(pool.debugIsInUse(first), false)
+        XCTAssertEqual(pool.debugTextureCount, 1)
+        XCTAssertNil(pool.debugIsInUse(first))
         XCTAssertEqual(pool.debugIsInUse(second), true)
     }
 
@@ -57,9 +57,55 @@ final class OutputTexturePoolTests: XCTestCase {
         let resized = try pool.resize(from: old, toWidth: 64, toHeight: 64, device: device)
 
         XCTAssertEqual(ObjectIdentifier(resized as AnyObject), ObjectIdentifier(available as AnyObject))
-        XCTAssertEqual(pool.debugIsInUse(old), false)
+        XCTAssertNil(pool.debugIsInUse(old))
         XCTAssertEqual(pool.debugIsInUse(resized), true)
+        XCTAssertEqual(pool.debugTextureCount, 1)
+    }
+
+    func test_resizeHeavySessionRetainsOnlySettledSize() throws {
+        let device = try makeDevice()
+        let pool = OutputTexturePool()
+        var previousLease: OutputTextureLease?
+
+        for step in 0..<24 {
+            let currentLease = try pool.acquireWithLease(width: 320 + step,
+                                                         height: 240 + step,
+                                                         pixelFormat: .bgra8Unorm,
+                                                         device: device)
+            previousLease?.release()
+            previousLease = currentLease
+
+            XCTAssertEqual(pool.debugTextureCount, 1)
+            XCTAssertEqual(pool.debugIsInUse(currentLease.texture), true)
+        }
+
+        previousLease?.release()
+        XCTAssertEqual(pool.debugTextureCount, 1)
+    }
+
+    func test_resizeDoesNotEvictInFlightLeaseUntilRelease() throws {
+        let device = try makeDevice()
+        let pool = OutputTexturePool()
+        let oldLease = try pool.acquireWithLease(width: 320,
+                                                 height: 240,
+                                                 pixelFormat: .bgra8Unorm,
+                                                 device: device)
+        let currentLease = try pool.acquireWithLease(width: 640,
+                                                     height: 480,
+                                                     pixelFormat: .bgra8Unorm,
+                                                     device: device)
+
         XCTAssertEqual(pool.debugTextureCount, 2)
+        XCTAssertEqual(pool.debugIsInUse(oldLease.texture), true)
+        XCTAssertEqual(pool.debugIsInUse(currentLease.texture), true)
+
+        oldLease.release()
+
+        XCTAssertEqual(pool.debugTextureCount, 1)
+        XCTAssertNil(pool.debugIsInUse(oldLease.texture))
+        XCTAssertEqual(pool.debugIsInUse(currentLease.texture), true)
+
+        currentLease.release()
     }
 
     func test_acquireRejectsInvalidDimensions() throws {

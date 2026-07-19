@@ -14,8 +14,16 @@ import CoreGraphics
 import simd
 
 extension MetalVolumeRenderingAdapter {
-    func resolveWindow(for dataset: VolumeDataset) throws -> ClosedRange<Int32> {
-        if let window = extendedState.huWindow ?? overrides.window ?? dataset.recommendedWindow {
+    private struct PreparedRaycast {
+        var input: VolumeRaycastPassInput
+        var metadata: VolumeRenderFrame.Metadata
+    }
+
+    func resolveWindow(
+        for dataset: VolumeDataset,
+        fallback: ClosedRange<Int32>? = nil
+    ) throws -> ClosedRange<Int32> {
+        if let window = extendedState.huWindow ?? overrides.window ?? dataset.recommendedWindow ?? fallback {
             return window
         }
         throw AdapterError.windowNotSpecified
@@ -26,6 +34,35 @@ extension MetalVolumeRenderingAdapter {
                          datasetTexture providedDatasetTexture: (any MTLTexture)? = nil,
                          outputTexture providedOutputTexture: (any MTLTexture)? = nil,
                          waitsForCompletion: Bool = true) async throws -> VolumeRenderFrame {
+        let prepared = try await prepareRaycast(state: state,
+                                                request: request,
+                                                datasetTexture: providedDatasetTexture,
+                                                outputTexture: providedOutputTexture)
+        logInteractionInfo(
+            "[MTK3DInteraction] adapter.raycast.dispatch frameIndex=\(String(describing: prepared.metadata.debugFrameIndex)) waitsForCompletion=\(waitsForCompletion) adapterQueueID=\(objectIdentifier(state.commandQueue as AnyObject)) outputTextureID=\(objectIdentifier(prepared.input.outputTexture.map { $0 as AnyObject })) outputLabel=\(prepared.input.outputTexture?.label ?? "nil") outputStorage=\(String(describing: prepared.input.outputTexture?.storageMode)) quality=\(request.quality) compositing=\(request.compositing) cameraPosition=\(request.camera.position) cameraUp=\(request.camera.up)"
+        )
+        let passOutput: VolumeRaycastPassOutput
+        if waitsForCompletion {
+            passOutput = try await state.raycastPass.execute(input: prepared.input,
+                                                             commandQueue: state.commandQueue)
+        } else {
+            passOutput = try await state.raycastPass.enqueue(input: prepared.input,
+                                                             commandQueue: state.commandQueue)
+        }
+        state.frameIndex &+= 1
+        logInteractionInfo(
+            "[MTK3DInteraction] adapter.raycast.return frameIndex=\(String(describing: prepared.metadata.debugFrameIndex)) nextFrameIndex=\(state.frameIndex) waitsForCompletion=\(waitsForCompletion) outputTextureID=\(objectIdentifier(passOutput.outputTexture as AnyObject)) outputLabel=\(passOutput.outputTexture.label ?? "nil") outputStorage=\(passOutput.outputTexture.storageMode) timingCpuMs=\(formatPerf(passOutput.timing.cpuDurationMilliseconds)) timingGpuMs=\(formatPerf(passOutput.timing.gpuDurationMilliseconds))"
+        )
+        return VolumeRenderFrame(texture: passOutput.outputTexture,
+                                 metadata: prepared.metadata)
+    }
+
+    private func prepareRaycast(state: MetalState,
+                                request: VolumeRenderRequest,
+                                datasetTexture providedDatasetTexture: (any MTLTexture)?,
+                                outputTexture providedOutputTexture: (any MTLTexture)?,
+                                window: ClosedRange<Int32>? = nil,
+                                usesAcceleration: Bool = true) async throws -> PreparedRaycast {
         let viewport = VolumetricMath.clampViewportSize(request.viewportSize)
         guard viewport.width > 0, viewport.height > 0 else {
             throw RenderingError.outputTextureUnavailable
@@ -57,14 +94,23 @@ extension MetalVolumeRenderingAdapter {
                                                                dataset: request.dataset,
                                                                state: state)
         let transferPreparationMilliseconds = ClinicalProfiler.milliseconds(from: transferPreparationStartedAt)
+        let accelerationPreparationStartedAt = CFAbsoluteTimeGetCurrent()
+        let accelerationTexture: (any MTLTexture)?
+        if usesAcceleration, request.compositing == .frontToBack {
+            accelerationTexture = prepareAccelerationTexture(for: request.dataset, state: state)
+        } else {
+            accelerationTexture = nil
+        }
+        let accelerationPreparationMilliseconds = ClinicalProfiler.milliseconds(from: accelerationPreparationStartedAt)
         let preparationMilliseconds = ClinicalProfiler.milliseconds(from: preparationStartedAt)
 
         try Task.checkCancellation()
 
         let parameterPreparationStartedAt = CFAbsoluteTimeGetCurrent()
-        let parameters = try buildRenderingParameters(for: request)
+        let parameters = try buildRenderingParameters(for: request, window: window)
         let toneBuffers = try makeToneBuffers(state: state)
-        let optionValue = computeOptionFlags()
+        let optionValue = computeOptionFlags(useAcceleration: accelerationTexture != nil)
+        state.lastRequestedOptionValue = optionValue
         let targetViewSize = UInt16(clamping: max(viewport.width, viewport.height))
         let quaternion = SIMD4<Float>(0, 0, 0, 1)
 
@@ -75,7 +121,7 @@ extension MetalVolumeRenderingAdapter {
         let debugFrameIndex = UInt64(state.frameIndex)
         if Logger.performanceLoggingEnabled {
             logger.info(
-                "[MTKPerf] volume.prepare viewport=\(viewport.width)x\(viewport.height) quality=\(request.quality) compositing=\(request.compositing) samplingDistance=\(formatPerf(request.samplingDistance)) datasetMs=\(formatPerf(datasetPreparationMilliseconds)) transferMs=\(formatPerf(transferPreparationMilliseconds)) paramsMs=\(formatPerf(parameterPreparationMilliseconds)) totalPrepareMs=\(formatPerf(preparationMilliseconds)) datasetCacheHit=\(datasetCacheHit) transferCacheHit=\(transferCacheHit) providedDatasetTexture=\(providedDatasetTexture != nil) providedOutputTexture=\(providedOutputTexture != nil) frameIndex=\(state.frameIndex)"
+                "[MTKPerf] volume.prepare viewport=\(viewport.width)x\(viewport.height) quality=\(request.quality) compositing=\(request.compositing) samplingDistance=\(formatPerf(request.samplingDistance)) datasetMs=\(formatPerf(datasetPreparationMilliseconds)) transferMs=\(formatPerf(transferPreparationMilliseconds)) accelerationMs=\(formatPerf(accelerationPreparationMilliseconds)) paramsMs=\(formatPerf(parameterPreparationMilliseconds)) totalPrepareMs=\(formatPerf(preparationMilliseconds)) datasetCacheHit=\(datasetCacheHit) transferCacheHit=\(transferCacheHit) accelerationBound=\(accelerationTexture != nil) providedDatasetTexture=\(providedDatasetTexture != nil) providedOutputTexture=\(providedOutputTexture != nil) frameIndex=\(state.frameIndex)"
             )
         }
         let passRenderingParameters = VolumeRaycastPassRenderingParameters(
@@ -86,6 +132,7 @@ extension MetalVolumeRenderingAdapter {
         let passInput = VolumeRaycastPassInput(
             volumeTexture: datasetTexture,
             transferFunctionTexture: transferTexture,
+            accelerationTexture: accelerationTexture,
             toneBuffers: toneBuffers,
             cameraUniforms: camera,
             renderingParameters: passRenderingParameters,
@@ -99,28 +146,13 @@ extension MetalVolumeRenderingAdapter {
                                                                                    device: state.device),
             debugFrameIndex: debugFrameIndex
         )
-        logInteractionInfo(
-            "[MTK3DInteraction] adapter.raycast.dispatch frameIndex=\(debugFrameIndex) waitsForCompletion=\(waitsForCompletion) adapterQueueID=\(objectIdentifier(state.commandQueue as AnyObject)) outputTextureID=\(objectIdentifier(passInput.outputTexture.map { $0 as AnyObject })) outputLabel=\(passInput.outputTexture?.label ?? "nil") outputStorage=\(String(describing: passInput.outputTexture?.storageMode)) quality=\(request.quality) compositing=\(request.compositing) cameraPosition=\(request.camera.position) cameraUp=\(request.camera.up)"
-        )
-        let passOutput: VolumeRaycastPassOutput
-        if waitsForCompletion {
-            passOutput = try await state.raycastPass.execute(input: passInput,
-                                                             commandQueue: state.commandQueue)
-        } else {
-            passOutput = try await state.raycastPass.enqueue(input: passInput,
-                                                             commandQueue: state.commandQueue)
-        }
-        let outputTexture = passOutput.outputTexture
-        state.frameIndex &+= 1
-        logInteractionInfo(
-            "[MTK3DInteraction] adapter.raycast.return frameIndex=\(debugFrameIndex) nextFrameIndex=\(state.frameIndex) waitsForCompletion=\(waitsForCompletion) outputTextureID=\(objectIdentifier(outputTexture as AnyObject)) outputLabel=\(outputTexture.label ?? "nil") outputStorage=\(outputTexture.storageMode) timingCpuMs=\(formatPerf(passOutput.timing.cpuDurationMilliseconds)) timingGpuMs=\(formatPerf(passOutput.timing.gpuDurationMilliseconds))"
-        )
-
         if ClinicalProfiler.shared.isRecordingEnabled {
             ClinicalProfiler.shared.recordSample(
                 stage: .texturePreparation,
                 cpuTime: preparationMilliseconds,
-                memory: ResourceMemoryEstimator.estimate(for: datasetTexture) + ResourceMemoryEstimator.estimate(for: transferTexture),
+                memory: ResourceMemoryEstimator.estimate(for: datasetTexture)
+                    + ResourceMemoryEstimator.estimate(for: transferTexture)
+                    + (accelerationTexture.map { ResourceMemoryEstimator.estimate(for: $0) } ?? 0),
                 viewport: ProfilingViewportContext(
                     width: viewport.width,
                     height: viewport.height,
@@ -130,7 +162,8 @@ extension MetalVolumeRenderingAdapter {
                 ),
                 metadata: [
                     "datasetTexture": datasetTexture.label ?? "",
-                    "transferTexture": transferTexture.label ?? ""
+                    "transferTexture": transferTexture.label ?? "",
+                    "accelerationTexture": accelerationTexture?.label ?? ""
                 ],
                 device: state.device
             )
@@ -142,11 +175,48 @@ extension MetalVolumeRenderingAdapter {
             samplingDistance: request.samplingDistance,
             compositing: request.compositing,
             quality: request.quality,
-            pixelFormat: outputTexture.pixelFormat,
+            pixelFormat: passInput.outputTexture?.pixelFormat ?? .invalid,
             debugFrameIndex: debugFrameIndex
         )
-        return VolumeRenderFrame(texture: outputTexture,
-                                 metadata: metadata)
+        return PreparedRaycast(input: passInput, metadata: metadata)
+    }
+
+    package func encodeTexture(using request: VolumeRenderRequest,
+                               volumeTexture: any MTLTexture,
+                               outputTexture: any MTLTexture,
+                               into commandBuffer: any MTLCommandBuffer,
+                               batchIndex: Int,
+                               usesAcceleration: Bool) async throws -> VolumeRenderFrame {
+        let presetResolution = applyCurrentPresetIfNeeded(to: request)
+        var effectiveRequest = presetResolution.request
+        if let compositing = overrides.compositing {
+            effectiveRequest.compositing = compositing
+        }
+        if let samplingDistance = overrides.samplingDistance {
+            effectiveRequest.samplingDistance = samplingDistance
+        }
+        effectiveRequest = try applyCompatibilityClippingIfNeeded(to: effectiveRequest)
+        let window = try resolveWindow(
+            for: effectiveRequest.dataset,
+            fallback: effectiveRequest.dataset.intensityRange
+        )
+        let prepared = try await prepareRaycast(state: metalState,
+                                                request: effectiveRequest,
+                                                datasetTexture: volumeTexture,
+                                                outputTexture: outputTexture,
+                                                window: window,
+                                                usesAcceleration: usesAcceleration)
+        let pass = try metalState.frameRaycastPass(at: batchIndex)
+        let passOutput = try await pass.encode(input: prepared.input,
+                                               into: commandBuffer,
+                                               commandQueue: metalState.commandQueue)
+        metalState.frameIndex &+= 1
+        lastSnapshot = RenderSnapshot(dataset: request.dataset,
+                                      metadata: prepared.metadata,
+                                      window: window,
+                                      preset: presetResolution.preset)
+        return VolumeRenderFrame(texture: passOutput.outputTexture,
+                                 metadata: prepared.metadata)
     }
 
     func renderLayerStackWithMetal(state: MetalState,

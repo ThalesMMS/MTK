@@ -7,69 +7,86 @@
 
 import Foundation
 
-@MainActor
 public final class MPRFrameCache<Key: Hashable>: @unchecked Sendable {
     private struct Entry {
         var frame: MPRTextureFrame
         var signature: MPRFrameSignature
     }
 
+    private let lock = NSLock()
     private var entries: [Key: Entry] = [:]
 
     public init() {}
 
     public var entryCount: Int {
-        entries.count
+        withLock { entries.count }
     }
 
     public func cachedFrame(for key: Key,
                             matching signature: MPRFrameSignature) -> MPRTextureFrame? {
-        guard let entry = entries[key],
-              entry.signature == signature else {
-            return nil
+        withLock {
+            guard let entry = entries[key],
+                  entry.signature == signature else {
+                return nil
+            }
+            return entry.frame
         }
-        return entry.frame
     }
 
     @discardableResult
     public func store(_ frame: MPRTextureFrame,
                       for key: Key,
                       signature: MPRFrameSignature) -> MPRTextureFrame {
-        releaseStoredFrame(for: key, replacing: frame)
         var retainedFrame = frame
         retainedFrame.outputTextureLeaseRetainedByCache = retainedFrame.outputTextureLease != nil
-        entries[key] = Entry(frame: retainedFrame, signature: signature)
+        let replacedLease = withLock {
+            let replacedLease = outputTextureLeaseToRelease(for: key, replacing: retainedFrame)
+            entries[key] = Entry(frame: retainedFrame, signature: signature)
+            return replacedLease
+        }
+        replacedLease?.releaseAfterPresentationCompletes()
         return retainedFrame
     }
 
     public func invalidate(_ key: Key) {
-        entries[key]?.frame.releaseOutputTextureLeaseAfterPresentationCompletes()
-        entries[key] = nil
+        let removedFrame = withLock { entries.removeValue(forKey: key)?.frame }
+        removedFrame?.releaseOutputTextureLeaseAfterPresentationCompletes()
     }
 
     public func invalidateAll() {
-        for entry in entries.values {
-            entry.frame.releaseOutputTextureLeaseAfterPresentationCompletes()
+        let removedFrames = withLock {
+            let frames = entries.values.map(\.frame)
+            entries.removeAll()
+            return frames
         }
-        entries.removeAll()
+        for frame in removedFrames {
+            frame.releaseOutputTextureLeaseAfterPresentationCompletes()
+        }
     }
 
     public func storedFrame(for key: Key) -> MPRTextureFrame? {
-        entries[key]?.frame
+        withLock { entries[key]?.frame }
     }
 
     func storedSignature(for key: Key) -> MPRFrameSignature? {
-        entries[key]?.signature
+        withLock { entries[key]?.signature }
     }
 
-    private func releaseStoredFrame(for key: Key, replacing frame: MPRTextureFrame) {
+    private func outputTextureLeaseToRelease(for key: Key,
+                                             replacing frame: MPRTextureFrame) -> OutputTextureLease? {
         guard let currentLease = entries[key]?.frame.outputTextureLease else {
-            return
+            return nil
         }
         if let replacementLease = frame.outputTextureLease,
            currentLease === replacementLease {
-            return
+            return nil
         }
-        currentLease.releaseAfterPresentationCompletes()
+        return currentLease
+    }
+
+    private func withLock<Result>(_ operation: () throws -> Result) rethrows -> Result {
+        lock.lock()
+        defer { lock.unlock() }
+        return try operation()
     }
 }

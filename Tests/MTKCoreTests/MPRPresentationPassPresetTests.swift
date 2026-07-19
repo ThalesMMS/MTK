@@ -24,20 +24,20 @@ final class MPRPresentationPassPresetTests: XCTestCase {
 
     func test_brainPresetWindowClampsAndNormalizesRamp() throws {
         try assertPresetWindow(WindowLevelPresetLibrary.brain,
-                               expectedWindow: 80,
-                               expectedLevel: 40)
+                               expectedWindow: 100,
+                               expectedLevel: 50)
     }
 
     func test_lungPresetWindowClampsAndNormalizesRamp() throws {
         try assertPresetWindow(WindowLevelPresetLibrary.lung,
-                               expectedWindow: 1_500,
-                               expectedLevel: -600)
+                               expectedWindow: 1_400,
+                               expectedLevel: -500)
     }
 
     func test_bonePresetWindowClampsAndNormalizesRamp() throws {
         try assertPresetWindow(WindowLevelPresetLibrary.bone,
-                               expectedWindow: 2_500,
-                               expectedLevel: 480)
+                               expectedWindow: 1_500,
+                               expectedLevel: 300)
     }
 
     func test_softTissuePresetWindowClampsAndNormalizesRamp() throws {

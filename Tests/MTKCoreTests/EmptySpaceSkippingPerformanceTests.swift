@@ -26,8 +26,10 @@ final class EmptySpaceSkippingPerformanceTests: XCTestCase {
     private var volumeComputeFunction: MTLFunction!
     private var volumeComputePipeline: MTLComputePipelineState!
     private var argumentManager: ArgumentEncoderManager!
+    private var visibilityCache: EmptySpaceVisibilityCache!
     private var cameraBuffer: MTLBuffer!
     private var dummyAccelerationTexture: MTLTexture!
+    private var cachedTransferTexture: (identity: DatasetIdentity.Content, texture: MTLTexture)?
 
     override func setUpWithError() throws {
         try super.setUpWithError()
@@ -74,6 +76,8 @@ final class EmptySpaceSkippingPerformanceTests: XCTestCase {
             mtlFunction: function,
             debugOptions: VolumeRenderingDebugOptions(isDebugMode: false, histogramBinCount: 256, enableDensityDebug: false)
         )
+        self.visibilityCache = try EmptySpaceVisibilityCache(device: device, library: library)
+        self.cachedTransferTexture = nil
 
         guard let cameraBuffer = device.makeBuffer(length: CameraUniforms.stride, options: [.storageModeShared]) else {
             throw XCTSkip("Failed to allocate camera buffer")
@@ -218,6 +222,23 @@ final class EmptySpaceSkippingPerformanceTests: XCTestCase {
         #endif
     }
 
+    func test_occupiedRegion_disablesUnproductiveAcceleration() async throws {
+        #if canImport(MetalPerformanceShaders)
+        guard raycaster.isMetalPerformanceShadersAvailable else {
+            throw XCTSkip("MPS not available, skipping performance test")
+        }
+
+        let dataset = makeOccupiedTestDataset()
+        let accelerationTexture = try requireAccelerationTexture(for: dataset)
+        _ = try await renderWithAcceleration(dataset: dataset,
+                                              accelerationTexture: accelerationTexture,
+                                              validateAccelerationDisabled: true)
+        XCTAssertFalse(visibilityCache.isSkippingUseful)
+        #else
+        throw XCTSkip("MetalPerformanceShaders unavailable on this platform")
+        #endif
+    }
+
     // MARK: - Memory Overhead Tests
 
     func testAccelerationStructureMemoryOverhead() throws {
@@ -323,7 +344,7 @@ final class EmptySpaceSkippingPerformanceTests: XCTestCase {
         // The dummy acceleration texture is bound only to satisfy shader resource layout;
         // OPTION_USE_ACCELERATION remains unset.
         let resources = try raycaster.prepare(dataset: dataset)
-        let transferTexture = try await RaycasterTestHelpers.makeTestTransferTexture(for: dataset, device: device)
+        let transferTexture = try await transferTexture(for: dataset)
 
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let computeEncoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -349,7 +370,7 @@ final class EmptySpaceSkippingPerformanceTests: XCTestCase {
         var pointSetCount: UInt16 = 0
         var pointSelectedIndex: UInt16 = 0
 
-        argumentManager.encodeTexture(resources.texture, argumentIndex: .mainTexture)
+        try argumentManager.encodeFilterableVolumeTexture(resources.texture)
         argumentManager.encodeTexture(outputTexture, argumentIndex: .outputTexture)
         argumentManager.encodeTexture(transferTexture, argumentIndex: .transferTextureCh1)
         argumentManager.encodeTexture(transferTexture, argumentIndex: .transferTextureCh2)
@@ -394,12 +415,20 @@ final class EmptySpaceSkippingPerformanceTests: XCTestCase {
     private func renderWithAcceleration(
         dataset: VolumeDataset,
         accelerationTexture: any MTLTexture,
-        validateAccelerationEnabled: Bool = false
+        validateAccelerationEnabled: Bool = false,
+        validateAccelerationDisabled: Bool = false
     ) async throws -> MTLTexture? {
-        // MPS path: baseline Metal ray marching plus the precomputed min-max
-        // acceleration structure, with OPTION_USE_ACCELERATION enabled.
+        // MPS path: baseline Metal ray marching plus precomputed visibility,
+        // with OPTION_USE_ACCELERATION enabled.
         let resources = try raycaster.prepare(dataset: dataset)
-        let transferTexture = try await RaycasterTestHelpers.makeTestTransferTexture(for: dataset, device: device)
+        let transferTexture = try await transferTexture(for: dataset)
+        var params = RaycasterTestHelpers.makeTestRenderingParameters(dataset: dataset, method: 1)
+        let visibilityTexture = try await visibilityCache.texture(
+            minMaxTexture: accelerationTexture,
+            transferTexture: transferTexture,
+            parameters: params,
+            commandQueue: commandQueue
+        )
 
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let computeEncoder = commandBuffer.makeComputeCommandEncoder() else {
@@ -418,21 +447,20 @@ final class EmptySpaceSkippingPerformanceTests: XCTestCase {
         }
 
         // Encode argument buffer for volume_compute with acceleration enabled.
-        var params = RaycasterTestHelpers.makeTestRenderingParameters(dataset: dataset, method: 1)
         let optionUseAcceleration: UInt16 = 1 << 4
-        var optionValue: UInt16 = optionUseAcceleration
+        var optionValue: UInt16 = visibilityCache.isSkippingUseful ? optionUseAcceleration : 0
         var quaternion = SIMD4<Float>(0, 0, 0, 1)
         var targetViewSize = UInt16(256)
         var pointSetCount: UInt16 = 0
         var pointSelectedIndex: UInt16 = 0
 
-        argumentManager.encodeTexture(resources.texture, argumentIndex: .mainTexture)
+        try argumentManager.encodeFilterableVolumeTexture(resources.texture)
         argumentManager.encodeTexture(outputTexture, argumentIndex: .outputTexture)
         argumentManager.encodeTexture(transferTexture, argumentIndex: .transferTextureCh1)
         argumentManager.encodeTexture(transferTexture, argumentIndex: .transferTextureCh2)
         argumentManager.encodeTexture(transferTexture, argumentIndex: .transferTextureCh3)
         argumentManager.encodeTexture(transferTexture, argumentIndex: .transferTextureCh4)
-        argumentManager.encodeTexture(accelerationTexture, argumentIndex: .accelerationTexture)
+        argumentManager.encodeTexture(visibilityTexture, argumentIndex: .accelerationTexture)
         argumentManager.encodeSampler(filter: .linear)
         argumentManager.encode(&params, argumentIndex: .renderParams)
         argumentManager.encode(&optionValue, argumentIndex: .optionValue)
@@ -456,6 +484,14 @@ final class EmptySpaceSkippingPerformanceTests: XCTestCase {
             XCTAssertNotEqual(value & optionUseAcceleration, 0, "OPTION_USE_ACCELERATION must be set for accelerated render")
             XCTAssertGreaterThan(accelerationTexture.width, 0, "Acceleration texture must be valid")
         }
+        if validateAccelerationDisabled {
+            guard let optionBuffer = argumentManager.getBuffer(argumentIndex: .optionValue) else {
+                XCTFail("optionValue buffer was not encoded")
+                return outputTexture
+            }
+            let value = optionBuffer.contents().bindMemory(to: UInt16.self, capacity: 1).pointee
+            XCTAssertEqual(value & optionUseAcceleration, 0, "ESS must be disabled when no block can be skipped")
+        }
 
         var camera = RaycasterTestHelpers.makeTestCameraUniforms()
         memcpy(cameraBuffer.contents(), &camera, CameraUniforms.stride)
@@ -477,6 +513,16 @@ final class EmptySpaceSkippingPerformanceTests: XCTestCase {
         try await RaycasterTestHelpers.commitAndWait(commandBuffer)
 
         return outputTexture
+    }
+
+    private func transferTexture(for dataset: VolumeDataset) async throws -> any MTLTexture {
+        let identity = DatasetIdentity.Content(dataset: dataset)
+        if let cachedTransferTexture, cachedTransferTexture.identity == identity {
+            return cachedTransferTexture.texture
+        }
+        let texture = try await RaycasterTestHelpers.makeTestTransferTexture(for: dataset, device: device)
+        cachedTransferTexture = (identity, texture)
+        return texture
     }
 
     private func makeSparseTestDataset() -> VolumeDataset {
@@ -512,6 +558,20 @@ final class EmptySpaceSkippingPerformanceTests: XCTestCase {
         let data = values.withUnsafeBytes { Data($0) }
         return VolumeDataset(
             data: data,
+            dimensions: dimensions,
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+            pixelFormat: .int16Signed,
+            intensityRange: (-1024)...3071
+        )
+    }
+
+    private func makeOccupiedTestDataset() -> VolumeDataset {
+        let dimensions = VolumeDimensions(width: 64, height: 64, depth: 64)
+        let values: [Int16] = (0..<dimensions.voxelCount).map { index in
+            Int16(-900 + (index % 16) - 8)
+        }
+        return VolumeDataset(
+            data: values.withUnsafeBytes { Data($0) },
             dimensions: dimensions,
             spacing: VolumeSpacing(x: 1, y: 1, z: 1),
             pixelFormat: .int16Signed,

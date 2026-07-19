@@ -179,12 +179,15 @@ final class MPRTestMetalDrawable: NSObject, CAMetalDrawable {
     let presentedTime: CFTimeInterval = 0
     let drawableID: Int = 0
 
-    init(device: any MTLDevice, width: Int, height: Int) throws {
+    init(device: any MTLDevice,
+         width: Int,
+         height: Int,
+         usage: MTLTextureUsage = [.shaderRead, .shaderWrite, .renderTarget]) throws {
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm,
                                                                   width: width,
                                                                   height: height,
                                                                   mipmapped: false)
-        descriptor.usage = [.shaderRead, .shaderWrite, .renderTarget]
+        descriptor.usage = usage
         descriptor.storageMode = .shared
         texture = try XCTUnwrap(device.makeTexture(descriptor: descriptor))
         layer = CAMetalLayer()

@@ -26,6 +26,7 @@ public enum ChunkedVolumeUploadError: Error, Equatable {
 public final class ChunkedVolumeUploader {
     public typealias ProgressHandler = VolumeUploadProgressHandler
 
+    private static let maximumInFlightUploads = 3
     private let device: any MTLDevice
     private let commandQueue: any MTLCommandQueue
     private let pipeline: HUConversionPipeline
@@ -75,7 +76,8 @@ public final class ChunkedVolumeUploader {
         let textureDescriptor = VolumeTextureFactory.makeVolumeTextureDescriptor(
             dimensions: descriptor.dimensions,
             pixelFormat: .int16Signed,
-            storageMode: .private
+            storageMode: .private,
+            usage: [.shaderRead, .shaderWrite, .pixelFormatView]
         )
 
         guard let texture = device.makeTexture(descriptor: textureDescriptor) else {
@@ -83,14 +85,21 @@ public final class ChunkedVolumeUploader {
         }
         texture.label = "ChunkedVolumeUploader.VolumeTexture3D"
 
-        // StorageModePolicy.md: reuse one shared/write-combined staging buffer per slice.
-        guard let stagingBuffer = device.makeBuffer(
-            length: sliceByteCount,
-            options: [.storageModeShared, .cpuCacheModeWriteCombined]
-        ) else {
-            throw ChunkedVolumeUploadError.stagingBufferCreationFailed
+        // StorageModePolicy.md: keep a bounded ring of shared/write-combined staging slices.
+        let stagingBufferCount = min(Self.maximumInFlightUploads, descriptor.dimensions.depth)
+        var stagingBuffers: [any MTLBuffer] = []
+        stagingBuffers.reserveCapacity(stagingBufferCount)
+        for index in 0..<stagingBufferCount {
+            guard let stagingBuffer = device.makeBuffer(
+                length: sliceByteCount,
+                options: [.storageModeShared, .cpuCacheModeWriteCombined]
+            ) else {
+                throw ChunkedVolumeUploadError.stagingBufferCreationFailed
+            }
+            stagingBuffer.label = "ChunkedVolumeUploader.StagingSlice.\(index)"
+            stagingBuffers.append(stagingBuffer)
         }
-        stagingBuffer.label = "ChunkedVolumeUploader.StagingSlice"
+        let stagingMemory = stagingBuffers.reduce(0) { $0 + $1.length }
 
         let totalSlices = descriptor.dimensions.depth
         let textureMemory = ResourceMemoryEstimator.estimate(for: texture)
@@ -99,25 +108,33 @@ public final class ChunkedVolumeUploader {
         ClinicalProfiler.shared.recordSample(
             stage: .texturePreparation,
             cpuTime: ClinicalProfiler.milliseconds(from: preparationStartedAt),
-            memory: textureMemory + stagingBuffer.length,
+            memory: textureMemory + stagingMemory,
             viewport: .unknown,
             metadata: [
                 "path": "ChunkedVolumeUploader.prepare",
                 "dimensions": "\(descriptor.dimensions.width)x\(descriptor.dimensions.height)x\(descriptor.dimensions.depth)",
-                "sliceCount": String(totalSlices)
+                "sliceCount": String(totalSlices),
+                "stagingBufferCount": String(stagingBufferCount)
             ],
             device: device
         )
         var processedSlices = 0
+        var submittedSlices = 0
         var seenIndices = Set<Int>()
+        var inFlightUploads = Array<InFlightUpload?>(repeating: nil,
+                                                     count: stagingBufferCount)
+        var totalCommandCPUTime = 0.0
+        var totalCommandGPUTime = 0.0
+        var totalKernelTime = 0.0
         let signpostID = OSSignpostID(log: memorySignpostLog)
         os_signpost(.begin,
                     log: memorySignpostLog,
                     name: "ChunkedVolumeUploadMemory",
                     signpostID: signpostID,
-                    "texture=%{public}ld staging=%{public}ld",
+                    "texture=%{public}ld staging=%{public}ld buffers=%{public}ld",
                     textureMemory,
-                    stagingBuffer.length)
+                    stagingMemory,
+                    stagingBufferCount)
         defer {
             os_signpost(.end,
                         log: memorySignpostLog,
@@ -128,84 +145,107 @@ public final class ChunkedVolumeUploader {
         }
 
         updatePeakMemory(textureBytes: textureMemory,
-                         stagingBytes: stagingBuffer.length,
+                         stagingBytes: stagingMemory,
                          peakMemoryBytes: &peakMemoryBytes,
                          signpostID: signpostID)
 
         await emit(.started(totalSlices: totalSlices), to: progress)
 
-        for try await slice in slices {
-            try Task.checkCancellation()
-            if cancellationState.isCancelled {
-                throw CancellationError()
-            }
-            guard (0..<totalSlices).contains(slice.index) else {
-                throw ChunkedVolumeUploadError.invalidSliceIndex(slice.index)
-            }
-            guard seenIndices.insert(slice.index).inserted else {
-                throw ChunkedVolumeUploadError.duplicateSliceIndex(slice.index)
-            }
-            guard slice.data.count == sliceByteCount else {
-                throw ChunkedVolumeUploadError.invalidSliceByteCount(expected: sliceByteCount,
-                                                                    actual: slice.data.count)
-            }
+        do {
+            for try await slice in slices {
+                try Task.checkCancellation()
+                if cancellationState.isCancelled {
+                    throw CancellationError()
+                }
+                guard (0..<totalSlices).contains(slice.index) else {
+                    throw ChunkedVolumeUploadError.invalidSliceIndex(slice.index)
+                }
+                guard seenIndices.insert(slice.index).inserted else {
+                    throw ChunkedVolumeUploadError.duplicateSliceIndex(slice.index)
+                }
+                guard slice.data.count == sliceByteCount else {
+                    throw ChunkedVolumeUploadError.invalidSliceByteCount(expected: sliceByteCount,
+                                                                        actual: slice.data.count)
+                }
 
-            try copy(slice: slice,
-                     expectedByteCount: sliceByteCount,
-                     to: stagingBuffer)
+                let stagingSlot = submittedSlices % stagingBufferCount
+                if let pendingUpload = inFlightUploads[stagingSlot] {
+                    inFlightUploads[stagingSlot] = nil
+                    let timings = try await pendingUpload.completion.value
+                    if cancellationState.isCancelled || Task.isCancelled {
+                        throw CancellationError()
+                    }
+                    totalCommandCPUTime += timings.cpuTime
+                    totalCommandGPUTime += timings.gpuTime
+                    totalKernelTime += timings.kernelTime
+                    processedSlices += 1
+                    await emit(.uploadingSlice(current: processedSlices,
+                                               total: totalSlices),
+                               to: progress)
+                }
 
-            guard let commandBuffer = commandQueue.makeCommandBuffer() else {
-                throw ChunkedVolumeUploadError.commandBufferCreationFailed
-            }
-            let commandStartedAt = CFAbsoluteTimeGetCurrent()
-            commandBuffer.label = "ChunkedVolumeUploader.UploadSlice.\(slice.index)"
+                let stagingBuffer = stagingBuffers[stagingSlot]
+                try copy(slice: slice,
+                         expectedByteCount: sliceByteCount,
+                         to: stagingBuffer)
 
-            let params = HUConversionParameters(
-                slope: Float(slice.slope),
-                intercept: Float(slice.intercept),
-                minClamp: slice.minClamp,
-                maxClamp: slice.maxClamp,
-                sliceIndex: UInt32(slice.index),
-                sliceWidth: UInt32(descriptor.dimensions.width),
-                sliceHeight: UInt32(descriptor.dimensions.height)
-            )
-            try pipeline.encode(stagingBuffer: stagingBuffer,
-                                to: texture,
-                                sourcePixelFormat: descriptor.sourcePixelFormat,
-                                params: params,
-                                commandBuffer: commandBuffer)
-            CommandBufferProfiler.captureTimes(for: commandBuffer,
-                                               label: "chunked-upload-slice",
-                                               category: "Upload")
+                guard let commandBuffer = commandQueue.makeCommandBuffer() else {
+                    throw ChunkedVolumeUploadError.commandBufferCreationFailed
+                }
+                let commandStartedAt = CFAbsoluteTimeGetCurrent()
+                commandBuffer.label = "ChunkedVolumeUploader.UploadSlice.\(slice.index)"
 
-            try await withTaskCancellationHandler {
-                let timings = try await waitForCompletion(commandBuffer,
-                                                          cpuStart: commandStartedAt)
-                ClinicalProfiler.shared.recordSample(
-                    stage: .huConversion,
-                    cpuTime: timings.cpuTime,
-                    gpuTime: timings.gpuTime > 0 ? timings.gpuTime : nil,
-                    memory: textureMemory + stagingBuffer.length,
-                    viewport: .unknown,
-                    metadata: [
-                        "path": "ChunkedVolumeUploader.upload",
-                        "sliceIndex": String(slice.index),
-                        "kernelTimeMilliseconds": String(format: "%.6f", timings.kernelTime)
-                    ],
-                    device: device
+                let params = HUConversionParameters(
+                    slope: Float(slice.slope),
+                    intercept: Float(slice.intercept),
+                    minClamp: slice.minClamp,
+                    maxClamp: slice.maxClamp,
+                    sliceIndex: UInt32(slice.index),
+                    sliceWidth: UInt32(descriptor.dimensions.width),
+                    sliceHeight: UInt32(descriptor.dimensions.height)
                 )
-            } onCancel: {
-                cancellationState.markCancelled()
+                try pipeline.encode(stagingBuffer: stagingBuffer,
+                                    to: texture,
+                                    sourcePixelFormat: descriptor.sourcePixelFormat,
+                                    params: params,
+                                    commandBuffer: commandBuffer)
+                CommandBufferProfiler.captureTimes(for: commandBuffer,
+                                                   label: "chunked-upload-in-flight",
+                                                   category: "Upload")
+
+                let completion = Task {
+                    try await self.waitForCompletion(commandBuffer,
+                                                     cpuStart: commandStartedAt)
+                }
+                inFlightUploads[stagingSlot] = InFlightUpload(
+                    submissionOrder: submittedSlices,
+                    completion: completion
+                )
+                submittedSlices += 1
             }
 
-            if cancellationState.isCancelled || Task.isCancelled {
-                throw CancellationError()
+            let remainingUploads = inFlightUploads.compactMap { $0 }.sorted {
+                $0.submissionOrder < $1.submissionOrder
             }
-
-            processedSlices += 1
-            await emit(.uploadingSlice(current: processedSlices,
-                                       total: totalSlices),
-                       to: progress)
+            for pendingUpload in remainingUploads {
+                let timings = try await pendingUpload.completion.value
+                if cancellationState.isCancelled || Task.isCancelled {
+                    throw CancellationError()
+                }
+                totalCommandCPUTime += timings.cpuTime
+                totalCommandGPUTime += timings.gpuTime
+                totalKernelTime += timings.kernelTime
+                processedSlices += 1
+                await emit(.uploadingSlice(current: processedSlices,
+                                           total: totalSlices),
+                               to: progress)
+            }
+            inFlightUploads = Array(repeating: nil, count: stagingBufferCount)
+        } catch {
+            for pendingUpload in inFlightUploads.compactMap({ $0 }) {
+                _ = try? await pendingUpload.completion.value
+            }
+            throw error
         }
 
         let missingIndices = (0..<totalSlices).filter { !seenIndices.contains($0) }
@@ -216,6 +256,21 @@ public final class ChunkedVolumeUploader {
         if cancellationState.isCancelled {
             throw CancellationError()
         }
+
+        ClinicalProfiler.shared.recordSample(
+            stage: .huConversion,
+            cpuTime: totalCommandCPUTime,
+            gpuTime: totalCommandGPUTime > 0 ? totalCommandGPUTime : nil,
+            memory: textureMemory + stagingMemory,
+            viewport: .unknown,
+            metadata: [
+                "path": "ChunkedVolumeUploader.upload",
+                "slicesProcessed": String(processedSlices),
+                "effectiveStagingBufferCount": String(stagingBufferCount),
+                "kernelTimeMilliseconds": String(format: "%.6f", totalKernelTime)
+            ],
+            device: device
+        )
 
         let metrics = VolumeUploadMetrics(
             uploadTimeSeconds: CFAbsoluteTimeGetCurrent() - startedAt,
@@ -321,6 +376,11 @@ public final class ChunkedVolumeUploader {
         return commandBuffer.timings(cpuStart: cpuStart,
                                      cpuEnd: cpuEnd)
     }
+}
+
+private struct InFlightUpload {
+    let submissionOrder: Int
+    let completion: Task<CommandBufferTimings, Error>
 }
 
 private final class ChunkedUploadCancellationState: @unchecked Sendable {

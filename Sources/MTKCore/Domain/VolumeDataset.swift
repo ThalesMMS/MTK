@@ -260,6 +260,8 @@ public struct ClinicalImageMetadata: Sendable, Equatable {
 public struct ImageData3D: Sendable {
     public var dimensions: VolumeDimensions
     public var spacing: VolumeSpacing
+    public var isInPlaneSpacingCalibrated: Bool
+    public var isOrientationVerified: Bool
     public var origin: SIMD3<Float>
     public var direction: simd_float3x3
     public var pixelFormat: VolumePixelFormat
@@ -270,6 +272,8 @@ public struct ImageData3D: Sendable {
 
     public init(dimensions: VolumeDimensions,
                 spacing: VolumeSpacing,
+                isInPlaneSpacingCalibrated: Bool = false,
+                isOrientationVerified: Bool = false,
                 origin: SIMD3<Float>,
                 direction: simd_float3x3,
                 pixelFormat: VolumePixelFormat,
@@ -281,6 +285,8 @@ public struct ImageData3D: Sendable {
                      "ImageData3D v1 supports only one scalar component per voxel; got \(componentsPerVoxel).")
         self.dimensions = dimensions
         self.spacing = spacing
+        self.isInPlaneSpacingCalibrated = isInPlaneSpacingCalibrated
+        self.isOrientationVerified = isOrientationVerified
         self.origin = origin
         self.direction = direction
         self.pixelFormat = pixelFormat
@@ -292,6 +298,8 @@ public struct ImageData3D: Sendable {
 
     public init(dimensions: VolumeDimensions,
                 spacing: VolumeSpacing,
+                isInPlaneSpacingCalibrated: Bool = false,
+                isOrientationVerified: Bool = false,
                 orientation: VolumeOrientation,
                 pixelFormat: VolumePixelFormat,
                 componentsPerVoxel: Int = 1,
@@ -303,6 +311,8 @@ public struct ImageData3D: Sendable {
                                                  fallback: SIMD3<Float>(0, 0, 1))
         self.init(dimensions: dimensions,
                   spacing: spacing,
+                  isInPlaneSpacingCalibrated: isInPlaneSpacingCalibrated,
+                  isOrientationVerified: isOrientationVerified,
                   origin: orientation.origin,
                   direction: simd_float3x3(columns: (orientation.row, orientation.column, normal)),
                   pixelFormat: pixelFormat,
@@ -398,6 +408,8 @@ extension ImageData3D: Equatable {
     public static func == (lhs: ImageData3D, rhs: ImageData3D) -> Bool {
         lhs.dimensions == rhs.dimensions &&
             lhs.spacing == rhs.spacing &&
+            lhs.isInPlaneSpacingCalibrated == rhs.isInPlaneSpacingCalibrated &&
+            lhs.isOrientationVerified == rhs.isOrientationVerified &&
             lhs.origin == rhs.origin &&
             lhs.direction.columns.0 == rhs.direction.columns.0 &&
             lhs.direction.columns.1 == rhs.direction.columns.1 &&
@@ -453,6 +465,18 @@ public struct VolumeDataset: Sendable, Equatable {
         set { imageData.spacing = newValue }
     }
 
+    /// True only when X/Y spacing represents a valid physical calibration.
+    public var isInPlaneSpacingCalibrated: Bool {
+        get { imageData.isInPlaneSpacingCalibrated }
+        set { imageData.isInPlaneSpacingCalibrated = newValue }
+    }
+
+    /// True only when the source patient orientation metadata was valid.
+    public var isOrientationVerified: Bool {
+        get { imageData.isOrientationVerified }
+        set { imageData.isOrientationVerified = newValue }
+    }
+
     /// Format of voxel intensity values in the data buffer.
     public var pixelFormat: VolumePixelFormat {
         get { imageData.pixelFormat }
@@ -489,6 +513,8 @@ public struct VolumeDataset: Sendable, Equatable {
     ///   - data: Raw voxel buffer (size must match `dimensions.voxelCount * pixelFormat.bytesPerVoxel`)
     ///   - dimensions: Volume size in voxels
     ///   - spacing: Physical distance between voxel centers in millimeters
+    ///   - isInPlaneSpacingCalibrated: Whether x/y spacing is validated for downstream millimeter-based measurements
+    ///   - isOrientationVerified: Whether spatial orientation is validated for gating downstream millimeter-based measurements
     ///   - pixelFormat: Format of voxel values in the data buffer
     ///   - intensityRange: Actual intensity range in the data (defaults to `pixelFormat.defaultIntensityRange`)
     ///   - orientation: Spatial orientation (defaults to `.canonical`)
@@ -497,6 +523,8 @@ public struct VolumeDataset: Sendable, Equatable {
     public init(data: Data,
                 dimensions: VolumeDimensions,
                 spacing: VolumeSpacing,
+                isInPlaneSpacingCalibrated: Bool = false,
+                isOrientationVerified: Bool = false,
                 pixelFormat: VolumePixelFormat,
                 intensityRange: ClosedRange<Int32>? = nil,
                 orientation: VolumeOrientation? = nil,
@@ -505,6 +533,8 @@ public struct VolumeDataset: Sendable, Equatable {
         self.data = data
         self.imageData = ImageData3D(dimensions: dimensions,
                                      spacing: spacing,
+                                     isInPlaneSpacingCalibrated: isInPlaneSpacingCalibrated,
+                                     isOrientationVerified: isOrientationVerified,
                                      orientation: orientation ?? .canonical,
                                      pixelFormat: pixelFormat,
                                      intensityRange: intensityRange,

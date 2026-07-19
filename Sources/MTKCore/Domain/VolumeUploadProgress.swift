@@ -60,6 +60,8 @@ public struct VolumeUploadDescriptor: Sendable, Equatable {
     public let intensityRange: ClosedRange<Int32>
     public let orientation: VolumeOrientation
     public let recommendedWindow: ClosedRange<Int32>?
+    /// Stable identity for the stream's voxel content and per-slice conversion metadata.
+    /// Reuse a value only while both remain unchanged.
     public let cacheKey: String?
     public let clinicalMetadata: ClinicalImageMetadata?
 

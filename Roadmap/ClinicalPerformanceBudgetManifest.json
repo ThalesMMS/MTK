@@ -1,5 +1,8 @@
 {
-  "version": 1,
+  "version": 2,
+  "issue": 1436,
+  "conformanceManifest": "../DICOM-Swift/Tests/DicomCoreTests/Resources/ReleaseGates/ClinicalCodecConformanceManifest.json",
+  "privacyPolicy": "Aggregate environment, fixture IDs, timing, work, and resource counters only; no PHI or pixel payloads.",
   "requiredStages": [
     "decode",
     "volumeAssembly",
@@ -13,7 +16,46 @@
     "debug",
     "release"
   ],
+  "benchmarkModes": [
+    "cold-sdk-first-call",
+    "prewarmed-first-clinical-call",
+    "warm-isolated",
+    "warm-sustained",
+    "concurrent-clinical-workload",
+    "fallback-path"
+  ],
+  "tiers": [
+    "pr-smoke",
+    "nightly",
+    "release",
+    "manual-device"
+  ],
+  "reportFormats": [
+    "json",
+    "csv",
+    "markdown"
+  ],
+  "requiredResourceMetrics": [
+    "peakRSSBytes",
+    "residentDeltaBytes",
+    "metalAllocatedBytes",
+    "metalLeasedBytes",
+    "metalReclaimableBytes",
+    "metalPeakBytes",
+    "newBufferCount",
+    "reusedBufferCount",
+    "newTextureCount",
+    "reusedTextureCount",
+    "cpuCopyCount",
+    "gpuCopyCount",
+    "temporaryFileIOBytes",
+    "commandBufferDurationMilliseconds",
+    "commandBufferFailureCount"
+  ],
   "comparisonProfile": {
+    "comparisonRule": "Correctness before speed; apply absolute budgets and same-host/mode/fixture/build/startup-scope relative deltas.",
+    "relativeWarningPercent": 10.0,
+    "relativeFailurePercent": 20.0,
     "requiredResultEnvironmentFields": [
       "deviceName",
       "osVersion",
@@ -21,47 +63,141 @@
       "modelIdentifier",
       "buildConfiguration",
       "benchmarkMode",
-      "fixtureID"
+      "fixtureID",
+      "tier",
+      "commandLineStartupIncluded"
     ]
   },
   "scenarios": [
     {
       "id": "mtk-clinical-rendering",
       "component": "MTK",
-      "fixturePolicy": "committed synthetic fixtures plus optional local DICOM fixtures skipped when unavailable",
-      "benchmarkMode": "clinical-render",
+      "fixturePolicy": "Use local committed synthetic fixtures plus optional local DICOM fixtures skipped when unavailable.",
+      "fixtureIDs": [
+        "ct-explicit-vr-le-rescale",
+        "secondary-capture-rgb",
+        "us-multiframe-metadata",
+        "seg-binary",
+        "rtdose-grid"
+      ],
+      "benchmarkMode": "warm-sustained",
+      "benchmarkModes": [
+        "prewarmed-first-clinical-call",
+        "warm-isolated",
+        "warm-sustained",
+        "concurrent-clinical-workload",
+        "fallback-path"
+      ],
+      "tiers": [
+        "pr-smoke",
+        "nightly",
+        "release",
+        "manual-device"
+      ],
+      "backends": [
+        "metal-shared-volume",
+        "cpu-reference"
+      ],
+      "workflowMetrics": [
+        "firstInteractiveMPR",
+        "firstVolumeRender",
+        "finalVolumeQuality",
+        "cineFrameP50P95P99",
+        "zoomROILatency",
+        "panCancellationLatency",
+        "metalResources",
+        "commandBuffers",
+        "sustainedResourceBounds"
+      ],
+      "correctnessGate": "Rendered geometry, pixels, progressive quality, and overlays must pass conformance assertions before timing verdicts.",
       "budgets": [
         {
-          "stage": "gpuUpload"
+          "stage": "gpuUpload",
+          "metric": "meanTimeMilliseconds",
+          "warningLimit": 108.0,
+          "failureLimit": 120.0
         },
         {
-          "stage": "mprRender"
+          "stage": "mprRender",
+          "metric": "p95TimeMilliseconds",
+          "warningLimit": 29.7,
+          "failureLimit": 33.0
         },
         {
-          "stage": "volumeRender"
+          "stage": "volumeRender",
+          "metric": "p95TimeMilliseconds",
+          "warningLimit": 45.0,
+          "failureLimit": 50.0
         },
         {
-          "stage": "snapshot"
+          "stage": "snapshot",
+          "metric": "meanTimeMilliseconds",
+          "warningLimit": 270.0,
+          "failureLimit": 300.0
         },
         {
-          "stage": "peakMemory"
+          "stage": "peakMemory",
+          "metric": "peakMemoryMegabytes",
+          "warningLimit": 230.4,
+          "failureLimit": 256.0
         }
       ]
     },
     {
       "id": "dicom-ingest-to-volume",
       "component": "DICOM-Swift",
-      "fixturePolicy": "committed non-PHI metadata fixtures only",
-      "benchmarkMode": "volume-ingest",
+      "fixturePolicy": "Use local committed synthetic non-PHI fixtures from the #1435 conformance manifest.",
+      "fixtureIDs": [
+        "ct-explicit-vr-le-rescale",
+        "secondary-capture-rgb",
+        "us-multiframe-metadata"
+      ],
+      "benchmarkMode": "prewarmed-first-clinical-call",
+      "benchmarkModes": [
+        "cold-sdk-first-call",
+        "prewarmed-first-clinical-call",
+        "warm-isolated",
+        "warm-sustained",
+        "concurrent-clinical-workload",
+        "fallback-path"
+      ],
+      "tiers": [
+        "pr-smoke",
+        "nightly",
+        "release"
+      ],
+      "backends": [
+        "j2kswift-cpu",
+        "openjpeg",
+        "jlswift-cpu",
+        "charls"
+      ],
+      "workflowMetrics": [
+        "decodeLatency",
+        "volumeAssemblyLatency",
+        "partialWorkAvoided",
+        "jpipByteAccounting",
+        "jp3dColdWarmFallback"
+      ],
+      "correctnessGate": "The #1435 conformance case for the fixture/backend pair must pass before ingest timing is eligible.",
       "budgets": [
         {
-          "stage": "decode"
+          "stage": "decode",
+          "metric": "meanTimeMilliseconds",
+          "warningLimit": 225.0,
+          "failureLimit": 250.0
         },
         {
-          "stage": "volumeAssembly"
+          "stage": "volumeAssembly",
+          "metric": "meanTimeMilliseconds",
+          "warningLimit": 162.0,
+          "failureLimit": 180.0
         },
         {
-          "stage": "peakMemory"
+          "stage": "peakMemory",
+          "metric": "peakMemoryMegabytes",
+          "warningLimit": 230.4,
+          "failureLimit": 256.0
         }
       ]
     }

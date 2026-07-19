@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted.
+Superseded by [HeadlessArchitectureADR.md](HeadlessArchitectureADR.md).
+
+This document is retained as the historical integrated-presentation decision.
 
 ## Context
 
@@ -10,7 +12,7 @@ MTK contains rendering-related code that does not belong to the clinical
 architecture contract:
 
 - Metal compute adapters, engine code, and render passes in `MTKCore`.
-- MTKUI presentation code responsible for clinical viewport display.
+- presentation code responsible for clinical viewport display.
 - SceneKit materials and integration code in `MTKSceneKit`.
 - Explicit snapshot/export utilities that convert GPU frames to `CGImage`.
 
@@ -78,7 +80,7 @@ The clinical display contract is:
   presentation.
 - `MTKSceneKit` is not part of the clinical architecture and will be removed
   from the main package unless a separate experimental package is explicitly
-  created later. No clinical demo or MTKUI path may depend on SceneKit.
+  created later. No clinical product path may depend on SceneKit.
 - `CGImage` is allowed only behind `SnapshotExporting`/`TextureSnapshotExporter`.
   It is not a render result, display surface, or compatibility path.
 - `TextureSnapshotExporter` is the sole supported CPU readback boundary for
@@ -193,7 +195,8 @@ Positive consequences:
 
 - The clinical renderer has one backend contract: Metal-native rendering.
 - Removing SceneKit and `CGImage` display paths eliminates architectural
-  ambiguity in MTKUI, the demo app, and clinical documentation.
+  ambiguity in the clinical product code, the demo app, and clinical
+  documentation.
 - Viewports can share GPU resources by handle across volume, MPR, projection,
   and overlay passes.
 - Interactive frames remain GPU-resident as `MTLTexture` values until
@@ -207,7 +210,7 @@ Required consequences:
 
 - `MTKSceneKit` is outside the clinical architecture and is not preserved as a
   clinical fallback in the main package.
-- No clinical MTKUI path or demo path may depend on SceneKit.
+- No clinical product path or demo path may depend on SceneKit.
 - `CGImage`, image-backed surfaces, and similar CPU-readback display APIs are
   outside the interactive clinical path.
 - Documentation and implementation must remove compatibility guidance that keeps
@@ -222,9 +225,9 @@ compatibility retention window.
    only behind `SnapshotExporting`/`TextureSnapshotExporter`.
 2. Enforce `PresentationPass` as the only clinical presentation step from
    persistent GPU outputs into `MTKView`/`CAMetalLayer` drawables.
-3. Remove SceneKit dependencies from MTKUI and from the clinical demo path.
+3. Remove SceneKit dependencies from the clinical product path and from the
+   clinical demo path.
 4. Remove `MTKSceneKit` from the main package or extract it only if a separate
    explicitly experimental package is created later.
 5. Keep tests focused on GPU-native interactive rendering and explicit snapshot
    export boundaries.
-

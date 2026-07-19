@@ -93,6 +93,70 @@ final class MTKRenderingEngineRenderTests: MTKRenderingEngineTestCase {
         XCTAssertEqual(poolInUseCount, 0)
     }
 
+    func test_renderFusionWithMesh_submitsOneFrameWithoutWindowCommands() async throws {
+        let viewport = try await engine.createViewport(
+            ViewportDescriptor(type: .volume3D,
+                               initialSize: CGSize(width: 40, height: 24))
+        )
+        let overlayDataset = VolumeDatasetTestFactory.makeTestDataset(
+            dimensions: testDataset.dimensions,
+            pixelFormat: .int16Signed,
+            seed: 42
+        )
+        let overlayLayer = VolumeLayer(id: "fusion-overlay",
+                                       dataset: overlayDataset,
+                                       transferFunction: .defaultGrayscale(for: overlayDataset),
+                                       opacity: 0.5,
+                                       blendMode: .additive)
+        try await engine.setVolume(testDataset, for: viewport)
+        try await engine.configure(viewport, volumeLayers: [overlayLayer])
+        try await engine.configure(viewport, surfaceMeshLayers: [makeSurfaceMeshLayer()])
+        let submissionsBefore = await engine.debugVolumeFrameSubmissionCount
+        let optionalWindowCommandsBefore = await engine.debugVolumeWindowCommandCount
+        let windowCommandsBefore = try XCTUnwrap(optionalWindowCommandsBefore)
+
+        let frame = try await engine.render(viewport)
+
+        let submissionsAfter = await engine.debugVolumeFrameSubmissionCount
+        let encoderCount = await engine.debugLastVolumeFrameEncoderCount
+        let optionalWindowCommandsAfter = await engine.debugVolumeWindowCommandCount
+        let windowCommandsAfter = try XCTUnwrap(optionalWindowCommandsAfter)
+        XCTAssertEqual(submissionsAfter - submissionsBefore, 1)
+        XCTAssertEqual(encoderCount, 4)
+        XCTAssertEqual(windowCommandsAfter, windowCommandsBefore)
+        frame.outputTextureLease?.release()
+    }
+
+    func test_renderFusionFrames_withProfilingDisabled_doesNotCreateSession() async throws {
+        let profiler = ClinicalProfiler.shared
+        let viewport = try await engine.createViewport(
+            ViewportDescriptor(type: .volume3D,
+                               initialSize: CGSize(width: 24, height: 24))
+        )
+        let overlayDataset = VolumeDatasetTestFactory.makeTestDataset(
+            dimensions: testDataset.dimensions,
+            pixelFormat: .int16Signed,
+            seed: 42
+        )
+        let overlayLayer = VolumeLayer(id: "fusion-overlay",
+                                       dataset: overlayDataset,
+                                       transferFunction: .defaultGrayscale(for: overlayDataset),
+                                       opacity: 0.5,
+                                       blendMode: .additive)
+        try await engine.setVolume(testDataset, for: viewport)
+        try await engine.configure(viewport, volumeLayers: [overlayLayer])
+        _ = profiler.endSession()
+        defer { _ = profiler.endSession() }
+        XCTAssertNil(profiler.sessionSnapshot())
+
+        for _ in 0..<3 {
+            let frame = try await engine.render(viewport)
+            frame.outputTextureLease?.release()
+        }
+
+        XCTAssertNil(profiler.sessionSnapshot())
+    }
+
     func test_renderMPR_returnsValidTexture() async throws {
         let viewport = try await engine.createViewport(
             ViewportDescriptor(type: .mpr(axis: .axial),

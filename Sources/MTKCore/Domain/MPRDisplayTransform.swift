@@ -78,6 +78,12 @@ public struct MPRDisplayTransform: Sendable, Equatable {
         return orientation.inverseApply(to: point)
     }
 
+    /// Resolves the physical aspect ratio after the anatomical display orientation is applied.
+    public func displayAspectRatio(forSourceAspectRatio aspectRatio: Float) -> Float {
+        let safeAspectRatio = aspectRatio.isFinite ? max(aspectRatio, Float.ulpOfOne) : 1
+        return transposeUV ? 1 / safeAspectRatio : safeAspectRatio
+    }
+
     public static let identity = MPRDisplayTransform(
         orientation: .standard,
         flipHorizontal: false,
@@ -90,9 +96,18 @@ public struct MPRDisplayTransform: Sendable, Equatable {
 }
 
 public struct MPRViewportTransform: Sendable, Equatable {
-    public static let minimumZoom: Float = 1
+    /// Fit-to-viewport is 1; zooming out below fit renders the image smaller
+    /// than the viewport (centered, background filled) down to 25%.
+    public static let minimumZoom: Float = 0.25
     public static let maximumZoom: Float = 8
     public static let identity = MPRViewportTransform()
+
+    /// Maximum |pan| per axis for a given zoom: panning is allowed at any
+    /// zoom, but at least a quarter of the viewport must stay covered by the
+    /// image so it can never be pushed fully off-screen.
+    public static func panLimit(forZoom zoom: Float) -> Float {
+        (max(zoom, minimumZoom) + 1) * 0.5 - 0.25
+    }
 
     public var zoom: Float
     public var pan: SIMD2<Float>
@@ -112,20 +127,49 @@ public struct MPRViewportTransform: Sendable, Equatable {
     }
 
     public var isIdentity: Bool {
-        zoom == Self.minimumZoom && pan == .zero && rotationRadians == 0
+        zoom == 1 && pan == .zero && rotationRadians == 0
     }
 
-    public func screenCoordinates(forImageScreen point: SIMD2<Float>) -> SIMD2<Float> {
-        let centered = point - SIMD2<Float>(repeating: 0.5)
-        return SIMD2<Float>(repeating: 0.5) + Self.rotated(centered * zoom,
-                                                           radians: rotationRadians) + pan
+    /// Maps source-image coordinates into the rotated, zoomed viewport using physical aspect bounds.
+    public func screenCoordinates(
+        forImageScreen point: SIMD2<Float>,
+        sourceAspectRatio: Float = 1
+    ) -> SIMD2<Float> {
+        let sourceSize = SIMD2<Float>(Self.safeSourceAspectRatio(sourceAspectRatio), 1)
+        let centered = (point - SIMD2<Float>(repeating: 0.5)) * sourceSize * zoom
+        return SIMD2<Float>(repeating: 0.5)
+            + Self.rotated(centered, radians: rotationRadians) / rotatedBounds(sourceAspectRatio: sourceAspectRatio)
+            + pan
     }
 
-    public func imageScreenCoordinates(forViewportScreen point: SIMD2<Float>) -> SIMD2<Float> {
+    /// Inverts the aspect-aware viewport transform used by presentation shaders.
+    public func imageScreenCoordinates(
+        forViewportScreen point: SIMD2<Float>,
+        sourceAspectRatio: Float = 1
+    ) -> SIMD2<Float> {
         let safeZoom = max(zoom, Self.minimumZoom)
-        let centered = point - SIMD2<Float>(repeating: 0.5) - pan
-        return SIMD2<Float>(repeating: 0.5) + Self.rotated(centered,
-                                                           radians: -rotationRadians) / safeZoom
+        let sourceSize = SIMD2<Float>(Self.safeSourceAspectRatio(sourceAspectRatio), 1)
+        let centered = (point - SIMD2<Float>(repeating: 0.5) - pan)
+            * rotatedBounds(sourceAspectRatio: sourceAspectRatio)
+        return SIMD2<Float>(repeating: 0.5)
+            + Self.rotated(centered, radians: -rotationRadians) / safeZoom / sourceSize
+    }
+
+    /// Returns the physical bounding-box size of the rotated source rectangle.
+    public func rotatedBounds(sourceAspectRatio: Float) -> SIMD2<Float> {
+        let sourceAspect = Self.safeSourceAspectRatio(sourceAspectRatio)
+        let absoluteCos = abs(cos(rotationRadians))
+        let absoluteSin = abs(sin(rotationRadians))
+        return SIMD2<Float>(
+            absoluteCos * sourceAspect + absoluteSin,
+            absoluteSin * sourceAspect + absoluteCos
+        )
+    }
+
+    /// Returns the width-to-height ratio of the rotated physical bounding box.
+    public func rotatedContentAspectRatio(sourceAspectRatio: Float) -> Float {
+        let bounds = rotatedBounds(sourceAspectRatio: sourceAspectRatio)
+        return max(bounds.x / max(bounds.y, Float.ulpOfOne), Float.ulpOfOne)
     }
 
     public func translated(by delta: SIMD2<Float>) -> MPRViewportTransform {
@@ -134,16 +178,27 @@ public struct MPRViewportTransform: Sendable, Equatable {
                              rotationRadians: rotationRadians)
     }
 
-    public func zoomed(by factor: Float, around anchor: SIMD2<Float>) -> MPRViewportTransform {
+    /// Applies zoom while preserving the source coordinate under the supplied viewport anchor.
+    public func zoomed(
+        by factor: Float,
+        around anchor: SIMD2<Float>,
+        sourceAspectRatio: Float = 1
+    ) -> MPRViewportTransform {
         guard factor.isFinite, factor > 0 else { return self }
         let safeAnchor = SIMD2<Float>(
             anchor.x.isFinite ? anchor.x : 0.5,
             anchor.y.isFinite ? anchor.y : 0.5
         )
-        let previousImagePoint = imageScreenCoordinates(forViewportScreen: safeAnchor)
+        let previousImagePoint = imageScreenCoordinates(
+            forViewportScreen: safeAnchor,
+            sourceAspectRatio: sourceAspectRatio
+        )
         let nextZoom = min(max(zoom * factor, Self.minimumZoom), Self.maximumZoom)
-        let rotatedImagePoint = Self.rotated((previousImagePoint - SIMD2<Float>(repeating: 0.5)) * nextZoom,
-                                             radians: rotationRadians)
+        let sourceSize = SIMD2<Float>(Self.safeSourceAspectRatio(sourceAspectRatio), 1)
+        let rotatedImagePoint = Self.rotated(
+            (previousImagePoint - SIMD2<Float>(repeating: 0.5)) * sourceSize * nextZoom,
+            radians: rotationRadians
+        ) / rotatedBounds(sourceAspectRatio: sourceAspectRatio)
         let nextPan = safeAnchor
             - SIMD2<Float>(repeating: 0.5)
             - rotatedImagePoint
@@ -153,8 +208,7 @@ public struct MPRViewportTransform: Sendable, Equatable {
     }
 
     private static func clampedPan(_ pan: SIMD2<Float>, zoom: Float) -> SIMD2<Float> {
-        guard zoom > Self.minimumZoom else { return .zero }
-        let limit = (zoom - Self.minimumZoom) * 0.5
+        let limit = Self.panLimit(forZoom: zoom)
         return SIMD2<Float>(
             min(max(pan.x, -limit), limit),
             min(max(pan.y, -limit), limit)
@@ -169,5 +223,9 @@ public struct MPRViewportTransform: Sendable, Equatable {
             point.x * cosTheta - point.y * sinTheta,
             point.x * sinTheta + point.y * cosTheta
         )
+    }
+
+    private static func safeSourceAspectRatio(_ aspectRatio: Float) -> Float {
+        aspectRatio.isFinite ? max(aspectRatio, Float.ulpOfOne) : 1
     }
 }

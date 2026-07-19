@@ -15,10 +15,6 @@ let package = Package(
             targets: ["MTKCore"]
         ),
         .library(
-            name: "MTKUI",
-            targets: ["MTKUI"]
-        ),
-        .library(
             name: "MTKFixtures",
             targets: ["MTKFixtures"]
         )
@@ -34,15 +30,6 @@ let package = Package(
             resources: [
                 .process("Resources")
             ]
-        ),
-        // MTKUI intentionally stays independent from any legacy 3D wrapper. The
-        // clinical UI path is Metal-native and must not widen its public contract.
-        .target(
-            name: "MTKUI",
-            dependencies: [
-                "MTKCore"
-            ],
-            path: "Sources/MTKUI"
         ),
         .target(
             name: "MTKFixtures",
@@ -63,13 +50,6 @@ let package = Package(
             resources: [
                 .process("Fixtures")
             ]
-        ),
-        .testTarget(
-            name: "MTKUITests",
-            dependencies: [
-                "MTKUI"
-            ],
-            path: "Tests/MTKUITests"
         ),
         .testTarget(
             name: "MTKFixturesTests",

@@ -46,7 +46,7 @@ final class VolumeUploadPerformanceTests: XCTestCase {
         let fullVolumeStagingPeak = ResourceMemoryEstimator.estimate(for: gpuTexture) + dataset.data.count
 
         // Expected shape: the CPU reference path stages the full volume on the CPU,
-        // while chunked upload keeps upload memory near one private texture plus one slice.
+        // while chunked upload keeps upload memory near one private texture plus a bounded slice ring.
         XCTAssertEqual(metrics.slicesProcessed, dimensions.depth)
         XCTAssertLessThan(metrics.peakMemoryBytes, fullVolumeStagingPeak)
         XCTAssertGreaterThan(cpuUploadTime, 0)

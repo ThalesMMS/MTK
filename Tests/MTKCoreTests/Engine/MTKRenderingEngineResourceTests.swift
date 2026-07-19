@@ -164,6 +164,79 @@ final class MTKRenderingEngineResourceTests: MTKRenderingEngineTestCase {
         XCTAssertEqual(releasedMetrics.volumeTextureCount, 1)
     }
 
+    func test_fusedRenderWhileSwitchingCachedSeries_keepsResourceBookkeepingConsistent() async throws {
+        let dimensions = VolumeDimensions(width: 24, height: 24, depth: 24)
+        let firstBase = VolumeDatasetTestFactory.makeTestDataset(
+            dimensions: dimensions,
+            pixelFormat: .int16Signed,
+            seed: 10
+        )
+        let secondBase = VolumeDatasetTestFactory.makeTestDataset(
+            dimensions: dimensions,
+            pixelFormat: .int16Signed,
+            seed: 20
+        )
+        let firstOverlay = VolumeDatasetTestFactory.makeTestDataset(
+            dimensions: dimensions,
+            pixelFormat: .int16Signed,
+            seed: 30
+        )
+        let secondOverlay = VolumeDatasetTestFactory.makeTestDataset(
+            dimensions: dimensions,
+            pixelFormat: .int16Signed,
+            seed: 40
+        )
+        let firstLayer = VolumeLayer(
+            id: "fusion",
+            dataset: firstOverlay,
+            transferFunction: .defaultGrayscale(for: firstOverlay),
+            opacity: 0.5,
+            blendMode: .additive
+        )
+        let secondLayer = VolumeLayer(
+            id: "fusion",
+            dataset: secondOverlay,
+            transferFunction: .defaultGrayscale(for: secondOverlay),
+            opacity: 0.5,
+            blendMode: .additive
+        )
+        let target = try await engine.createViewport(
+            ViewportDescriptor(type: .volume3D, initialSize: CGSize(width: 64, height: 64))
+        )
+        let firstHolder = try await engine.createViewport(
+            ViewportDescriptor(type: .volume3D, initialSize: CGSize(width: 8, height: 8))
+        )
+        let secondHolder = try await engine.createViewport(
+            ViewportDescriptor(type: .volume3D, initialSize: CGSize(width: 8, height: 8))
+        )
+
+        try await engine.setVolume(firstBase, for: [target, firstHolder])
+        try await engine.configure([target, firstHolder], volumeLayers: [firstLayer])
+        try await engine.setVolume(secondBase, for: secondHolder)
+        try await engine.configure(secondHolder, volumeLayers: [secondLayer])
+
+        for iteration in 0..<12 {
+            let renderTask = Task { try await self.engine.render(target) }
+            await Task.yield()
+
+            if iteration.isMultiple(of: 2) {
+                try await engine.setVolume(secondBase, for: target)
+                try await engine.configure(target, volumeLayers: [secondLayer])
+            } else {
+                try await engine.setVolume(firstBase, for: target)
+                try await engine.configure(target, volumeLayers: [firstLayer])
+            }
+
+            let frame = try await renderTask.value
+            frame.outputTextureLease?.release()
+        }
+
+        let textureCount = await engine.debugResourceTextureCount
+        let referenceCount = await engine.debugResourceReferenceCount
+        XCTAssertEqual(textureCount, 4)
+        XCTAssertEqual(referenceCount, 6)
+    }
+
     func test_translatedScalarVolumeLayerTransformIsResampledBeforeResourceAcquisition() async throws {
         let viewport = try await engine.createViewport(
             ViewportDescriptor(type: .volume3D,

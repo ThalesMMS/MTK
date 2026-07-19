@@ -92,48 +92,44 @@ public:
         float stepSize;
     };
 
-    // Keep the decode step explicit so future packed/encoded volume formats can
-    // add conversion logic without touching all sampling call sites.
-    static inline float decodeInt16Sample(float sampleValue) {
-        return sampleValue;
+    // The raycast path binds a normalized view over the shared 16-bit integer volume.
+    // Normalized samples map back into the original signed or unsigned intensity domain here.
+    // SNORM aliases -32768 and -32767; preserve -32768 as the padding sentinel.
+    static inline float decodeVolumeSample(float sampleValue, bool unsignedVolume) {
+        if (unsignedVolume) {
+            return sampleValue * 65535.0f;
+        }
+        return sampleValue <= -1.0f ? -32768.0f : sampleValue * 32767.0f;
     }
 
     static inline short decodeInt16SampleToShort(float sampleValue) {
-        return short(clamp(sampleValue, -32768.0f, 32767.0f));
+        return short(round(clamp(sampleValue, -32768.0f, 32767.0f)));
     }
 
-    static float sampleTrilinearDensity(texture3d<short, access::read> volume,
-                                        float3 coord)
+    static inline float3 sampleCoordinate(texture3d<float, access::sample> volume,
+                                          float3 coord)
     {
-        uint3 maxIndex = uint3(max(volume.get_width(), 1u) - 1u,
-                               max(volume.get_height(), 1u) - 1u,
-                               max(volume.get_depth(), 1u) - 1u);
-        float3 voxelCoord = clamp(coord, 0.0f, 1.0f) * float3(maxIndex);
-        uint3 baseIndex = uint3(floor(voxelCoord));
-        uint3 nextIndex = min(baseIndex + uint3(1u), maxIndex);
-        float3 weight = voxelCoord - float3(baseIndex);
-
-        float c000 = decodeInt16Sample(float(volume.read(uint3(baseIndex.x, baseIndex.y, baseIndex.z)).r));
-        float c100 = decodeInt16Sample(float(volume.read(uint3(nextIndex.x, baseIndex.y, baseIndex.z)).r));
-        float c010 = decodeInt16Sample(float(volume.read(uint3(baseIndex.x, nextIndex.y, baseIndex.z)).r));
-        float c110 = decodeInt16Sample(float(volume.read(uint3(nextIndex.x, nextIndex.y, baseIndex.z)).r));
-        float c001 = decodeInt16Sample(float(volume.read(uint3(baseIndex.x, baseIndex.y, nextIndex.z)).r));
-        float c101 = decodeInt16Sample(float(volume.read(uint3(nextIndex.x, baseIndex.y, nextIndex.z)).r));
-        float c011 = decodeInt16Sample(float(volume.read(uint3(baseIndex.x, nextIndex.y, nextIndex.z)).r));
-        float c111 = decodeInt16Sample(float(volume.read(uint3(nextIndex.x, nextIndex.y, nextIndex.z)).r));
-
-        float c00 = mix(c000, c100, weight.x);
-        float c10 = mix(c010, c110, weight.x);
-        float c01 = mix(c001, c101, weight.x);
-        float c11 = mix(c011, c111, weight.x);
-        float c0 = mix(c00, c10, weight.y);
-        float c1 = mix(c01, c11, weight.y);
-        return mix(c0, c1, weight.z);
+        const float3 dimension = float3(max(volume.get_width(), 1u),
+                                        max(volume.get_height(), 1u),
+                                        max(volume.get_depth(), 1u));
+        const float3 maxIndex = max(dimension - float3(1.0f), float3(0.0f));
+        return (clamp(coord, 0.0f, 1.0f) * maxIndex + float3(0.5f)) / dimension;
     }
 
-    static float3 calGradient(texture3d<short, access::read> volume,
+    static float sampleTrilinearDensity(texture3d<float, access::sample> volume,
+                                        sampler linearSampler,
+                                        float3 coord,
+                                        bool unsignedVolume)
+    {
+        const float sampleValue = volume.sample(linearSampler, sampleCoordinate(volume, coord)).r;
+        return decodeVolumeSample(sampleValue, unsignedVolume);
+    }
+
+    static float3 calGradient(texture3d<float, access::sample> volume,
+                              sampler linearSampler,
                               float3 coord,
-                              float3 dimension)
+                              float3 dimension,
+                              bool unsignedVolume)
     {
         if (dimension.x < 2.0f || dimension.y < 2.0f || dimension.z < 2.0f) {
             return float3(0.0f);
@@ -144,23 +140,31 @@ public:
         invDim.y = dimension.y > 1.0f ? 1.0f / (dimension.y - 1.0f) : 0.0f;
         invDim.z = dimension.z > 1.0f ? 1.0f / (dimension.z - 1.0f) : 0.0f;
 
-        return calGradientWithStep(volume, coord, invDim);
+        return calGradientWithStep(volume, linearSampler, coord, invDim, unsignedVolume);
     }
 
-    static float3 calGradientWithStep(texture3d<short, access::read> volume,
+    static float3 calGradientWithStep(texture3d<float, access::sample> volume,
+                                      sampler linearSampler,
                                       float3 coord,
-                                      float3 invDim)
+                                      float3 invDim,
+                                      bool unsignedVolume)
     {
         if (any(invDim <= float3(0.0f))) {
             return float3(0.0f);
         }
 
-        float sxPlus = sampleTrilinearDensity(volume, float3(min(coord.x + invDim.x, 1.0f), coord.y, coord.z));
-        float sxMinus = sampleTrilinearDensity(volume, float3(max(coord.x - invDim.x, 0.0f), coord.y, coord.z));
-        float syPlus = sampleTrilinearDensity(volume, float3(coord.x, min(coord.y + invDim.y, 1.0f), coord.z));
-        float syMinus = sampleTrilinearDensity(volume, float3(coord.x, max(coord.y - invDim.y, 0.0f), coord.z));
-        float szPlus = sampleTrilinearDensity(volume, float3(coord.x, coord.y, min(coord.z + invDim.z, 1.0f)));
-        float szMinus = sampleTrilinearDensity(volume, float3(coord.x, coord.y, max(coord.z - invDim.z, 0.0f)));
+        float sxPlus = sampleTrilinearDensity(
+            volume, linearSampler, float3(min(coord.x + invDim.x, 1.0f), coord.y, coord.z), unsignedVolume);
+        float sxMinus = sampleTrilinearDensity(
+            volume, linearSampler, float3(max(coord.x - invDim.x, 0.0f), coord.y, coord.z), unsignedVolume);
+        float syPlus = sampleTrilinearDensity(
+            volume, linearSampler, float3(coord.x, min(coord.y + invDim.y, 1.0f), coord.z), unsignedVolume);
+        float syMinus = sampleTrilinearDensity(
+            volume, linearSampler, float3(coord.x, max(coord.y - invDim.y, 0.0f), coord.z), unsignedVolume);
+        float szPlus = sampleTrilinearDensity(
+            volume, linearSampler, float3(coord.x, coord.y, min(coord.z + invDim.z, 1.0f)), unsignedVolume);
+        float szMinus = sampleTrilinearDensity(
+            volume, linearSampler, float3(coord.x, coord.y, max(coord.z - invDim.z, 0.0f)), unsignedVolume);
 
         return float3(sxMinus - sxPlus, syMinus - syPlus, szMinus - szPlus);
     }
@@ -188,18 +192,20 @@ public:
         return raymarchInfo;
     }
 
-    static short getDensity(texture3d<short, access::read> volume, float3 coord)
+    static short getDensity(texture3d<float, access::sample> volume,
+                            float3 coord,
+                            bool unsignedVolume)
     {
-        uint3 maxIndex = uint3(max(volume.get_width(), 1u) - 1u,
-                               max(volume.get_height(), 1u) - 1u,
-                               max(volume.get_depth(), 1u) - 1u);
-        uint3 index = uint3(round(clamp(coord, 0.0f, 1.0f) * float3(maxIndex)));
-        return decodeInt16SampleToShort(float(volume.read(index).r));
+        const float sampleValue = volume.sample(sampler3d, sampleCoordinate(volume, coord)).r;
+        return decodeInt16SampleToShort(decodeVolumeSample(sampleValue, unsignedVolume));
     }
 
-    static float getDensityTrilinear(texture3d<short, access::read> volume, float3 coord)
+    static float getDensityTrilinear(texture3d<float, access::sample> volume,
+                                     sampler linearSampler,
+                                     float3 coord,
+                                     bool unsignedVolume)
     {
-        return sampleTrilinearDensity(volume, coord);
+        return sampleTrilinearDensity(volume, linearSampler, coord, unsignedVolume);
     }
 
     static float3 getGradient(texture3d<float, access::sample> gradient, float3 coord)
@@ -210,22 +216,18 @@ public:
     static float4 getTfColour(texture2d<float, access::sample> tf,
                               float density)
     {
-        return getTfColour(tf, density, 0.0f);
+        return tf.sample(sampler2d, float2(clamp(density, 0.0f, 1.0f), 0.0f));
     }
 
     static float4 getTfColour(texture2d<float, access::sample> tf,
                               float density,
-                              float gradientMagnitude)
+                              float gradientMagnitude,
+                              bool use2DTransferFunction)
     {
         const float densityCoord = clamp(density, 0.0f, 1.0f);
         const float gradientCoord = clamp(gradientMagnitude, 0.0f, 1.0f);
-        const uint tfHeight = tf.get_height();
-
-        if (tfHeight <= 1u) {
-            return tf.sample(sampler2d, float2(densityCoord, 0.0f));
-        }
-
-        return tf.sample(sampler2d, float2(densityCoord, gradientCoord));
+        return tf.sample(sampler2d,
+                         float2(densityCoord, use2DTransferFunction ? gradientCoord : 0.0f));
     }
 };
 

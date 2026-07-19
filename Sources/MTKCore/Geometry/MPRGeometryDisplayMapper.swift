@@ -30,6 +30,10 @@ public struct MPRGeometryDisplayContext: Sendable {
     public var presentationLayout: MPRPresentationLayout
     public var viewportSize: CGSize
 
+    public var displayAspectRatio: Float {
+        displayTransform.displayAspectRatio(forSourceAspectRatio: plane.physicalAspectRatio)
+    }
+
     public func viewportPoint(forVoxel voxel: SIMD3<Float>) throws -> ViewportPoint {
         let worldPoint = VolumePicking.worldPoint(forVoxelIndex: voxel, in: dataset)
         return try viewportPoint(forWorldPoint: worldPoint)
@@ -88,6 +92,7 @@ public enum MPRGeometryDisplayMapper {
                                    axis: MPRPlaneAxis,
                                    slicePosition: Float,
                                    planeRotation: simd_quatf? = nil,
+                                   precomputedPlane: MPRPlaneGeometry? = nil,
                                    viewportTransform: MPRViewportTransform = .identity,
                                    outputAspect: MPROutputAspect? = nil,
                                    viewportSize: CGSize) throws -> MPRGeometryDisplayContext {
@@ -99,13 +104,16 @@ public enum MPRGeometryDisplayMapper {
         }
 
         let resolvedSlicePosition = clampNormalized(slicePosition)
-        let plane = makePlane(for: dataset,
-                              axis: axis,
-                              slicePosition: resolvedSlicePosition,
-                              rotation: planeRotation)
+        let plane = precomputedPlane ?? makePlane(for: dataset,
+                                                  axis: axis,
+                                                  slicePosition: resolvedSlicePosition,
+                                                  rotation: planeRotation)
         let displayTransform = MPRDisplayTransformFactory.makeTransform(for: plane,
                                                                        axis: axis)
-        let resolvedAspect = outputAspect ?? .aspectFit(physicalAspectRatio: plane.physicalAspectRatio)
+        let displayAspectRatio = displayTransform.displayAspectRatio(
+            forSourceAspectRatio: plane.physicalAspectRatio
+        )
+        let resolvedAspect = outputAspect ?? .aspectFit(physicalAspectRatio: displayAspectRatio)
         return MPRGeometryDisplayContext(
             dataset: dataset,
             axis: axis,
@@ -114,7 +122,10 @@ public enum MPRGeometryDisplayMapper {
             displayTransform: displayTransform,
             viewportTransform: viewportTransform,
             outputAspect: resolvedAspect,
-            presentationLayout: resolvedAspect.layout(destinationSize: viewportSize),
+            presentationLayout: resolvedAspect.layout(
+                destinationSize: viewportSize,
+                viewportTransform: viewportTransform
+            ),
             viewportSize: viewportSize
         )
     }

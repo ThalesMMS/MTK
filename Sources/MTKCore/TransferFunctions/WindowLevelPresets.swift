@@ -20,13 +20,15 @@ public struct WindowLevelPreset: Identifiable, Equatable {
         }
     }
 
-    /// Source of the preset (OHIF, Weasis, etc.)
+    /// Source of the preset.
     public enum Source: String, CaseIterable, Sendable {
+        case isis
         case ohif
         case weasis
 
         public var displayName: String {
             switch self {
+            case .isis: return "Isis"
             case .ohif: return "OHIF"
             case .weasis: return "Weasis"
             }
@@ -99,61 +101,76 @@ public struct WindowLevelPreset: Identifiable, Equatable {
 
 /// Library of standard window/level presets
 public enum WindowLevelPresetLibrary {
-    /// Common CT soft tissue window (W400/L40).
+    /// Canonical CT soft tissue window (W400/L40).
     public static let softTissue = WindowLevelPreset(
-        id: "ohif.ct-soft-tissue",
+        id: "isis.ct-soft-tissue",
         name: "Soft Tissue",
         modality: .ct,
         window: 400,
         level: 40,
-        source: .ohif
+        source: .isis
     )
 
-    /// Common CT lung window (W1500/L-600).
+    /// Canonical CT abdomen window (W350/L40).
+    public static let abdomen = WindowLevelPreset(
+        id: "isis.ct-abdomen",
+        name: "Abdomen",
+        modality: .ct,
+        window: 350,
+        level: 40,
+        source: .isis
+    )
+
+    /// Canonical CT lung window (W1400/L-500).
     public static let lung = WindowLevelPreset(
-        id: "ohif.ct-lung",
+        id: "isis.ct-lung",
         name: "Lung",
         modality: .ct,
-        window: 1500,
-        level: -600,
-        source: .ohif
+        window: 1400,
+        level: -500,
+        source: .isis
     )
 
-    /// Common CT bone window (W2500/L480).
+    /// Canonical CT bone window (W1500/L300).
     public static let bone = WindowLevelPreset(
-        id: "ohif.ct-bone",
+        id: "isis.ct-bone",
         name: "Bone",
         modality: .ct,
-        window: 2500,
-        level: 480,
-        source: .ohif
+        window: 1500,
+        level: 300,
+        source: .isis
     )
 
-    /// Common CT brain window (W80/L40).
+    /// Canonical CT brain window (W100/L50).
     public static let brain = WindowLevelPreset(
-        id: "ohif.ct-brain",
+        id: "isis.ct-brain",
         name: "Brain",
         modality: .ct,
-        window: 80,
-        level: 40,
-        source: .ohif
+        window: 100,
+        level: 50,
+        source: .isis
     )
 
-    /// CT presets from OHIF and Weasis
+    /// Canonical CT endoscopy window (W700/L-300).
+    public static let endoscopy = WindowLevelPreset(
+        id: "isis.ct-endoscopy",
+        name: "Endoscopy",
+        modality: .ct,
+        window: 700,
+        level: -300,
+        source: .isis
+    )
+
+    /// Canonical CT presets plus uniquely named presets from external viewers.
     public static let ct: [WindowLevelPreset] = [
-        // OHIF presets
         softTissue,
+        abdomen,
         lung,
-        WindowLevelPreset(id: "ohif.ct-liver", name: "Liver", modality: .ct, window: 150, level: 90, source: .ohif),
         bone,
         brain,
-
-        // Weasis presets
-        WindowLevelPreset(id: "weasis.ct-brain", name: "Brain", modality: .ct, window: 110, level: 35, source: .weasis),
-        WindowLevelPreset(id: "weasis.ct-abdomen", name: "Abdomen", modality: .ct, window: 320, level: 50, source: .weasis),
+        endoscopy,
+        WindowLevelPreset(id: "ohif.ct-liver", name: "Liver", modality: .ct, window: 150, level: 90, source: .ohif),
         WindowLevelPreset(id: "weasis.ct-mediastinum", name: "Mediastinum", modality: .ct, window: 400, level: 80, source: .weasis),
-        WindowLevelPreset(id: "weasis.ct-bone", name: "Bone", modality: .ct, window: 2000, level: 350, source: .weasis),
-        WindowLevelPreset(id: "weasis.ct-lung", name: "Lung", modality: .ct, window: 1500, level: -500, source: .weasis),
         WindowLevelPreset(id: "weasis.ct-mip", name: "MIP", modality: .ct, window: 380, level: 120, source: .weasis)
     ]
 

@@ -1,10 +1,33 @@
 import Foundation
 
 enum DatasetIdentity {
+    /// Revalidates cached datasets by content so allocator address reuse cannot produce false hits.
+    struct CachedContent: Sendable {
+        let content: Content
+        private let data: Data
+        private let storage: Storage
+
+        init(dataset: VolumeDataset) {
+            self.content = Content(dataset: dataset)
+            self.data = dataset.data
+            self.storage = Storage(dataset: dataset)
+        }
+
+        func matches(dataset: VolumeDataset) -> Bool {
+            guard Content(dataset: dataset) == content else { return false }
+            let candidateStorage = Storage(dataset: dataset)
+            if candidateStorage == storage {
+                return true
+            }
+            return dataset.data == data
+        }
+    }
+
     struct Content: Hashable, Sendable {
         let byteCount: Int
         let dimensions: VolumeDimensions
         let pixelFormat: VolumePixelFormat
+        let intensityRange: ClosedRange<Int32>
         let contentFingerprint: UInt64
 
         init(dataset: VolumeDataset) {
@@ -12,6 +35,7 @@ enum DatasetIdentity {
                 byteCount: dataset.data.count,
                 dimensions: dataset.dimensions,
                 pixelFormat: dataset.pixelFormat,
+                intensityRange: dataset.intensityRange,
                 contentFingerprint: DatasetContentFingerprint.make(for: dataset.data)
             )
         }
@@ -19,10 +43,12 @@ enum DatasetIdentity {
         init(byteCount: Int,
              dimensions: VolumeDimensions,
              pixelFormat: VolumePixelFormat,
+             intensityRange: ClosedRange<Int32>,
              contentFingerprint: UInt64) {
             self.byteCount = byteCount
             self.dimensions = dimensions
             self.pixelFormat = pixelFormat
+            self.intensityRange = intensityRange
             self.contentFingerprint = contentFingerprint
         }
 
@@ -30,6 +56,7 @@ enum DatasetIdentity {
             lhs.byteCount == rhs.byteCount
                 && lhs.dimensions == rhs.dimensions
                 && lhs.pixelFormat == rhs.pixelFormat
+                && lhs.intensityRange == rhs.intensityRange
                 && lhs.contentFingerprint == rhs.contentFingerprint
         }
 
@@ -39,6 +66,8 @@ enum DatasetIdentity {
             hasher.combine(dimensions.height)
             hasher.combine(dimensions.depth)
             hasher.combine(pixelFormat.hashKey)
+            hasher.combine(intensityRange.lowerBound)
+            hasher.combine(intensityRange.upperBound)
             hasher.combine(contentFingerprint)
         }
     }

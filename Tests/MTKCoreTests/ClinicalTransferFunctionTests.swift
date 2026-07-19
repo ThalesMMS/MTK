@@ -230,6 +230,93 @@ final class ClinicalTransferFunctionTests: XCTestCase {
         let gradientTexture = try XCTUnwrap(TransferFunctions.texture(for: gradientAware, device: device))
         XCTAssertEqual(gradientTexture.height, gradientAware.gradientOpacity?.resolution)
     }
+
+    @MainActor
+    func test_gradientOpacityTexture_whenUsingFixture_matchesExpectedPixels() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("Metal unavailable for transfer texture validation.")
+        }
+        var transfer = TransferFunction()
+        transfer.name = "Gradient opacity byte fixture"
+        transfer.minimumValue = 0
+        transfer.maximumValue = 2
+        transfer.colorSpace = .linear
+        transfer.colourPoints = [
+            .init(dataValue: 0, colourValue: .init(r: 0, g: 0, b: 0, a: 1)),
+            .init(dataValue: 2, colourValue: .init(r: 1, g: 0, b: 0, a: 1))
+        ]
+        transfer.alphaPoints = [
+            .init(dataValue: 0, alphaValue: 0.25),
+            .init(dataValue: 2, alphaValue: 1)
+        ]
+        transfer.gradientOpacity = GradientOpacityFunction(
+            minimumGradient: 0,
+            maximumGradient: 2,
+            points: [
+                .init(gradientMagnitude: 0, opacity: 0),
+                .init(gradientMagnitude: 2, opacity: 1)
+            ],
+            resolution: 3
+        )
+        let options = TransferFunctions.TextureOptions(resolution: 3, gradientResolution: 3)
+        let texture = try XCTUnwrap(TransferFunctions.texture(for: transfer,
+                                                              device: device,
+                                                              options: options))
+        let bytesPerRow = 3 * MemoryLayout<SIMD4<Float>>.stride
+        let bytes = MPRTextureReadbackHelper.readBytes(from: texture,
+                                                       bytesPerRow: bytesPerRow,
+                                                       byteCount: bytesPerRow * 3)
+        let pixels = bytes.withUnsafeBytes { buffer in
+            Array(buffer.bindMemory(to: SIMD4<Float>.self))
+        }
+
+        XCTAssertEqual(pixels, [
+            SIMD4<Float>(0, 0, 0, 0),
+            SIMD4<Float>(0.5, 0, 0, 0),
+            SIMD4<Float>(1, 0, 0, 0),
+            SIMD4<Float>(0, 0, 0, 0.125),
+            SIMD4<Float>(0.5, 0, 0, 0.3125),
+            SIMD4<Float>(1, 0, 0, 0.5),
+            SIMD4<Float>(0, 0, 0, 0.25),
+            SIMD4<Float>(0.5, 0, 0, 0.625),
+            SIMD4<Float>(1, 0, 0, 1)
+        ])
+    }
+
+    func test_gradientOpacityTexture_whenBuiltDetached_usesConfiguredHeight() async throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("Metal unavailable for transfer texture validation.")
+        }
+
+        let height = await Task.detached { () -> Int in
+            dispatchPrecondition(condition: .notOnQueue(.main))
+            var transfer = TransferFunction()
+            transfer.name = "Detached gradient opacity fixture"
+            transfer.minimumValue = 0
+            transfer.maximumValue = 1
+            transfer.colourPoints = [
+                .init(dataValue: 0, colourValue: .init(r: 0, g: 0, b: 0, a: 1)),
+                .init(dataValue: 1, colourValue: .init(r: 1, g: 1, b: 1, a: 1))
+            ]
+            transfer.alphaPoints = [
+                .init(dataValue: 0, alphaValue: 0),
+                .init(dataValue: 1, alphaValue: 1)
+            ]
+            transfer.gradientOpacity = GradientOpacityFunction(
+                minimumGradient: 0,
+                maximumGradient: 1,
+                points: [
+                    .init(gradientMagnitude: 0, opacity: 0),
+                    .init(gradientMagnitude: 1, opacity: 1)
+                ],
+                resolution: 4
+            )
+            let texture = TransferFunctions.texture(for: transfer, device: device)
+            return texture?.height ?? 0
+        }.value
+
+        XCTAssertEqual(height, 4)
+    }
 }
 
 private extension ClinicalTransferFunctionTests {

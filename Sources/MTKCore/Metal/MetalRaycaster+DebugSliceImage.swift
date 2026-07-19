@@ -43,14 +43,10 @@ extension MetalRaycaster {
     ///
     /// ```swift
     /// // Generate middle slice
-    /// if let preview = raycaster.makeDebugSliceImage(dataset: dataset) {
-    ///     imageView.image = UIImage(cgImage: preview)
-    /// }
+    /// let preview = raycaster.makeDebugSliceImage(dataset: dataset)
     ///
     /// // Generate specific slice
-    /// if let slice = raycaster.makeDebugSliceImage(dataset: dataset, slice: 100) {
-    ///     imageView.image = UIImage(cgImage: slice)
-    /// }
+    /// let slice = raycaster.makeDebugSliceImage(dataset: dataset, slice: 100)
     /// ```
     public func makeDebugSliceImage(dataset: VolumeDataset,
                                     slice index: Int? = nil) -> CGImage? {

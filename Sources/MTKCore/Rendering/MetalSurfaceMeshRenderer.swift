@@ -80,9 +80,25 @@ public final class MetalSurfaceMeshRenderer: @unchecked Sendable {
         var clipPlane2: SIMD4<Float>
     }
 
-    private enum DrawBufferRole: Equatable {
+    private enum DrawBufferRole: Equatable, Hashable {
         case opaque
-        case transparent
+        case transparent(layerID: String)
+
+        var label: String {
+            switch self {
+            case .opaque:
+                "SurfaceMesh.opaque"
+            case .transparent(let layerID):
+                "SurfaceMesh.transparent.\(layerID)"
+            }
+        }
+
+        var isTransparent: Bool {
+            if case .transparent = self {
+                return true
+            }
+            return false
+        }
     }
 
     private struct DrawBufferSignature: Equatable {
@@ -109,8 +125,7 @@ public final class MetalSurfaceMeshRenderer: @unchecked Sendable {
     private let opaqueDepthStencilState: any MTLDepthStencilState
     private let transparentDepthStencilState: any MTLDepthStencilState
     private let cacheLock = NSLock()
-    private var opaqueDrawBufferCache: DrawBufferCacheEntry?
-    private var transparentDrawBufferCache: DrawBufferCacheEntry?
+    private var drawBufferCache: [DrawBufferRole: DrawBufferCacheEntry] = [:]
     private var depthTextureCache: DepthTextureCacheEntry?
     private var drawBufferRebuildCount = 0
     private var depthTextureAllocationCount = 0
@@ -213,11 +228,37 @@ public final class MetalSurfaceMeshRenderer: @unchecked Sendable {
                        clipping: VolumeClippingState = .disabled,
                        clearTarget: Bool = false) async throws -> any MTLTexture {
         try validate(targetTexture)
-        let visibleLayers = layers.filter { layer in
-            layer.isVisible &&
-                layer.clampedOpacity > 0 &&
-                layer.mesh.isRenderable
+        guard clearTarget || layers.contains(where: isRenderable) else {
+            return targetTexture
         }
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
+            throw MetalSurfaceMeshRendererError.commandBufferCreationFailed
+        }
+        commandBuffer.label = "MetalSurfaceMeshRenderer.Render"
+        let texture = try encode(layers: layers,
+                                 dataset: dataset,
+                                 camera: camera,
+                                 targetTexture: targetTexture,
+                                 clipping: clipping,
+                                 clearTarget: clearTarget,
+                                 into: commandBuffer)
+        try await complete(commandBuffer)
+        return texture
+    }
+
+    @discardableResult
+    func encode(layers: [SurfaceMeshLayer],
+                dataset: VolumeDataset,
+                camera: VolumeRenderRequest.Camera,
+                targetTexture: any MTLTexture,
+                clipping: VolumeClippingState = .disabled,
+                clearTarget: Bool = false,
+                into commandBuffer: any MTLCommandBuffer) throws -> any MTLTexture {
+        guard commandBuffer.commandQueue.device === device else {
+            throw MetalSurfaceMeshRendererError.commandQueueDeviceMismatch
+        }
+        try validate(targetTexture)
+        let visibleLayers = layers.filter(isRenderable)
         guard !visibleLayers.isEmpty || clearTarget else {
             return targetTexture
         }
@@ -231,10 +272,9 @@ public final class MetalSurfaceMeshRenderer: @unchecked Sendable {
         let opaqueBuffers = try cachedDrawBuffers(for: opaqueLayers,
                                                   role: .opaque,
                                                   dataset: dataset)
-        let transparentBuffers = try cachedDrawBuffers(for: transparentLayers,
-                                                       role: .transparent,
-                                                       dataset: dataset)
-        guard opaqueBuffers != nil || transparentBuffers != nil || clearTarget else {
+        let transparentBuffers = try cachedTransparentDrawBuffers(for: transparentLayers,
+                                                                  dataset: dataset)
+        guard opaqueBuffers != nil || !transparentBuffers.isEmpty || clearTarget else {
             return targetTexture
         }
 
@@ -263,14 +303,11 @@ public final class MetalSurfaceMeshRenderer: @unchecked Sendable {
         renderPass.depthAttachment.storeAction = .dontCare
         renderPass.depthAttachment.clearDepth = 1
 
-        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
-            throw MetalSurfaceMeshRendererError.commandBufferCreationFailed
-        }
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPass) else {
+            releaseDepthTexture(depthTexture)
             throw MetalSurfaceMeshRendererError.encoderCreationFailed
         }
 
-        commandBuffer.label = "MetalSurfaceMeshRenderer.Render"
         encoder.label = "MetalSurfaceMeshRenderer.Encoder"
         encoder.setRenderPipelineState(pipeline)
         encoder.setCullMode(.none)
@@ -285,23 +322,20 @@ public final class MetalSurfaceMeshRenderer: @unchecked Sendable {
                                           indexBuffer: opaqueBuffers.indices,
                                           indexBufferOffset: 0)
         }
-        if let transparentBuffers {
+        if !transparentBuffers.isEmpty {
             encoder.setDepthStencilState(transparentDepthStencilState)
-            encoder.setVertexBuffer(transparentBuffers.vertices, offset: 0, index: 0)
-            encoder.drawIndexedPrimitives(type: .triangle,
-                                          indexCount: transparentBuffers.indexCount,
-                                          indexType: .uint32,
-                                          indexBuffer: transparentBuffers.indices,
-                                          indexBufferOffset: 0)
+            for buffers in transparentBuffers {
+                encoder.setVertexBuffer(buffers.vertices, offset: 0, index: 0)
+                encoder.drawIndexedPrimitives(type: .triangle,
+                                              indexCount: buffers.indexCount,
+                                              indexType: .uint32,
+                                              indexBuffer: buffers.indices,
+                                              indexBufferOffset: 0)
+            }
         }
         encoder.endEncoding()
-
-        do {
-            try await complete(commandBuffer)
-            releaseDepthTexture(depthTexture)
-        } catch {
-            releaseDepthTexture(depthTexture)
-            throw error
+        commandBuffer.addCompletedHandler { [weak self] _ in
+            self?.releaseDepthTexture(depthTexture)
         }
         return targetTexture
     }
@@ -334,7 +368,7 @@ public final class MetalSurfaceMeshRenderer: @unchecked Sendable {
         let input = try makeBuffersInput(from: layers, dataset: dataset)
         let buffers = try makeBuffers(vertices: input.vertices,
                                       indices: input.indices,
-                                      label: role == .opaque ? "SurfaceMesh.opaque" : "SurfaceMesh.transparent")
+                                      label: role.label)
 
         cacheLock.lock()
         setDrawBufferCache(DrawBufferCacheEntry(signature: signature,
@@ -347,22 +381,40 @@ public final class MetalSurfaceMeshRenderer: @unchecked Sendable {
         return buffers
     }
 
-    private func drawBufferCache(for role: DrawBufferRole) -> DrawBufferCacheEntry? {
-        switch role {
-        case .opaque:
-            return opaqueDrawBufferCache
-        case .transparent:
-            return transparentDrawBufferCache
+    private func cachedTransparentDrawBuffers(for layers: [SurfaceMeshLayer],
+                                              dataset: VolumeDataset) throws -> [DrawBuffers] {
+        let activeRoles = Set(layers.map { DrawBufferRole.transparent(layerID: $0.id) })
+        pruneTransparentDrawBufferCache(retaining: activeRoles)
+
+        var buffers: [DrawBuffers] = []
+        buffers.reserveCapacity(layers.count)
+        for layer in layers {
+            if let layerBuffers = try cachedDrawBuffers(for: [layer],
+                                                        role: .transparent(layerID: layer.id),
+                                                        dataset: dataset) {
+                buffers.append(layerBuffers)
+            }
         }
+        return buffers
+    }
+
+    private func drawBufferCache(for role: DrawBufferRole) -> DrawBufferCacheEntry? {
+        drawBufferCache[role]
     }
 
     private func setDrawBufferCache(_ cacheEntry: DrawBufferCacheEntry,
                                     for role: DrawBufferRole) {
-        switch role {
-        case .opaque:
-            opaqueDrawBufferCache = cacheEntry
-        case .transparent:
-            transparentDrawBufferCache = cacheEntry
+        drawBufferCache[role] = cacheEntry
+    }
+
+    private func pruneTransparentDrawBufferCache(retaining activeRoles: Set<DrawBufferRole>) {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        let staleRoles = drawBufferCache.keys.filter { role in
+            role.isTransparent && !activeRoles.contains(role)
+        }
+        for role in staleRoles {
+            drawBufferCache.removeValue(forKey: role)
         }
     }
 
@@ -459,6 +511,10 @@ public final class MetalSurfaceMeshRenderer: @unchecked Sendable {
 
     private func effectiveAlpha(for layer: SurfaceMeshLayer) -> Float {
         layer.clampedOpacity * clamp01(meshAlpha(layer.material.color))
+    }
+
+    private func isRenderable(_ layer: SurfaceMeshLayer) -> Bool {
+        layer.isVisible && layer.clampedOpacity > 0 && layer.mesh.isRenderable
     }
 
     private func texturePosition(for vertex: SIMD3<Float>,

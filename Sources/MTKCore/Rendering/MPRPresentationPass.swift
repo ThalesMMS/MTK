@@ -139,12 +139,14 @@ public struct MPRPresentationPass {
     public let device: any MTLDevice
     public let commandQueue: any MTLCommandQueue
     public let library: any MTLLibrary
+    private let featureFlags: FeatureFlags
     private let cacheLock = NSLock()
     private var pipelineCache: [String: MTLComputePipelineState] = [:]
     private var cachedPresentationTexture: (any MTLTexture)?
     private var cachedOverlayTexture: (any MTLTexture)?
     private var cachedAlternateOverlayTexture: (any MTLTexture)?
     private var fallbackColormapTexture: (any MTLTexture)?
+    private var lastPresentationUsedDirectOutput: Bool?
 
     private struct MPRPresentationUniforms {
         var windowMin: Int32
@@ -155,7 +157,7 @@ public struct MPRPresentationPass {
         var flipHorizontal: Int32
         var flipVertical: Int32
         var bitShift: Int32
-        var _pad0: Int32
+        var transposeUV: Int32
         var viewportZoom: Float
         var viewportPanX: Float
         var viewportPanY: Float
@@ -193,13 +195,13 @@ public struct MPRPresentationPass {
         var _pad3: Float
         var flipHorizontal: Int32
         var flipVertical: Int32
+        var transposeUV: Int32
         var viewportZoom: Float
         var viewportPanX: Float
         var viewportPanY: Float
         var viewportRotationCos: Float
         var viewportRotationSin: Float
         var sourceAspectRatio: Float
-        var _pad5: Float
         var _pad6: Float
         var imageOriginX: Float
         var imageOriginY: Float
@@ -220,13 +222,13 @@ public struct MPRPresentationPass {
         var _pad2: Float
         var flipHorizontal: Int32
         var flipVertical: Int32
+        var transposeUV: Int32
         var viewportZoom: Float
         var viewportPanX: Float
         var viewportPanY: Float
         var viewportRotationCos: Float
         var viewportRotationSin: Float
         var sourceAspectRatio: Float
-        var _pad4: Float
         var _pad5: Float
         var imageOriginX: Float
         var imageOriginY: Float
@@ -243,6 +245,18 @@ public struct MPRPresentationPass {
     public init(device: any MTLDevice,
                 commandQueue: any MTLCommandQueue,
                 library: (any MTLLibrary)? = nil) throws {
+        try self.init(
+            device: device,
+            commandQueue: commandQueue,
+            library: library,
+            featureFlagEvaluator: FeatureFlags.evaluate(for:)
+        )
+    }
+
+    init(device: any MTLDevice,
+         commandQueue: any MTLCommandQueue,
+         library: (any MTLLibrary)? = nil,
+         featureFlagEvaluator: (any MTLDevice) -> FeatureFlags) throws {
         guard commandQueue.device === device else {
             throw MPRPresentationPassError.commandQueueDeviceMismatch
         }
@@ -261,7 +275,15 @@ public struct MPRPresentationPass {
         self.device = device
         self.commandQueue = commandQueue
         self.library = resolvedLibrary
+        self.featureFlags = featureFlagEvaluator(device)
     }
+
+    @_spi(Testing)
+    public var debugLastPresentationUsedDirectOutput: Bool? {
+        lastPresentationUsedDirectOutput
+    }
+
+    var featureFlagsForTesting: FeatureFlags { featureFlags }
 
     @discardableResult
     public mutating func present(frame: MPRTextureFrame,
@@ -284,6 +306,7 @@ public struct MPRPresentationPass {
                         colormap: colormap,
                         flipHorizontal: transform.presentationFlipHorizontal,
                         flipVertical: transform.presentationFlipVertical,
+                        transposeUV: transform.transposeUV,
                         bitShift: bitShift,
                         viewportTransform: viewportTransform,
                         labelmapOverlays: labelmapOverlays,
@@ -316,6 +339,7 @@ public struct MPRPresentationPass {
                         colormap: colormap,
                         flipHorizontal: flipHorizontal,
                         flipVertical: flipVertical,
+                        transposeUV: false,
                         bitShift: bitShift,
                         viewportTransform: viewportTransform,
                         labelmapOverlays: labelmapOverlays,
@@ -333,6 +357,7 @@ public struct MPRPresentationPass {
                                       colormap: (any MTLTexture)?,
                                       flipHorizontal: Bool,
                                       flipVertical: Bool,
+                                      transposeUV: Bool,
                                       bitShift: Int32,
                                       viewportTransform: MPRViewportTransform,
                                       labelmapOverlays: [MPRLabelmapOverlay],
@@ -351,11 +376,13 @@ public struct MPRPresentationPass {
                                              colormap: colormap,
                                              flipHorizontal: flipHorizontal,
                                              flipVertical: flipVertical,
+                                             transposeUV: transposeUV,
                                              bitShift: bitShift,
                                              viewportTransform: viewportTransform,
                                              labelmapOverlays: labelmapOverlays,
                                              scalarOverlays: scalarOverlays,
-                                             shutter: shutter)
+                                             shutter: shutter,
+                                             allowsDirectOutput: true)
         } catch {
             if shouldReleaseLeaseAfterPresentation {
                 outputTextureLease?.release()
@@ -423,6 +450,7 @@ public struct MPRPresentationPass {
                         "monochrome": invert ? "MONOCHROME1" : "MONOCHROME2",
                         "flipHorizontal": flipHorizontal ? "true" : "false",
                         "flipVertical": flipVertical ? "true" : "false",
+                        "transposeUV": transposeUV ? "true" : "false",
                         "viewportZoom": String(format: "%.6f", viewportTransform.zoom),
                         "viewportPanX": String(format: "%.6f", viewportTransform.pan.x),
                         "viewportPanY": String(format: "%.6f", viewportTransform.pan.y)
@@ -458,11 +486,13 @@ public struct MPRPresentationPass {
                                              colormap: colormap,
                                              flipHorizontal: transform.presentationFlipHorizontal,
                                              flipVertical: transform.presentationFlipVertical,
+                                             transposeUV: transform.transposeUV,
                                              bitShift: bitShift,
                                              viewportTransform: viewportTransform,
                                              labelmapOverlays: labelmapOverlays,
                                              scalarOverlays: scalarOverlays,
-                                             shutter: shutter)
+                                             shutter: shutter,
+                                             allowsDirectOutput: false)
         encoded.commandBuffer.commit()
         encoded.commandBuffer.waitUntilCompleted()
         guard encoded.commandBuffer.error == nil,
@@ -482,11 +512,13 @@ public struct MPRPresentationPass {
                                              colormap: (any MTLTexture)?,
                                              flipHorizontal: Bool,
                                              flipVertical: Bool,
+                                             transposeUV: Bool,
                                              bitShift: Int32,
                                              viewportTransform: MPRViewportTransform,
                                              labelmapOverlays: [MPRLabelmapOverlay],
                                              scalarOverlays: [MPRScalarVolumeOverlay],
-                                             shutter: MPRPresentationShutter?) throws -> EncodedPresentation {
+                                             shutter: MPRPresentationShutter?,
+                                             allowsDirectOutput: Bool) throws -> EncodedPresentation {
         assert(
             Thread.isMainThread,
             "MPRPresentationPass uses pipelineCache and cachedPresentationTexture; " +
@@ -502,12 +534,19 @@ public struct MPRPresentationPass {
         let outputWidth = outputTexture.width
         let outputHeight = outputTexture.height
         let sourceAspectRatio = Self.safeSourceAspectRatio(frame.planeGeometry.physicalAspectRatio)
-        let layout = Self.presentationLayout(sourceAspectRatio: sourceAspectRatio,
+        let displayAspectRatio = transposeUV ? 1 / sourceAspectRatio : sourceAspectRatio
+        let layout = Self.presentationLayout(sourceAspectRatio: displayAspectRatio,
                                              rotationRadians: viewportTransform.rotationRadians,
                                              destinationWidth: outputWidth,
                                              destinationHeight: outputHeight)
-        let presentationTexture = try reusablePresentationTexture(width: outputWidth,
-                                                                  height: outputHeight)
+        let usesDirectOutput = allowsDirectOutput
+            && scalarOverlays.isEmpty
+            && labelmapOverlays.isEmpty
+            && outputTexture.usage.contains(.shaderWrite)
+        lastPresentationUsedDirectOutput = usesDirectOutput
+        let presentationTexture = try usesDirectOutput
+            ? outputTexture
+            : reusablePresentationTexture(width: outputWidth, height: outputHeight)
         let colormapTexture = try colormap ?? reusableFallbackColormapTexture()
         let pipeline = try pipelineState(for: frame.pixelFormat)
         let shutterUniforms = Self.shutterUniformValues(for: shutter)
@@ -519,13 +558,13 @@ public struct MPRPresentationPass {
             flipHorizontal: flipHorizontal ? 1 : 0,
             flipVertical: flipVertical ? 1 : 0,
             bitShift: max(0, min(bitShift, 15)),
-            _pad0: 0,
+            transposeUV: transposeUV ? 1 : 0,
             viewportZoom: viewportTransform.zoom,
             viewportPanX: viewportTransform.pan.x,
             viewportPanY: viewportTransform.pan.y,
             viewportRotationCos: cos(viewportTransform.rotationRadians),
             viewportRotationSin: sin(viewportTransform.rotationRadians),
-            sourceAspectRatio: sourceAspectRatio,
+            sourceAspectRatio: displayAspectRatio,
             _pad2: 0,
             _pad3: 0,
             imageOriginX: layout.origin.x,
@@ -570,7 +609,7 @@ public struct MPRPresentationPass {
         MetalDispatch.dispatch(encoder: computeEncoder,
                                threadsPerGrid: presentationThreadsPerGrid,
                                configuration: dispatch,
-                               featureFlags: FeatureFlags.evaluate(for: device))
+                               featureFlags: featureFlags)
         computeEncoder.endEncoding()
 
         let scalarCompositedTexture = try encodeScalarOverlays(scalarOverlays,
@@ -580,8 +619,9 @@ public struct MPRPresentationPass {
                                                                height: presentationTexture.height,
                                                                flipHorizontal: flipHorizontal,
                                                                flipVertical: flipVertical,
+                                                               transposeUV: transposeUV,
                                                                layout: layout,
-                                                               sourceAspectRatio: sourceAspectRatio,
+                                                               sourceAspectRatio: displayAspectRatio,
                                                                viewportTransform: viewportTransform)
         let finalPresentationTexture = try encodeLabelmapOverlays(labelmapOverlays,
                                                                   initialTexture: scalarCompositedTexture,
@@ -590,26 +630,29 @@ public struct MPRPresentationPass {
                                                                   height: presentationTexture.height,
                                                                   flipHorizontal: flipHorizontal,
                                                                   flipVertical: flipVertical,
+                                                                  transposeUV: transposeUV,
                                                                   layout: layout,
-                                                                  sourceAspectRatio: sourceAspectRatio,
+                                                                  sourceAspectRatio: displayAspectRatio,
                                                                   viewportTransform: viewportTransform)
 
-        guard let blitEncoder = commandBuffer.makeBlitCommandEncoder() else {
-            throw MPRPresentationPassError.encoderCreationFailed
+        if !sameTexture(finalPresentationTexture, outputTexture) {
+            guard let blitEncoder = commandBuffer.makeBlitCommandEncoder() else {
+                throw MPRPresentationPassError.encoderCreationFailed
+            }
+            blitEncoder.label = "mpr_presentation_blit"
+            blitEncoder.copy(from: finalPresentationTexture,
+                             sourceSlice: 0,
+                             sourceLevel: 0,
+                             sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+                             sourceSize: MTLSize(width: finalPresentationTexture.width,
+                                                 height: finalPresentationTexture.height,
+                                                 depth: 1),
+                             to: outputTexture,
+                             destinationSlice: 0,
+                             destinationLevel: 0,
+                             destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
+            blitEncoder.endEncoding()
         }
-        blitEncoder.label = "mpr_presentation_blit"
-        blitEncoder.copy(from: finalPresentationTexture,
-                         sourceSlice: 0,
-                         sourceLevel: 0,
-                         sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
-                         sourceSize: MTLSize(width: finalPresentationTexture.width,
-                                             height: finalPresentationTexture.height,
-                                             depth: 1),
-                         to: outputTexture,
-                         destinationSlice: 0,
-                         destinationLevel: 0,
-                         destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
-        blitEncoder.endEncoding()
 
         return EncodedPresentation(commandBuffer: commandBuffer,
                                    outputTexture: outputTexture,
@@ -637,6 +680,7 @@ public struct MPRPresentationPass {
                         colormap: colormap,
                         flipHorizontal: transform.presentationFlipHorizontal,
                         flipVertical: transform.presentationFlipVertical,
+                        transposeUV: transform.transposeUV,
                         bitShift: bitShift,
                         viewportTransform: viewportTransform,
                         labelmapOverlays: labelmapOverlays,
@@ -668,6 +712,7 @@ public struct MPRPresentationPass {
                         colormap: colormap,
                         flipHorizontal: flipHorizontal,
                         flipVertical: flipVertical,
+                        transposeUV: false,
                         bitShift: bitShift,
                         viewportTransform: viewportTransform,
                         labelmapOverlays: labelmapOverlays,
@@ -685,23 +730,10 @@ public struct MPRPresentationPass {
                                            rotationRadians: Float,
                                            destinationWidth: Int,
                                            destinationHeight: Int) -> MPRPresentationLayout {
-        MPRPresentationLayout.aspectFit(
-            contentAspectRatio: rotatedContentAspectRatio(sourceAspectRatio: sourceAspectRatio,
-                                                          rotationRadians: rotationRadians),
-            destinationWidth: destinationWidth,
-            destinationHeight: destinationHeight
+        MPROutputAspect.aspectFit(physicalAspectRatio: sourceAspectRatio).layout(
+            destinationSize: CGSize(width: destinationWidth, height: destinationHeight),
+            viewportTransform: MPRViewportTransform(rotationRadians: rotationRadians)
         )
-    }
-
-    private static func rotatedContentAspectRatio(sourceAspectRatio: Float,
-                                                  rotationRadians: Float) -> Float {
-        let sourceAspect = safeSourceAspectRatio(sourceAspectRatio)
-        let rotation = rotationRadians.isFinite ? rotationRadians : 0
-        let absoluteCos = abs(cos(rotation))
-        let absoluteSin = abs(sin(rotation))
-        let width = absoluteCos * sourceAspect + absoluteSin
-        let height = absoluteSin * sourceAspect + absoluteCos
-        return max(width / max(height, Float.ulpOfOne), Float.ulpOfOne)
     }
 
     private static func safeSourceAspectRatio(_ aspectRatio: Float) -> Float {
@@ -791,6 +823,7 @@ public struct MPRPresentationPass {
                                                height: Int,
                                                flipHorizontal: Bool,
                                                flipVertical: Bool,
+                                               transposeUV: Bool,
                                                layout: MPRPresentationLayout,
                                                sourceAspectRatio: Float,
                                                viewportTransform: MPRViewportTransform) throws -> any MTLTexture {
@@ -827,13 +860,13 @@ public struct MPRPresentationPass {
                 _pad2: 0,
                 flipHorizontal: flipHorizontal ? 1 : 0,
                 flipVertical: flipVertical ? 1 : 0,
+                transposeUV: transposeUV ? 1 : 0,
                 viewportZoom: viewportTransform.zoom,
                 viewportPanX: viewportTransform.pan.x,
                 viewportPanY: viewportTransform.pan.y,
                 viewportRotationCos: cos(viewportTransform.rotationRadians),
                 viewportRotationSin: sin(viewportTransform.rotationRadians),
                 sourceAspectRatio: sourceAspectRatio,
-                _pad4: 0,
                 _pad5: 0,
                 imageOriginX: layout.origin.x,
                 imageOriginY: layout.origin.y,
@@ -851,7 +884,7 @@ public struct MPRPresentationPass {
             MetalDispatch.dispatch(encoder: encoder,
                                    threadsPerGrid: threadsPerGrid,
                                    configuration: dispatch,
-                                   featureFlags: FeatureFlags.evaluate(for: device))
+                                   featureFlags: featureFlags)
             encoder.endEncoding()
 
             if index < overlays.count - 1 {
@@ -869,6 +902,7 @@ public struct MPRPresentationPass {
                                                  height: Int,
                                                  flipHorizontal: Bool,
                                                  flipVertical: Bool,
+                                                 transposeUV: Bool,
                                                  layout: MPRPresentationLayout,
                                                  sourceAspectRatio: Float,
                                                  viewportTransform: MPRViewportTransform) throws -> any MTLTexture {
@@ -903,13 +937,13 @@ public struct MPRPresentationPass {
                 _pad3: 0,
                 flipHorizontal: flipHorizontal ? 1 : 0,
                 flipVertical: flipVertical ? 1 : 0,
+                transposeUV: transposeUV ? 1 : 0,
                 viewportZoom: viewportTransform.zoom,
                 viewportPanX: viewportTransform.pan.x,
                 viewportPanY: viewportTransform.pan.y,
                 viewportRotationCos: cos(viewportTransform.rotationRadians),
                 viewportRotationSin: sin(viewportTransform.rotationRadians),
                 sourceAspectRatio: sourceAspectRatio,
-                _pad5: 0,
                 _pad6: 0,
                 imageOriginX: layout.origin.x,
                 imageOriginY: layout.origin.y,
@@ -927,7 +961,7 @@ public struct MPRPresentationPass {
             MetalDispatch.dispatch(encoder: encoder,
                                    threadsPerGrid: threadsPerGrid,
                                    configuration: dispatch,
-                                   featureFlags: FeatureFlags.evaluate(for: device))
+                                   featureFlags: featureFlags)
             encoder.endEncoding()
 
             if index < overlays.count - 1 {

@@ -35,6 +35,8 @@ public enum VolumeDatasetFactory {
     ///   - voxels: Raw voxel data as Data object
     ///   - dimensions: 3D dimensions (width, height, depth)
     ///   - spacing: Physical spacing between voxels (x, y, z)
+    ///   - isInPlaneSpacingCalibrated: Whether x/y spacing came from calibrated source metadata
+    ///   - isOrientationVerified: Whether the source orientation was validated
     ///   - pixelFormat: Source pixel format type
     ///   - intensityRange: Min/max intensity values for the dataset
     ///   - orientation: Volumetric orientation with row/column vectors and origin
@@ -52,6 +54,8 @@ public enum VolumeDatasetFactory {
     ///       voxels: sourceData.voxels,
     ///       dimensions: sourceData.dimensions,
     ///       spacing: sourceData.spacing,
+    ///       isInPlaneSpacingCalibrated: sourceData.isInPlaneSpacingCalibrated,
+    ///       isOrientationVerified: sourceData.isOrientationVerified,
     ///       pixelFormat: sourceData.pixelFormat,
     ///       intensityRange: sourceData.intensityRange,
     ///       orientation: sourceData.orientation,
@@ -62,6 +66,8 @@ public enum VolumeDatasetFactory {
         voxels: Data,
         dimensions: VolumetricDimensions,
         spacing: VolumetricSpacing,
+        isInPlaneSpacingCalibrated: Bool = false,
+        isOrientationVerified: Bool = false,
         pixelFormat: VolumetricPixelFormat,
         intensityRange: ClosedRange<Int32>,
         orientation: VolumetricOrientation,
@@ -79,6 +85,8 @@ public enum VolumeDatasetFactory {
                 y: spacing.y,
                 z: spacing.z
             ),
+            isInPlaneSpacingCalibrated: isInPlaneSpacingCalibrated,
+            isOrientationVerified: isOrientationVerified,
             pixelFormat: pixelFormat.toVolumePixelFormat(),
             intensityRange: intensityRange,
             orientation: VolumeOrientation(
@@ -115,29 +123,14 @@ public enum VolumeDatasetFactory {
             voxels: seriesData.voxels,
             dimensions: seriesData.dimensions,
             spacing: seriesData.spacing,
+            isInPlaneSpacingCalibrated: seriesData.isInPlaneSpacingCalibrated,
+            isOrientationVerified: seriesData.isOrientationVerified,
             pixelFormat: seriesData.pixelFormat,
             intensityRange: seriesData.intensityRange,
             orientation: seriesData.orientation,
             recommendedWindow: seriesData.recommendedWindow
         )
     }
-}
-
-// MARK: - Volumetric Series Data Provider
-
-/// Stable MTKCore boundary for renderer-ready volumetric input.
-///
-/// App-side DICOM loaders keep ownership of parsing, PHI handling, ordering,
-/// decompression, and rescale/window metadata. The provider exposes only the
-/// scalar volume fields MTKCore needs to create a ``VolumeDataset``.
-public protocol VolumetricSeriesDataProvider {
-    var voxels: Data { get }
-    var dimensions: VolumetricDimensions { get }
-    var spacing: VolumetricSpacing { get }
-    var pixelFormat: VolumetricPixelFormat { get }
-    var intensityRange: ClosedRange<Int32> { get }
-    var orientation: VolumetricOrientation { get }
-    var recommendedWindow: ClosedRange<Int32>? { get }
 }
 
 // MARK: - Stable MTKCore Volumetric Input DTOs
@@ -194,38 +187,5 @@ public enum VolumetricPixelFormat: Sendable, Equatable {
         case .int16Unsigned:
             return .int16Unsigned
         }
-    }
-}
-
-/// Stable MTKCore DTO for complete renderer-ready volumetric series data.
-///
-/// Use this type when an app-side loader has already decoded and validated a
-/// single scalar volume. It intentionally does not model DICOM parsing,
-/// decompression, slice sorting, PHI, or PACS/networking concerns.
-public struct VolumetricSeriesData: Sendable, Equatable, VolumetricSeriesDataProvider {
-    public var voxels: Data
-    public var dimensions: VolumetricDimensions
-    public var spacing: VolumetricSpacing
-    public var pixelFormat: VolumetricPixelFormat
-    public var intensityRange: ClosedRange<Int32>
-    public var orientation: VolumetricOrientation
-    public var recommendedWindow: ClosedRange<Int32>?
-
-    public init(
-        voxels: Data,
-        dimensions: VolumetricDimensions,
-        spacing: VolumetricSpacing,
-        pixelFormat: VolumetricPixelFormat,
-        intensityRange: ClosedRange<Int32>,
-        orientation: VolumetricOrientation,
-        recommendedWindow: ClosedRange<Int32>? = nil
-    ) {
-        self.voxels = voxels
-        self.dimensions = dimensions
-        self.spacing = spacing
-        self.pixelFormat = pixelFormat
-        self.intensityRange = intensityRange
-        self.orientation = orientation
-        self.recommendedWindow = recommendedWindow
     }
 }

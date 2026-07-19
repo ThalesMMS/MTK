@@ -71,6 +71,13 @@ final class ClinicalProfilerGoldenExportTests: XCTestCase {
             "renderMode",
             "deviceName",
             "osVersion",
+            "architecture",
+            "modelIdentifier",
+            "buildConfiguration",
+            "benchmarkMode",
+            "fixtureID",
+            "tier",
+            "commandLineStartupIncluded",
             "gpuFamily",
             "maxThreadsPerThreadgroupWidth",
             "maxThreadsPerThreadgroupHeight",
@@ -441,7 +448,14 @@ final class ClinicalProfilerGoldenExportTests: XCTestCase {
             maxThreadsPerThreadgroupDimensions: ProfilingThreadgroupDimensions(width: 1024, height: 1024, depth: 64),
             recommendedMaxWorkingSetSize: 8_589_934_592,
             appVersion: "5.4.3",
-            buildNumber: "5430"
+            buildNumber: "5430",
+            architecture: "arm64",
+            modelIdentifier: "ClinicalTest1,1",
+            buildConfiguration: "debug",
+            benchmarkMode: "warm-isolated",
+            fixtureID: "synthetic-ct-volume",
+            tier: "pr-smoke",
+            commandLineStartupIncluded: false
         )
     }
 
@@ -493,13 +507,13 @@ final class ClinicalProfilerGoldenExportTests: XCTestCase {
     }
 
     private static let goldenCSVOutput = #"""
-timestamp,stage,cpuTimeMs,gpuTimeMs,memoryBytes,resolution,viewportType,quality,renderMode,deviceName,osVersion,gpuFamily,maxThreadsPerThreadgroupWidth,maxThreadsPerThreadgroupHeight,maxThreadsPerThreadgroupDepth,recommendedMaxWorkingSetSize,appVersion,buildNumber,metadata
-2027-01-15T08:00:01Z,textureUpload,14.125000,8.250000,268435456,1024x768,volume3D,interactive,frontToBack,Clinical Test GPU,iOS 17.4,apple9,1024,1024,64,8589934592,5.4.3,5430,
-2027-01-15T08:00:02Z,texturePreparation,6.500000,2.125000,268500992,1024x768,volume3D,interactive,frontToBack,Clinical Test GPU,iOS 17.4,apple9,1024,1024,64,8589934592,5.4.3,5430,
-2027-01-15T08:00:03Z,volumeRaycast,12.375000,9.875000,,1024x768,volume3D,interactive,frontToBack,Clinical Test GPU,iOS 17.4,apple9,1024,1024,64,8589934592,5.4.3,5430,
-2027-01-15T08:00:04Z,mprReslice,4.625000,3.500000,16777216,512x512,mpr.axial,interactive,single,Clinical Test GPU,iOS 17.4,apple9,1024,1024,64,8589934592,5.4.3,5430,
-2027-01-15T08:00:05Z,presentationPass,1.750000,0.950000,16777216,1024x768,volume3D,interactive,frontToBack,Clinical Test GPU,iOS 17.4,apple9,1024,1024,64,8589934592,5.4.3,5430,
-2027-01-15T08:00:06Z,memorySnapshot,0.000000,,285278208,1024x768,volume3D,interactive,frontToBack,Clinical Test GPU,iOS 17.4,apple9,1024,1024,64,8589934592,5.4.3,5430,"{""outputTextureBytes"":""16777216"",""outputTexturePoolSize"":""2"",""totalBytes"":""285278208"",""transferTextureBytes"":""65536"",""transferTextureCount"":""1"",""volumeTextureBytes"":""268435456"",""volumeTextureCount"":""1""}"
+timestamp,stage,cpuTimeMs,gpuTimeMs,memoryBytes,resolution,viewportType,quality,renderMode,deviceName,osVersion,architecture,modelIdentifier,buildConfiguration,benchmarkMode,fixtureID,tier,commandLineStartupIncluded,gpuFamily,maxThreadsPerThreadgroupWidth,maxThreadsPerThreadgroupHeight,maxThreadsPerThreadgroupDepth,recommendedMaxWorkingSetSize,appVersion,buildNumber,metadata
+2027-01-15T08:00:01Z,textureUpload,14.125000,8.250000,268435456,1024x768,volume3D,interactive,frontToBack,Clinical Test GPU,iOS 17.4,arm64,"ClinicalTest1,1",debug,warm-isolated,synthetic-ct-volume,pr-smoke,false,apple9,1024,1024,64,8589934592,5.4.3,5430,
+2027-01-15T08:00:02Z,texturePreparation,6.500000,2.125000,268500992,1024x768,volume3D,interactive,frontToBack,Clinical Test GPU,iOS 17.4,arm64,"ClinicalTest1,1",debug,warm-isolated,synthetic-ct-volume,pr-smoke,false,apple9,1024,1024,64,8589934592,5.4.3,5430,
+2027-01-15T08:00:03Z,volumeRaycast,12.375000,9.875000,,1024x768,volume3D,interactive,frontToBack,Clinical Test GPU,iOS 17.4,arm64,"ClinicalTest1,1",debug,warm-isolated,synthetic-ct-volume,pr-smoke,false,apple9,1024,1024,64,8589934592,5.4.3,5430,
+2027-01-15T08:00:04Z,mprReslice,4.625000,3.500000,16777216,512x512,mpr.axial,interactive,single,Clinical Test GPU,iOS 17.4,arm64,"ClinicalTest1,1",debug,warm-isolated,synthetic-ct-volume,pr-smoke,false,apple9,1024,1024,64,8589934592,5.4.3,5430,
+2027-01-15T08:00:05Z,presentationPass,1.750000,0.950000,16777216,1024x768,volume3D,interactive,frontToBack,Clinical Test GPU,iOS 17.4,arm64,"ClinicalTest1,1",debug,warm-isolated,synthetic-ct-volume,pr-smoke,false,apple9,1024,1024,64,8589934592,5.4.3,5430,
+2027-01-15T08:00:06Z,memorySnapshot,0.000000,,285278208,1024x768,volume3D,interactive,frontToBack,Clinical Test GPU,iOS 17.4,arm64,"ClinicalTest1,1",debug,warm-isolated,synthetic-ct-volume,pr-smoke,false,apple9,1024,1024,64,8589934592,5.4.3,5430,"{""outputTextureBytes"":""16777216"",""outputTexturePoolSize"":""2"",""totalBytes"":""285278208"",""transferTextureBytes"":""65536"",""transferTextureCount"":""1"",""volumeTextureBytes"":""268435456"",""volumeTextureCount"":""1""}"
 """#
 
     private static let goldenJSONOutput = #"""
@@ -507,16 +521,23 @@ timestamp,stage,cpuTimeMs,gpuTimeMs,memoryBytes,resolution,viewportType,quality,
   "endTimestamp" : "2027-01-15T08:00:12Z",
   "environment" : {
     "appVersion" : "5.4.3",
+    "architecture" : "arm64",
+    "benchmarkMode" : "warm-isolated",
+    "buildConfiguration" : "debug",
     "buildNumber" : "5430",
+    "commandLineStartupIncluded" : false,
     "deviceName" : "Clinical Test GPU",
+    "fixtureID" : "synthetic-ct-volume",
     "gpuFamily" : "apple9",
     "maxThreadsPerThreadgroupDimensions" : {
       "depth" : 64,
       "height" : 1024,
       "width" : 1024
     },
+    "modelIdentifier" : "ClinicalTest1,1",
     "osVersion" : "iOS 17.4",
-    "recommendedMaxWorkingSetSize" : 8589934592
+    "recommendedMaxWorkingSetSize" : 8589934592,
+    "tier" : "pr-smoke"
   },
   "samples" : [
     {

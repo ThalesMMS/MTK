@@ -3,8 +3,35 @@ import Metal
 
 @_spi(Testing) @testable import MTKCore
 
-@MainActor
 final class MPRFrameCacheTests: XCTestCase {
+    func testConcurrentAccessPreservesCacheIntegrity() async throws {
+        let cache = MPRFrameCache<Int>()
+        let frame = try makeFrame()
+        let signatures = (0..<8).map { makeSignature(slicePosition: Float($0)) }
+
+        await withTaskGroup(of: Void.self) { group in
+            for worker in 0..<16 {
+                group.addTask {
+                    for iteration in 0..<250 {
+                        let key = iteration % signatures.count
+                        let signature = signatures[key]
+                        switch (worker + iteration) % 3 {
+                        case 0:
+                            cache.store(frame, for: key, signature: signature)
+                        case 1:
+                            _ = cache.cachedFrame(for: key, matching: signature)
+                        default:
+                            cache.invalidate(key)
+                        }
+                    }
+                }
+            }
+        }
+
+        cache.invalidateAll()
+        XCTAssertEqual(cache.entryCount, 0)
+    }
+
     func testCachedFrameReturnsOnlyForMatchingSignature() throws {
         let cache = MPRFrameCache<String>()
         let frame = try makeFrame()

@@ -135,6 +135,28 @@ final class VolumeDataReaderTests: XCTestCase {
         }
     }
 
+    func test_histogram_zeroBins_returnsEmptyResult() {
+        let dimensions = VolumeDimensions(width: 2, height: 1, depth: 1)
+        let dataset = makeDataset(dimensions: dimensions, pixelFormat: .int16Unsigned)
+        let values: [UInt16] = [7, 7]
+
+        values.withUnsafeBytes { raw in
+            let reader = try? XCTUnwrap(VolumeDataReader(dataset: dataset, buffer: raw))
+            XCTAssertEqual(reader?.histogram(binCount: 0, intensityRange: 0...10, indices: 0..<2), [])
+        }
+    }
+
+    func test_histogram_equalRange_countsSamplesInFirstBin() {
+        let dimensions = VolumeDimensions(width: 2, height: 1, depth: 1)
+        let dataset = makeDataset(dimensions: dimensions, pixelFormat: .int16Unsigned)
+        let values: [UInt16] = [7, 7]
+
+        values.withUnsafeBytes { raw in
+            let reader = try? XCTUnwrap(VolumeDataReader(dataset: dataset, buffer: raw))
+            XCTAssertEqual(reader?.histogram(binCount: 3, intensityRange: 7...7, indices: 0..<2), [2, 0, 0])
+        }
+    }
+
     // MARK: - Regression: empty Data with non-zero declared dimensions fails
 
     func testEmptyDataWithNonZeroDimensionsFails() {

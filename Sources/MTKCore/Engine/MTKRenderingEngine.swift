@@ -171,7 +171,7 @@ package actor MTKRenderingEngine {
                                                                          factory: volumeAdapterFactory)
         self.mprAdapter = try MetalMPRAdapter(device: resolvedDevice,
                                               commandQueue: resolvedQueue)
-        self.mprFrameCache = await MainActor.run { MPRFrameCache<ViewportID>() }
+        self.mprFrameCache = MPRFrameCache<ViewportID>()
         self.renderPassDispatcher = RenderPassDispatcher(
             device: resolvedDevice,
             commandQueue: resolvedQueue,
@@ -200,7 +200,7 @@ package actor MTKRenderingEngine {
     /// render/present lifecycle should still be closed explicitly by the owner.
     package func destroyViewport(_ viewport: ViewportID) async {
         guard let state = viewports.removeValue(forKey: viewport) else {
-            await mprFrameCache.invalidate(viewport)
+            mprFrameCache.invalidate(viewport)
             releasePendingOutputTextureLeases(for: viewport)
             return
         }
@@ -208,7 +208,7 @@ package actor MTKRenderingEngine {
             resourceManager.release(handle: handle)
         }
         releaseVolumeLayerHandles(state.volumeLayerResourceHandles)
-        await mprFrameCache.invalidate(viewport)
+        mprFrameCache.invalidate(viewport)
         releasePendingOutputTextureLeases(for: viewport)
     }
 
@@ -218,7 +218,7 @@ package actor MTKRenderingEngine {
             guard var state = self.viewports[viewport],
                   let handle = state.resourceHandle
             else {
-                await mprFrameCache.invalidate(viewport)
+                mprFrameCache.invalidate(viewport)
                 continue
             }
             state.resourceHandle = nil
@@ -226,7 +226,7 @@ package actor MTKRenderingEngine {
             state.volumeLayerResourceHandles = [:]
             state.volumeLayers = []
             self.viewports[viewport] = state
-            await mprFrameCache.invalidate(viewport)
+            mprFrameCache.invalidate(viewport)
             resourceManager.release(handle: handle)
             releaseVolumeLayerHandles(layerHandles)
         }
@@ -241,10 +241,14 @@ package actor MTKRenderingEngine {
 
         let newHandle: VolumeResourceHandle
         if let oldHandle = previousHandle {
-            newHandle = try await resourceManager.replaceDataset(oldHandle: oldHandle,
-                                                                 newDataset: dataset)
+            newHandle = try await resourceManager.replaceDataset(
+                isolatedTo: self,
+                oldHandle: oldHandle,
+                newDataset: dataset
+            )
         } else {
             newHandle = try await resourceManager.acquire(
+                isolatedTo: self,
                 dataset: dataset,
                 device: device,
                 commandQueue: commandQueue
@@ -263,7 +267,7 @@ package actor MTKRenderingEngine {
 
         currentState.resourceHandle = newHandle
         viewports[viewport] = currentState
-        await mprFrameCache.invalidate(viewport)
+        mprFrameCache.invalidate(viewport)
     }
 
     package func setVolume<S: AsyncSequence>(
@@ -278,6 +282,7 @@ package actor MTKRenderingEngine {
         let previousHandle = initialState.resourceHandle
 
         let newHandle = try await resourceManager.acquireFromStream(
+            isolatedTo: self,
             descriptor: uploadDescriptor,
             slices: slices,
             progress: progress
@@ -299,7 +304,7 @@ package actor MTKRenderingEngine {
 
         currentState.resourceHandle = newHandle
         viewports[viewport] = currentState
-        await mprFrameCache.invalidate(viewport)
+        mprFrameCache.invalidate(viewport)
     }
 
     @discardableResult
@@ -325,6 +330,7 @@ package actor MTKRenderingEngine {
         }
 
         let sharedHandle = try await resourceManager.acquireFromStream(
+            isolatedTo: self,
             descriptor: uploadDescriptor,
             slices: slices,
             progress: progress
@@ -356,7 +362,7 @@ package actor MTKRenderingEngine {
 
         for (viewport, state) in replacements {
             self.viewports[viewport] = state
-            await mprFrameCache.invalidate(viewport)
+            mprFrameCache.invalidate(viewport)
         }
 
         for handle in previousHandles {
@@ -385,6 +391,7 @@ package actor MTKRenderingEngine {
         }
 
         let sharedHandle = try await resourceManager.acquire(
+            isolatedTo: self,
             dataset: dataset,
             device: device,
             commandQueue: commandQueue
@@ -416,7 +423,7 @@ package actor MTKRenderingEngine {
 
         for (viewport, state) in replacements {
             self.viewports[viewport] = state
-            await mprFrameCache.invalidate(viewport)
+            mprFrameCache.invalidate(viewport)
         }
 
         for handle in previousHandles {
@@ -494,7 +501,17 @@ package actor MTKRenderingEngine {
         let mprFrame: MPRTextureFrame?
         let labelmapOverlays: [MPRLabelmapOverlay]
         let scalarOverlays: [MPRScalarVolumeOverlay]
-        logger.info("Rendering viewport viewportID=\(String(describing: viewport)) route=\(route.profilingName) viewportType=\(route.viewportType.profilingName) viewportLabel=\(state.descriptor.label ?? "nil") viewportSize=\(Int(state.currentSize.width))x\(Int(state.currentSize.height)) pipeline=\(route.passPipelineName)")
+        if Logger.performanceLoggingEnabled {
+            let viewportDescription = String(describing: viewport)
+            let viewportType = route.viewportType.profilingName
+            let viewportLabel = state.descriptor.label ?? "nil"
+            let viewportSize = "\(Int(state.currentSize.width))x\(Int(state.currentSize.height))"
+            let message =
+                "Rendering viewport viewportID=\(viewportDescription) route=\(route.profilingName) " +
+                    "viewportType=\(viewportType) viewportLabel=\(viewportLabel) " +
+                    "viewportSize=\(viewportSize) pipeline=\(route.passPipelineName)"
+            logger.info("\(message, privacy: .public)")
+        }
 
         guard let primaryPass = route.primaryPass else {
             throw RenderGraphError.unmappedViewportRoute(route.viewportType)
@@ -512,6 +529,7 @@ package actor MTKRenderingEngine {
                     debugPostAcquireRenderFailure = nil
                 }
                 volumeFrame = try await renderPassDispatcher.renderVolume(
+                    isolatedTo: self,
                     state: state,
                     dataset: dataset,
                     volumeTexture: volumeTexture,
@@ -527,6 +545,7 @@ package actor MTKRenderingEngine {
         case .mprReslice:
             isRaycastFrame = false
             let mprResult = try await renderPassDispatcher.renderMPR(
+                isolatedTo: self,
                 viewport: viewport,
                 state: state,
                 axis: primaryPass.axis ?? .axial,
@@ -598,7 +617,7 @@ package actor MTKRenderingEngine {
         let next = viewportLifecycleController.resized(snapshot, to: size)
         state.currentSize = next.currentSize
         viewports[viewport] = state
-        await mprFrameCache.invalidate(viewport)
+        mprFrameCache.invalidate(viewport)
     }
 
     package func configure(_ viewport: ViewportID,
@@ -625,7 +644,7 @@ package actor MTKRenderingEngine {
             state.mprPlaneGeometry = nil
         }
         viewports[viewport] = state
-        await mprFrameCache.invalidate(viewport)
+        mprFrameCache.invalidate(viewport)
     }
 
     package func configure(_ viewport: ViewportID,
@@ -727,7 +746,7 @@ package actor MTKRenderingEngine {
         }
         let clampedSlicePosition = VolumetricMath.clampFloat(slicePosition, lower: 0, upper: 1)
         if state.slicePosition != clampedSlicePosition {
-            await mprFrameCache.invalidate(viewport)
+            mprFrameCache.invalidate(viewport)
         }
         state.slicePosition = clampedSlicePosition
         state.window = window
@@ -740,7 +759,7 @@ package actor MTKRenderingEngine {
             throw EngineError.viewportNotFound(viewport)
         }
         if state.mprPlaneGeometry != mprPlaneGeometry {
-            await mprFrameCache.invalidate(viewport)
+            mprFrameCache.invalidate(viewport)
         }
         state.mprPlaneGeometry = mprPlaneGeometry
         viewports[viewport] = state
@@ -768,7 +787,7 @@ package actor MTKRenderingEngine {
         if state.slabThickness != sanitizedThickness ||
             state.slabSteps != sanitizedSteps ||
             state.mprBlend != resolvedBlend {
-            await mprFrameCache.invalidate(viewport)
+            mprFrameCache.invalidate(viewport)
         }
         state.slabThickness = sanitizedThickness
         state.slabSteps = sanitizedSteps
@@ -965,6 +984,7 @@ private extension MTKRenderingEngine {
             for layer in scalarLayers where handles[layer.id] == nil {
                 guard let scalarVolume = layer.scalarVolume else { continue }
                 let handle = try await resourceManager.acquire(
+                    isolatedTo: self,
                     dataset: scalarVolume.dataset,
                     device: device,
                     commandQueue: commandQueue
@@ -1123,6 +1143,20 @@ extension MTKRenderingEngine {
         lastFrameTimings
     }
 
+    package var debugVolumeFrameSubmissionCount: Int {
+        renderPassDispatcher.debugVolumeFrameSubmissionCount
+    }
+
+    package var debugLastVolumeFrameEncoderCount: Int {
+        renderPassDispatcher.debugLastVolumeFrameEncoderCount
+    }
+
+    package var debugVolumeWindowCommandCount: Int? {
+        get async {
+            await renderPassDispatcher.debugVolumeWindowCommandCount(isolatedTo: self)
+        }
+    }
+
     package func debugDescriptor(for viewport: ViewportID) -> ViewportDescriptor? {
         viewports[viewport]?.descriptor
     }
@@ -1139,7 +1173,7 @@ extension MTKRenderingEngine {
     #endif
 
     package func debugMPRFrameTextureObjectIdentifier(for viewport: ViewportID) async -> ObjectIdentifier? {
-        guard let texture = await mprFrameCache.storedFrame(for: viewport)?.texture else { return nil }
+        guard let texture = mprFrameCache.storedFrame(for: viewport)?.texture else { return nil }
         return ObjectIdentifier(texture as AnyObject)
     }
 

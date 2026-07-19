@@ -327,22 +327,9 @@ try data.write(to: url)
 let restored = try JSONDecoder().decode(TransferFunction.self, from: data)
 ```
 
-### Apply to a Clinical Viewport
+### Apply to a Render Request
 
-MTKUI viewports can apply the full public contract, including the preset's rendering intent:
-
-```swift
-import MTKCore
-import MTKUI
-
-let session = try await ClinicalViewportSession.make(dataset: dataset)
-try await session.applyClinicalTransferFunctionPreset(.ctMinIPLung)
-
-let custom = try JSONDecoder().decode(TransferFunction.self, from: savedData)
-try await session.applyTransferFunction(custom)
-```
-
-For lower-level MTKCore rendering, convert the public model to the render request type:
+Convert the public model to the render request type:
 
 ```swift
 let transfer = try ClinicalTransferFunctionPreset.ctVRBone

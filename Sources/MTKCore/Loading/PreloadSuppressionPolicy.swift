@@ -12,10 +12,6 @@
 
 import Foundation
 
-#if os(iOS)
-import UIKit
-#endif
-
 // MARK: - PreloadSuppressionReason
 
 /// Represents why a volumetric dataset load was suppressed.
@@ -247,13 +243,7 @@ extension PreloadSuppressionPolicy {
     ///
     /// - Returns: `true` if low battery mode is enabled, `false` otherwise
     public static func isLowBatteryModeActive() -> Bool {
-        #if os(iOS)
-        if #available(iOS 9.0, *) {
-            return UIDevice.current.batteryState == .unplugged &&
-                   UIDevice.current.batteryLevel < 0.20
-        }
-        #endif
-        return false
+        return ProcessInfo.processInfo.isLowPowerModeEnabled
     }
 
     /// Checks if the device is experiencing thermal throttling.

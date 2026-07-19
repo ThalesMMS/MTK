@@ -494,7 +494,7 @@ final class MPRTextureFrameTests: MetalMPRComputeAdapterTestCase {
             plane: plane
         )
         let slabHalf = normalizedThickness / 2
-        let normal = simd_normalize(simd_cross(plane.axisUTexture, plane.axisVTexture))
+        let normal = MPRPlaneGeometryFactory.textureDirectionAlongNormal(for: dataset, plane: plane)
         var output = [Int16]()
         output.reserveCapacity(width * height)
 

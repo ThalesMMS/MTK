@@ -111,7 +111,7 @@ public final class VolumeTextureFactory {
     /// Replaces the current dataset with a new one.
     ///
     /// Call this method to swap datasets without recreating the factory. The next call to
-    /// ``generate(device:)`` or ``generateAsync(device:commandQueue:)`` will use the updated dataset.
+    /// ``generate(device:usage:)`` or ``generateAsync(device:commandQueue:usage:)`` will use the updated dataset.
     ///
     /// - Parameter dataset: The new `VolumeDataset` to use.
     public func update(dataset: VolumeDataset) {
@@ -139,11 +139,14 @@ public final class VolumeTextureFactory {
     /// the voxel data directly via `MTLTexture.replace(region:...)`. Suitable for small datasets or
     /// environments where asynchronous uploads are not required.
     ///
-    /// - Parameter device: The Metal device to allocate the texture on.
+    /// - Parameters:
+    ///   - device: The Metal device to allocate the texture on.
+    ///   - usage: The final texture capabilities. Read-only shader access is the default.
     /// - Returns: A configured `MTLTexture`, or `nil` if texture creation failed.
     ///
     /// - Note: Logs errors via OSLog when texture creation fails.
-    public func generate(device: any MTLDevice) -> (any MTLTexture)? {
+    public func generate(device: any MTLDevice,
+                         usage: MTLTextureUsage = .shaderRead) -> (any MTLTexture)? {
         let startedAt = CFAbsoluteTimeGetCurrent()
         let expectedByteCount: Int
         do {
@@ -157,7 +160,8 @@ public final class VolumeTextureFactory {
         // storage so tests can validate raw voxel uploads without a readback pass.
         let descriptor = Self.makeVolumeTextureDescriptor(dimensions: dataset.dimensions,
                                                           pixelFormat: dataset.pixelFormat,
-                                                          storageMode: .shared)
+                                                          storageMode: .shared,
+                                                          usage: usage)
 
         guard let texture = device.makeTexture(descriptor: descriptor) else {
             logger.error("Failed to create 3D texture (\(descriptor.width)x\(descriptor.height)x\(descriptor.depth))")
@@ -217,6 +221,7 @@ public final class VolumeTextureFactory {
     /// - Parameters:
     ///   - device: The Metal device to allocate resources on.
     ///   - commandQueue: The command queue to submit the blit operation.
+    ///   - usage: The final texture capabilities. Read-only shader access is the default.
     ///
     /// - Returns: A configured `MTLTexture` once the GPU transfer completes.
     ///
@@ -229,7 +234,9 @@ public final class VolumeTextureFactory {
     /// // Texture is ready for immediate shader use
     /// ```
     public func generateAsync(device: any MTLDevice,
-                             commandQueue: any MTLCommandQueue) async throws -> any MTLTexture {
+                              commandQueue: any MTLCommandQueue,
+                              usage: MTLTextureUsage = .shaderRead) async throws -> any MTLTexture {
+        try Task.checkCancellation()
         let startedAt = CFAbsoluteTimeGetCurrent()
         let expectedByteCount = try Self.validatedUploadByteCount(for: dataset)
 
@@ -237,7 +244,8 @@ public final class VolumeTextureFactory {
         // texture through a transient CPU-visible staging buffer.
         let descriptor = Self.makeVolumeTextureDescriptor(dimensions: dataset.dimensions,
                                                           pixelFormat: dataset.pixelFormat,
-                                                          storageMode: .private)
+                                                          storageMode: .private,
+                                                          usage: usage)
 
         guard let texture = device.makeTexture(descriptor: descriptor) else {
             logger.error("Failed to create 3D texture (\(descriptor.width)x\(descriptor.height)x\(descriptor.depth))")
@@ -273,6 +281,7 @@ public final class VolumeTextureFactory {
             guard let baseAddress = buffer.baseAddress else { return }
             memcpy(stagingBuffer.contents(), baseAddress, expectedByteCount)
         }
+        try Task.checkCancellation()
 
         guard let commandBuffer = commandQueue.makeCommandBuffer() else {
             logger.error("Failed to create command buffer for texture upload")
@@ -304,7 +313,8 @@ public final class VolumeTextureFactory {
                                            category: "Benchmark")
         let uploadCPUEnd = CFAbsoluteTimeGetCurrent()
 
-        return try await withCheckedThrowingContinuation { continuation in
+        let uploadedTexture: any MTLTexture = try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<any MTLTexture, any Error>) in
             commandBuffer.addCompletedHandler { buffer in
                 if let error = buffer.error {
                     continuation.resume(throwing: error)
@@ -330,18 +340,21 @@ public final class VolumeTextureFactory {
             }
             commandBuffer.commit()
         }
+        try Task.checkCancellation()
+        return uploadedTexture
     }
 }
 
 extension VolumeTextureFactory {
     static func makeVolumeTextureDescriptor(dimensions: VolumeDimensions,
                                             pixelFormat: VolumePixelFormat,
-                                            storageMode: MTLStorageMode = .private) -> MTLTextureDescriptor {
+                                            storageMode: MTLStorageMode = .private,
+                                            usage: MTLTextureUsage = .shaderRead) -> MTLTextureDescriptor {
         // StorageModePolicy.md: volume texture storage is always explicit at call sites.
         let descriptor = MTLTextureDescriptor()
         descriptor.textureType = .type3D
         descriptor.pixelFormat = pixelFormat.metalPixelFormat
-        descriptor.usage = [.shaderRead, .shaderWrite, .pixelFormatView]
+        descriptor.usage = usage
         descriptor.width = dimensions.width
         descriptor.height = dimensions.height
         descriptor.depth = dimensions.depth

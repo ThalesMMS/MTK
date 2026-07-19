@@ -43,6 +43,13 @@ final class ClinicalProfilerTests: XCTestCase {
 
         XCTAssertEqual(decoded.environment.deviceName, "Unit Test GPU")
         XCTAssertEqual(decoded.environment.osVersion, "Unit Test OS")
+        XCTAssertEqual(decoded.environment.architecture, "arm64")
+        XCTAssertEqual(decoded.environment.modelIdentifier, "TestMac1,1")
+        XCTAssertEqual(decoded.environment.buildConfiguration, "release")
+        XCTAssertEqual(decoded.environment.benchmarkMode, "warm-isolated")
+        XCTAssertEqual(decoded.environment.fixtureID, "ct-explicit-vr-le-rescale")
+        XCTAssertEqual(decoded.environment.tier, "pr-smoke")
+        XCTAssertFalse(decoded.environment.commandLineStartupIncluded)
         XCTAssertEqual(decoded.samples.first?.stageType, .snapshotReadback)
         XCTAssertEqual(decoded.samples.first?.viewportContext.resolutionWidth, 1024)
         XCTAssertEqual(decoded.samples.first?.viewportContext.resolutionHeight, 768)
@@ -89,6 +96,9 @@ final class ClinicalProfilerTests: XCTestCase {
         }
         XCTAssertTrue(csv.contains("Unit Test GPU"))
         XCTAssertTrue(csv.contains("Unit Test OS"))
+        XCTAssertTrue(csv.contains("ct-explicit-vr-le-rescale"))
+        XCTAssertTrue(csv.contains("warm-isolated"))
+        XCTAssertTrue(csv.contains("pr-smoke"))
         XCTAssertTrue(csv.contains("512"))
         XCTAssertTrue(csv.contains("interactive"))
         XCTAssertTrue(csv.contains("production"))
@@ -162,6 +172,27 @@ final class ClinicalProfilerTests: XCTestCase {
         XCTAssertNil(profiler.sessionSnapshot())
     }
 
+    func test_recordSampleWithoutActiveSession_doesNotCreateSession() {
+        let profiler = ClinicalProfiler.shared
+
+        profiler.recordSample(stage: .volumeRaycast, cpuTime: 1)
+
+        XCTAssertNil(profiler.sessionSnapshot())
+    }
+
+    func test_activeSession_stopsRecordingAtSampleLimit() {
+        let profiler = ClinicalProfiler.shared
+        profiler.startSession(environment: makeEnvironment())
+
+        for _ in 0...ClinicalProfiler.maximumSampleCount {
+            profiler.recordSample(stage: .volumeRaycast, cpuTime: 1)
+        }
+
+        XCTAssertEqual(profiler.sessionSnapshot()?.samples.count,
+                       ClinicalProfiler.maximumSampleCount)
+        XCTAssertFalse(profiler.isRecordingEnabled)
+    }
+
     private func makeEnvironment() -> ProfilingEnvironment {
         ProfilingEnvironment(
             deviceName: "Unit Test GPU",
@@ -170,7 +201,14 @@ final class ClinicalProfilerTests: XCTestCase {
             maxThreadsPerThreadgroupDimensions: ProfilingThreadgroupDimensions(width: 1024, height: 1024, depth: 64),
             recommendedMaxWorkingSetSize: 8_589_934_592,
             appVersion: "1.0",
-            buildNumber: "100"
+            buildNumber: "100",
+            architecture: "arm64",
+            modelIdentifier: "TestMac1,1",
+            buildConfiguration: "release",
+            benchmarkMode: "warm-isolated",
+            fixtureID: "ct-explicit-vr-le-rescale",
+            tier: "pr-smoke",
+            commandLineStartupIncluded: false
         )
     }
 

@@ -56,6 +56,68 @@ final class MPRPresentationPassTests: XCTestCase {
         XCTAssertEqual(try MPRTestHelpers.readGrayBytes(from: drawable.texture), [0, 64, 128, 255], accuracy: 1)
     }
 
+    func test_overlayFreePresentation_shaderWritableDrawable_usesDirectOutput() throws {
+        let input = try MPRTestHelpers.makeUnsignedTexture([0, 100], width: 2, height: 1, device: device)
+        let drawable = try MPRTestMetalDrawable(device: device, width: 2, height: 1)
+        let frame = MPRTestHelpers.makeFrame(texture: input,
+                                             pixelFormat: .int16Unsigned,
+                                             intensityRange: 0...100)
+        var pass = try MPRPresentationPass(device: device,
+                                           commandQueue: commandQueue,
+                                           library: library)
+
+        try pass.present(frame: frame,
+                         window: 0...100,
+                         to: drawable,
+                         transform: .identity)
+        try MPRTestHelpers.waitForQueue(commandQueue)
+
+        XCTAssertEqual(pass.debugLastPresentationUsedDirectOutput, true)
+        XCTAssertEqual(try MPRTestHelpers.readGrayBytes(from: drawable.texture), [0, 255], accuracy: 1)
+    }
+
+    func test_overlayFreePresentation_nonShaderWritableDrawable_usesFallback() throws {
+        let input = try MPRTestHelpers.makeUnsignedTexture([0, 100], width: 2, height: 1, device: device)
+        let drawable = try MPRTestMetalDrawable(device: device,
+                                                width: 2,
+                                                height: 1,
+                                                usage: [.shaderRead, .renderTarget])
+        let frame = MPRTestHelpers.makeFrame(texture: input,
+                                             pixelFormat: .int16Unsigned,
+                                             intensityRange: 0...100)
+        var pass = try MPRPresentationPass(device: device,
+                                           commandQueue: commandQueue,
+                                           library: library)
+
+        try pass.present(frame: frame,
+                         window: 0...100,
+                         to: drawable,
+                         transform: .identity)
+        try MPRTestHelpers.waitForQueue(commandQueue)
+
+        XCTAssertEqual(pass.debugLastPresentationUsedDirectOutput, false)
+        XCTAssertEqual(try MPRTestHelpers.readGrayBytes(from: drawable.texture), [0, 255], accuracy: 1)
+    }
+
+    func test_snapshot_intermediatePresentationRoute_isPreserved() throws {
+        let input = try MPRTestHelpers.makeUnsignedTexture([0, 100], width: 2, height: 1, device: device)
+        let frame = MPRTestHelpers.makeFrame(texture: input,
+                                             pixelFormat: .int16Unsigned,
+                                             intensityRange: 0...100)
+        var pass = try MPRPresentationPass(device: device,
+                                           commandQueue: commandQueue,
+                                           library: library)
+
+        let snapshot = try pass.makeSnapshotTexture(frame: frame,
+                                                    window: 0...100,
+                                                    transform: .identity,
+                                                    width: 2,
+                                                    height: 1)
+
+        XCTAssertEqual(pass.debugLastPresentationUsedDirectOutput, false)
+        XCTAssertEqual(try MPRTestHelpers.readGrayBytes(from: snapshot), [0, 255], accuracy: 1)
+    }
+
     func test_aspectFitLetterboxesInsteadOfStretchingSourcePixels() throws {
         let values: [Int16] = [0, 100, 200, 300]
         let input = try MPRTestHelpers.makeSignedTexture(values, width: 2, height: 2, device: device)
@@ -76,6 +138,60 @@ final class MPRPresentationPassTests: XCTestCase {
                            0, 170, 255, 0
                        ],
                        accuracy: 1)
+    }
+
+    func test_rotated90CW_presentsPixelsAtDisplayTransformCoordinates() throws {
+        let input = try MPRTestHelpers.makeUnsignedTexture(
+            [0, 10, 20, 30, 40, 50],
+            width: 2,
+            height: 3,
+            device: device
+        )
+        let drawable = try MPRTestMetalDrawable(device: device, width: 3, height: 2)
+        let frame = MPRTestHelpers.makeFrame(
+            texture: input,
+            pixelFormat: .int16Unsigned,
+            intensityRange: 0...50
+        )
+        let transform = makeDisplayTransform(orientation: .rotated90CW)
+        var pass = try MPRPresentationPass(device: device, commandQueue: commandQueue, library: library)
+
+        try pass.present(frame: frame, window: 0...50, to: drawable, transform: transform)
+        try MPRTestHelpers.waitForQueue(commandQueue)
+
+        XCTAssertEqual(transform.textureCoordinates(forScreen: .zero), SIMD2<Float>(0, 1))
+        XCTAssertEqual(
+            try MPRTestHelpers.readGrayBytes(from: drawable.texture),
+            [204, 102, 0, 255, 153, 51],
+            accuracy: 1
+        )
+    }
+
+    func test_rotated90CCW_presentsPixelsAtDisplayTransformCoordinates() throws {
+        let input = try MPRTestHelpers.makeUnsignedTexture(
+            [0, 10, 20, 30, 40, 50],
+            width: 2,
+            height: 3,
+            device: device
+        )
+        let drawable = try MPRTestMetalDrawable(device: device, width: 3, height: 2)
+        let frame = MPRTestHelpers.makeFrame(
+            texture: input,
+            pixelFormat: .int16Unsigned,
+            intensityRange: 0...50
+        )
+        let transform = makeDisplayTransform(orientation: .rotated90CCW)
+        var pass = try MPRPresentationPass(device: device, commandQueue: commandQueue, library: library)
+
+        try pass.present(frame: frame, window: 0...50, to: drawable, transform: transform)
+        try MPRTestHelpers.waitForQueue(commandQueue)
+
+        XCTAssertEqual(transform.textureCoordinates(forScreen: .zero), SIMD2<Float>(1, 0))
+        XCTAssertEqual(
+            try MPRTestHelpers.readGrayBytes(from: drawable.texture),
+            [51, 153, 255, 0, 102, 204],
+            accuracy: 1
+        )
     }
 
     func test_narrowWindowClampsOutput() throws {
@@ -152,10 +268,10 @@ final class MPRPresentationPassTests: XCTestCase {
 
     func test_ctPresetConvenienceCoversCommonClinicalWindows() throws {
         let presetIDs = [
-            "ohif.ct-brain",
-            "ohif.ct-lung",
-            "ohif.ct-bone",
-            "ohif.ct-soft-tissue"
+            "isis.ct-brain",
+            "isis.ct-lung",
+            "isis.ct-bone",
+            "isis.ct-soft-tissue"
         ]
         var pass = try MPRPresentationPass(device: device,
                                            commandQueue: commandQueue,
@@ -373,6 +489,31 @@ final class MPRPresentationPassTests: XCTestCase {
         XCTAssertEqual(try MPRTestHelpers.readInputValues(Int16.self, from: input), values)
     }
 
+    func test_viewportZoomUsesLetterboxBandsWhenMagnified() throws {
+        let values = [Int16](repeating: 100, count: 16)
+        let input = try MPRTestHelpers.makeSignedTexture(values, width: 4, height: 4, device: device)
+        let drawable = try MPRTestMetalDrawable(device: device, width: 4, height: 8)
+        let frame = MPRTestHelpers.makeFrame(texture: input,
+                                             pixelFormat: .int16Signed,
+                                             intensityRange: 0...100)
+        var pass = try MPRPresentationPass(device: device,
+                                           commandQueue: commandQueue,
+                                           library: library)
+
+        try pass.present(frame: frame,
+                         window: 0...100,
+                         to: drawable,
+                         transform: .identity,
+                         viewportTransform: MPRViewportTransform(zoom: 2))
+        try MPRTestHelpers.waitForQueue(commandQueue)
+
+        XCTAssertEqual(
+            try MPRTestHelpers.readGrayBytes(from: drawable.texture),
+            [UInt8](repeating: 255, count: 32),
+            accuracy: 1
+        )
+    }
+
     func test_viewportTransformKeepsLabelmapOverlayAlignedWithVisibleSourcePixels() throws {
         let input = try MPRTestHelpers.makeUnsignedTexture([UInt16](repeating: 0, count: 16),
                                                            width: 4,
@@ -477,6 +618,7 @@ final class MPRPresentationPassTests: XCTestCase {
                          labelmapOverlays: [overlay])
         try MPRTestHelpers.waitForQueue(commandQueue)
 
+        XCTAssertEqual(pass.debugLastPresentationUsedDirectOutput, false)
         XCTAssertEqual(try MPRTestHelpers.readBGRAByteArrays(from: drawable.texture).flatMap { $0 },
                        [
                            0, 0, 0, 255,
@@ -484,6 +626,37 @@ final class MPRPresentationPassTests: XCTestCase {
                            0, 64, 0, 255,
                            0, 0, 0, 255
                        ],
+                       accuracy: 1)
+    }
+
+    func test_rotated90CW_transposesLabelmapOverlayWithBasePresentation() throws {
+        let input = try MPRTestHelpers.makeUnsignedTexture([0, 0, 0, 0], width: 2, height: 2, device: device)
+        let drawable = try MPRTestMetalDrawable(device: device, width: 2, height: 2)
+        let frame = MPRTestHelpers.makeFrame(texture: input,
+                                             pixelFormat: .int16Unsigned,
+                                             intensityRange: 0...100)
+        let labelmapTexture = try makeLabelmapTexture([0, 1, 0, 0], width: 2, height: 2, depth: 1)
+        let lutTexture = try MPRTestHelpers.makeColormapTexture([
+            SIMD4<Float>(0, 0, 0, 0),
+            SIMD4<Float>(1, 0, 0, 1)
+        ], device: device)
+        let overlay = MPRLabelmapOverlay(labelmapTexture: labelmapTexture,
+                                         colorLUTTexture: lutTexture,
+                                         opacity: 1,
+                                         originTexture: SIMD3<Float>(0.25, 0.25, 0.5),
+                                         axisUTexture: SIMD3<Float>(0.5, 0, 0),
+                                         axisVTexture: SIMD3<Float>(0, 0.5, 0))
+        var pass = try MPRPresentationPass(device: device, commandQueue: commandQueue, library: library)
+
+        try pass.present(frame: frame,
+                         window: 0...100,
+                         to: drawable,
+                         transform: makeDisplayTransform(orientation: .rotated90CW),
+                         labelmapOverlays: [overlay])
+        try MPRTestHelpers.waitForQueue(commandQueue)
+
+        XCTAssertEqual(try MPRTestHelpers.readBGRAByteArrays(from: drawable.texture).flatMap { $0 },
+                       [0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 255, 255],
                        accuracy: 1)
     }
 
@@ -529,6 +702,40 @@ final class MPRPresentationPassTests: XCTestCase {
                            0, 0, 128, 255,
                            0, 0, 0, 255
                        ],
+                       accuracy: 1)
+    }
+
+    func test_rotated90CCW_transposesScalarOverlayWithBasePresentation() throws {
+        let input = try MPRTestHelpers.makeUnsignedTexture([0, 0, 0, 0], width: 2, height: 2, device: device)
+        let drawable = try MPRTestMetalDrawable(device: device, width: 2, height: 2)
+        let frame = MPRTestHelpers.makeFrame(texture: input,
+                                             pixelFormat: .int16Unsigned,
+                                             intensityRange: 0...100)
+        let scalarTexture = try makeLabelmapTexture([0, 200, 0, 0], width: 2, height: 2, depth: 1)
+        let lutTexture = try MPRTestHelpers.makeColormapTexture([
+            SIMD4<Float>(0, 0, 0, 0),
+            SIMD4<Float>(1, 0, 0, 1)
+        ], device: device)
+        let overlay = MPRScalarVolumeOverlay(scalarTexture: scalarTexture,
+                                             colorLUTTexture: lutTexture,
+                                             pixelFormat: .int16Unsigned,
+                                             opacity: 1,
+                                             blendMode: .sourceOver,
+                                             intensityRange: 0...200,
+                                             originTexture: SIMD3<Float>(0.25, 0.25, 0.5),
+                                             axisUTexture: SIMD3<Float>(0.5, 0, 0),
+                                             axisVTexture: SIMD3<Float>(0, 0.5, 0))
+        var pass = try MPRPresentationPass(device: device, commandQueue: commandQueue, library: library)
+
+        try pass.present(frame: frame,
+                         window: 0...100,
+                         to: drawable,
+                         transform: makeDisplayTransform(orientation: .rotated90CCW),
+                         scalarOverlays: [overlay])
+        try MPRTestHelpers.waitForQueue(commandQueue)
+
+        XCTAssertEqual(try MPRTestHelpers.readBGRAByteArrays(from: drawable.texture).flatMap { $0 },
+                       [0, 0, 255, 255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255],
                        accuracy: 1)
     }
 
@@ -593,5 +800,17 @@ final class MPRPresentationPassTests: XCTestCase {
                             bytesPerImage: width * height * MemoryLayout<UInt16>.stride)
         }
         return texture
+    }
+
+    private func makeDisplayTransform(orientation: MPRDisplayOrientation) -> MPRDisplayTransform {
+        MPRDisplayTransform(
+            orientation: orientation,
+            flipHorizontal: false,
+            flipVertical: false,
+            leadingLabel: .right,
+            trailingLabel: .left,
+            topLabel: .anterior,
+            bottomLabel: .posterior
+        )
     }
 }

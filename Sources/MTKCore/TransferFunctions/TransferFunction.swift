@@ -315,7 +315,6 @@ public struct TransferFunction: Codable, Equatable, Sendable {
     ///
     /// ## Example
     /// ```swift
-    /// @MainActor
     /// func setupTransferFunction() {
     ///     if let tf = TransferFunction.load(from: url),
     ///        let texture = tf.makeTexture(device: metalDevice) {
@@ -324,8 +323,6 @@ public struct TransferFunction: Codable, Equatable, Sendable {
     /// }
     /// ```
     ///
-    /// - Important: Must be called from the main actor due to Metal texture creation requirements.
-    @MainActor
     public func makeTexture(device: any MTLDevice,
                             logger: Logger = Logger(subsystem: "com.mtk.volumerendering",
                                                      category: "TransferFunction")) -> (any MTLTexture)? {

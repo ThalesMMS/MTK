@@ -5,8 +5,12 @@ MTKCore keeps the interactive rendering path GPU-native. CPU-visible resources a
 ## Resource Types
 
 - Volume 3D textures: use `.private` for async and chunked upload paths. They are final rendering resources and are not read directly by the CPU.
-- CPU reference volume textures: may use `.shared` only in the synchronous `VolumeTextureFactory.generate(device:)` path used by tests and small debug uploads.
-- Staging buffers: use `.storageModeShared` with `.cpuCacheModeWriteCombined` for one-way CPU writes before a blit or compute upload.
+- Read-only volume textures declare `.shaderRead`; add `.pixelFormatView` only when normalized sampling needs a
+  reinterpretation view, and add `.shaderWrite` only to GPU conversion destinations.
+- CPU reference volume textures: may use `.shared` only in the synchronous `VolumeTextureFactory.generate(device:usage:)` path used by tests and small debug uploads.
+- Staging buffers: use `.storageModeShared` with `.cpuCacheModeWriteCombined` for one-way CPU writes before a blit or
+  compute upload. Chunked volume ingestion keeps a bounded three-slot ring so CPU staging can overlap GPU conversion
+  without allocating a full-volume copy.
 - Transfer function textures: use `.shared` because they are small CPU-authored lookup tables updated from UI state.
 - Output render targets: use `.private`; render passes write them on the GPU and presentation samples or copies them without CPU access.
 - Readback resources: use `.shared`, or `.managed` on discrete macOS GPUs, only for snapshot/export/debug/tests.
