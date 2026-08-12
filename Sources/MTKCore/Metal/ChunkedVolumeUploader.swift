@@ -316,13 +316,20 @@ public final class ChunkedVolumeUploader {
         await progress(event)
     }
 
+    /// - Important: the ceiling here is `type3D`'s **2048**, not `UInt32.max`.
+    ///   Anything past it reaches `-[MTLTextureDescriptorInternal
+    ///   validateWithDevice:]`, which calls `abort()` — so the `guard let` on
+    ///   `makeTexture` below never runs and the process is simply gone. This
+    ///   uploader is a second route to that same descriptor, and #1682 only
+    ///   closed the one in `VolumeTextureFactory`.
     private func validate(dimensions: VolumeDimensions) throws {
+        let maximumExtent = VolumeTextureFactory.maximumVolumeTextureExtent
         guard dimensions.width > 0,
               dimensions.height > 0,
               dimensions.depth > 0,
-              dimensions.width <= Int(UInt32.max),
-              dimensions.height <= Int(UInt32.max),
-              dimensions.depth <= Int(UInt32.max) else {
+              dimensions.width <= maximumExtent,
+              dimensions.height <= maximumExtent,
+              dimensions.depth <= maximumExtent else {
             throw ChunkedVolumeUploadError.invalidDimensions(dimensions)
         }
     }
@@ -359,17 +366,24 @@ public final class ChunkedVolumeUploader {
         let cpuEnd = CFAbsoluteTimeGetCurrent()
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
             commandBuffer.addCompletedHandler { buffer in
-                if let error = buffer.error {
-                    continuation.resume(throwing: ChunkedVolumeUploadError.commandBufferExecutionFailed(
-                        String(describing: error)
-                    ))
-                } else if buffer.status == .error {
-                    continuation.resume(throwing: ChunkedVolumeUploadError.commandBufferExecutionFailed(
-                        "command buffer completed with status .error"
-                    ))
-                } else {
-                    continuation.resume()
+                // The conversion kernel writes into a `.private` 3D texture, so there is
+                // nothing readable here to check against: only the command buffer's
+                // terminal state says whether the slice reached the volume, and only
+                // `.completed` says it did. A buffer the driver discarded as the innocent
+                // victim of another process's GPU error stops on `.error` — status raw
+                // value 5 — and can carry no error object at all, which is why the status
+                // is asked about and not just `buffer.error`.
+                //
+                // There is no retry here on purpose: by the time this handler runs the
+                // caller is free to refill this slot's staging buffer with the next slice,
+                // so the voxels this dispatch was given are already gone. Recovering one
+                // discarded slice means starting the upload over, which is the caller's
+                // decision, not ours.
+                if let reason = CommandBufferCompletion.reasonItDidNotRun(buffer) {
+                    continuation.resume(throwing: ChunkedVolumeUploadError.commandBufferExecutionFailed(reason))
+                    return
                 }
+                continuation.resume()
             }
             commandBuffer.commit()
         }

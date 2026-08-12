@@ -174,8 +174,18 @@ enum MPRTextureReadbackHelper {
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
 
-        if let error = commandBuffer.error {
-            throw ReadbackError.commandBufferFailed(error.localizedDescription)
+        // A copy has no invariant of its own — every byte it can produce is a legal pixel
+        // — so `.completed` is the only thing that says the destination holds the texture
+        // rather than the zeroes it was allocated with. A buffer the driver discarded as
+        // the innocent victim of another process's GPU error lands on `.error` carrying no
+        // error object, and this readback used to hand those zeroes back as pixels:
+        // `VolumeLayerCompositePassTests` read `[0, 0, 0, 0]` where `[0, 0, 64, 64]` was
+        // composited, twice in eighteen contended runs.
+        if commandBuffer.status != .completed {
+            let failure = ReadbackError.commandBufferFailed(commandBuffer.error?.localizedDescription
+                ?? "status \(commandBuffer.status.rawValue) with no error object")
+            try GPUFaultAttribution.rethrowUnlessDiscarded(commandBuffer.error ?? failure,
+                                                           while: "Reading a texture back")
         }
 
         let pointer = buffer.contents().assumingMemoryBound(to: UInt8.self)

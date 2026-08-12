@@ -6,11 +6,11 @@ final class VolumeRenderQualitySettingsTests: XCTestCase {
         let settings = VolumeRenderQualitySettings.default
 
         XCTAssertEqual(settings.renderResolution, .high)
-        XCTAssertEqual(settings.interactingResolution, .medium)
-        XCTAssertEqual(settings.depthResolution, .high)
-        XCTAssertEqual(settings.iterations, .medium)
+        XCTAssertEqual(settings.interactingResolution, .low)
+        XCTAssertEqual(settings.depthResolution, .low)
+        XCTAssertEqual(settings.iterations, .low)
         XCTAssertEqual(settings.shadowMode, .off)
-        XCTAssertFalse(settings.disableShadowsWhenInteracting)
+        XCTAssertTrue(settings.disableShadowsWhenInteracting)
         XCTAssertEqual(settings.directionalLightIntensity, 1.0)
         XCTAssertEqual(settings.ambientLightIntensity, 0.2)
         XCTAssertEqual(settings.effectiveShadowMode(for: .production), .off)
@@ -43,6 +43,14 @@ final class VolumeRenderQualitySettingsTests: XCTestCase {
         XCTAssertEqual(settings.interactingSamplingStep, 640)
         XCTAssertEqual(settings.interactionSamplingFactor, 0.5)
         XCTAssertEqual(settings.depthGradientScale, 2.0)
+    }
+
+    func test_interactiveOutputScales_stayWithinReducedResolutionContract() {
+        XCTAssertEqual(VolumeRenderQualityOption.low.interactiveOutputScale, 0.50)
+        XCTAssertEqual(VolumeRenderQualityOption.medium.interactiveOutputScale, 0.56)
+        XCTAssertEqual(VolumeRenderQualityOption.high.interactiveOutputScale, 0.62)
+        XCTAssertEqual(VolumeRenderQualityOption.fantastic.interactiveOutputScale, 0.67)
+        XCTAssertEqual(VolumeRenderQualitySettings(interactingResolution: .low).interactionOutputScale, 0.50)
     }
 
     func testSanitizedSettingsClampLightIntensities() {

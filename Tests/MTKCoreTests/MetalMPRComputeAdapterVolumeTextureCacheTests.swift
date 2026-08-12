@@ -15,7 +15,14 @@ final class MetalMPRComputeAdapterVolumeTextureCacheTests: MetalMPRComputeAdapte
         let dataset = VolumeDatasetTestFactory.makeTestDataset()
         let plane = MPRTestHelpers.makeTestPlaneGeometry(for: dataset)
 
-        _ = try await adapter.makeTextureFrame(dataset: dataset, plane: plane, thickness: 5, steps: 5, blend: .average)
+        let firstFrame = try await adapter.makeTextureFrame(
+            dataset: dataset,
+            plane: plane,
+            thickness: 5,
+            steps: 5,
+            blend: .average
+        )
+        firstFrame.debugReleaseOutputTextureLease()
 
         let cachedIdentity = await adapter.debugCachedDatasetIdentity
         XCTAssertNotNil(cachedIdentity)
@@ -27,7 +34,14 @@ final class MetalMPRComputeAdapterVolumeTextureCacheTests: MetalMPRComputeAdapte
         XCTAssertEqual(storageMode, MTLStorageMode.private.rawValue)
         XCTAssertEqual(usage, MTLTextureUsage.shaderRead.rawValue)
 
-        _ = try await adapter.makeTextureFrame(dataset: dataset, plane: plane, thickness: 5, steps: 5, blend: .maximum)
+        let secondFrame = try await adapter.makeTextureFrame(
+            dataset: dataset,
+            plane: plane,
+            thickness: 5,
+            steps: 5,
+            blend: .maximum
+        )
+        defer { secondFrame.debugReleaseOutputTextureLease() }
 
         let uploadCount = await adapter.debugTextureUploadCount
         XCTAssertEqual(uploadCount, 1)
@@ -39,6 +53,7 @@ final class MetalMPRComputeAdapterVolumeTextureCacheTests: MetalMPRComputeAdapte
 
         for _ in 0..<10 {
             let frame = try await adapter.makeTextureFrame(dataset: dataset, plane: plane, thickness: 5, steps: 5, blend: .average)
+            defer { frame.debugReleaseOutputTextureLease() }
             MPRTestHelpers.assertValidFrame(frame,
                                             expectedWidth: 64,
                                             expectedHeight: 64,
@@ -153,10 +168,24 @@ final class MetalMPRComputeAdapterVolumeTextureCacheTests: MetalMPRComputeAdapte
         let planeA = MPRTestHelpers.makeTestPlaneGeometry(for: datasetA)
         let planeB = MPRTestHelpers.makeTestPlaneGeometry(for: datasetB)
 
-        _ = try await adapter.makeTextureFrame(dataset: datasetA, plane: planeA, thickness: 5, steps: 5, blend: .single)
+        let firstFrame = try await adapter.makeTextureFrame(
+            dataset: datasetA,
+            plane: planeA,
+            thickness: 5,
+            steps: 5,
+            blend: .single
+        )
+        firstFrame.debugReleaseOutputTextureLease()
         let initialIdentity = await adapter.debugCachedDatasetIdentity
 
-        _ = try await adapter.makeTextureFrame(dataset: datasetB, plane: planeB, thickness: 5, steps: 5, blend: .single)
+        let secondFrame = try await adapter.makeTextureFrame(
+            dataset: datasetB,
+            plane: planeB,
+            thickness: 5,
+            steps: 5,
+            blend: .single
+        )
+        defer { secondFrame.debugReleaseOutputTextureLease() }
 
         let uploadCount = await adapter.debugTextureUploadCount
         XCTAssertEqual(uploadCount, 2)
@@ -172,11 +201,25 @@ final class MetalMPRComputeAdapterVolumeTextureCacheTests: MetalMPRComputeAdapte
         let dataset = VolumeDatasetTestFactory.makeTestDataset()
         let plane = MPRTestHelpers.makeTestPlaneGeometry(for: dataset)
 
-        _ = try await adapter.makeTextureFrame(dataset: dataset, plane: plane, thickness: 3, steps: 3, blend: .single)
+        let firstFrame = try await adapter.makeTextureFrame(
+            dataset: dataset,
+            plane: plane,
+            thickness: 3,
+            steps: 3,
+            blend: .single
+        )
+        firstFrame.debugReleaseOutputTextureLease()
         let initialIdentity = await adapter.debugCachedDatasetIdentity
 
         let mutatedDataset = VolumeDatasetTestFactory.makeDataChangedDataset(from: dataset)
-        _ = try await adapter.makeTextureFrame(dataset: mutatedDataset, plane: plane, thickness: 3, steps: 3, blend: .single)
+        let secondFrame = try await adapter.makeTextureFrame(
+            dataset: mutatedDataset,
+            plane: plane,
+            thickness: 3,
+            steps: 3,
+            blend: .single
+        )
+        defer { secondFrame.debugReleaseOutputTextureLease() }
 
         let uploadCount = await adapter.debugTextureUploadCount
         XCTAssertEqual(uploadCount, 2)
@@ -195,16 +238,18 @@ final class MetalMPRComputeAdapterVolumeTextureCacheTests: MetalMPRComputeAdapte
         let datasetB = VolumeDataset(data: copiedData, imageData: datasetA.imageData)
         let plane = MPRTestHelpers.makeTestPlaneGeometry(for: datasetA)
 
-        _ = try await adapter.makeTextureFrame(dataset: datasetA,
-                                               plane: plane,
-                                               thickness: 3,
-                                               steps: 3,
-                                               blend: .single)
-        _ = try await adapter.makeTextureFrame(dataset: datasetB,
-                                               plane: plane,
-                                               thickness: 3,
-                                               steps: 3,
-                                               blend: .single)
+        let firstFrame = try await adapter.makeTextureFrame(dataset: datasetA,
+                                                            plane: plane,
+                                                            thickness: 3,
+                                                            steps: 3,
+                                                            blend: .single)
+        firstFrame.debugReleaseOutputTextureLease()
+        let secondFrame = try await adapter.makeTextureFrame(dataset: datasetB,
+                                                             plane: plane,
+                                                             thickness: 3,
+                                                             steps: 3,
+                                                             blend: .single)
+        defer { secondFrame.debugReleaseOutputTextureLease() }
 
         let uploadCount = await adapter.debugTextureUploadCount
         XCTAssertEqual(uploadCount, 1)
@@ -222,10 +267,24 @@ final class MetalMPRComputeAdapterVolumeTextureCacheTests: MetalMPRComputeAdapte
         let planeA = MPRTestHelpers.makeTestPlaneGeometry(for: datasetA)
         let planeB = MPRTestHelpers.makeTestPlaneGeometry(for: datasetB)
 
-        _ = try await adapter.makeTextureFrame(dataset: datasetA, plane: planeA, thickness: 3, steps: 3, blend: .single)
+        let firstFrame = try await adapter.makeTextureFrame(
+            dataset: datasetA,
+            plane: planeA,
+            thickness: 3,
+            steps: 3,
+            blend: .single
+        )
+        firstFrame.debugReleaseOutputTextureLease()
         let initialIdentity = await adapter.debugCachedDatasetIdentity
 
-        _ = try await adapter.makeTextureFrame(dataset: datasetB, plane: planeB, thickness: 3, steps: 3, blend: .single)
+        let secondFrame = try await adapter.makeTextureFrame(
+            dataset: datasetB,
+            plane: planeB,
+            thickness: 3,
+            steps: 3,
+            blend: .single
+        )
+        defer { secondFrame.debugReleaseOutputTextureLease() }
 
         let uploadCount = await adapter.debugTextureUploadCount
         XCTAssertEqual(uploadCount, 2)
@@ -245,11 +304,25 @@ final class MetalMPRComputeAdapterVolumeTextureCacheTests: MetalMPRComputeAdapte
         let dataset = VolumeDatasetTestFactory.makeTestDataset(data: sharedData.data, pixelFormat: .int16Signed)
         let plane = MPRTestHelpers.makeTestPlaneGeometry(for: dataset)
 
-        _ = try await adapter.makeTextureFrame(dataset: dataset, plane: plane, thickness: 3, steps: 3, blend: .single)
+        let firstFrame = try await adapter.makeTextureFrame(
+            dataset: dataset,
+            plane: plane,
+            thickness: 3,
+            steps: 3,
+            blend: .single
+        )
+        firstFrame.debugReleaseOutputTextureLease()
         let initialIdentity = await adapter.debugCachedDatasetIdentity
 
         VolumeDatasetTestFactory.mutateSharedTestDataInPlace(sharedData.storage, pixelFormat: dataset.pixelFormat)
-        _ = try await adapter.makeTextureFrame(dataset: dataset, plane: plane, thickness: 3, steps: 3, blend: .single)
+        let secondFrame = try await adapter.makeTextureFrame(
+            dataset: dataset,
+            plane: plane,
+            thickness: 3,
+            steps: 3,
+            blend: .single
+        )
+        defer { secondFrame.debugReleaseOutputTextureLease() }
 
         let uploadCount = await adapter.debugTextureUploadCount
         XCTAssertEqual(uploadCount, 2)

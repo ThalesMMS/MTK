@@ -43,17 +43,39 @@ enum RaycasterTestHelpers {
         }
     }
 
-    static func commitAndWait(_ commandBuffer: MTLCommandBuffer) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-            commandBuffer.addCompletedHandler { buffer in
-                if let error = buffer.error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume(returning: ())
+    /// Commits and waits, skipping the test when the driver discarded the buffer as the
+    /// innocent victim of another process's GPU error.
+    ///
+    /// Every caller reads the textures this buffer was supposed to write. A discarded
+    /// buffer never ran, so `.completed` is the only status under which those textures
+    /// mean anything — and the status is the only place it shows, because the buffer can
+    /// carry no error object at all.
+    static func commitAndWait(_ commandBuffer: MTLCommandBuffer,
+                              file: StaticString = #filePath,
+                              line: UInt = #line) async throws {
+        do {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                commandBuffer.addCompletedHandler { buffer in
+                    if let error = buffer.error {
+                        continuation.resume(throwing: error)
+                    } else if buffer.status != .completed {
+                        continuation.resume(throwing: CommandBufferError.didNotComplete(status: buffer.status.rawValue))
+                    } else {
+                        continuation.resume(returning: ())
+                    }
                 }
+                commandBuffer.commit()
             }
-            commandBuffer.commit()
+        } catch {
+            try GPUFaultAttribution.rethrowUnlessDiscarded(error,
+                                                           while: "GPU work under test",
+                                                           file: file,
+                                                           line: line)
         }
+    }
+
+    enum CommandBufferError: Error {
+        case didNotComplete(status: UInt)
     }
 
     static func makeTestRenderingParameters(dataset: VolumeDataset, method: Int32) -> RenderingParameters {

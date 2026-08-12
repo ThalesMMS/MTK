@@ -98,6 +98,64 @@ final class VolumeHistogramCalculatorTests: XCTestCase {
         wait(for: [expectation], timeout: 5.0)
     }
 
+    /// The threadgroup kernel spreads its bins across the threads of one threadgroup, so
+    /// a grid far smaller than the threadgroup and far smaller than the bin count is the
+    /// case where coverage can quietly go missing. Every voxel must still be counted.
+    func testComputeHistogramCoversAGridSmallerThanOneThreadgroup() throws {
+        let expectation = expectation(description: "4096-bin histogram over 4 voxels")
+        let texture = try makeUnsignedTexture(values: [0, 32_768, 65_535, 65_535],
+                                              width: 2,
+                                              height: 2,
+                                              depth: 1)
+
+        calculator.computeHistogram(for: texture,
+                                    channelCount: 1,
+                                    voxelMin: 0,
+                                    voxelMax: 65_535,
+                                    bins: 4096) { result in
+            switch result {
+            case .success(let histograms):
+                XCTAssertEqual(histograms[0].reduce(0, +), 4)
+                XCTAssertEqual(histograms[0][0], 1)
+                XCTAssertEqual(histograms[0][2048], 1)
+                XCTAssertEqual(histograms[0][4095], 2)
+            case .failure(let error):
+                XCTFail("Histogram computation failed: \(error)")
+            }
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 5.0)
+    }
+
+    /// A grid one thread past a threadgroup boundary leaves ragged threadgroups at the
+    /// edges — one thread wide in places. Those must cover the bins too.
+    func testComputeHistogramCoversRaggedEdgeThreadgroups() throws {
+        let expectation = expectation(description: "histogram over a ragged grid")
+        let side = 33
+        var values = [UInt16](repeating: 0, count: side * side)
+        values[values.count - 1] = 65_535
+        let texture = try makeUnsignedTexture(values: values, width: side, height: side, depth: 1)
+
+        calculator.computeHistogram(for: texture,
+                                    channelCount: 1,
+                                    voxelMin: 0,
+                                    voxelMax: 65_535,
+                                    bins: 4096) { result in
+            switch result {
+            case .success(let histograms):
+                XCTAssertEqual(histograms[0].reduce(0, +), UInt32(side * side))
+                XCTAssertEqual(histograms[0][0], UInt32(side * side - 1))
+                XCTAssertEqual(histograms[0][4095], 1)
+            case .failure(let error):
+                XCTFail("Histogram computation failed: \(error)")
+            }
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 5.0)
+    }
+
     private func makeUnsignedTexture(values: [UInt16],
                                      width: Int,
                                      height: Int,

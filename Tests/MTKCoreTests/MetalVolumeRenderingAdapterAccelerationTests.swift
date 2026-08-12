@@ -15,9 +15,13 @@ final class MetalVolumeRenderingAdapterAccelerationTests: XCTestCase {
         let image = try await TextureSnapshotExporter().makeCGImage(from: frame)
         let energy = try XCTUnwrap(rgbEnergy(in: image))
 
+        // Re-recorded when the bundled metallib caught up with the shader:
+        // the DVR path stopped multiplying the preset's RGB and alpha by the
+        // window ramp, so the same fixture composites brighter. See
+        // `VolumeRaycastPassTests` for the full account.
         XCTAssertEqual(Double(energy),
-                       236_796,
-                       accuracy: 236_796 * 0.02,
+                       359_988,
+                       accuracy: 359_988 * 0.02,
                        "DVR readback drifted from the pre-acceleration adapter golden")
     }
 

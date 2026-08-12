@@ -189,6 +189,7 @@ final class GateUniformTests: XCTestCase {
                                                    depthResolution: .low,
                                                    iterations: .medium,
                                                    shadowMode: .soft,
+                                                   disableShadowsWhenInteracting: false,
                                                    directionalLightIntensity: 1.5,
                                                    ambientLightIntensity: 0.4)
 
@@ -214,10 +215,16 @@ final class GateUniformTests: XCTestCase {
     func testHardAndSoftShadowModesPopulateDistinctShaderModes() async throws {
         try await adapter.send(.setWindow(min: -1024, max: 1023))
         let hardUniforms = try await adapter.buildVolumeUniforms(
-            for: makeRequest(renderQualitySettings: VolumeRenderQualitySettings(shadowMode: .hard))
+            for: makeRequest(renderQualitySettings: VolumeRenderQualitySettings(
+                shadowMode: .hard,
+                disableShadowsWhenInteracting: false
+            ))
         )
         let softUniforms = try await adapter.buildVolumeUniforms(
-            for: makeRequest(renderQualitySettings: VolumeRenderQualitySettings(shadowMode: .soft))
+            for: makeRequest(renderQualitySettings: VolumeRenderQualitySettings(
+                shadowMode: .soft,
+                disableShadowsWhenInteracting: false
+            ))
         )
 
         XCTAssertEqual(hardUniforms.isLightingOn, 1)

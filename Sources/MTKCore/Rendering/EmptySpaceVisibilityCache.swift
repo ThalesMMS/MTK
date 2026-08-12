@@ -68,11 +68,11 @@ final class EmptySpaceVisibilityCache {
                                  withExtension: "metal",
                                  subdirectory: "Shaders")
         guard let sourceURL,
-              let source = try? String(contentsOf: sourceURL) else {
+              let source = try? String(contentsOf: sourceURL, encoding: .utf8) else {
             return nil
         }
         let options = MTLCompileOptions()
-        if #available(iOS 16.0, tvOS 16.0, macOS 13.0, *) {
+        if #available(tvOS 16.0, *) {
             options.languageVersion = .version3_0
         }
         return try? device.makeLibrary(source: source, options: options)

@@ -12,18 +12,18 @@ public struct MPRDisplayTransform: Sendable, Equatable {
     public var orientation: MPRDisplayOrientation
     public var flipHorizontal: Bool
     public var flipVertical: Bool
-    public var leadingLabel: AnatomicalAxisLabel
-    public var trailingLabel: AnatomicalAxisLabel
-    public var topLabel: AnatomicalAxisLabel
-    public var bottomLabel: AnatomicalAxisLabel
+    public var leadingLabel: AnatomicalOrientationLabel
+    public var trailingLabel: AnatomicalOrientationLabel
+    public var topLabel: AnatomicalOrientationLabel
+    public var bottomLabel: AnatomicalOrientationLabel
 
     public init(orientation: MPRDisplayOrientation,
                 flipHorizontal: Bool,
                 flipVertical: Bool,
-                leadingLabel: AnatomicalAxisLabel,
-                trailingLabel: AnatomicalAxisLabel,
-                topLabel: AnatomicalAxisLabel,
-                bottomLabel: AnatomicalAxisLabel) {
+                leadingLabel: AnatomicalOrientationLabel,
+                trailingLabel: AnatomicalOrientationLabel,
+                topLabel: AnatomicalOrientationLabel,
+                bottomLabel: AnatomicalOrientationLabel) {
         self.orientation = orientation
         self.flipHorizontal = flipHorizontal
         self.flipVertical = flipVertical
@@ -76,6 +76,22 @@ public struct MPRDisplayTransform: Sendable, Equatable {
             point.y = 1 - point.y
         }
         return orientation.inverseApply(to: point)
+    }
+
+    public func applyingAdditionalFlips(horizontal: Bool,
+                                        vertical: Bool) -> MPRDisplayTransform {
+        var transformed = self
+        if horizontal {
+            transformed.flipHorizontal.toggle()
+            (transformed.leadingLabel, transformed.trailingLabel) =
+                (transformed.trailingLabel, transformed.leadingLabel)
+        }
+        if vertical {
+            transformed.flipVertical.toggle()
+            (transformed.topLabel, transformed.bottomLabel) =
+                (transformed.bottomLabel, transformed.topLabel)
+        }
+        return transformed
     }
 
     /// Resolves the physical aspect ratio after the anatomical display orientation is applied.

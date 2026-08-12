@@ -26,6 +26,7 @@ package final class OutputTextureLease: @unchecked Sendable {
     package let debugSlotID: Int?
     private var debugFrameIndexStorage: UInt64?
     private var debugPresentationTokenStorage: String?
+    private var activePresentationCount = 0
     private var presented = false
     private var released = false
     private var releaseAfterPresentation = false
@@ -86,13 +87,16 @@ package final class OutputTextureLease: @unchecked Sendable {
         let shouldRelease: Bool
 
         lock.lock()
-        if released || presented {
+        if released {
             shouldNotify = false
             shouldRelease = false
         } else {
+            if activePresentationCount > 0 {
+                activePresentationCount -= 1
+            }
+            shouldNotify = !presented
             presented = true
-            shouldNotify = true
-            if releaseAfterPresentation {
+            if releaseAfterPresentation && activePresentationCount == 0 {
                 released = true
                 shouldRelease = true
             } else {
@@ -109,6 +113,34 @@ package final class OutputTextureLease: @unchecked Sendable {
         }
     }
 
+    package func markPresentationSubmitted() {
+        lock.lock()
+        if !released {
+            activePresentationCount += 1
+        }
+        lock.unlock()
+    }
+
+    package func cancelPresentationSubmission() {
+        let shouldRelease: Bool
+
+        lock.lock()
+        if activePresentationCount > 0 {
+            activePresentationCount -= 1
+        }
+        if !released && releaseAfterPresentation && activePresentationCount == 0 {
+            released = true
+            shouldRelease = true
+        } else {
+            shouldRelease = false
+        }
+        lock.unlock()
+
+        if shouldRelease {
+            onRelease(self)
+        }
+    }
+
     package func release() {
         release(origin: .explicit)
     }
@@ -119,7 +151,7 @@ package final class OutputTextureLease: @unchecked Sendable {
         lock.lock()
         if released {
             shouldRelease = false
-        } else if presented {
+        } else if activePresentationCount == 0 {
             released = true
             shouldRelease = true
         } else {

@@ -124,7 +124,7 @@ final class MPRFrameCacheTests: XCTestCase {
         XCTAssertEqual(cache.storedSignature(for: "axial"), secondSignature)
     }
 
-    func testCacheRetainsLeaseUntilInvalidationAfterPresentation() throws {
+    func test_cachedFrameLease_releasesAfterPresentationAndInvalidation() throws {
         let device = try requireMetalDevice()
         let pool = OutputTexturePool()
         let lease = try pool.acquireWithLease(width: 1,
@@ -143,6 +143,81 @@ final class MPRFrameCacheTests: XCTestCase {
         XCTAssertNil(retainedFrame.presentationManagedOutputTextureLease)
         lease.markPresented()
         cache.invalidate("axial")
+        XCTAssertFalse(retainedFrame.debugHasOutputTextureLease)
+        XCTAssertEqual(pool.debugLeaseReleasedCount, 1)
+    }
+
+    func test_cacheInvalidation_releasesLeaseNeverSubmittedForPresentation() throws {
+        let device = try requireMetalDevice()
+        let pool = OutputTexturePool()
+        let lease = try pool.acquireWithLease(width: 1,
+                                              height: 1,
+                                              pixelFormat: .r16Uint,
+                                              device: device)
+        let frame = makeFrame(texture: lease.texture,
+                              outputTextureLease: lease)
+        let cache = MPRFrameCache<String>()
+
+        let retainedFrame = cache.store(
+            frame,
+            for: "axial",
+            signature: makeSignature(slicePosition: 0)
+        )
+
+        cache.invalidate("axial")
+
+        XCTAssertFalse(retainedFrame.debugHasOutputTextureLease)
+        XCTAssertEqual(pool.debugLeaseReleasedCount, 1)
+    }
+
+    func test_cacheInvalidation_waitsForSubmittedPresentation() throws {
+        let device = try requireMetalDevice()
+        let pool = OutputTexturePool()
+        let lease = try pool.acquireWithLease(width: 1,
+                                              height: 1,
+                                              pixelFormat: .r16Uint,
+                                              device: device)
+        let frame = makeFrame(texture: lease.texture,
+                              outputTextureLease: lease)
+        let cache = MPRFrameCache<String>()
+        let retainedFrame = cache.store(
+            frame,
+            for: "axial",
+            signature: makeSignature(slicePosition: 0)
+        )
+
+        lease.markPresentationSubmitted()
+        cache.invalidate("axial")
+
+        XCTAssertTrue(retainedFrame.debugHasOutputTextureLease)
+        XCTAssertEqual(pool.debugLeaseReleasedCount, 0)
+
+        lease.markPresented()
+
+        XCTAssertFalse(retainedFrame.debugHasOutputTextureLease)
+        XCTAssertEqual(pool.debugLeaseReleasedCount, 1)
+    }
+
+    func test_cacheDeinit_releasesRetainedLeaseNeverSubmittedForPresentation() throws {
+        let device = try requireMetalDevice()
+        let pool = OutputTexturePool()
+        let lease = try pool.acquireWithLease(width: 1,
+                                              height: 1,
+                                              pixelFormat: .r16Uint,
+                                              device: device)
+        let frame = makeFrame(texture: lease.texture,
+                              outputTextureLease: lease)
+        let retainedFrame: MPRTextureFrame
+
+        do {
+            let cache = MPRFrameCache<String>()
+            retainedFrame = cache.store(
+                frame,
+                for: "axial",
+                signature: makeSignature(slicePosition: 0)
+            )
+        }
+
         XCTAssertFalse(retainedFrame.debugHasOutputTextureLease)
         XCTAssertEqual(pool.debugLeaseReleasedCount, 1)
     }

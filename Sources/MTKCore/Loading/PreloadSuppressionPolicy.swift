@@ -213,7 +213,7 @@ extension PreloadSuppressionPolicy {
         #if os(macOS)
         // Metal is available on all modern macOS versions
         return ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 10
-        #elseif os(iOS) || os(tvOS)
+        #elseif os(iOS) || os(tvOS) || os(visionOS)
         // Metal is available on all A7 and later chips
         return ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 8
         #else
@@ -225,37 +225,41 @@ extension PreloadSuppressionPolicy {
     ///
     /// - Returns: `true` if thermal monitoring is available, `false` otherwise
     public static func isThermalMonitoringAvailable() -> Bool {
-        #if os(iOS) || os(tvOS)
-        // ProcessInfo.thermalState available on iOS 11.2+
-        if #available(iOS 11.2, tvOS 11.2, *) {
+        #if os(iOS) || os(visionOS)
+        return true
+        #elseif os(tvOS)
+        if #available(tvOS 11.2, *) {
             return true
         }
-        #elseif os(macOS)
-        // macOS thermal monitoring available on 10.10.3+
-        if #available(macOS 10.10.3, *) {
-            return true
-        }
-        #endif
         return false
+        #elseif os(macOS)
+        return true
+        #else
+        return false
+        #endif
     }
 
     /// Checks if the device is currently in low battery mode.
     ///
     /// - Returns: `true` if low battery mode is enabled, `false` otherwise
     public static func isLowBatteryModeActive() -> Bool {
-        return ProcessInfo.processInfo.isLowPowerModeEnabled
+        ProcessInfo.processInfo.isLowPowerModeEnabled
     }
 
     /// Checks if the device is experiencing thermal throttling.
     ///
     /// - Returns: `true` if thermal throttling is active, `false` otherwise
     public static func isThermalThrottlingActive() -> Bool {
-        #if os(iOS) || os(tvOS)
-        if #available(iOS 11.2, tvOS 11.2, *) {
+        #if os(iOS) || os(visionOS)
+        return ProcessInfo.processInfo.thermalState == .critical
+        #elseif os(tvOS)
+        if #available(tvOS 11.2, *) {
             return ProcessInfo.processInfo.thermalState == .critical
         }
-        #endif
         return false
+        #else
+        return false
+        #endif
     }
 }
 

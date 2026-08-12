@@ -334,7 +334,9 @@ struct ProjectionState {
 [[maybe_unused]] static inline float shadowSampleAlpha(constant RenderingArguments& args,
                                                        float3 position,
                                                        float windowMinValue,
-                                                       float invWindowRange)
+                                                       float invWindowRange,
+                                                       bool useTransfer,
+                                                       bool useDatasetDensity)
 {
     const bool unsignedVolume = (args.optionValue & OPTION_UNSIGNED_VOLUME) != 0;
     const float huValue = VR::getDensityTrilinear(args.volumeTexture,
@@ -349,7 +351,18 @@ struct ProjectionState {
     if (densityWindow <= densityFloor) {
         return 0.0f;
     }
-    return densityWindow;
+    if (!useTransfer) {
+        return densityWindow;
+    }
+
+    const float datasetMinValue = float(args.params.material.datasetMinValue);
+    const float datasetRange = float(args.params.material.datasetMaxValue) - datasetMinValue;
+    const float invDatasetRange = datasetRange > 0.0f ? 1.0f / datasetRange : 0.0f;
+    const float densityDataset = clamp((huValue - datasetMinValue) * invDatasetRange,
+                                       0.0f,
+                                       1.0f);
+    const float opacityDensity = useDatasetDensity ? densityDataset : densityWindow;
+    return clamp(compositeChannels(args, args.params, opacityDensity, 0.0f, true).a, 0.0f, 1.0f);
 }
 
 [[maybe_unused]] static inline float accumulateShadowOpacity(constant RenderingArguments& args,
@@ -359,7 +372,9 @@ struct ProjectionState {
                                                              int stepCount,
                                                              float windowMinValue,
                                                              float invWindowRange,
-                                                             float opacityScale)
+                                                             float opacityScale,
+                                                             bool useTransfer,
+                                                             bool useDatasetDensity)
 {
     if (dot(shadowDirection, shadowDirection) <= 1.0e-6f) {
         return 0.0f;
@@ -377,7 +392,9 @@ struct ProjectionState {
         const float alpha = clamp(shadowSampleAlpha(args,
                                                     position,
                                                     windowMinValue,
-                                                    invWindowRange) * opacityScale,
+                                                    invWindowRange,
+                                                    useTransfer,
+                                                    useDatasetDensity) * opacityScale,
                                   0.0f,
                                   1.0f);
         accumulated += (1.0f - accumulated) * alpha;
@@ -395,13 +412,17 @@ struct ProjectionState {
                                                           float3 shadowDirection,
                                                           float baseStep,
                                                           float windowMinValue,
-                                                          float invWindowRange)
+                                                          float invWindowRange,
+                                                          bool useTransfer,
+                                                          bool useDatasetDensity)
 {
     // Hard shadows use a thresholded opacity cut so occluders produce a crisp attenuation step.
     const float localAlpha = shadowSampleAlpha(args,
                                                samplePosition,
                                                windowMinValue,
-                                               invWindowRange);
+                                               invWindowRange,
+                                               useTransfer,
+                                               useDatasetDensity);
     const float occlusion = accumulateShadowOpacity(args,
                                                     samplePosition,
                                                     shadowDirection,
@@ -409,7 +430,9 @@ struct ProjectionState {
                                                     8,
                                                     windowMinValue,
                                                     invWindowRange,
-                                                    0.45f);
+                                                    0.45f,
+                                                    useTransfer,
+                                                    useDatasetDensity);
     const float effectiveOcclusion = max(occlusion, localAlpha * 0.35f);
     return effectiveOcclusion > 0.12f ? 0.35f : 1.0f;
 }
@@ -419,7 +442,9 @@ struct ProjectionState {
                                                           float3 shadowDirection,
                                                           float baseStep,
                                                           float windowMinValue,
-                                                          float invWindowRange)
+                                                          float invWindowRange,
+                                                          bool useTransfer,
+                                                          bool useDatasetDensity)
 {
     // Soft shadows average neighboring shadow rays and apply continuous absorption.
     if (dot(shadowDirection, shadowDirection) <= 1.0e-6f) {
@@ -436,7 +461,9 @@ struct ProjectionState {
     const float localAlpha = shadowSampleAlpha(args,
                                                samplePosition,
                                                windowMinValue,
-                                               invWindowRange);
+                                               invWindowRange,
+                                               useTransfer,
+                                               useDatasetDensity);
 
     occlusion += accumulateShadowOpacity(args,
                                          samplePosition,
@@ -445,7 +472,9 @@ struct ProjectionState {
                                          8,
                                          windowMinValue,
                                          invWindowRange,
-                                         0.28f);
+                                         0.28f,
+                                         useTransfer,
+                                         useDatasetDensity);
     occlusion += accumulateShadowOpacity(args,
                                          samplePosition,
                                          normalize(direction + tangent * spread),
@@ -453,7 +482,9 @@ struct ProjectionState {
                                          8,
                                          windowMinValue,
                                          invWindowRange,
-                                         0.28f);
+                                         0.28f,
+                                         useTransfer,
+                                         useDatasetDensity);
     occlusion += accumulateShadowOpacity(args,
                                          samplePosition,
                                          normalize(direction - bitangent * spread),
@@ -461,7 +492,9 @@ struct ProjectionState {
                                          8,
                                          windowMinValue,
                                          invWindowRange,
-                                         0.28f);
+                                         0.28f,
+                                         useTransfer,
+                                         useDatasetDensity);
 
     const float averageOcclusion = max(occlusion / 3.0f, localAlpha * 0.22f);
     return clamp(exp(-averageOcclusion * 1.6f), 0.45f, 1.0f);
@@ -472,7 +505,9 @@ struct ProjectionState {
                                                       float3 shadowDirection,
                                                       float baseStep,
                                                       float windowMinValue,
-                                                      float invWindowRange)
+                                                      float invWindowRange,
+                                                      bool useTransfer,
+                                                      bool useDatasetDensity)
 {
     if (args.params.material.shadowMode == SHADOW_OFF) {
         return 1.0f;
@@ -485,7 +520,9 @@ struct ProjectionState {
                                     shadowDirection,
                                     baseStep,
                                     windowMinValue,
-                                    invWindowRange);
+                                    invWindowRange,
+                                    useTransfer,
+                                    useDatasetDensity);
     }
     if (shadowMode == SHADOW_SOFT) {
         return softShadowVisibility(args,
@@ -493,7 +530,9 @@ struct ProjectionState {
                                     shadowDirection,
                                     baseStep,
                                     windowMinValue,
-                                    invWindowRange);
+                                    invWindowRange,
+                                    useTransfer,
+                                    useDatasetDensity);
     }
     return 1.0f;
 }

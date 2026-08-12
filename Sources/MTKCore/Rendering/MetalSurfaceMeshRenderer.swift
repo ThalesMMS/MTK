@@ -130,6 +130,10 @@ public final class MetalSurfaceMeshRenderer: @unchecked Sendable {
     private var drawBufferRebuildCount = 0
     private var depthTextureAllocationCount = 0
 
+    /// Number of leading renders that skip the commit, standing in for a driver that
+    /// discarded them. Tests only; zero everywhere else.
+    var discardedRendersForTesting = 0
+
     var debugDrawBufferRebuildCount: Int {
         cacheLock.lock()
         defer { cacheLock.unlock() }
@@ -623,14 +627,42 @@ public final class MetalSurfaceMeshRenderer: @unchecked Sendable {
         return texture
     }
 
+    /// Waits for the render, or says it never happened.
+    ///
+    /// A render pass leaves no invariant behind that the CPU can check — every colour it
+    /// can write is a legal pixel — so the command buffer's terminal state is the only
+    /// thing that says the target holds the surfaces rather than its own allocation. Only
+    /// `.completed` says so: a buffer the driver discarded as the innocent victim of
+    /// another process's GPU error stops on `.error`, status raw value 5, and can carry no
+    /// error object at all.
+    ///
+    /// What that leaves in the target is not blank. Metal hands out fresh `.private`
+    /// render targets filled with 0xFF00FFFF, and measuring it here is what settled the
+    /// last unexplained failure in #1686: 64 freshly allocated 64x64 `bgra8Unorm` targets,
+    /// read back without rendering anything into them, all came back
+    /// `b=255, g=0, r=255, a=255`. That is exactly the
+    /// `("255") is not greater than ("255")` that
+    /// `testTransparentSurfacesAreLayerSortedBackToFront` reported under contention — the
+    /// clear never ran either, so the test compared magenta against itself and blamed the
+    /// depth sort. Since `render` returned normally, nothing else could have caught it.
     private func complete(_ commandBuffer: any MTLCommandBuffer) async throws {
+        // The test seam leaves the buffer uncommitted and asks it the same question, so a
+        // check that stopped telling a pass that ran from one that did not would report
+        // this render as drawn as well — which is the bug, and what the test sees.
+        if discardedRendersForTesting > 0 {
+            discardedRendersForTesting -= 1
+            if let reason = CommandBufferCompletion.reasonItDidNotRun(commandBuffer) {
+                throw MetalSurfaceMeshRendererError.commandBufferFailed(reason)
+            }
+            return
+        }
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
             commandBuffer.addCompletedHandler { completed in
-                if let error = completed.error {
-                    continuation.resume(throwing: MetalSurfaceMeshRendererError.commandBufferFailed(error.localizedDescription))
-                } else {
-                    continuation.resume(returning: ())
+                if let reason = CommandBufferCompletion.reasonItDidNotRun(completed) {
+                    continuation.resume(throwing: MetalSurfaceMeshRendererError.commandBufferFailed(reason))
+                    return
                 }
+                continuation.resume(returning: ())
             }
             commandBuffer.commit()
         }
@@ -649,15 +681,15 @@ public final class MetalSurfaceMeshRenderer: @unchecked Sendable {
         let view = try simd_float4x4(surfaceMeshLookAt: centered.position,
                                      target: centered.target,
                                      up: centered.up)
-        let center = SIMD3<Float>.zero
-        let distanceToCenter = simd_length(centered.position - center)
+        let distanceToCenter = simd_length(centered.position - centered.target)
         let farPadding = distanceToCenter * 0.1 + 1
         let nearZ: Float = 0.01
         let farZ = max(distanceToCenter + farPadding, nearZ + 100)
 
         let projection: simd_float4x4
         if centered.projectionType == .orthographic {
-            let viewHeight: Float = 2
+            let fovY = max(centered.fieldOfView * .pi / 180, 0.01)
+            let viewHeight = max(2 * distanceToCenter * tan(fovY * 0.5), 0.01)
             projection = simd_float4x4(surfaceMeshOrthographicWidth: viewHeight * aspect,
                                        height: viewHeight,
                                        nearZ: nearZ,

@@ -1,4 +1,5 @@
 import Metal
+import simd
 import XCTest
 
 @_spi(Testing) @testable import MTKCore
@@ -56,6 +57,285 @@ final class MPRPresentationPassTests: XCTestCase {
         XCTAssertEqual(try MPRTestHelpers.readGrayBytes(from: drawable.texture), [0, 64, 128, 255], accuracy: 1)
     }
 
+    func test_signedIdentityConvolutionPreservesPresentedImage() throws {
+        let values: [Int16] = [
+            -100, -75, -50,
+            -25,    0,  25,
+              50,  75, 100
+        ]
+        let input = try MPRTestHelpers.makeSignedTexture(values, width: 3, height: 3, device: device)
+        let frame = MPRTestHelpers.makeFrame(
+            texture: input,
+            pixelFormat: .int16Signed,
+            intensityRange: -100...100
+        )
+        var pass = try MPRPresentationPass(device: device, commandQueue: commandQueue, library: library)
+
+        let baseline = try pass.makeSnapshotTexture(
+            frame: frame,
+            window: -100...100,
+            transform: .identity,
+            width: 3,
+            height: 3
+        )
+        let identity = try pass.makeSnapshotTexture(
+            frame: frame,
+            window: -100...100,
+            transform: .identity,
+            width: 3,
+            height: 3,
+            convolutionKernel: .identity
+        )
+
+        XCTAssertEqual(
+            try MPRTestHelpers.readBGRAByteArrays(from: identity),
+            try MPRTestHelpers.readBGRAByteArrays(from: baseline)
+        )
+    }
+
+    func test_unsignedBlurConvolutionAppliesRawKernelBeforeWindowing() throws {
+        let values: [UInt16] = [
+              0,   0, 0,
+              0, 100, 0,
+              0,   0, 0
+        ]
+        let input = try MPRTestHelpers.makeUnsignedTexture(values, width: 3, height: 3, device: device)
+        let frame = MPRTestHelpers.makeFrame(
+            texture: input,
+            pixelFormat: .int16Unsigned,
+            intensityRange: 0...100
+        )
+        var pass = try MPRPresentationPass(device: device, commandQueue: commandQueue, library: library)
+
+        let filtered = try pass.makeSnapshotTexture(
+            frame: frame,
+            window: 0...100,
+            transform: .identity,
+            width: 3,
+            height: 3,
+            convolutionKernel: .blur
+        )
+
+        XCTAssertEqual(
+            try MPRTestHelpers.readGrayBytes(from: filtered),
+            [16, 32, 16, 32, 64, 32, 16, 32, 16],
+            accuracy: 1
+        )
+    }
+
+    func test_disabledShadingPreservesPreviousPresentationExactly() throws {
+        let values: [Int16] = [
+            0, 20, 40,
+            60, 80, 100,
+            120, 140, 160
+        ]
+        let input = try MPRTestHelpers.makeSignedTexture(values, width: 3, height: 3, device: device)
+        let frame = MPRTestHelpers.makeFrame(
+            texture: input,
+            pixelFormat: .int16Signed,
+            intensityRange: 0...160
+        )
+        var pass = try MPRPresentationPass(device: device, commandQueue: commandQueue, library: library)
+
+        let baseline = try pass.makeSnapshotTexture(
+            frame: frame,
+            window: 0...160,
+            transform: .identity,
+            width: 3,
+            height: 3
+        )
+        let disabled = try pass.makeSnapshotTexture(
+            frame: frame,
+            window: 0...160,
+            transform: .identity,
+            width: 3,
+            height: 3,
+            shading: MPRShadingSettings(isEnabled: false, ambient: 1, diffuse: 1, specular: 1)
+        )
+
+        XCTAssertEqual(
+            try MPRTestHelpers.readBGRAByteArrays(from: disabled),
+            try MPRTestHelpers.readBGRAByteArrays(from: baseline)
+        )
+    }
+
+    func test_enabledShadingAppliesAmbientDiffuseAndSpecularDeterministically() throws {
+        let values: [UInt16] = [
+            20, 80, 140,
+            40, 120, 200,
+            60, 160, 240
+        ]
+        let input = try MPRTestHelpers.makeUnsignedTexture(values, width: 3, height: 3, device: device)
+        let frame = MPRTestHelpers.makeFrame(
+            texture: input,
+            pixelFormat: .int16Unsigned,
+            intensityRange: 0...240
+        )
+        var pass = try MPRPresentationPass(device: device, commandQueue: commandQueue, library: library)
+        let settings = MPRShadingSettings(isEnabled: true, ambient: 0.25, diffuse: 0.5, specular: 0.2)
+
+        let first = try pass.makeSnapshotTexture(
+            frame: frame,
+            window: 0...240,
+            transform: .identity,
+            width: 3,
+            height: 3,
+            shading: settings
+        )
+        let firstBytes = try MPRTestHelpers.readGrayBytes(from: first)
+        let second = try pass.makeSnapshotTexture(
+            frame: frame,
+            window: 0...240,
+            transform: .identity,
+            width: 3,
+            height: 3,
+            shading: settings
+        )
+        let secondBytes = try MPRTestHelpers.readGrayBytes(from: second)
+        let ambientOnly = try pass.makeSnapshotTexture(
+            frame: frame,
+            window: 0...240,
+            transform: .identity,
+            width: 3,
+            height: 3,
+            shading: MPRShadingSettings(isEnabled: true, ambient: 0.25, diffuse: 0, specular: 0)
+        )
+
+        XCTAssertEqual(secondBytes, firstBytes)
+        XCTAssertNotEqual(firstBytes, try MPRTestHelpers.readGrayBytes(from: ambientOnly))
+        XCTAssertNotEqual(firstBytes, values.map { UInt8((Float($0) / 240 * 255).rounded()) })
+    }
+
+    func test_eachShadingComponentReachesKernelAtExpectedUniformOffset() throws {
+        let values: [UInt16] = [
+            100, 115, 130,
+            105, 120, 135,
+            110, 125, 140
+        ]
+        let input = try MPRTestHelpers.makeUnsignedTexture(values, width: 3, height: 3, device: device)
+        let frame = MPRTestHelpers.makeFrame(
+            texture: input,
+            pixelFormat: .int16Unsigned,
+            intensityRange: 0...240
+        )
+        var pass = try MPRPresentationPass(device: device, commandQueue: commandQueue, library: library)
+        let ambient = try pass.makeSnapshotTexture(
+            frame: frame,
+            window: 0...240,
+            transform: .identity,
+            width: 3,
+            height: 3,
+            shading: MPRShadingSettings(isEnabled: true, ambient: 0.4, diffuse: 0, specular: 0)
+        )
+        let diffuse = try pass.makeSnapshotTexture(
+            frame: frame,
+            window: 0...240,
+            transform: .identity,
+            width: 3,
+            height: 3,
+            shading: MPRShadingSettings(isEnabled: true, ambient: 0, diffuse: 0.6, specular: 0)
+        )
+        let specular = try pass.makeSnapshotTexture(
+            frame: frame,
+            window: 0...240,
+            transform: .identity,
+            width: 3,
+            height: 3,
+            shading: MPRShadingSettings(isEnabled: true, ambient: 0, diffuse: 0, specular: 1)
+        )
+
+        let scales = MPRPresentationPass.shadingGradientScales(for: frame)
+        let gradientU = Float(105 - 135) * scales.x
+        let gradientV = Float(115 - 125) * scales.y
+        let diffuseFactor = 1 / sqrt(gradientU * gradientU + gradientV * gradientV + 1)
+        let specularFactor = pow(diffuseFactor, MPRPresentationPass.shadingSpecularExponent)
+        let centerNormalized: Float = 0.5
+
+        XCTAssertEqual(
+            Int(try MPRTestHelpers.readGrayBytes(from: ambient)[4]),
+            Int((centerNormalized * 0.4 * 255).rounded()),
+            accuracy: 1
+        )
+        XCTAssertEqual(
+            Int(try MPRTestHelpers.readGrayBytes(from: diffuse)[4]),
+            Int((centerNormalized * 0.6 * diffuseFactor * 255).rounded()),
+            accuracy: 1
+        )
+        XCTAssertEqual(
+            Int(try MPRTestHelpers.readGrayBytes(from: specular)[4]),
+            Int((centerNormalized * specularFactor * 255).rounded()),
+            accuracy: 1
+        )
+    }
+
+    func test_shadingGradientScalesUseRawIntensityRangeAndPhysicalTexelSpacing() throws {
+        let input = try MPRTestHelpers.makeUnsignedTexture(
+            [UInt16](repeating: 0, count: 25),
+            width: 5,
+            height: 5,
+            device: device
+        )
+        var frame = MPRTestHelpers.makeFrame(
+            texture: input,
+            pixelFormat: .int16Unsigned,
+            intensityRange: 0...1_200
+        )
+        frame.planeGeometry.axisUWorld = SIMD3<Float>(2, 0, 0)
+        frame.planeGeometry.axisVWorld = SIMD3<Float>(0, 8, 0)
+
+        let scales = MPRPresentationPass.shadingGradientScales(for: frame)
+        let shiftedScales = MPRPresentationPass.shadingGradientScales(for: frame, bitShift: 4)
+        let rawSpan = Float(frame.intensityRange.upperBound - frame.intensityRange.lowerBound)
+        let spacingU = simd_length(frame.planeGeometry.axisUWorld) / Float(frame.texture.width - 1)
+        let spacingV = simd_length(frame.planeGeometry.axisVWorld) / Float(frame.texture.height - 1)
+        let normalizedScale = MPRPresentationPass.shadingNormalizedGradientScale / rawSpan
+        let shiftedNormalizedScale = MPRPresentationPass.shadingNormalizedGradientScale / (rawSpan / 16)
+
+        XCTAssertEqual(scales.x, normalizedScale / spacingU, accuracy: 0.000_001)
+        XCTAssertEqual(scales.y, normalizedScale / spacingV, accuracy: 0.000_001)
+        XCTAssertEqual(shiftedScales.x, shiftedNormalizedScale / spacingU, accuracy: 0.000_001)
+        XCTAssertEqual(shiftedScales.y, shiftedNormalizedScale / spacingV, accuracy: 0.000_001)
+    }
+
+    func test_shadingNormalDoesNotChangeWithWindowLevel() throws {
+        let values: [UInt16] = [
+            100, 115, 130,
+            105, 120, 135,
+            110, 125, 140
+        ]
+        let input = try MPRTestHelpers.makeUnsignedTexture(values, width: 3, height: 3, device: device)
+        let frame = MPRTestHelpers.makeFrame(
+            texture: input,
+            pixelFormat: .int16Unsigned,
+            intensityRange: 0...240
+        )
+        var pass = try MPRPresentationPass(device: device, commandQueue: commandQueue, library: library)
+        let shading = MPRShadingSettings(isEnabled: true, ambient: 0.3, diffuse: 0.6, specular: 0.1)
+
+        // The center value 120 normalizes to 0.5 in both 0...240 and 100...140.
+        let wideWindow = try pass.makeSnapshotTexture(
+            frame: frame,
+            window: 0...240,
+            transform: .identity,
+            width: 3,
+            height: 3,
+            shading: shading
+        )
+        let narrowWindow = try pass.makeSnapshotTexture(
+            frame: frame,
+            window: 100...140,
+            transform: .identity,
+            width: 3,
+            height: 3,
+            shading: shading
+        )
+
+        XCTAssertEqual(
+            try MPRTestHelpers.readGrayBytes(from: wideWindow)[4],
+            try MPRTestHelpers.readGrayBytes(from: narrowWindow)[4]
+        )
+    }
+
     func test_overlayFreePresentation_shaderWritableDrawable_usesDirectOutput() throws {
         let input = try MPRTestHelpers.makeUnsignedTexture([0, 100], width: 2, height: 1, device: device)
         let drawable = try MPRTestMetalDrawable(device: device, width: 2, height: 1)
@@ -74,6 +354,33 @@ final class MPRPresentationPassTests: XCTestCase {
 
         XCTAssertEqual(pass.debugLastPresentationUsedDirectOutput, true)
         XCTAssertEqual(try MPRTestHelpers.readGrayBytes(from: drawable.texture), [0, 255], accuracy: 1)
+    }
+
+    func test_presentationTextureCallback_receivesGPUIntermediateUsedForMagnification() throws {
+        let input = try MPRTestHelpers.makeUnsignedTexture([0, 100], width: 2, height: 1, device: device)
+        let drawable = try MPRTestMetalDrawable(device: device, width: 2, height: 1)
+        let frame = MPRTestHelpers.makeFrame(texture: input,
+                                             pixelFormat: .int16Unsigned,
+                                             intensityRange: 0...100)
+        var pass = try MPRPresentationPass(device: device,
+                                           commandQueue: commandQueue,
+                                           library: library)
+        var presentationTexture: (any MTLTexture)?
+
+        try pass.present(
+            frame: frame,
+            window: 0...100,
+            to: drawable,
+            transform: .identity,
+            onPresentationTextureReady: { presentationTexture = $0 }
+        )
+        try MPRTestHelpers.waitForQueue(commandQueue)
+
+        let texture = try XCTUnwrap(presentationTexture)
+        XCTAssertEqual(pass.debugLastPresentationUsedDirectOutput, false)
+        XCTAssertNotEqual(ObjectIdentifier(texture as AnyObject), ObjectIdentifier(drawable.texture))
+        XCTAssertEqual(texture.pixelFormat, .bgra8Unorm)
+        XCTAssertEqual(try MPRTestHelpers.readGrayBytes(from: texture), [0, 255], accuracy: 1)
     }
 
     func test_overlayFreePresentation_nonShaderWritableDrawable_usesFallback() throws {
@@ -138,6 +445,109 @@ final class MPRPresentationPassTests: XCTestCase {
                            0, 170, 255, 0
                        ],
                        accuracy: 1)
+    }
+
+    func test_outOfVolumeObliquePixelsRemainBlackWithInvertedWindow() throws {
+        let input = try MPRTestHelpers.makeSignedTexture(
+            [100, 100, 100, 100],
+            width: 2,
+            height: 2,
+            device: device
+        )
+        let drawable = try MPRTestMetalDrawable(device: device, width: 2, height: 2)
+        var frame = MPRTestHelpers.makeFrame(
+            texture: input,
+            pixelFormat: .int16Signed,
+            intensityRange: 0...200
+        )
+        frame.planeGeometry.originTexture = SIMD3<Float>(-0.5, 0, 0.25)
+        frame.planeGeometry.axisUTexture = SIMD3<Float>(1, 0, 0.5)
+        frame.planeGeometry.axisVTexture = SIMD3<Float>(0.5, 1, 0)
+        var pass = try MPRPresentationPass(device: device,
+                                           commandQueue: commandQueue,
+                                           library: library)
+
+        try pass.present(frame: frame,
+                         window: 0...200,
+                         to: drawable,
+                         invert: true)
+        try MPRTestHelpers.waitForQueue(commandQueue)
+
+        XCTAssertEqual(
+            try MPRTestHelpers.readGrayBytes(from: drawable.texture),
+            [0, 128, 128, 128],
+            accuracy: 1
+        )
+    }
+
+    func test_outOfVolumeObliqueUnsignedPixelsRemainBlackWithInvertedWindow() throws {
+        let input = try MPRTestHelpers.makeUnsignedTexture(
+            [100, 100, 100, 100],
+            width: 2,
+            height: 2,
+            device: device
+        )
+        let drawable = try MPRTestMetalDrawable(device: device, width: 2, height: 2)
+        var frame = MPRTestHelpers.makeFrame(
+            texture: input,
+            pixelFormat: .int16Unsigned,
+            intensityRange: 0...200
+        )
+        frame.planeGeometry.originTexture = SIMD3<Float>(-0.5, 0, 0.25)
+        frame.planeGeometry.axisUTexture = SIMD3<Float>(1, 0, 0.5)
+        frame.planeGeometry.axisVTexture = SIMD3<Float>(0.5, 1, 0)
+        var pass = try MPRPresentationPass(device: device,
+                                           commandQueue: commandQueue,
+                                           library: library)
+
+        try pass.present(frame: frame,
+                         window: 0...200,
+                         to: drawable,
+                         invert: true)
+        try MPRTestHelpers.waitForQueue(commandQueue)
+
+        XCTAssertEqual(
+            try MPRTestHelpers.readGrayBytes(from: drawable.texture),
+            [0, 128, 128, 128],
+            accuracy: 1
+        )
+    }
+
+    func test_outOfVolumeObliquePixelsRemainBlackWithHorizontalFlipAndTransposition() throws {
+        let input = try MPRTestHelpers.makeSignedTexture(
+            [100, 100, 100, 100],
+            width: 2,
+            height: 2,
+            device: device
+        )
+        let drawable = try MPRTestMetalDrawable(device: device, width: 2, height: 2)
+        var frame = MPRTestHelpers.makeFrame(
+            texture: input,
+            pixelFormat: .int16Signed,
+            intensityRange: 0...200
+        )
+        frame.planeGeometry.originTexture = SIMD3<Float>(-0.5, 0, 0.25)
+        frame.planeGeometry.axisUTexture = SIMD3<Float>(1, 0, 0.5)
+        frame.planeGeometry.axisVTexture = SIMD3<Float>(0.5, 1, 0)
+        let transform = makeDisplayTransform(orientation: .rotated90CW)
+        var pass = try MPRPresentationPass(device: device,
+                                           commandQueue: commandQueue,
+                                           library: library)
+
+        XCTAssertTrue(transform.presentationFlipHorizontal)
+        XCTAssertTrue(transform.transposeUV)
+        try pass.present(frame: frame,
+                         window: 0...200,
+                         to: drawable,
+                         transform: transform,
+                         invert: true)
+        try MPRTestHelpers.waitForQueue(commandQueue)
+
+        XCTAssertEqual(
+            try MPRTestHelpers.readGrayBytes(from: drawable.texture),
+            [128, 0, 128, 128],
+            accuracy: 1
+        )
     }
 
     func test_rotated90CW_presentsPixelsAtDisplayTransformCoordinates() throws {
@@ -365,6 +775,34 @@ final class MPRPresentationPassTests: XCTestCase {
         XCTAssertEqual(try MPRTestHelpers.readBGRAByteArrays(from: drawable.texture).flatMap { $0 },
                        [0, 255, 0, 255, 0, 255, 0, 255],
                        accuracy: 1)
+    }
+
+    func test_identityColormapMatchesPresentationWithoutColormap() throws {
+        let values: [UInt16] = [0, 25, 50, 75, 100]
+        let input = try MPRTestHelpers.makeUnsignedTexture(values, width: 5, height: 1, device: device)
+        let frame = MPRTestHelpers.makeFrame(texture: input,
+                                             pixelFormat: .int16Unsigned,
+                                             intensityRange: 0...100)
+        let baselineDrawable = try MPRTestMetalDrawable(device: device, width: 5, height: 1)
+        let identityDrawable = try MPRTestMetalDrawable(device: device, width: 5, height: 1)
+        let identityColors = (0..<256).map { index -> SIMD4<Float> in
+            let value = Float(index) / 255
+            return SIMD4<Float>(value, value, value, 1)
+        }
+        let identity = try MPRTestHelpers.makeColormapTexture(identityColors, device: device)
+        var pass = try MPRPresentationPass(device: device,
+                                           commandQueue: commandQueue,
+                                           library: library)
+
+        try pass.present(frame: frame, window: 0...100, to: baselineDrawable)
+        try pass.present(frame: frame, window: 0...100, to: identityDrawable, colormap: identity)
+        try MPRTestHelpers.waitForQueue(commandQueue)
+
+        XCTAssertEqual(
+            try MPRTestHelpers.readBGRAByteArrays(from: identityDrawable.texture).flatMap { $0 },
+            try MPRTestHelpers.readBGRAByteArrays(from: baselineDrawable.texture).flatMap { $0 },
+            accuracy: 1
+        )
     }
 
     func test_flipWritesPresentationOnlyOrientation() throws {

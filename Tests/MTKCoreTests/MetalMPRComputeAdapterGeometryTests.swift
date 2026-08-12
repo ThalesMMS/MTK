@@ -24,6 +24,7 @@ final class MetalMPRComputeAdapterGeometryTests: MetalMPRComputeAdapterTestCase 
             steps: 1,
             blend: .single
         )
+        defer { frame.debugReleaseOutputTextureLease() }
 
         MPRTestHelpers.assertValidFrame(frame,
                                         expectedWidth: 64,
@@ -47,6 +48,7 @@ final class MetalMPRComputeAdapterGeometryTests: MetalMPRComputeAdapterTestCase 
             steps: 1,
             blend: .single
         )
+        defer { frame.debugReleaseOutputTextureLease() }
 
         MPRTestHelpers.assertValidFrame(frame,
                                         expectedWidth: 1,
@@ -68,6 +70,7 @@ final class MetalMPRComputeAdapterGeometryTests: MetalMPRComputeAdapterTestCase 
             steps: 1,
             blend: .single
         )
+        defer { axialFrame.debugReleaseOutputTextureLease() }
         XCTAssertEqual(try MPRTestHelpers.readInputValues(UInt16.self, from: axialFrame).count, axialFrame.texture.width * axialFrame.texture.height)
         let axialSnapshot = await adapter.debugLastSnapshot
         XCTAssertEqual(axialSnapshot?.axis, .z)
@@ -81,6 +84,7 @@ final class MetalMPRComputeAdapterGeometryTests: MetalMPRComputeAdapterTestCase 
             steps: 1,
             blend: .single
         )
+        defer { sagittalFrame.debugReleaseOutputTextureLease() }
         XCTAssertEqual(try MPRTestHelpers.readInputValues(UInt16.self, from: sagittalFrame).count, sagittalFrame.texture.width * sagittalFrame.texture.height)
         let sagittalSnapshot = await adapter.debugLastSnapshot
         XCTAssertEqual(sagittalSnapshot?.axis, .x)
@@ -94,6 +98,7 @@ final class MetalMPRComputeAdapterGeometryTests: MetalMPRComputeAdapterTestCase 
             steps: 1,
             blend: .single
         )
+        defer { coronalFrame.debugReleaseOutputTextureLease() }
         XCTAssertEqual(try MPRTestHelpers.readInputValues(UInt16.self, from: coronalFrame).count, coronalFrame.texture.width * coronalFrame.texture.height)
         let coronalSnapshot = await adapter.debugLastSnapshot
         XCTAssertEqual(coronalSnapshot?.axis, .y)

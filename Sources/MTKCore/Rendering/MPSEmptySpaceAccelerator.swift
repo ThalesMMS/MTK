@@ -116,6 +116,10 @@ public final class MPSEmptySpaceAccelerator {
         /// The provided intensity range is invalid for the source pixel format.
         /// For `.r16Uint`, the lower bound must be non-negative.
         case invalidIntensityRange
+
+        /// The command buffer reached a terminal state other than `.completed`, so the
+        /// pyramid was never built and the texture holds whatever it was allocated with.
+        case pyramidBuildDidNotRun(String)
     }
 
     /// Reasons why shared acceleration generation can be unavailable.
@@ -173,6 +177,11 @@ public final class MPSEmptySpaceAccelerator {
     /// Logger for diagnostic messages during acceleration structure generation.
     private let logger = Logger(subsystem: "com.mtk.volumerendering",
                                 category: "MPSEmptySpaceAccelerator")
+
+    /// Number of leading pyramid builds that skip the commit, standing in for a driver
+    /// that discarded them. Tests only; zero everywhere else.
+    @_spi(Testing)
+    public var discardedBuildsForTesting = 0
 
     /// Creates an accelerator instance when MPS support and required Metal resources are available.
     ///
@@ -240,12 +249,12 @@ public final class MPSEmptySpaceAccelerator {
         let sourceURL = Bundle.module.url(forResource: "empty_space_compute", withExtension: "metal")
             ?? Bundle.module.url(forResource: "empty_space_compute", withExtension: "metal", subdirectory: "Shaders")
         guard let sourceURL,
-              let source = try? String(contentsOf: sourceURL) else {
+              let source = try? String(contentsOf: sourceURL, encoding: .utf8) else {
             return nil
         }
 
         let options = MTLCompileOptions()
-        if #available(iOS 16.0, tvOS 16.0, macOS 13.0, *) {
+        if #available(tvOS 16.0, *) {
             options.languageVersion = .version3_0
         }
         return try? device.makeLibrary(source: source, options: options)
@@ -400,7 +409,7 @@ private extension MPSEmptySpaceAccelerator {
         if let defaultLibrary = device.makeDefaultLibrary() {
             candidates.append(defaultLibrary)
         }
-        if #available(iOS 13.0, tvOS 13.0, macOS 11.0, *),
+        if #available(tvOS 13.0, *),
            let bundleLibrary = try? device.makeDefaultLibrary(bundle: Bundle.module) {
             candidates.append(bundleLibrary)
         }
@@ -580,6 +589,60 @@ private extension MPSEmptySpaceAccelerator {
         intensityRange: ClosedRange<Int32>,
         basePipeline: any MTLComputePipelineState
     ) throws {
+        var attemptsLeft = Self.retriesAfterADiscardedBuild
+        while true {
+            let attemptsMade = Self.retriesAfterADiscardedBuild - attemptsLeft
+            do {
+                return try buildMinMaxPyramidOnce(source: source,
+                                                  destination: destination,
+                                                  mipLevels: mipLevels,
+                                                  intensityRange: intensityRange,
+                                                  basePipeline: basePipeline,
+                                                  simulatesDiscard: attemptsMade < discardedBuildsForTesting)
+            } catch let error as AcceleratorError {
+                guard case .pyramidBuildDidNotRun(let reason) = error, attemptsLeft > 0 else {
+                    throw error
+                }
+                logger.error("Acceleration structure build \(reason); retrying once.")
+                attemptsLeft -= 1
+            }
+        }
+    }
+
+    /// One retry after a build that never ran; a real failure fails both attempts.
+    ///
+    /// The source volume and the destination pyramid are both still alive, so the second
+    /// attempt encodes the same pyramid rather than a different one.
+    private static let retriesAfterADiscardedBuild = 1
+
+    /// Builds the pyramid once, or says it did not run.
+    ///
+    /// Every value this kernel can write is a legal min or max, and the destination is
+    /// `.private`, so the pyramid gives nothing away about whether it was filled. The
+    /// command buffer's terminal state is what is left, and only `.completed` means the
+    /// build ran — a buffer the driver discarded as the innocent victim of another
+    /// process's GPU error stops on `.error`, status raw value 5, and can carry no error
+    /// object at all.
+    ///
+    /// The consequence is not a blank image but a wrong one: a pyramid nobody wrote tells
+    /// the raycaster every block is empty, so it skips the whole volume and returns a
+    /// black frame that nothing downstream can distinguish from a correct one. That is
+    /// the shape of a failure this suite does produce —
+    /// `test_accelerationInput_buildsVisibilityAndPreservesDVRReadback` read RGB energy
+    /// `0.0` from the accelerated render against `1969749.0` from the baseline, once in
+    /// eighteen contended runs — though which command buffer that run lost was never
+    /// established, only that the accelerated path is the one that came back empty.
+    ///
+    /// - Parameter simulatesDiscard: Skips the commit, standing in for a driver that
+    ///   discarded the buffer. Tests only.
+    private func buildMinMaxPyramidOnce(
+        source: any MTLTexture,
+        destination: any MTLTexture,
+        mipLevels: Int,
+        intensityRange: ClosedRange<Int32>,
+        basePipeline: any MTLComputePipelineState,
+        simulatesDiscard: Bool
+    ) throws {
         guard let commandBuffer = commandQueue.makeCommandBuffer() else {
             throw AcceleratorError.commandBufferUnavailable
         }
@@ -600,18 +663,24 @@ private extension MPSEmptySpaceAccelerator {
                 destination: destination,
                 sourceLevel: level - 1,
                 targetLevel: level,
+                // #1692: one voxel of apron, applied once, and every coarser level
+                // inherits exactly one voxel of it. See `computeMinMaxDownsample`.
+                apronVoxels: level == 1 ? 1 : 0,
                 commandBuffer: commandBuffer
             )
         }
 
-        // Execute all GPU work synchronously
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
+        // Execute all GPU work synchronously. The test seam leaves the buffer uncommitted
+        // and asks it the same question below, so a check that stopped telling a build
+        // that ran from one that did not would accept the untouched pyramid here as well.
+        if !simulatesDiscard {
+            commandBuffer.commit()
+            commandBuffer.waitUntilCompleted()
+        }
 
-        // Check for GPU errors during execution
-        if let error = commandBuffer.error {
-            logger.error("Acceleration structure build failed: \(error.localizedDescription)")
-            throw error
+        if let reason = CommandBufferCompletion.reasonItDidNotRun(commandBuffer) {
+            logger.error("Acceleration structure build failed: \(reason)")
+            throw AcceleratorError.pyramidBuildDidNotRun(reason)
         }
     }
 
@@ -696,6 +765,7 @@ private extension MPSEmptySpaceAccelerator {
         destination: any MTLTexture,
         sourceLevel: Int,
         targetLevel: Int,
+        apronVoxels: Int,
         commandBuffer: any MTLCommandBuffer
     ) throws {
         // Create texture views targeting specific mip levels
@@ -725,6 +795,9 @@ private extension MPSEmptySpaceAccelerator {
         computeEncoder.setComputePipelineState(downsamplePipeline)
         computeEncoder.setTexture(sourceView, index: 0)
         computeEncoder.setTexture(destView, index: 1)
+
+        var apron = Int32(apronVoxels)
+        computeEncoder.setBytes(&apron, length: MemoryLayout<Int32>.size, index: 0)
 
         // Destination dimensions at this mip level
         let dstWidth = destView.width

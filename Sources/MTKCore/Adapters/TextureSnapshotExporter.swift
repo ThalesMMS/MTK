@@ -221,12 +221,56 @@ public final class TextureSnapshotExporter: SnapshotExporting, @unchecked Sendab
 }
 
 enum TextureReadbackHelper {
+    /// One retry after a copy that did not run; a real failure fails both attempts.
+    private static let retriesAfterADiscardedCopy = 1
+
+    private enum CopyOutcome {
+        case copied(any MTLTexture)
+        case didNotRun(String)
+    }
+
+    /// Copies `texture` into CPU-visible memory, or throws rather than hand back a
+    /// staging texture nothing ever wrote into.
+    ///
+    /// A blit has no invariant of its own to check: every byte it can produce is a legal
+    /// pixel, so nothing in the destination says whether the copy happened. The one thing
+    /// that does is the command buffer's terminal state, and only `.completed` means it
+    /// ran. A buffer discarded as the innocent victim of somebody else's GPU error lands
+    /// on `.error` — status raw value 5 — and can carry no error object at all, so asking
+    /// only `commandBuffer.error` returns a freshly allocated staging texture as if it
+    /// were a picture. It reads back entirely black, and every caller here turns that into
+    /// a `CGImage`, a PNG on disk, or a regression comparison, none of which can tell a
+    /// black frame from a frame that was never copied.
+    ///
+    /// - Parameter discardedCopiesForTesting: Skips the commit on this many leading
+    ///   attempts, standing in for a driver that discarded them. Tests only.
     static func makeCPUReadableTexture(from texture: any MTLTexture,
-                                       stagingLabel: String) throws -> any MTLTexture {
+                                       stagingLabel: String,
+                                       discardedCopiesForTesting: Int = 0) throws -> any MTLTexture {
         if texture.storageMode == .shared {
             return texture
         }
 
+        var attemptsLeft = retriesAfterADiscardedCopy
+        while true {
+            let attemptsMade = retriesAfterADiscardedCopy - attemptsLeft
+            switch try copyForReadback(from: texture,
+                                       stagingLabel: stagingLabel,
+                                       simulatesDiscard: attemptsMade < discardedCopiesForTesting) {
+            case .copied(let stagingTexture):
+                return stagingTexture
+            case .didNotRun(let description):
+                guard attemptsLeft > 0 else {
+                    throw SnapshotExportError.readbackFailed(description)
+                }
+                attemptsLeft -= 1
+            }
+        }
+    }
+
+    private static func copyForReadback(from texture: any MTLTexture,
+                                        stagingLabel: String,
+                                        simulatesDiscard: Bool) throws -> CopyOutcome {
         guard let commandQueue = texture.device.makeCommandQueue(),
               let commandBuffer = commandQueue.makeCommandBuffer(),
               let encoder = commandBuffer.makeBlitCommandEncoder()
@@ -268,13 +312,17 @@ enum TextureReadbackHelper {
         }
 #endif
         encoder.endEncoding()
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
-
-        if let error = commandBuffer.error {
-            throw SnapshotExportError.readbackFailed(error.localizedDescription)
+        if !simulatesDiscard {
+            commandBuffer.commit()
+            commandBuffer.waitUntilCompleted()
         }
 
-        return stagingTexture
+        guard commandBuffer.status == .completed else {
+            let reason = commandBuffer.error?.localizedDescription
+                ?? "status \(commandBuffer.status.rawValue) with no error object"
+            return .didNotRun("Texture readback blit did not run: \(reason)")
+        }
+
+        return .copied(stagingTexture)
     }
 }

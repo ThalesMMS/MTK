@@ -52,8 +52,7 @@ final class TransferFunction2DPerformanceTests: XCTestCase {
             resolvedLibrary = lib
         } else if let defaultLibrary = device.makeDefaultLibrary() {
             resolvedLibrary = defaultLibrary
-        } else if #available(macOS 11.0, *),
-                  let bundled = try? device.makeDefaultLibrary(bundle: coreBundle) {
+        } else if let bundled = try? device.makeDefaultLibrary(bundle: coreBundle) {
             resolvedLibrary = bundled
         } else {
             resolvedLibrary = nil
@@ -93,6 +92,44 @@ final class TransferFunction2DPerformanceTests: XCTestCase {
         }
         dummy.label = "Test.DummyAcceleration"
         self.dummyAccelerationTexture = dummy
+    }
+
+    // MARK: - GPU Correctness
+
+    /// #1691: the four benchmarks below all dispatch `volume_compute` through an argument
+    /// buffer. Every texture the kernel reads is reached only from inside that buffer, so
+    /// nothing is resident unless the encoder is told. The 1D LUT (1024x1, 16 KB) survived
+    /// the omission; the 2D LUT (256x256 rgba32Float, 1 MB) faulted the GPU every single
+    /// time, and the suite reported that as "unavailable on this GPU".
+    ///
+    /// Two assertions, because "the command buffer came back" is not "the kernel ran":
+    /// `commitAndWait` rejects any status but `.completed`, and the readback proves the
+    /// ray actually reached the volume and composited the transfer function.
+    func test_twoDTransferFunctionDispatch_doesNotFaultTheGPU() async throws {
+        guard device != nil else {
+            throw XCTSkip("Metal device unavailable")
+        }
+
+        let dataset = makeTestDataset()
+        let sample = try await renderWith2DTransferFunction(dataset: dataset)
+        let texture = try XCTUnwrap(sample.texture,
+                                    "2D transfer-function render produced no output texture")
+
+        let pixels = try MPRTextureReadbackHelper.readBytes(from: texture,
+                                                            bytesPerPixel: 4,
+                                                            device: device,
+                                                            commandQueue: commandQueue)
+
+        var brightest: UInt8 = 0
+        for index in stride(from: 0, to: pixels.count, by: 4) {
+            brightest = max(brightest, max(pixels[index], max(pixels[index + 1], pixels[index + 2])))
+        }
+
+        XCTAssertGreaterThan(
+            brightest,
+            0,
+            "The 2D transfer-function dispatch returned an all-black frame: the kernel did not composite anything"
+        )
     }
 
     // MARK: - Performance Benchmark Tests
@@ -165,7 +202,7 @@ final class TransferFunction2DPerformanceTests: XCTestCase {
         let iterations = 10
 
         for _ in 0..<iterations {
-            let result = try await renderWith1DTransferFunction(dataset: dataset)
+            let result = try await renderWith1DTransferFunction(dataset: dataset).texture
             XCTAssertNotNil(result, "Render should produce valid output")
         }
 
@@ -184,13 +221,12 @@ final class TransferFunction2DPerformanceTests: XCTestCase {
         }
 
         let dataset = makeTestDataset()
-        try await ensure2DTransferRenderingAvailable(for: dataset)
 
         let startTime = CFAbsoluteTimeGetCurrent()
         let iterations = 10
 
         for _ in 0..<iterations {
-            let result = try await renderWith2DTransferFunction(dataset: dataset)
+            let result = try await renderWith2DTransferFunction(dataset: dataset).texture
             XCTAssertNotNil(result, "Render should produce valid output")
         }
 
@@ -209,18 +245,16 @@ final class TransferFunction2DPerformanceTests: XCTestCase {
         }
 
         let dataset = makeTestDataset()
-        let (baselineAverage, twoDAverage) = try await measureRenderAverages(
+        let (baselineAverage, twoDAverage, overheadRatio) = try await measureRenderAverages(
             dataset: dataset,
             iterations: 14
         )
 
-        // Calculate overhead
-        let overhead = (twoDAverage - baselineAverage) / baselineAverage
-        let overheadPercentage = overhead * 100
+        let overheadPercentage = (overheadRatio - 1) * 100
 
         print("📊 Performance Analysis:")
-        print("   1D TF average:       \(String(format: "%.3f", baselineAverage * 1000))ms")
-        print("   2D TF average:       \(String(format: "%.3f", twoDAverage * 1000))ms")
+        print("   1D TF median:        \(String(format: "%.3f", baselineAverage * 1000))ms")
+        print("   2D TF median:        \(String(format: "%.3f", twoDAverage * 1000))ms")
         print("   Overhead:            \(String(format: "%.1f", overheadPercentage))%")
         print("   Target:              <10%")
 
@@ -243,19 +277,17 @@ final class TransferFunction2DPerformanceTests: XCTestCase {
         }
 
         let dataset = makeLargerTestDataset()
-        let (baselineAverage, twoDAverage) = try await measureRenderAverages(
+        let (baselineAverage, twoDAverage, overheadRatio) = try await measureRenderAverages(
             dataset: dataset,
             iterations: 12
         )
 
-        // Calculate overhead
-        let overhead = (twoDAverage - baselineAverage) / baselineAverage
-        let overheadPercentage = overhead * 100
+        let overheadPercentage = (overheadRatio - 1) * 100
 
         print("📊 Performance Analysis (Larger Volume):")
         print("   Dimensions:          \(dataset.dimensions.width)×\(dataset.dimensions.height)×\(dataset.dimensions.depth)")
-        print("   1D TF average:       \(String(format: "%.3f", baselineAverage * 1000))ms")
-        print("   2D TF average:       \(String(format: "%.3f", twoDAverage * 1000))ms")
+        print("   1D TF median:        \(String(format: "%.3f", baselineAverage * 1000))ms")
+        print("   2D TF median:        \(String(format: "%.3f", twoDAverage * 1000))ms")
         print("   Overhead:            \(String(format: "%.1f", overheadPercentage))%")
 
         XCTAssertLessThan(
@@ -267,9 +299,17 @@ final class TransferFunction2DPerformanceTests: XCTestCase {
 
     // MARK: - Helper Methods
 
+    /// One dispatch and what it cost on the GPU. `gpuSeconds` is the command buffer's own
+    /// execution window, which is what the 10% target is about; the wall clock around it
+    /// also contains dataset preparation, argument encoding and CPU scheduling.
+    private struct RenderSample {
+        let texture: (any MTLTexture)?
+        let gpuSeconds: Double
+    }
+
     private func renderWith1DTransferFunction(
         dataset: VolumeDataset
-    ) async throws -> MTLTexture? {
+    ) async throws -> RenderSample {
         let resources = try raycaster.prepare(dataset: dataset)
         let transferTexture = try await make1DTransferTexture(for: dataset)
 
@@ -323,6 +363,11 @@ final class TransferFunction2DPerformanceTests: XCTestCase {
         computeEncoder.setComputePipelineState(volumeComputePipeline)
         computeEncoder.setBuffer(argumentManager.argumentBuffer, offset: 0, index: 0)
         computeEncoder.setBuffer(cameraBuffer, offset: 0, index: 1)
+        // #1691: everything the kernel reads arrives through the argument buffer, so
+        // nothing here is resident by virtue of being bound. VolumeRaycastPass makes this
+        // call on every dispatch; the benchmark copied the encoding block without it and
+        // the GPU dereferenced an unmapped texture.
+        argumentManager.registerResources(on: computeEncoder)
 
         let threadgroupSize = MTLSize(width: 16, height: 16, depth: 1)
         let threadgroups = MTLSize(
@@ -336,15 +381,14 @@ final class TransferFunction2DPerformanceTests: XCTestCase {
 
         try await RaycasterTestHelpers.commitAndWait(commandBuffer)
 
-        return outputTexture
+        return RenderSample(texture: outputTexture,
+                            gpuSeconds: commandBuffer.gpuEndTime - commandBuffer.gpuStartTime)
     }
 
     private func measureRenderAverages(
         dataset: VolumeDataset,
         iterations: Int
-    ) async throws -> (baseline: Double, twoD: Double) {
-        try await ensure2DTransferRenderingAvailable(for: dataset)
-
+    ) async throws -> (baseline: Double, twoD: Double, overheadRatio: Double) {
         for _ in 0..<3 {
             _ = try await renderWith1DTransferFunction(dataset: dataset)
             _ = try await renderWith2DTransferFunction(dataset: dataset)
@@ -356,41 +400,51 @@ final class TransferFunction2DPerformanceTests: XCTestCase {
         twoDSamples.reserveCapacity(iterations)
 
         for _ in 0..<iterations {
-            let baselineStart = CFAbsoluteTimeGetCurrent()
-            _ = try await renderWith1DTransferFunction(dataset: dataset)
-            baselineSamples.append(CFAbsoluteTimeGetCurrent() - baselineStart)
-
-            let twoDStart = CFAbsoluteTimeGetCurrent()
-            _ = try await renderWith2DTransferFunction(dataset: dataset)
-            twoDSamples.append(CFAbsoluteTimeGetCurrent() - twoDStart)
+            baselineSamples.append(try await renderWith1DTransferFunction(dataset: dataset).gpuSeconds)
+            twoDSamples.append(try await renderWith2DTransferFunction(dataset: dataset).gpuSeconds)
         }
 
-        return (trimmedMean(baselineSamples), trimmedMean(twoDSamples))
+        guard let overheadRatio = medianPairedRatio(baseline: baselineSamples, twoD: twoDSamples) else {
+            throw XCTSkip("GPU timestamps were unavailable for every paired render sample.")
+        }
+        return (median(baselineSamples), median(twoDSamples), overheadRatio)
     }
 
-    private func trimmedMean(_ samples: [Double]) -> Double {
+    /// #1691: this assertion only became reachable once the dispatch stopped faulting, and
+    /// it turned out to be measuring the machine. Wall clock around each render also
+    /// contains dataset preparation, argument encoding and whatever else the CPU is doing
+    /// for the other processes on the box; what the 10% target is about is the dispatch.
+    /// So the samples are the command buffers' own GPU windows, paired inside an iteration
+    /// — six processes sharing one GPU move both series together, and one summary per
+    /// series throws that pairing away — and reduced by median. Measured over 36 concurrent
+    /// processes on an otherwise idle machine, on a path that reports -40% alone:
+    ///
+    ///     wall clock, trimmed mean of each series   5 failures / 36
+    ///     GPU window, median of paired ratios       1 failure  / 36
+    ///
+    /// One in 36 is not zero. A ratio of two timings on a contended GPU has a tail, and
+    /// this test still owns a share of it.
+    private func medianPairedRatio(baseline: [Double], twoD: [Double]) -> Double? {
+        let ratios = zip(baseline, twoD).compactMap { pair -> Double? in
+            pair.0 > 0 && pair.1 > 0 ? pair.1 / pair.0 : nil
+        }
+        guard !ratios.isEmpty else { return nil }
+        return median(ratios)
+    }
+
+    private func median(_ samples: [Double]) -> Double {
         guard !samples.isEmpty else { return 0 }
-        guard samples.count > 4 else {
-            return samples.reduce(0, +) / Double(samples.count)
-        }
-
         let sorted = samples.sorted()
-        let trimmed = sorted.dropFirst(1).dropLast(1)
-        let total = trimmed.reduce(0, +)
-        return total / Double(trimmed.count)
-    }
-
-    private func ensure2DTransferRenderingAvailable(for dataset: VolumeDataset) async throws {
-        do {
-            _ = try await renderWith2DTransferFunction(dataset: dataset)
-        } catch {
-            throw XCTSkip("2D transfer-function render benchmark unavailable on this GPU: \(error)")
+        let middle = sorted.count / 2
+        if sorted.count.isMultiple(of: 2) {
+            return (sorted[middle - 1] + sorted[middle]) / 2
         }
+        return sorted[middle]
     }
 
     private func renderWith2DTransferFunction(
         dataset: VolumeDataset
-    ) async throws -> MTLTexture? {
+    ) async throws -> RenderSample {
         let resources = try raycaster.prepare(dataset: dataset)
         let transferTexture = try await make2DTransferTexture(for: dataset)
 
@@ -444,6 +498,10 @@ final class TransferFunction2DPerformanceTests: XCTestCase {
         computeEncoder.setComputePipelineState(volumeComputePipeline)
         computeEncoder.setBuffer(argumentManager.argumentBuffer, offset: 0, index: 0)
         computeEncoder.setBuffer(cameraBuffer, offset: 0, index: 1)
+        // #1691: the 2D LUT is a 256x256 rgba32Float allocation reached only through the
+        // argument buffer. Without this the GPU faults on it deterministically — see
+        // testTwoDTransferFunctionDispatchDoesNotFaultTheGPU.
+        argumentManager.registerResources(on: computeEncoder)
 
         let threadgroupSize = MTLSize(width: 16, height: 16, depth: 1)
         let threadgroups = MTLSize(
@@ -457,7 +515,8 @@ final class TransferFunction2DPerformanceTests: XCTestCase {
 
         try await RaycasterTestHelpers.commitAndWait(commandBuffer)
 
-        return outputTexture
+        return RenderSample(texture: outputTexture,
+                            gpuSeconds: commandBuffer.gpuEndTime - commandBuffer.gpuStartTime)
     }
 
     private func makeTestRenderingParameters(dataset: VolumeDataset, method: Int32, use2DTF: Bool) -> RenderingParameters {

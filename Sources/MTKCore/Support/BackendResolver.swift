@@ -7,9 +7,9 @@
 //  current system satisfies the Metal rendering contract, with support for
 //  persisting the check result via UserDefaults.
 //
-//  Note: This struct focuses on Metal runtime availability checking. Related
-//  rendering-mode types live in the core renderer to avoid circular
-//  dependencies.
+//  Note: This struct focuses on Metal runtime availability checking.
+//  Rendering-mode and presentation types live in downstream applications so
+//  runtime availability remains decoupled from UI concerns.
 //
 //  Extracted from: Isis DICOM Viewer/Presentation/ViewModels/Viewer/VolumetricSessionState.swift
 //  Thales Matheus Mendonça Santos - November 2025

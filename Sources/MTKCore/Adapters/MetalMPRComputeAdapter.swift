@@ -29,6 +29,9 @@ public actor MetalMPRComputeAdapter: MPRReslicePort {
         case outputTextureCreationFailed
         case outputBufferAllocationFailed
         case invalidComputeConfiguration(String)
+        /// The command buffer reached a terminal state other than `.completed`, so the
+        /// slab never ran and the output texture still holds whatever was there before.
+        case dispatchDidNotRun(String)
     }
 
     public struct Overrides: Equatable {
@@ -63,6 +66,9 @@ public actor MetalMPRComputeAdapter: MPRReslicePort {
     private let outputTexturePool: OutputTexturePool
     private var outputTextureAllocationCount = 0
     private var overrides = Overrides()
+    /// Number of leading slab dispatches that skip the commit, standing in for a driver
+    /// that discarded them. Tests only; zero everywhere else.
+    private var discardedDispatchesForTesting = 0
     private var lastSnapshot: SliceSnapshot?
     private let mpsAvailable: Bool
     private let logger = Logger(subsystem: "com.mtk.volumerendering",
@@ -248,6 +254,14 @@ extension MetalMPRComputeAdapter {
 
     @_spi(Testing)
     public var debugUnavailablePipelineNames: Set<String> { unavailablePipelineNames }
+
+    /// Makes the next `count` slab dispatches skip the commit, so they complete with no
+    /// error over an output texture the GPU never touched — what an innocent-victim
+    /// discard leaves behind.
+    @_spi(Testing)
+    public func setDiscardedDispatchesForTesting(_ count: Int) {
+        discardedDispatchesForTesting = count
+    }
 
     @_spi(Testing)
     public var debugCachedDatasetIdentity: (
@@ -487,12 +501,60 @@ private extension MetalMPRComputeAdapter {
 // MARK: - Compute Dispatch
 
 private extension MetalMPRComputeAdapter {
+    /// One retry after a slab that never ran; a real failure fails both attempts.
+    ///
+    /// Everything the dispatch needs is still alive when it comes back — the volume, the
+    /// output texture and the uniforms are all inputs — so the second attempt encodes the
+    /// same slab, not a different one.
+    static var retriesAfterADiscardedDispatch: Int { 1 }
+
     func dispatchCompute(pipeline: MTLComputePipelineState,
                          volumeTexture: any MTLTexture,
                          outputTexture: any MTLTexture,
                          uniforms: inout MPRSlabUniforms,
                          width: Int,
                          height: Int) async throws -> CommandBufferTimings {
+        var attemptsLeft = Self.retriesAfterADiscardedDispatch
+        while true {
+            let attemptsMade = Self.retriesAfterADiscardedDispatch - attemptsLeft
+            do {
+                return try await dispatchComputeOnce(pipeline: pipeline,
+                                                     volumeTexture: volumeTexture,
+                                                     outputTexture: outputTexture,
+                                                     uniforms: &uniforms,
+                                                     width: width,
+                                                     height: height,
+                                                     simulatesDiscard: attemptsMade < discardedDispatchesForTesting)
+            } catch let error as ComputeError {
+                guard case .dispatchDidNotRun(let reason) = error, attemptsLeft > 0 else {
+                    throw error
+                }
+                logger.error("MPR slab dispatch \(reason); retrying once.")
+                attemptsLeft -= 1
+            }
+        }
+    }
+
+    /// Runs one MPR slab dispatch, or says it did not run.
+    ///
+    /// The kernel writes into a texture that comes out of ``outputTexturePool``, so the
+    /// pixels underneath a dispatch that never ran are not blank — they are the last
+    /// slice rendered into that texture. Nothing in the image tells the two apart, and
+    /// the kernel has no output the CPU can check besides the image itself. The command
+    /// buffer's terminal state is what is left, and only `.completed` means the slab ran:
+    /// a buffer the driver discarded as the innocent victim of another process's GPU
+    /// error stops on `.error` — status raw value 5 — and can carry no error object at
+    /// all, so `buffer.error` alone would have handed back the previous slice as this one.
+    ///
+    /// - Parameter simulatesDiscard: Skips the commit, standing in for a driver that
+    ///   discarded the buffer. Tests only.
+    func dispatchComputeOnce(pipeline: MTLComputePipelineState,
+                             volumeTexture: any MTLTexture,
+                             outputTexture: any MTLTexture,
+                             uniforms: inout MPRSlabUniforms,
+                             width: Int,
+                             height: Int,
+                             simulatesDiscard: Bool) async throws -> CommandBufferTimings {
         guard width > 0, height > 0 else {
             throw ComputeError.invalidComputeConfiguration("MPR compute dimensions must be positive, got \(width)x\(height).")
         }
@@ -534,15 +596,25 @@ private extension MetalMPRComputeAdapter {
         encoder.endEncoding()
 
         let cpuEnd = CFAbsoluteTimeGetCurrent()
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-            commandBuffer.addCompletedHandler { buffer in
-                if let error = buffer.error {
-                    continuation.resume(throwing: error)
-                } else {
+        // The test seam leaves the buffer uncommitted and asks it the same question, so a
+        // check that stopped telling a dispatch that ran from one that did not would hand
+        // the untouched texture back here as well — which is the bug, and what the test
+        // sees.
+        if simulatesDiscard {
+            if let reason = CommandBufferCompletion.reasonItDidNotRun(commandBuffer) {
+                throw ComputeError.dispatchDidNotRun(reason)
+            }
+        } else {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                commandBuffer.addCompletedHandler { buffer in
+                    if let reason = CommandBufferCompletion.reasonItDidNotRun(buffer) {
+                        continuation.resume(throwing: ComputeError.dispatchDidNotRun(reason))
+                        return
+                    }
                     continuation.resume()
                 }
+                commandBuffer.commit()
             }
-            commandBuffer.commit()
         }
         return commandBuffer.timings(cpuStart: cpuStart,
                                      cpuEnd: cpuEnd)

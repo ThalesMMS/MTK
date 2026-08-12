@@ -108,8 +108,12 @@ public enum MPRGeometryDisplayMapper {
                                                   axis: axis,
                                                   slicePosition: resolvedSlicePosition,
                                                   rotation: planeRotation)
+        let referencePlane = makePlane(for: dataset,
+                                       axis: axis,
+                                       slicePosition: resolvedSlicePosition)
         let displayTransform = MPRDisplayTransformFactory.makeTransform(for: plane,
-                                                                       axis: axis)
+                                                                       axis: axis,
+                                                                       referencePlane: referencePlane)
         let displayAspectRatio = displayTransform.displayAspectRatio(
             forSourceAspectRatio: plane.physicalAspectRatio
         )
@@ -140,29 +144,52 @@ public enum MPRGeometryDisplayMapper {
                                                     slicePosition: slicePosition)
         }
 
-        let dims = datasetDimensions(for: dataset.dimensions)
-        let count = sliceCount(for: axis, dimensions: dataset.dimensions)
-        let maximumIndex = max(count - 1, 0)
-        let index = Int((clampNormalized(slicePosition) * Float(maximumIndex)).rounded())
         return makeRotatedPlane(for: dataset,
                                 axis: axis,
-                                index: index,
-                                dims: dims,
+                                slicePosition: clampNormalized(slicePosition),
                                 rotation: rotation)
+    }
+
+    /// The plane through a crosshair point — the path the clinical grid uses
+    /// once a cursor exists, so it is the one a rotation gesture actually
+    /// exercises.
+    ///
+    /// Like every other path here it keeps the resting rectangle's physical
+    /// extents (see `rotatedAxes`); only the rectangle's position differs. Do
+    /// not size it to the volume's bounds projected on the tilted axes, however
+    /// natural that looks — those bounds grow with the tilt and the panel
+    /// aspect-fits the rectangle, so the anatomy in the other two panels
+    /// rescales as the user rotates.
+    public static func makePlane(for dataset: VolumeDataset,
+                                 axis: MPRPlaneAxis,
+                                 through worldPoint: SIMD3<Float>,
+                                 rotation: simd_quatf? = nil) -> MPRPlaneGeometry {
+        makePlane(for: dataset,
+                  axis: axis,
+                  through: worldPoint,
+                  rotation: rotation ?? identityRotation())
     }
 
     public static func makePlane(for dataset: VolumeDataset,
                                  axis: MPRPlaneAxis,
                                  sliceIndex: Int,
                                  rotation: simd_quatf) -> MPRPlaneGeometry {
-        let dims = datasetDimensions(for: dataset.dimensions)
         let count = sliceCount(for: axis, dimensions: dataset.dimensions)
         let index = max(0, min(sliceIndex, max(count - 1, 0)))
+        let slicePosition = count > 1 ? Float(index) / Float(count - 1) : 0
         return makeRotatedPlane(for: dataset,
                                 axis: axis,
-                                index: index,
-                                dims: dims,
+                                slicePosition: slicePosition,
                                 rotation: rotation)
+    }
+
+    /// Returns the unrotated plane basis used by renderer-generated MPR planes.
+    public static func makeDisplayReferencePlane(for dataset: VolumeDataset,
+                                                 axis: MPRPlaneAxis,
+                                                 slicePosition: Float) -> MPRPlaneGeometry {
+        rotationReferencePlane(for: dataset,
+                               axis: axis,
+                               slicePosition: clampNormalized(slicePosition))
     }
 
     public static func normalizedPositionUpdates(fromVoxel voxel: SIMD3<Float>,
@@ -195,131 +222,201 @@ public enum MPRGeometryDisplayMapper {
 }
 
 private extension MPRGeometryDisplayMapper {
+    typealias RotatedPlaneAxes = (
+        axisUWorld: SIMD3<Float>,
+        axisVWorld: SIMD3<Float>,
+        normalWorld: SIMD3<Float>
+    )
+
+    static func makePlane(for dataset: VolumeDataset,
+                          axis: MPRPlaneAxis,
+                          through worldPoint: SIMD3<Float>,
+                          rotation: simd_quatf) -> MPRPlaneGeometry {
+        let reference = rotationReferencePlane(
+            for: dataset,
+            axis: axis,
+            slicePosition: 0.5
+        )
+        let axes = rotatedAxes(for: dataset, reference: reference, rotation: rotation)
+        let volumeCenterWorld = reference.originWorld
+            + reference.axisUWorld * 0.5
+            + reference.axisVWorld * 0.5
+        let planeCenterWorld = volumeCenterWorld
+            + axes.normalWorld * simd_dot(worldPoint - volumeCenterWorld, axes.normalWorld)
+
+        return makePlane(
+            for: dataset,
+            centerWorld: rectangleCenter(containing: worldPoint,
+                                         planeCenter: planeCenterWorld,
+                                         axes: axes),
+            axes: axes
+        )
+    }
+
     static func makeRotatedPlane(for dataset: VolumeDataset,
                                  axis: MPRPlaneAxis,
-                                 index: Int,
-                                 dims: SIMD3<Float>,
+                                 slicePosition: Float,
                                  rotation: simd_quatf) -> MPRPlaneGeometry {
-        let plane = rotatedPlaneComputation(axis: axis,
-                                            index: index,
-                                            dims: dims,
-                                            rotation: rotation)
+        let reference = rotationReferencePlane(
+            for: dataset,
+            axis: axis,
+            slicePosition: slicePosition
+        )
+        let centerWorld = reference.originWorld
+            + reference.axisUWorld * 0.5
+            + reference.axisVWorld * 0.5
+
+        return makePlane(for: dataset,
+                         centerWorld: centerWorld,
+                         axes: rotatedAxes(for: dataset,
+                                           reference: reference,
+                                           rotation: rotation))
+    }
+
+    /// Rigidly rotates the reference basis: the rectangle tilts, but keeps the
+    /// physical extents it had at rest, so tilting one plane never rescales what
+    /// the other panels show.
+    static func rotatedAxes(for dataset: VolumeDataset,
+                            reference: MPRPlaneGeometry,
+                            rotation: simd_quatf) -> RotatedPlaneAxes {
+        let patientBasis = patientDirectionBasis(for: dataset)
+        let worldRotation = patientBasis
+            * simd_float3x3(normalizedRotation(rotation))
+            * patientBasis.transpose
+        let axisUWorld = worldRotation * reference.axisUWorld
+        let axisVWorld = worldRotation * reference.axisVWorld
+        let normalWorld = normalized(cross: axisUWorld,
+                                     axisVWorld,
+                                     fallback: worldRotation * reference.normalWorld)
+        return (axisUWorld, axisVWorld, normalWorld)
+    }
+
+    static func makePlane(for dataset: VolumeDataset,
+                          centerWorld: SIMD3<Float>,
+                          axes: RotatedPlaneAxes) -> MPRPlaneGeometry {
         let geometry = DICOMGeometry(imageData: dataset.imageData)
-        let originWorld = geometry.voxelToWorld.transformPoint(plane.originVoxel)
-        let axisUWorld = geometry.voxelToWorld.transformPoint(plane.originVoxel + plane.axisUVoxel) - originWorld
-        let axisVWorld = geometry.voxelToWorld.transformPoint(plane.originVoxel + plane.axisVVoxel) - originWorld
+        let originWorld = centerWorld - axes.axisUWorld * 0.5 - axes.axisVWorld * 0.5
+        let originVoxel = geometry.worldToVoxel.transformPoint(originWorld)
+        let axisUVoxel = geometry.worldToVoxel
+            .transformPoint(originWorld + axes.axisUWorld) - originVoxel
+        let axisVVoxel = geometry.worldToVoxel
+            .transformPoint(originWorld + axes.axisVWorld) - originVoxel
         let textureBasis = geometry.planeWorldToTex(originW: originWorld,
-                                                    axisUW: axisUWorld,
-                                                    axisVW: axisVWorld)
-        let normal = normalized(cross: axisUWorld,
-                                axisVWorld,
-                                fallback: fallbackNormal(for: axis))
+                                                    axisUW: axes.axisUWorld,
+                                                    axisVW: axes.axisVWorld)
 
         return MPRPlaneGeometry(
-            originVoxel: plane.originVoxel,
-            axisUVoxel: plane.axisUVoxel,
-            axisVVoxel: plane.axisVVoxel,
+            originVoxel: originVoxel,
+            axisUVoxel: axisUVoxel,
+            axisVVoxel: axisVVoxel,
             originWorld: originWorld,
-            axisUWorld: axisUWorld,
-            axisVWorld: axisVWorld,
+            axisUWorld: axes.axisUWorld,
+            axisVWorld: axes.axisVWorld,
             originTexture: textureBasis.originT,
             axisUTexture: textureBasis.axisUT,
             axisVTexture: textureBasis.axisVT,
-            normalWorld: normal
+            normalWorld: axes.normalWorld
         )
     }
-    struct RotatedPlaneComputation {
-        var originVoxel: SIMD3<Float>
-        var axisUVoxel: SIMD3<Float>
-        var axisVVoxel: SIMD3<Float>
+
+    /// Slides the rectangle within its own plane by the smallest amount that
+    /// puts `worldPoint` back onto it, and leaves it alone while the point is
+    /// already inside.
+    ///
+    /// Sizing the rectangle to the volume's bounds projected on the tilted axes
+    /// would contain every point without sliding, but those bounds grow with the
+    /// tilt — and because the panel aspect-fits the rectangle, the anatomy in the
+    /// *other* two panels shrank as the crosshair was rotated. Extents stay
+    /// fixed and the window moves instead; the tilted corners that leave the
+    /// volume are drawn as background.
+    static func rectangleCenter(containing worldPoint: SIMD3<Float>,
+                                planeCenter: SIMD3<Float>,
+                                axes: RotatedPlaneAxes) -> SIMD3<Float> {
+        guard let coordinates = planeCoordinates(of: worldPoint - planeCenter,
+                                                 axes: axes) else {
+            return planeCenter
+        }
+        let overflow = coordinates - simd_clamp(coordinates,
+                                                SIMD2<Float>(repeating: -0.5),
+                                                SIMD2<Float>(repeating: 0.5))
+        return planeCenter
+            + axes.axisUWorld * overflow.x
+            + axes.axisVWorld * overflow.y
     }
 
-    static func rotatedPlaneComputation(axis: MPRPlaneAxis,
-                                        index: Int,
-                                        dims: SIMD3<Float>,
-                                        rotation: simd_quatf) -> RotatedPlaneComputation {
+    /// Expresses `offset` in the rectangle's own `(axisU, axisV)` coordinates —
+    /// the coordinates the presentation shader samples with. Gantry-tilted
+    /// acquisitions leave that basis non-orthogonal, so this solves the 2×2 Gram
+    /// system instead of projecting onto each axis alone.
+    static func planeCoordinates(of offset: SIMD3<Float>,
+                                 axes: RotatedPlaneAxes) -> SIMD2<Float>? {
+        let uu = simd_length_squared(axes.axisUWorld)
+        let vv = simd_length_squared(axes.axisVWorld)
+        let uv = simd_dot(axes.axisUWorld, axes.axisVWorld)
+        let determinant = uu * vv - uv * uv
+        guard determinant > Float.ulpOfOne else { return nil }
+
+        let offsetU = simd_dot(offset, axes.axisUWorld)
+        let offsetV = simd_dot(offset, axes.axisVWorld)
+        return SIMD2<Float>((offsetU * vv - offsetV * uv) / determinant,
+                            (offsetV * uu - offsetU * uv) / determinant)
+    }
+
+    /// The basis a rotated plane is built from.
+    ///
+    /// This used to reverse `axisU` for the coronal plane — origin moved to the
+    /// far edge, `axisU` negated, and the normal recomputed to keep the triad
+    /// right-handed. That last part is what made it look harmless: the triad
+    /// stayed right-handed, but the plane's normal reversed with it, so a
+    /// rotated coronal was viewed from the opposite side of the patient.
+    ///
+    /// The coronal plane the factory produces has `axisU` running in −x, which
+    /// is the radiological convention baked into the geometry. Reversing it here
+    /// applied only when a rotation was present, so the coronal image mirrored
+    /// horizontally the instant the crosshair was first tilted, and rotations
+    /// about the longitudinal axis then read backwards — one sign change, both
+    /// symptoms (issue #1657).
+    ///
+    /// Left as a named function rather than inlined: the invariant that the
+    /// rotated and unrotated bases are the same one is the point, and
+    /// `makeDisplayReferencePlane` publishes it.
+    static func rotationReferencePlane(
+        for dataset: VolumeDataset,
+        axis: MPRPlaneAxis,
+        slicePosition: Float
+    ) -> MPRPlaneGeometry {
+        MPRPlaneGeometryFactory.makePlane(
+            for: dataset,
+            axis: axis,
+            slicePosition: slicePosition
+        )
+    }
+
+    static func normalizedRotation(_ rotation: simd_quatf) -> simd_quatf {
         let identity = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
-        let normalizedRotation: simd_quatf
         if rotation.real == 0, rotation.imag == .zero {
-            normalizedRotation = identity
-        } else {
-            normalizedRotation = simd_normalize(rotation)
+            return identity
         }
-        let rotationMatrix = simd_float3x3(normalizedRotation)
-        let basis = defaultAxes(for: axis)
-        let span = simd_max(dims - SIMD3<Float>(repeating: 1), SIMD3<Float>(repeating: 0))
-        let scaledU = basis.u * span
-        let scaledV = basis.v * span
-        var axisUVoxel = rotationMatrix * scaledU
-        var axisVVoxel = rotationMatrix * scaledV
-
-        let center = planeCenterVoxel(for: axis, index: index, dims: dims)
-        let halfU = axisUVoxel * 0.5
-        let halfV = axisVVoxel * 0.5
-        let combinedHalf = simd_abs(halfU) + simd_abs(halfV)
-
-        var scale: Float = 1
-        for component in 0..<3 {
-            let extent = combinedHalf[component]
-            guard extent > 0 else { continue }
-
-            let lowerBound: Float = -0.5
-            let upperBound = dims[component] - 0.5
-            let spaceBelow = center[component] - lowerBound
-            let spaceAbove = upperBound - center[component]
-            let componentScale = min(spaceBelow / extent, spaceAbove / extent)
-            scale = min(scale, componentScale)
-        }
-
-        if !scale.isFinite {
-            scale = 1
-        } else {
-            scale = max(min(scale, 1), 0)
-        }
-
-        if scale < 1 {
-            axisUVoxel *= scale
-            axisVVoxel *= scale
-        }
-
-        let origin = center - 0.5 * axisUVoxel - 0.5 * axisVVoxel
-        return RotatedPlaneComputation(originVoxel: origin,
-                                       axisUVoxel: axisUVoxel,
-                                       axisVVoxel: axisVVoxel)
+        return simd_normalize(rotation)
     }
 
-    static func datasetDimensions(for dimensions: VolumeDimensions) -> SIMD3<Float> {
-        SIMD3<Float>(
-            max(1, Float(dimensions.width)),
-            max(1, Float(dimensions.height)),
-            max(1, Float(dimensions.depth))
+    static func identityRotation() -> simd_quatf {
+        simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
+    }
+
+    static func patientDirectionBasis(for dataset: VolumeDataset) -> simd_float3x3 {
+        let row = normalized(
+            vector: dataset.imageData.rowDirection,
+            fallback: SIMD3<Float>(1, 0, 0)
         )
-    }
-
-    static func defaultAxes(for axis: MPRPlaneAxis) -> (u: SIMD3<Float>, v: SIMD3<Float>) {
-        switch axis {
-        case .x:
-            return (SIMD3<Float>(0, 1, 0), SIMD3<Float>(0, 0, 1))
-        case .y:
-            return (SIMD3<Float>(1, 0, 0), SIMD3<Float>(0, 0, 1))
-        case .z:
-            return (SIMD3<Float>(1, 0, 0), SIMD3<Float>(0, 1, 0))
+        let columnCandidate = dataset.imageData.columnDirection -
+            simd_dot(dataset.imageData.columnDirection, row) * row
+        let column = normalized(vector: columnCandidate, fallback: SIMD3<Float>(0, 1, 0))
+        var slice = normalized(cross: row, column, fallback: SIMD3<Float>(0, 0, 1))
+        if simd_dot(slice, dataset.imageData.sliceDirection) < 0 {
+            slice = -slice
         }
-    }
-
-    static func planeCenterVoxel(for axis: MPRPlaneAxis,
-                                 index: Int,
-                                 dims: SIMD3<Float>) -> SIMD3<Float> {
-        let span = simd_max(dims - SIMD3<Float>(repeating: 1), SIMD3<Float>(repeating: 0))
-        let halfSpan = span * 0.5
-        switch axis {
-        case .x:
-            return SIMD3<Float>(Float(index), halfSpan.y, halfSpan.z)
-        case .y:
-            return SIMD3<Float>(halfSpan.x, Float(index), halfSpan.z)
-        case .z:
-            return SIMD3<Float>(halfSpan.x, halfSpan.y, Float(index))
-        }
+        return simd_float3x3(columns: (row, column, slice))
     }
 
     static func sliceCount(for axis: MPRPlaneAxis,

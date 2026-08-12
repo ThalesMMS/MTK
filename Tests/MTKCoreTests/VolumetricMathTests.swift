@@ -358,6 +358,22 @@ final class VolumetricMathTests: XCTestCase {
         XCTAssertEqual(result, 15.0, accuracy: 0.001)
     }
 
+    // MARK: - Matrix Tests
+
+    func testRotatingMatrixWithSIMD3AxisRotatesVector() {
+        let matrix = matrix_identity_float4x4.rotatingMatrix(
+            angle: .pi / 2,
+            axis: SIMD3<Float>(0, 0, 1)
+        )
+
+        let result = matrix * SIMD4<Float>(1, 0, 0, 1)
+
+        XCTAssertEqual(result.x, 0, accuracy: 0.001)
+        XCTAssertEqual(result.y, 1, accuracy: 0.001)
+        XCTAssertEqual(result.z, 0, accuracy: 0.001)
+        XCTAssertEqual(result.w, 1, accuracy: 0.001)
+    }
+
     // MARK: - Axis Constants Tests
 
     func testXAxisConstant() {

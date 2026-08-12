@@ -250,23 +250,19 @@ final class MetalRaycaster {
                 commandQueue: (any MTLCommandQueue)? = nil,
                 library: (any MTLLibrary)? = nil) throws {
         var supports3DTextures = false
-#if os(iOS) || os(tvOS)
-        if #available(iOS 13.0, tvOS 13.0, *) {
+#if os(iOS) || os(tvOS) || os(visionOS)
+        if #available(tvOS 13.0, *) {
             supports3DTextures = device.supportsFamily(.apple3) || device.supportsFamily(.apple4) || device.supportsFamily(.apple5)
         } else {
             supports3DTextures = true
         }
 #elseif os(macOS)
-        if #available(macOS 11.0, *) {
-            supports3DTextures = device.supportsFamily(.mac2)
-        } else {
-            supports3DTextures = true
-        }
+        supports3DTextures = device.supportsFamily(.mac2)
 #else
         supports3DTextures = true
 #endif
 
-        if #available(iOS 13.0, tvOS 13.0, macOS 11.0, *) {
+        if #available(tvOS 13.0, *) {
             supports3DTextures = supports3DTextures || device.supportsFamily(.apple4) || device.supportsFamily(.mac2)
         }
 
@@ -303,7 +299,7 @@ final class MetalRaycaster {
     /// does not depend on this value.
     ///
     /// MPS is available on:
-    /// - iOS 10+, tvOS 10+, macOS 10.13+ with supported GPUs
+    /// - Package Apple 26 targets, or tvOS 10+, with supported GPUs
     /// - Apple Silicon Macs
     public var isMetalPerformanceShadersAvailable: Bool { mpsAvailable }
 
@@ -646,7 +642,6 @@ final class MetalRaycaster {
     /// ## MPS Availability
     ///
     /// Returns `.unavailable(reason: .mpsUnsupportedOnDevice)` when MPS is unavailable:
-    /// - macOS < 10.13
     /// - Non-Apple GPUs on macOS
     /// - iOS Simulator (Intel Macs)
     ///

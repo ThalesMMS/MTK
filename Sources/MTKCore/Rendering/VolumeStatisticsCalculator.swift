@@ -24,6 +24,14 @@ public final class VolumeStatisticsCalculator {
         case encoderCreationFailed
         case emptyHistogram
         case invalidPercentiles
+
+        /// The command buffer completed without reporting an error, but the scan did not
+        /// reach the end of the histogram — the dispatch never ran over these bins.
+        case cumulativeSumDidNotCoverHistogram(counted: UInt32, expected: UInt32)
+
+        /// The command buffer completed without reporting an error, but the Otsu kernel
+        /// left the result untouched — it never ran.
+        case otsuThresholdNotWritten(read: UInt32, binCount: UInt32)
     }
 
     @_spi(Testing)
@@ -32,6 +40,15 @@ public final class VolumeStatisticsCalculator {
         case pipelineUnavailable
         case commandBufferCreationFailed
         case encoderCreationFailed
+
+        /// Commits a command buffer with nothing dispatched into it, on every attempt.
+        ///
+        /// This is what an innocent-victim discard leaves behind: a command buffer that
+        /// completes with no error at all, over output the GPU never touched.
+        case dispatchNeverRuns
+
+        /// Same, but only on the first attempt, so the retry finds a working GPU.
+        case firstDispatchNeverRuns
     }
 
     private let device: any MTLDevice
@@ -94,7 +111,6 @@ public final class VolumeStatisticsCalculator {
 
         // For multi-channel histograms, use first channel
         let channelHistogram = histogram[0]
-        let binCount = channelHistogram.count
 
         // Calculate total count
         let totalCount = channelHistogram.reduce(0, +)
@@ -102,6 +118,28 @@ public final class VolumeStatisticsCalculator {
             completion(.failure(StatisticsError.emptyHistogram))
             return
         }
+
+        encodePercentiles(channelHistogram: channelHistogram,
+                          totalCount: totalCount,
+                          percentiles: percentiles,
+                          attemptsLeft: Self.retriesAfterADiscardedDispatch,
+                          completion: completion)
+    }
+
+    /// A GPU error/recovery event discards command buffers that were merely in flight
+    /// when it happened — the driver calls them innocent victims, and a discarded
+    /// dispatch never runs. Its output buffer then still holds whatever the CPU left
+    /// there, and `buffer.error` can be nil, so the only thing that tells the two cases
+    /// apart is an invariant on the output itself. Retrying once keeps somebody else's
+    /// GPU fault from failing our computation; a genuine defect fails both attempts.
+    private static let retriesAfterADiscardedDispatch = 1
+
+    private func encodePercentiles(channelHistogram: [UInt32],
+                                   totalCount: UInt32,
+                                   percentiles: [Float],
+                                   attemptsLeft: Int,
+                                   completion: @escaping (Result<[UInt32], Error>) -> Void) {
+        let binCount = channelHistogram.count
 
         // Allocate buffers
         let histogramBufferLength = binCount * MemoryLayout<UInt32>.stride
@@ -174,9 +212,13 @@ public final class VolumeStatisticsCalculator {
         cumulativeEncoder.label = "enc.cumulativeSum"
         cumulativeEncoder.setComputePipelineState(resolvedCumulativeSumPipeline)
 
+        let dispatchIsSuppressed = suppressesDispatch(attemptsLeft: attemptsLeft)
         var binCountParam = UInt32(binCount)
 
-        if usesThreadgroupMemory {
+        if dispatchIsSuppressed {
+            // Nothing is encoded into either encoder, so the command buffer completes
+            // with no error over output the GPU never touched — see ForcedFailure.
+        } else if usesThreadgroupMemory {
             // Parallel cumulative sum using threadgroup memory
             cumulativeEncoder.setBuffer(histogramBuffer, offset: 0, index: 0)
             cumulativeEncoder.setBuffer(cumulativeSumBuffer, offset: 0, index: 1)
@@ -227,16 +269,49 @@ public final class VolumeStatisticsCalculator {
         let percentileThreadsPerThreadgroup = MTLSize(width: percentileThreadCount, height: 1, depth: 1)
         let percentileThreadsPerGrid = MTLSize(width: percentiles.count, height: 1, depth: 1)
 
-        MetalDispatch.dispatch(encoder: percentilesEncoder,
-                               threadsPerGrid: percentileThreadsPerGrid,
-                               threadsPerThreadgroup: percentileThreadsPerThreadgroup,
-                               featureFlags: featureFlags)
+        if !dispatchIsSuppressed {
+            MetalDispatch.dispatch(encoder: percentilesEncoder,
+                                   threadsPerGrid: percentileThreadsPerGrid,
+                                   threadsPerThreadgroup: percentileThreadsPerThreadgroup,
+                                   featureFlags: featureFlags)
+        }
 
         percentilesEncoder.endEncoding()
 
+        let logger = logger
+
+        func retryOrFail(_ reason: String, _ error: Error) {
+            guard attemptsLeft > 0 else {
+                completion(.failure(error))
+                return
+            }
+            logger.error("Percentile dispatch \(reason); retrying once.")
+            self.encodePercentiles(channelHistogram: channelHistogram,
+                                   totalCount: totalCount,
+                                   percentiles: percentiles,
+                                   attemptsLeft: attemptsLeft - 1,
+                                   completion: completion)
+        }
+
         commandBuffer.addCompletedHandler { buffer in
             if let error = buffer.error {
-                completion(.failure(error))
+                retryOrFail("failed with \(error.localizedDescription)", error)
+                return
+            }
+
+            // Both scan kernels write an inclusive prefix sum over every bin, so the last
+            // element is the whole histogram — exactly `totalCount`, which the CPU already
+            // knows. The buffer was allocated for this dispatch and the CPU never wrote to
+            // it, so a scan that never ran leaves a last element that cannot match. That is
+            // what an innocent-victim discard looks like from here: no error, no counts.
+            let scanned = cumulativeSumBuffer.contents()
+                .assumingMemoryBound(to: UInt32.self)
+                .advanced(by: binCount - 1)
+                .pointee
+            guard scanned == totalCount else {
+                retryOrFail("scanned \(scanned) of \(totalCount) counts",
+                            StatisticsError.cumulativeSumDidNotCoverHistogram(counted: scanned,
+                                                                             expected: totalCount))
                 return
             }
 
@@ -267,7 +342,6 @@ public final class VolumeStatisticsCalculator {
 
         // For multi-channel histograms, use first channel
         let channelHistogram = histogram[0]
-        let binCount = channelHistogram.count
 
         // Calculate total count
         let totalCount = channelHistogram.reduce(0, +)
@@ -275,6 +349,18 @@ public final class VolumeStatisticsCalculator {
             completion(.failure(StatisticsError.emptyHistogram))
             return
         }
+
+        encodeOtsuThreshold(channelHistogram: channelHistogram,
+                            totalCount: totalCount,
+                            attemptsLeft: Self.retriesAfterADiscardedDispatch,
+                            completion: completion)
+    }
+
+    private func encodeOtsuThreshold(channelHistogram: [UInt32],
+                                     totalCount: UInt32,
+                                     attemptsLeft: Int,
+                                     completion: @escaping (Result<UInt32, Error>) -> Void) {
+        let binCount = channelHistogram.count
 
         // Allocate buffers
         let histogramBufferLength = binCount * MemoryLayout<UInt32>.stride
@@ -290,6 +376,12 @@ public final class VolumeStatisticsCalculator {
 
         histogramBuffer.label = "buf.histogram.otsu"
         resultBuffer.label = "buf.otsuThreshold"
+
+        // The kernel writes the threshold on every path it can take, and every value it
+        // can write is a bin index — below `binCount`. Seeding the slot with a value no
+        // run can produce is therefore the whole question "did this really run?", asked
+        // of the one word this dispatch owns.
+        resultBuffer.contents().bindMemory(to: UInt32.self, capacity: 1).pointee = .max
 
         // Copy histogram data to buffer
         channelHistogram.withUnsafeBytes { source in
@@ -332,24 +424,59 @@ public final class VolumeStatisticsCalculator {
         encoder.setBuffer(resultBuffer, offset: 0, index: 3)
 
         // Otsu kernel is a reduction operation, runs on single thread
-        encoder.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
-                                    threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
+        if !suppressesDispatch(attemptsLeft: attemptsLeft) {
+            encoder.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
+                                         threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
+        }
 
         encoder.endEncoding()
 
+        let logger = logger
+
+        func retryOrFail(_ reason: String, _ error: Error) {
+            guard attemptsLeft > 0 else {
+                completion(.failure(error))
+                return
+            }
+            logger.error("Otsu dispatch \(reason); retrying once.")
+            self.encodeOtsuThreshold(channelHistogram: channelHistogram,
+                                     totalCount: totalCount,
+                                     attemptsLeft: attemptsLeft - 1,
+                                     completion: completion)
+        }
+
         commandBuffer.addCompletedHandler { buffer in
             if let error = buffer.error {
-                completion(.failure(error))
+                retryOrFail("failed with \(error.localizedDescription)", error)
                 return
             }
 
             // Read result from buffer
             let pointer = resultBuffer.contents().assumingMemoryBound(to: UInt32.self)
             let thresholdBin = pointer.pointee
+            guard thresholdBin < UInt32(binCount) else {
+                retryOrFail("left the seeded \(thresholdBin) in place of a bin below \(binCount)",
+                            StatisticsError.otsuThresholdNotWritten(read: thresholdBin,
+                                                                    binCount: UInt32(binCount)))
+                return
+            }
             completion(.success(thresholdBin))
         }
 
         commandBuffer.commit()
+    }
+
+    /// Whether this attempt should commit a command buffer with nothing dispatched into
+    /// it, standing in for a dispatch the driver discarded before it ran.
+    private func suppressesDispatch(attemptsLeft: Int) -> Bool {
+        switch forcedFailure {
+        case .dispatchNeverRuns:
+            return true
+        case .firstDispatchNeverRuns:
+            return attemptsLeft == Self.retriesAfterADiscardedDispatch
+        default:
+            return false
+        }
     }
 }
 

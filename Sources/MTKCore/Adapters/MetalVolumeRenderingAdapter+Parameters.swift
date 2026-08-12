@@ -30,6 +30,7 @@ extension MetalVolumeRenderingAdapter {
         params.trimYMax = clip.yMax
         params.trimZMin = clip.zMin
         params.trimZMax = clip.zMax
+        params.clipBoxQuaternion = request.clipping.shaderCropRotation()
         let planes = try request.clipping.shaderClipPlanes(for: request.dataset)
         params.clipPlane0 = planes.0
         params.clipPlane1 = planes.1

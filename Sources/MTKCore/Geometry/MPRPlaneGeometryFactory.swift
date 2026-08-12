@@ -91,6 +91,11 @@ public enum MPRPlaneGeometryFactory {
         return projectedSpacings.max() ?? 0
     }
 
+    package static func sliceStepSpacing(for dataset: VolumeDataset,
+                                         plane: MPRPlaneGeometry) -> Float {
+        effectiveNormalSpacing(for: dataset, plane: plane)
+    }
+
     /// Transforms the physical plane normal into normalized texture space.
     @_spi(Testing)
     public static func textureDirectionAlongNormal(for dataset: VolumeDataset,

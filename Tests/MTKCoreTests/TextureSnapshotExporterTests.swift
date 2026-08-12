@@ -90,6 +90,80 @@ final class TextureSnapshotExporterTests: XCTestCase {
         }
     }
 
+    /// A discarded blit leaves the staging texture exactly as allocated — all zeroes — and
+    /// the command buffer carries no error, so the readback would otherwise report a black
+    /// frame as a snapshot.
+    func testReadbackFailsWhenTheBlitNeverRan() throws {
+        let device = try requireMetalDevice()
+        let source = try makePrivateSource(device: device)
+
+        XCTAssertThrowsError(
+            try TextureReadbackHelper.makeCPUReadableTexture(from: source,
+                                                             stagingLabel: "Test.Staging",
+                                                             discardedCopiesForTesting: 2)
+        ) { error in
+            guard case SnapshotExportError.readbackFailed(let description)? = error as? SnapshotExportError else {
+                XCTFail("Expected readbackFailed, got \(error)")
+                return
+            }
+            XCTAssertTrue(description.contains("did not run"), description)
+        }
+    }
+
+    func testReadbackRecoversWhenOnlyTheFirstBlitIsDiscarded() throws {
+        let device = try requireMetalDevice()
+        let source = try makePrivateSource(device: device)
+
+        let staging = try TextureReadbackHelper.makeCPUReadableTexture(from: source,
+                                                                       stagingLabel: "Test.Staging",
+                                                                       discardedCopiesForTesting: 1)
+
+        let bytes = MPRTextureReadbackHelper.readBytes(from: staging, bytesPerRow: 8, byteCount: 16)
+        XCTAssertEqual(bytes, Self.privateSourceBytes,
+                       "the retry should read the real pixels, not the untouched staging texture")
+    }
+
+    private static let privateSourceBytes: [UInt8] = [
+        1, 2, 3, 255,
+        4, 5, 6, 255,
+        7, 8, 9, 255,
+        10, 11, 12, 255
+    ]
+
+    /// A `.private` source, because a `.shared` one is returned without any blit at all.
+    private func makePrivateSource(device: any MTLDevice) throws -> any MTLTexture {
+        let upload = try makeFrame(device: device,
+                                   pixelFormat: .bgra8Unorm,
+                                   bytes: Self.privateSourceBytes).texture
+
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm,
+                                                                   width: 2,
+                                                                   height: 2,
+                                                                   mipmapped: false)
+        descriptor.storageMode = .private
+        descriptor.usage = [.shaderRead]
+        let source = try XCTUnwrap(device.makeTexture(descriptor: descriptor))
+
+        let queue = try XCTUnwrap(device.makeCommandQueue())
+        let commandBuffer = try XCTUnwrap(queue.makeCommandBuffer())
+        let blit = try XCTUnwrap(commandBuffer.makeBlitCommandEncoder())
+        blit.copy(from: upload,
+                  sourceSlice: 0,
+                  sourceLevel: 0,
+                  sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+                  sourceSize: MTLSize(width: 2, height: 2, depth: 1),
+                  to: source,
+                  destinationSlice: 0,
+                  destinationLevel: 0,
+                  destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
+        blit.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        try XCTSkipUnless(commandBuffer.status == .completed,
+                          "Could not stage the private source texture on this runner")
+        return source
+    }
+
     private func makeFrame(device: any MTLDevice,
                            pixelFormat: MTLPixelFormat,
                            bytes: [UInt8]) throws -> VolumeRenderFrame {

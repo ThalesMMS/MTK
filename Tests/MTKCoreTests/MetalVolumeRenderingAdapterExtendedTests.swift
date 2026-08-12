@@ -2,7 +2,7 @@ import CoreGraphics
 import simd
 import XCTest
 
-@testable import MTKCore
+@_spi(Testing) @testable import MTKCore
 
 final class MetalVolumeRenderingAdapterExtendedTests: XCTestCase {
     private enum PixelReadError: Error {
@@ -84,6 +84,18 @@ final class MetalVolumeRenderingAdapterExtendedTests: XCTestCase {
         XCTAssertEqual(renderingQuality, 1.0 / 128.0, accuracy: 1e-6)
         XCTAssertEqual(clipBoundsSnapshot, clipBounds)
         XCTAssertEqual(clipPlaneSnapshot, ClipPlaneSnapshot(preset: 1, offset: 0.25))
+    }
+
+    func test_applyRenderState_doesNotCreatePersistentSamplingOverride() async throws {
+        let adapter = try makeTestAdapter()
+        let state = VolumeRenderState(samplingStep: 1.0 / 128.0)
+
+        try await adapter.applyRenderState(state)
+
+        let effective = try await adapter.getRenderStateSnapshot()
+        let overrides = await adapter.debugOverrides
+        XCTAssertEqual(effective.samplingStep, 1.0 / 128.0, accuracy: 1e-6)
+        XCTAssertNil(overrides.samplingDistance)
     }
 
     func testApplyRenderStateRejectsInvalidChannelsBeforeMutation() async throws {

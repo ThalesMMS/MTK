@@ -1,4 +1,4 @@
-// swift-tools-version: 5.10
+// swift-tools-version: 6.0
 
 import PackageDescription
 
@@ -6,8 +6,9 @@ let package = Package(
     name: "MTK",
     defaultLocalization: "en",
     platforms: [
-        .iOS(.v17),
-        .macOS(.v14)
+        .iOS("26.0"),
+        .visionOS("26.0"),
+        .macOS("26.0")
     ],
     products: [
         .library(
@@ -59,5 +60,6 @@ let package = Package(
             ],
             path: "Tests/MTKFixturesTests"
         )
-    ]
+    ],
+    swiftLanguageModes: [.v5]
 )

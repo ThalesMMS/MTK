@@ -184,11 +184,6 @@ public struct ProfilingEnvironment: Codable, Equatable, Sendable {
         if device.supportsFamily(.apple1) { return "apple1" }
 #if os(macOS)
         if device.supportsFamily(.mac2) { return "mac2" }
-        if #unavailable(macOS 13.0),
-           let legacyMac1Family = Self.legacyMac1Family,
-           device.supportsFamily(legacyMac1Family) {
-            return "mac1"
-        }
 #endif
         if device.supportsFamily(.common3) { return "common3" }
         if device.supportsFamily(.common2) { return "common2" }
@@ -196,8 +191,4 @@ public struct ProfilingEnvironment: Codable, Equatable, Sendable {
         return "unknown"
     }
 
-#if os(macOS)
-    // 2001 is MTLGPUFamily.mac1; use the raw value to avoid deprecated-symbol warnings.
-    private static let legacyMac1Family = MTLGPUFamily(rawValue: 2001)
-#endif
 }

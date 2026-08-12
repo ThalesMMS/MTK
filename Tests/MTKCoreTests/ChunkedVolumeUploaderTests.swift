@@ -323,7 +323,17 @@ final class ChunkedVolumeUploaderTests: XCTestCase {
         }
     }
 
-    func test_uploadRejectsDimensionOverflowBeforeAllocation() async throws {
+    /// This used to expect `dimensionByteCountOverflow`, because the extent
+    /// guard admitted anything up to `UInt32.max` and the byte-count
+    /// multiplication was the first thing to notice. The extent guard now stops
+    /// at `type3D`'s real ceiling of 2048 (issue #1684), so an absurd extent is
+    /// refused for what it actually is rather than for overflowing later.
+    ///
+    /// The overflow branch is deliberately kept in the source: reaching it is
+    /// no longer possible through this entry point — 2048³ voxels at 8 bytes is
+    /// nowhere near `Int.max` — but it costs nothing and the day someone
+    /// changes the ceiling, it is the check that will still be standing.
+    func test_uploadRejectsAnAbsurdExtentBeforeAllocation() async throws {
         let dimensions = VolumeDimensions(width: Int(UInt32.max),
                                           height: Int(UInt32.max),
                                           depth: 1)
@@ -338,8 +348,8 @@ final class ChunkedVolumeUploaderTests: XCTestCase {
         do {
             _ = try await uploader.upload(slices: SliceSequence([]),
                                           descriptor: descriptor)
-            XCTFail("Expected byte count overflow")
-        } catch ChunkedVolumeUploadError.dimensionByteCountOverflow(let errorDimensions) {
+            XCTFail("Expected the extent to be refused")
+        } catch ChunkedVolumeUploadError.invalidDimensions(let errorDimensions) {
             XCTAssertEqual(errorDimensions, dimensions)
         }
     }

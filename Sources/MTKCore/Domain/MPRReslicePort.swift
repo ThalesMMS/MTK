@@ -98,6 +98,13 @@ public extension MPRPlaneGeometry {
         return CGSize(width: max(outputWidth, 1), height: max(outputHeight, 1))
     }
 
+    /// The rectangle's millimetre extents reach the screen through this ratio:
+    /// the panel aspect-fits `|axisUWorld| × |axisVWorld|` into a fixed viewport,
+    /// so those extents *are* the panel's zoom. Anything that resizes the
+    /// rectangle rescales the anatomy at unchanged `viewportTransform.zoom` —
+    /// which is why plane rotation has to be rigid. See
+    /// `Docs/MPRCrosshairGeometryAndTilt.md`, "The plane rectangle *is* the
+    /// panel's zoom".
     var physicalAspectRatio: Float {
         let worldU = simd_length(axisUWorld)
         let worldV = simd_length(axisVWorld)

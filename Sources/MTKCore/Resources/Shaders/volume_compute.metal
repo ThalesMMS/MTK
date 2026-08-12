@@ -317,8 +317,16 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
         }
 
         const bool useTransfer = (material.useTFProj != 0 || material.method == 1);
-        const float densityForColour = useTransfer ? densityDataset : densityWindow;
-        const float windowIntensity = densityWindow;
+        // #1588: in DVR the windowed value *is* the LUT index, so colour and
+        // opacity both come out of the preset at the position the window
+        // chose. It used to index by the dataset range and then multiply the
+        // result by a parallel window ramp, which left the colour frozen
+        // wherever the preset put it and flattened the preset's own opacity
+        // curve with a curve that was not its.
+        //
+        // Only read on the DVR path below; the projection modes composite in
+        // their own branch and are untouched.
+        const float densityForColour = densityWindow;
 
         if (!isDVR) {
             if (material.method == 2) {
@@ -365,20 +373,15 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
                                                                gradientMagnitude,
                                                                useTransfer);
 
-        if (useTransfer) {
-            sampleColour.rgb *= windowIntensity;
-        }
-
         const float densityFloor = clamp(args.params.material.densityFloor, 0.0f, 1.0f);
         if (densityWindow <= densityFloor) {
             sampleColour.a = 0.0f;
         }
 
-        if (useTransfer) {
-            sampleColour.a *= densityWindow;
-        } else {
-            sampleColour.a = densityWindow;
-        }
+        // With a transfer function the alpha is the preset's own, already
+        // scaled by the global opacity when the LUT was baked. Multiplying by
+        // densityWindow here was the second of the two normalizations #1588
+        // removes.
 
         if (debugDensityEnabled) {
             debugMaxSampleAlpha = max(debugMaxSampleAlpha, clamp(sampleColour.a, 0.0f, 1.0f));
@@ -419,7 +422,9 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
                                                                  shadowDir,
                                                                  baseStep,
                                                                  windowMinValue,
-                                                                 invWindowRange);
+                                                                 invWindowRange,
+                                                                 true,
+                                                                 false);
             sampleColour.rgb = VolumeCompute::calculateShadowedLighting(sampleColour.rgb,
                                                                         normal,
                                                                         lightDir,
@@ -481,7 +486,9 @@ kernel void volume_compute(constant RenderingArguments& args [[buffer(0)]],
                                                                      shadowDir,
                                                                      baseStep,
                                                                      windowMinValue,
-                                                                     invWindowRange);
+                                                                     invWindowRange,
+                                                                     useTransfer,
+                                                                     useTransfer);
                 accumulator.rgb = VolumeCompute::calculateShadowedLighting(accumulator.rgb,
                                                                            projectionNormal,
                                                                            lightDir,

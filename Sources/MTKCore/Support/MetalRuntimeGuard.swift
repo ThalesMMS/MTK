@@ -217,8 +217,8 @@ private extension MetalRuntimeGuard {
         }
 
         private static func supports3DTextures(device: any MTLDevice) -> Bool {
-            #if os(iOS) || os(tvOS)
-            if #available(iOS 13.0, tvOS 13.0, *) {
+            #if os(iOS) || os(tvOS) || os(visionOS)
+            if #available(tvOS 13.0, *) {
                 if device.supportsAnyFamily([
                     .apple3,
                     .apple4,
@@ -236,11 +236,7 @@ private extension MetalRuntimeGuard {
                 return true
             }
             #elseif os(macOS)
-            if #available(macOS 11.0, *) {
-                if device.supportsAnyFamily([.mac1, .mac2, .common3]) {
-                    return true
-                }
-            } else {
+            if device.supportsAnyFamily([.mac2, .common3]) {
                 return true
             }
             #else
@@ -253,8 +249,8 @@ private extension MetalRuntimeGuard {
         }
 
         private static func supportsRequiredGPUFamilies(device: any MTLDevice) -> Bool {
-            #if os(iOS) || os(tvOS)
-            if #available(iOS 16.0, tvOS 16.0, *) {
+            #if os(iOS) || os(tvOS) || os(visionOS)
+            if #available(tvOS 16.0, *) {
                 if device.supportsAnyFamily([
                     .apple4,
                     .apple5,
@@ -271,13 +267,10 @@ private extension MetalRuntimeGuard {
             }
             return true
             #elseif os(macOS)
-            if #available(macOS 12.0, *) {
-                if device.supportsAnyFamily([.mac1, .mac2, .common3]) {
-                    return true
-                }
-                return probe3DTextureAllocation(device: device)
+            if device.supportsAnyFamily([.mac2, .common3]) {
+                return true
             }
-            return true
+            return probe3DTextureAllocation(device: device)
             #else
             return true
             #endif
@@ -316,7 +309,7 @@ private extension MetalRuntimeGuard.Status.MissingFeature {
 }
 
 private extension MTLDevice {
-    @available(iOS 13.0, macOS 11.0, tvOS 13.0, *)
+    @available(tvOS 13.0, *)
     func supportsAnyFamily(_ families: [MTLGPUFamily]) -> Bool {
         families.contains { supportsFamily($0) }
     }

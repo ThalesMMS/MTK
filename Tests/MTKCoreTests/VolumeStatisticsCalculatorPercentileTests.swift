@@ -211,4 +211,51 @@ final class VolumeStatisticsCalculatorPercentileTests: XCTestCase {
             wait(for: [expectation], timeout: 5.0)
         }
     }
+
+    /// A dispatch the driver discarded before it ran completes with no error at all, over
+    /// buffers the GPU never touched — which reads back as bin 0 for every percentile, a
+    /// perfectly ordinary-looking answer. Only the scan total says the work never happened.
+    func testComputePercentilesFailsWhenTheDispatchNeverRan() {
+        let histogram = [[UInt32]](repeating: [UInt32](repeating: 100, count: 256), count: 1)
+        let percentiles: [Float] = [0.25, 0.5, 0.75]
+        let expectation = expectation(description: "Percentiles dispatch never ran")
+        let calculator = TestStatisticsHelper.makeCalculator(device: device,
+                                                             commandQueue: commandQueue,
+                                                             library: library,
+                                                             forcedFailure: .dispatchNeverRuns)
+
+        calculator.computePercentiles(from: histogram, percentiles: percentiles) { result in
+            TestStatisticsHelper.assertStatisticsFailure(
+                result,
+                equals: .cumulativeSumDidNotCoverHistogram(counted: 0, expected: 25_600)
+            )
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 5.0)
+    }
+
+    func testComputePercentilesRecoversWhenOnlyTheFirstDispatchIsDiscarded() {
+        let histogram = [[UInt32]](repeating: [UInt32](repeating: 100, count: 256), count: 1)
+        let percentiles: [Float] = [0.25, 0.5, 0.75]
+        let expectedBins = try? TestStatisticsHelper.computePercentilesCPU(from: histogram[0],
+                                                                           percentiles: percentiles)
+        let expectation = expectation(description: "Percentiles retry")
+        let calculator = TestStatisticsHelper.makeCalculator(device: device,
+                                                             commandQueue: commandQueue,
+                                                             library: library,
+                                                             forcedFailure: .firstDispatchNeverRuns)
+
+        calculator.computePercentiles(from: histogram, percentiles: percentiles) { result in
+            switch result {
+            case .success(let bins):
+                XCTAssertEqual(bins, expectedBins)
+            case .failure(let error):
+                XCTFail("One discarded dispatch should not fail the computation: \(error)")
+            }
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 5.0)
+    }
 }

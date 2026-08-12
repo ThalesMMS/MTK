@@ -63,11 +63,11 @@ final class SurfaceMeshRendererTests: XCTestCase {
                                                 up: SIMD3<Float>(0, 1, 0),
                                                 fieldOfView: 45)
 
-        try await renderer.render(layers: [layer],
-                                  dataset: dataset,
-                                  camera: camera,
-                                  targetTexture: target,
-                                  clearTarget: true)
+        try await renderer.renderAttributingGPUFaults(layers: [layer],
+                                                      dataset: dataset,
+                                                      camera: camera,
+                                                      targetTexture: target,
+                                                      clearTarget: true)
 
         let bytes = try MPRTextureReadbackHelper.readBytes(from: target,
                                                            bytesPerPixel: 4,
@@ -98,11 +98,11 @@ final class SurfaceMeshRendererTests: XCTestCase {
             material: SurfaceMeshMaterial(color: SIMD4<Float>(0, 0, 1, 1))
         )
 
-        try await renderer.render(layers: [front, back],
-                                  dataset: dataset,
-                                  camera: makeCamera(),
-                                  targetTexture: target,
-                                  clearTarget: true)
+        try await renderer.renderAttributingGPUFaults(layers: [front, back],
+                                                      dataset: dataset,
+                                                      camera: makeCamera(),
+                                                      targetTexture: target,
+                                                      clearTarget: true)
 
         let pixel = try centerPixel(from: target, device: device, commandQueue: queue)
         XCTAssertGreaterThan(pixel.r, pixel.b)
@@ -127,12 +127,12 @@ final class SurfaceMeshRendererTests: XCTestCase {
             textureMax: SIMD3<Float>(1, 1, 0.5)
         ))
 
-        try await renderer.render(layers: [layer],
-                                  dataset: dataset,
-                                  camera: makeCamera(),
-                                  targetTexture: target,
-                                  clipping: clipping,
-                                  clearTarget: true)
+        try await renderer.renderAttributingGPUFaults(layers: [layer],
+                                                      dataset: dataset,
+                                                      camera: makeCamera(),
+                                                      targetTexture: target,
+                                                      clipping: clipping,
+                                                      clearTarget: true)
 
         let bytes = try MPRTextureReadbackHelper.readBytes(from: target,
                                                            bytesPerPixel: 4,
@@ -162,12 +162,12 @@ final class SurfaceMeshRendererTests: XCTestCase {
                                         dataset: dataset)
         let clipping = try VolumeClippingState(clipPlanes: [plane])
 
-        try await renderer.render(layers: [layer],
-                                  dataset: dataset,
-                                  camera: makeCamera(),
-                                  targetTexture: target,
-                                  clipping: clipping,
-                                  clearTarget: true)
+        try await renderer.renderAttributingGPUFaults(layers: [layer],
+                                                      dataset: dataset,
+                                                      camera: makeCamera(),
+                                                      targetTexture: target,
+                                                      clipping: clipping,
+                                                      clearTarget: true)
 
         let bytes = try MPRTextureReadbackHelper.readBytes(from: target,
                                                            bytesPerPixel: 4,
@@ -193,11 +193,11 @@ final class SurfaceMeshRendererTests: XCTestCase {
             opacity: 0.5
         )
 
-        try await renderer.render(layers: [layer],
-                                  dataset: makeDataset(),
-                                  camera: makeCamera(),
-                                  targetTexture: target,
-                                  clearTarget: true)
+        try await renderer.renderAttributingGPUFaults(layers: [layer],
+                                                      dataset: makeDataset(),
+                                                      camera: makeCamera(),
+                                                      targetTexture: target,
+                                                      clearTarget: true)
 
         let pixel = try centerPixel(from: target, device: device, commandQueue: queue)
         XCTAssertGreaterThan(pixel.g, 10)
@@ -224,11 +224,11 @@ final class SurfaceMeshRendererTests: XCTestCase {
             opacity: 0.5
         )
 
-        try await renderer.render(layers: [near, far],
-                                  dataset: makeDataset(),
-                                  camera: makeCamera(),
-                                  targetTexture: target,
-                                  clearTarget: true)
+        try await renderer.renderAttributingGPUFaults(layers: [near, far],
+                                                      dataset: makeDataset(),
+                                                      camera: makeCamera(),
+                                                      targetTexture: target,
+                                                      clearTarget: true)
 
         let pixel = try centerPixel(from: target, device: device, commandQueue: queue)
         XCTAssertGreaterThan(pixel.r, pixel.b)
@@ -261,19 +261,19 @@ final class SurfaceMeshRendererTests: XCTestCase {
                                                     fieldOfView: 45,
                                                     projectionType: .orthographic)
 
-        try await renderer.render(layers: [near, far],
-                                  dataset: dataset,
-                                  camera: frontCamera,
-                                  targetTexture: target,
-                                  clearTarget: true)
+        try await renderer.renderAttributingGPUFaults(layers: [near, far],
+                                                      dataset: dataset,
+                                                      camera: frontCamera,
+                                                      targetTexture: target,
+                                                      clearTarget: true)
         let frontPixel = try centerPixel(from: target, device: device, commandQueue: queue)
         let rebuildCount = renderer.debugDrawBufferRebuildCount
 
-        try await renderer.render(layers: [near, far],
-                                  dataset: dataset,
-                                  camera: backCamera,
-                                  targetTexture: target,
-                                  clearTarget: true)
+        try await renderer.renderAttributingGPUFaults(layers: [near, far],
+                                                      dataset: dataset,
+                                                      camera: backCamera,
+                                                      targetTexture: target,
+                                                      clearTarget: true)
         let backPixel = try centerPixel(from: target, device: device, commandQueue: queue)
 
         XCTAssertGreaterThan(frontPixel.r, frontPixel.b)
@@ -295,11 +295,11 @@ final class SurfaceMeshRendererTests: XCTestCase {
                                           shading: .unlit)
         )
 
-        try await renderer.render(layers: [layer],
-                                  dataset: makeDataset(),
-                                  camera: makeCamera(),
-                                  targetTexture: target,
-                                  clearTarget: true)
+        try await renderer.renderAttributingGPUFaults(layers: [layer],
+                                                      dataset: makeDataset(),
+                                                      camera: makeCamera(),
+                                                      targetTexture: target,
+                                                      clearTarget: true)
 
         let pixel = try centerPixel(from: target, device: device, commandQueue: queue)
         XCTAssertGreaterThan(pixel.g, 220)
@@ -325,16 +325,16 @@ final class SurfaceMeshRendererTests: XCTestCase {
                                                       fieldOfView: 45,
                                                       projectionType: .orthographic)
 
-        try await renderer.render(layers: [layer],
-                                  dataset: dataset,
-                                  camera: firstCamera,
-                                  targetTexture: target,
-                                  clearTarget: true)
-        try await renderer.render(layers: [layer],
-                                  dataset: dataset,
-                                  camera: secondCamera,
-                                  targetTexture: target,
-                                  clearTarget: true)
+        try await renderer.renderAttributingGPUFaults(layers: [layer],
+                                                      dataset: dataset,
+                                                      camera: firstCamera,
+                                                      targetTexture: target,
+                                                      clearTarget: true)
+        try await renderer.renderAttributingGPUFaults(layers: [layer],
+                                                      dataset: dataset,
+                                                      camera: secondCamera,
+                                                      targetTexture: target,
+                                                      clearTarget: true)
 
         XCTAssertEqual(renderer.debugDrawBufferRebuildCount, 1)
         XCTAssertEqual(renderer.debugDepthTextureAllocationCount, 1)
@@ -431,5 +431,34 @@ final class SurfaceMeshRendererTests: XCTestCase {
                                                            commandQueue: commandQueue)
         let offset = ((texture.height / 2) * texture.width + (texture.width / 2)) * 4
         return (bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3])
+    }
+}
+
+private extension MetalSurfaceMeshRenderer {
+    /// Renders, and abstains rather than reporting another process's GPU fault as ours.
+    ///
+    /// Every assertion in this file reads pixels back, so a render the driver discarded
+    /// used to arrive here as a wrong colour rather than as a failure: Metal fills a fresh
+    /// `.private` render target with magenta, and
+    /// `testTransparentSurfacesAreLayerSortedBackToFront` duly reported
+    /// `("255") is not greater than ("255")` — the depth sort blamed for a pass that never
+    /// ran. The renderer now refuses to return from a command buffer that did not reach
+    /// `.completed`, which leaves this the only question worth asking: was it ours?
+    func renderAttributingGPUFaults(layers: [SurfaceMeshLayer],
+                                    dataset: VolumeDataset,
+                                    camera: VolumeRenderRequest.Camera,
+                                    targetTexture: any MTLTexture,
+                                    clipping: VolumeClippingState = .disabled,
+                                    clearTarget: Bool = false) async throws {
+        do {
+            _ = try await render(layers: layers,
+                                 dataset: dataset,
+                                 camera: camera,
+                                 targetTexture: targetTexture,
+                                 clipping: clipping,
+                                 clearTarget: clearTarget)
+        } catch {
+            try GPUFaultAttribution.rethrowUnlessDiscarded(error, while: "Rendering surface meshes")
+        }
     }
 }

@@ -2,7 +2,7 @@
 
 # build_docs.sh
 # Shared helper used by CI/CD to generate Swift DocC documentation
-# for MTK package targets (MTKCore, MTKFixtures).
+# for the MTKCore package target.
 # Designed to succeed even on headless builders.
 
 set -euo pipefail
@@ -58,13 +58,13 @@ fi
 # Dry-run mode: verify tools and exit
 if [[ "$DRY_RUN" == "true" ]]; then
   echo "[build_docs] Dry-run mode: All prerequisites satisfied."
-  echo "[build_docs] Would build documentation for: MTKCore, MTKFixtures"
+  echo "[build_docs] Would build documentation for: MTKCore"
   echo "[build_docs] Output directory: $OUTPUT_DIR"
   exit 0
 fi
 
 # List of targets to document
-TARGETS=("MTKCore" "MTKFixtures")
+TARGETS=("MTKCore")
 
 echo "[build_docs] Building documentation for ${#TARGETS[@]} targets..."
 

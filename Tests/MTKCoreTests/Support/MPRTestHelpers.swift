@@ -163,12 +163,26 @@ enum MPRTestHelpers {
         try MPRTextureReadbackHelper.readValues(type, from: frame)
     }
 
+    /// Drains the queue, and refuses to say the work finished when it did not.
+    ///
+    /// This fence buffer is empty, so its own completion is the whole signal: if the
+    /// driver discarded it as the innocent victim of another process's GPU error, it took
+    /// everything else in flight on this queue with it, and whatever the caller reads next
+    /// was never written. `commandBuffer.error` alone does not catch that — a discarded
+    /// buffer stops on `.error`, status raw value 5, and can carry no error object — which
+    /// is how `PresentationPassTests` read `[0, 0, 0, 0]` out of a drawable in one of
+    /// eighteen contended runs and reported it as four wrong colours.
     static func waitForQueue(_ commandQueue: any MTLCommandQueue) throws {
         let commandBuffer = try XCTUnwrap(commandQueue.makeCommandBuffer())
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
-        if let error = commandBuffer.error {
-            throw error
+        guard commandBuffer.status == .completed else {
+            let failure = commandBuffer.error
+                ?? NSError(domain: "MPRTestHelpers",
+                           code: Int(commandBuffer.status.rawValue),
+                           userInfo: [NSLocalizedDescriptionKey:
+                                        "Queue fence reached status \(commandBuffer.status.rawValue) with no error object"])
+            try GPUFaultAttribution.rethrowUnlessDiscarded(failure, while: "Waiting for the command queue")
         }
     }
 }

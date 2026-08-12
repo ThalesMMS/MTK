@@ -257,4 +257,50 @@ final class VolumeStatisticsCalculatorOtsuTests: XCTestCase {
             wait(for: [expectation], timeout: 5.0)
         }
     }
+
+    /// A dispatch the driver discarded before it ran completes with no error at all, over
+    /// a result the GPU never touched. Bin 0 is a threshold this histogram could plausibly
+    /// have, so only the calculator's own seed tells the two apart.
+    func testComputeOtsuThresholdFailsWhenTheDispatchNeverRan() {
+        let histogram = [[UInt32]](repeating: [UInt32](repeating: 100, count: 256), count: 1)
+        let expectation = expectation(description: "Otsu dispatch never ran")
+        let calculator = TestStatisticsHelper.makeCalculator(device: device,
+                                                             commandQueue: commandQueue,
+                                                             library: library,
+                                                             forcedFailure: .dispatchNeverRuns)
+
+        calculator.computeOtsuThreshold(from: histogram) { result in
+            TestStatisticsHelper.assertStatisticsFailure(
+                result,
+                equals: .otsuThresholdNotWritten(read: .max, binCount: 256)
+            )
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 5.0)
+    }
+
+    func testComputeOtsuThresholdRecoversWhenOnlyTheFirstDispatchIsDiscarded() {
+        var histogram = [UInt32](repeating: 0, count: 256)
+        for bin in 20...30 { histogram[bin] = 100 }
+        for bin in 70...80 { histogram[bin] = 100 }
+        let expectation = expectation(description: "Otsu retry")
+        let calculator = TestStatisticsHelper.makeCalculator(device: device,
+                                                             commandQueue: commandQueue,
+                                                             library: library,
+                                                             forcedFailure: .firstDispatchNeverRuns)
+
+        calculator.computeOtsuThreshold(from: [histogram]) { result in
+            switch result {
+            case .success(let threshold):
+                XCTAssertTrue((30...70).contains(threshold),
+                              "retry should return the real threshold, got \(threshold)")
+            case .failure(let error):
+                XCTFail("One discarded dispatch should not fail the computation: \(error)")
+            }
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 5.0)
+    }
 }

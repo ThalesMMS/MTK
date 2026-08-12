@@ -83,7 +83,7 @@ public extension MTLDevice {
 
 private extension MTLDevice {
     var supportsAdvancedArgumentBuffers: Bool {
-        if #available(iOS 13.0, macOS 11.0, tvOS 13.0, *) {
+        if #available(tvOS 13.0, *) {
             if supportsAnyFamily([.apple4, .apple5, .apple6, .apple7, .apple8, .apple9, .apple10, .common3, .mac2]) {
                 return true
             }
@@ -95,7 +95,7 @@ private extension MTLDevice {
     }
 
     var supportsNonUniformThreadgroups: Bool {
-        if #available(iOS 13.0, macOS 11.0, tvOS 13.0, *) {
+        if #available(tvOS 13.0, *) {
             if supportsAnyFamily([.apple4, .apple5, .apple6, .apple7, .apple8, .apple9, .apple10, .common3, .mac2]) {
                 return true
             }
@@ -105,7 +105,7 @@ private extension MTLDevice {
     }
 
     var supportsPrivateHeaps: Bool {
-        if #available(iOS 13.0, macOS 11.0, tvOS 13.0, *) {
+        if #available(tvOS 13.0, *) {
             if supportsAnyFamily([.apple4, .apple5, .apple6, .apple7, .apple8, .apple9, .apple10, .common3, .mac2]) {
                 return true
             }
@@ -114,7 +114,7 @@ private extension MTLDevice {
         return false
     }
 
-    @available(iOS 13.0, macOS 11.0, tvOS 13.0, *)
+    @available(tvOS 13.0, *)
     func supportsAnyFamily(_ families: [MTLGPUFamily]) -> Bool {
         families.contains { supportsFamily($0) }
     }

@@ -20,8 +20,8 @@ Supported today:
   opacity, visibility, and blend mode.
 - `VolumeLayerBlendMode.sourceOver` composites contextual overlays with alpha.
 - `VolumeLayerBlendMode.additive` supports heat-like PET or dose overlays.
-- `VolumeViewport3D` and `ClinicalViewportSession` can apply visible scalar
-  layers to the 3D volume viewport.
+- `VolumeRenderRequest` can apply visible scalar layers through the current
+  renderer path.
 - `LayerTransform` classifies scalar `baseWorldToLayerWorld` matrices.
 - Supported non-identity scalar transforms are axis-aligned scale, translation,
   or both. These are CPU-resampled into the base volume geometry before 3D
@@ -161,8 +161,7 @@ resampling. Deformable registration remains a non-goal until separately scoped.
    intensity-range recomputation.
 4. Add a helper that turns `(VolumeLayer, LayerTransform, baseDataset)` into a
    pre-resampled scalar `VolumeLayer`.
-5. Wire pre-resampled layers through the current `VolumeViewport3D` and
-   `ClinicalViewportSession` APIs.
+5. Wire pre-resampled layers through the current `VolumeRenderRequest` API.
 6. Add layer-aware picking that samples supported visible scalar layers at the
    base hit point.
 7. Consider GPU resampling or direct layer-space sampling only after CPU

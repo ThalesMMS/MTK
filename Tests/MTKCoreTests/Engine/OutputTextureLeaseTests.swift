@@ -47,22 +47,61 @@ final class OutputTextureLeaseTests: XCTestCase {
         XCTAssertEqual(pool.debugLeasePendingCount, 0)
     }
 
-    func test_deinitWithoutExplicitReleaseUsesSafetyNet() throws {
+    func test_releaseAfterPresentationCompletesReleasesNeverSubmittedLease() throws {
         let device = try makeDevice()
         let pool = TextureLeasePool()
-        let texture: any MTLTexture
-        do {
-            let lease = try pool.acquireWithLease(width: 24,
-                                                  height: 24,
-                                                  pixelFormat: .bgra8Unorm,
-                                                  device: device)
-            texture = lease.texture
-            XCTAssertEqual(pool.debugLeasePendingCount, 1)
-        }
+        let lease = try pool.acquireWithLease(width: 24,
+                                              height: 24,
+                                              pixelFormat: .bgra8Unorm,
+                                              device: device)
 
+        lease.releaseAfterPresentationCompletes()
+
+        XCTAssertTrue(lease.isReleased)
         XCTAssertEqual(pool.debugLeaseReleasedCount, 1)
         XCTAssertEqual(pool.debugLeasePendingCount, 0)
-        XCTAssertEqual(pool.debugIsInUse(texture), false)
+        XCTAssertEqual(pool.debugIsInUse(lease.texture), false)
+    }
+
+    func test_cancelledPresentationCompletesDeferredRelease() throws {
+        let device = try makeDevice()
+        let pool = TextureLeasePool()
+        let lease = try pool.acquireWithLease(width: 24,
+                                              height: 24,
+                                              pixelFormat: .bgra8Unorm,
+                                              device: device)
+
+        lease.markPresentationSubmitted()
+        lease.releaseAfterPresentationCompletes()
+
+        XCTAssertFalse(lease.isReleased)
+
+        lease.cancelPresentationSubmission()
+
+        XCTAssertTrue(lease.isReleased)
+        XCTAssertEqual(pool.debugLeaseReleasedCount, 1)
+    }
+
+    func test_deferredReleaseWaitsForAllSubmittedPresentations() throws {
+        let device = try makeDevice()
+        let pool = TextureLeasePool()
+        let lease = try pool.acquireWithLease(width: 24,
+                                              height: 24,
+                                              pixelFormat: .bgra8Unorm,
+                                              device: device)
+
+        lease.markPresentationSubmitted()
+        lease.markPresentationSubmitted()
+        lease.releaseAfterPresentationCompletes()
+        lease.markPresented()
+
+        XCTAssertFalse(lease.isReleased)
+
+        lease.markPresented()
+
+        XCTAssertTrue(lease.isReleased)
+        XCTAssertEqual(pool.debugLeasePresentedCount, 1)
+        XCTAssertEqual(pool.debugLeaseReleasedCount, 1)
     }
 
     func test_concurrentReleaseDoesNotCorruptState() throws {

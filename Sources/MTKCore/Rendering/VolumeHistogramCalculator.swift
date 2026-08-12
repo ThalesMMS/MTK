@@ -148,6 +148,10 @@ public final class VolumeHistogramCalculator {
 
         /// Failed to allocate a Metal buffer for histogram storage.
         case bufferAllocationFailed
+
+        /// The command buffer completed without reporting an error, but the histogram
+        /// does not account for every voxel — the dispatch did not cover the volume.
+        case incompleteCoverage(channel: Int, counted: Int, expected: Int)
     }
 
     private let device: any MTLDevice
@@ -247,6 +251,30 @@ public final class VolumeHistogramCalculator {
             return
         }
 
+        encode(texture: texture,
+               plan: plan,
+               pipeline: resolvedPipeline,
+               voxelMin: voxelMin,
+               voxelMax: voxelMax,
+               attemptsLeft: Self.retriesAfterADiscardedDispatch,
+               completion: completion)
+    }
+
+    /// A GPU error/recovery event discards command buffers that were merely in flight
+    /// when it happened — the driver calls them innocent victims. A discarded dispatch
+    /// never runs, so its output buffer still holds the zeros written before commit, and
+    /// the result is an entirely empty histogram that looks like a computed one. The
+    /// coverage check below catches that; this retry is what keeps somebody else's GPU
+    /// fault from failing our computation. A genuine defect fails both attempts.
+    private static let retriesAfterADiscardedDispatch = 1
+
+    private func encode(texture: any MTLTexture,
+                        plan: HistogramDispatchPlan,
+                        pipeline resolvedPipeline: MTLComputePipelineState,
+                        voxelMin: Int32,
+                        voxelMax: Int32,
+                        attemptsLeft: Int,
+                        completion: @escaping (Result<[[UInt32]], Error>) -> Void) {
         // StorageModePolicy.md: histogram buffers are CPU-visible compute outputs.
         guard let histogramBuffer = device.makeBuffer(length: plan.bufferLength, options: .storageModeShared) else {
             completion(.failure(HistogramError.bufferAllocationFailed))
@@ -298,9 +326,29 @@ public final class VolumeHistogramCalculator {
 
         encoder.endEncoding()
 
+        let expectedVoxelCount = HistogramCoverage.voxelCount(width: threadsPerGrid.width,
+                                                              height: threadsPerGrid.height,
+                                                              depth: threadsPerGrid.depth)
+        let logger = logger
+
+        func retryOrFail(_ reason: String, _ error: Error) {
+            guard attemptsLeft > 0 else {
+                completion(.failure(error))
+                return
+            }
+            logger.error("Histogram dispatch \(reason); retrying once.")
+            encode(texture: texture,
+                   plan: plan,
+                   pipeline: resolvedPipeline,
+                   voxelMin: voxelMin,
+                   voxelMax: voxelMax,
+                   attemptsLeft: attemptsLeft - 1,
+                   completion: completion)
+        }
+
         commandBuffer.addCompletedHandler { buffer in
             if let error = buffer.error {
-                completion(.failure(error))
+                retryOrFail("failed with \(error.localizedDescription)", error)
                 return
             }
 
@@ -313,6 +361,21 @@ public final class VolumeHistogramCalculator {
                 let channelHistogram = Array(UnsafeBufferPointer(start: pointer, count: plan.bins))
                 results.append(channelHistogram)
             }
+
+            // The kernel bins every voxel and clamps the bin index, so counts that fall
+            // short mean the dispatch did not cover the volume — never a valid histogram.
+            // A buffer discarded as the innocent victim of somebody else's GPU fault
+            // lands here with no error at all and every bin still zero.
+            if let shortfall = HistogramCoverage.shortfall(in: results,
+                                                           expectedVoxelCount: expectedVoxelCount) {
+                let error = HistogramError.incompleteCoverage(channel: shortfall.channel,
+                                                              counted: shortfall.counted,
+                                                              expected: shortfall.expected)
+                retryOrFail("covered \(shortfall.counted) of \(shortfall.expected) voxels on channel \(shortfall.channel)",
+                            error)
+                return
+            }
+
             completion(.success(results))
         }
 

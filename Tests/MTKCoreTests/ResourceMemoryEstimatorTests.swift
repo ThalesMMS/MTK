@@ -58,10 +58,12 @@ final class ResourceMemoryEstimatorTests: XCTestCase {
             ResourceMemoryEstimator.estimate(forOutputTexture: size, pixelFormat: .stencil8),
             10 * 10
         )
+        #if os(macOS)
         XCTAssertEqual(
             ResourceMemoryEstimator.estimate(forOutputTexture: size, pixelFormat: .x24_stencil8),
             10 * 10 * 4
         )
+        #endif
         XCTAssertEqual(
             ResourceMemoryEstimator.estimate(forOutputTexture: size, pixelFormat: .x32_stencil8),
             10 * 10 * 8

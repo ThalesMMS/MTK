@@ -26,14 +26,15 @@ final class MPRTextureFrameTests: MetalMPRComputeAdapterTestCase {
                 steps: 1,
                 blend: .single
             )
-
-            XCTAssertEqual(frame.texture.width, dimensions.width)
-            XCTAssertEqual(frame.texture.height, dimensions.height)
-            XCTAssertEqual(frame.pixelFormat, pixelFormat)
-            XCTAssertEqual(frame.texture.pixelFormat, pixelFormat.rawIntensityMetalPixelFormat)
-            XCTAssertEqual(frame.intensityRange, dataset.intensityRange)
-            XCTAssertEqual(frame.planeGeometry, plane)
-            XCTAssertTrue(frame.textureFormatMatchesPixelFormat)
+            withAutoReleasedFrame(frame) {
+                XCTAssertEqual(frame.texture.width, dimensions.width)
+                XCTAssertEqual(frame.texture.height, dimensions.height)
+                XCTAssertEqual(frame.pixelFormat, pixelFormat)
+                XCTAssertEqual(frame.texture.pixelFormat, pixelFormat.rawIntensityMetalPixelFormat)
+                XCTAssertEqual(frame.intensityRange, dataset.intensityRange)
+                XCTAssertEqual(frame.planeGeometry, plane)
+                XCTAssertTrue(frame.textureFormatMatchesPixelFormat)
+            }
         }
     }
 
@@ -56,12 +57,13 @@ final class MPRTextureFrameTests: MetalMPRComputeAdapterTestCase {
                 steps: blend == .single ? 1 : 3,
                 blend: blend
             )
-
-            XCTAssertEqual(frame.texture.width, dataset.dimensions.width)
-            XCTAssertEqual(frame.texture.height, dataset.dimensions.height)
-            XCTAssertEqual(frame.texture.textureType, .type2D)
-            XCTAssertEqual(frame.texture.pixelFormat, .r16Sint)
-            XCTAssertEqual(frame.intensityRange, dataset.intensityRange)
+            withAutoReleasedFrame(frame) {
+                XCTAssertEqual(frame.texture.width, dataset.dimensions.width)
+                XCTAssertEqual(frame.texture.height, dataset.dimensions.height)
+                XCTAssertEqual(frame.texture.textureType, .type2D)
+                XCTAssertEqual(frame.texture.pixelFormat, .r16Sint)
+                XCTAssertEqual(frame.intensityRange, dataset.intensityRange)
+            }
         }
     }
 
@@ -82,15 +84,16 @@ final class MPRTextureFrameTests: MetalMPRComputeAdapterTestCase {
                 steps: 1,
                 blend: .single
             )
+            try withAutoReleasedFrame(frame) {
+                XCTAssertEqual(frame.pixelFormat, .int16Signed)
+                XCTAssertEqual(frame.texture.pixelFormat, .r16Sint)
+                XCTAssertTrue(frame.textureFormatMatchesPixelFormat)
+                XCTAssertEqual(frame.intensityRange, dataset.intensityRange)
 
-            XCTAssertEqual(frame.pixelFormat, .int16Signed)
-            XCTAssertEqual(frame.texture.pixelFormat, .r16Sint)
-            XCTAssertTrue(frame.textureFormatMatchesPixelFormat)
-            XCTAssertEqual(frame.intensityRange, dataset.intensityRange)
-
-            let actual = try readSignedPixels(from: frame)
-            let expected = expectedPixels(axis: axis, fixedIndex: 1, dimensions: dimensions)
-            XCTAssertEqual(actual, expected)
+                let actual = try readSignedPixels(from: frame)
+                let expected = expectedPixels(axis: axis, fixedIndex: 1, dimensions: dimensions)
+                XCTAssertEqual(actual, expected)
+            }
         }
     }
 
@@ -109,20 +112,61 @@ final class MPRTextureFrameTests: MetalMPRComputeAdapterTestCase {
             steps: 1,
             blend: .single
         )
+        try withAutoReleasedFrame(frame) {
+            let actual = try readSignedPixels(from: frame)
+            let expected = cpuReferencePixels(dataset: dataset,
+                                              plane: plane,
+                                              thickness: 1,
+                                              steps: 1,
+                                              blend: .single)
+            assertSignedPixels(actual, equal: expected, accuracy: 1, "Oblique slab mismatch")
 
-        let actual = try readSignedPixels(from: frame)
-        let expected = cpuReferencePixels(dataset: dataset,
-                                          plane: plane,
-                                          thickness: 1,
-                                          steps: 1,
-                                          blend: .single)
-        assertSignedPixels(actual, equal: expected, accuracy: 1, "Oblique slab mismatch")
-        
-        // NOTE:
-        // The GPU sampling path can differ by ±1 voxel at certain oblique-plane boundaries
-        // due to nearest-neighbor tie-breaking / floating-point rounding.
-        // This test intentionally tolerates a 1-intensity-step mismatch.
-        // Exact (bitwise) equality is still asserted in axis-aligned tests above.
+            // NOTE:
+            // The GPU sampling path can differ by ±1 voxel at certain oblique-plane boundaries
+            // due to nearest-neighbor tie-breaking / floating-point rounding.
+            // This test intentionally tolerates a 1-intensity-step mismatch.
+            // Exact (bitwise) equality is still asserted in axis-aligned tests above.
+        }
+    }
+
+    func test_compoundRotatedPlaneRendersOutOfVolumeAreaAsBackground() async throws {
+        let dimensions = VolumeDimensions(width: 9, height: 9, depth: 9)
+        let values = Array(repeating: Int16(500), count: dimensions.voxelCount)
+        let dataset = VolumeDataset(
+            data: values.withUnsafeBytes { Data($0) },
+            dimensions: dimensions,
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+            pixelFormat: .int16Signed,
+            intensityRange: 0...1024
+        )
+        let angle = Float(60) * .pi / 180
+        let rotation = simd_normalize(
+            simd_quatf(angle: angle, axis: SIMD3<Float>(0, 1, 0))
+                * simd_quatf(angle: angle, axis: SIMD3<Float>(1, 0, 0))
+        )
+        let plane = MPRGeometryDisplayMapper.makePlane(
+            for: dataset,
+            axis: .z,
+            slicePosition: 0.5,
+            rotation: rotation
+        )
+        let volumeTexture = try await VolumeTextureFactory(dataset: dataset)
+            .generateAsync(device: device, commandQueue: commandQueue)
+
+        let frame = try await adapter.makeSlabTexture(
+            dataset: dataset,
+            volumeTexture: volumeTexture,
+            plane: plane,
+            thickness: 1,
+            steps: 1,
+            blend: .single
+        )
+        try withAutoReleasedFrame(frame) {
+            let actual = try readSignedPixels(from: frame)
+
+            XCTAssertTrue(actual.contains(0), "Samples outside the rotated plane must render as background")
+            XCTAssertTrue(actual.contains(where: { $0 > 0 }), "In-volume anatomy must remain visible")
+        }
     }
 
     func test_makeSlabTextureThickSlabBlendModesMatchCPUReference() async throws {
@@ -141,21 +185,22 @@ final class MPRTextureFrameTests: MetalMPRComputeAdapterTestCase {
                 steps: 3,
                 blend: blend
             )
+            try withAutoReleasedFrame(frame) {
+                let actual = try readSignedPixels(from: frame)
+                let expected = cpuReferencePixels(dataset: dataset,
+                                                  plane: plane,
+                                                  thickness: 2,
+                                                  steps: 3,
+                                                  blend: blend)
+                assertSignedPixels(actual, equal: expected, accuracy: 12, "Mismatch for \(blend)")
+                assertMeanAbsoluteError(actual, expected, maximum: 2.0, "Aggregate mismatch for \(blend)")
 
-            let actual = try readSignedPixels(from: frame)
-            let expected = cpuReferencePixels(dataset: dataset,
-                                              plane: plane,
-                                              thickness: 2,
-                                              steps: 3,
-                                              blend: blend)
-            assertSignedPixels(actual, equal: expected, accuracy: 12, "Mismatch for \(blend)")
-            assertMeanAbsoluteError(actual, expected, maximum: 2.0, "Aggregate mismatch for \(blend)")
-            
-            // NOTE:
-            // Thick-slab GPU sampling can diverge from the CPU reference due to
-            // differing tie-breaks/rounding when stepping along the slab normal.
-            // This keeps a modest per-pixel cap plus a stricter aggregate guard
-            // so systematic drift cannot hide behind isolated tie-break differences.
+                // NOTE:
+                // Thick-slab GPU sampling can diverge from the CPU reference due to
+                // differing tie-breaks/rounding when stepping along the slab normal.
+                // This keeps a modest per-pixel cap plus a stricter aggregate guard
+                // so systematic drift cannot hide behind isolated tie-break differences.
+            }
         }
     }
 
@@ -176,20 +221,21 @@ final class MPRTextureFrameTests: MetalMPRComputeAdapterTestCase {
             steps: 1,
             blend: .single
         )
+        try withAutoReleasedFrame(frame) {
+            let actual = try readSignedPixels(from: frame)
+            let expected = [
+                signedCoordinateValue(x: 0, y: 0, z: 0),
+                signedCoordinateValue(x: 1, y: 0, z: 0),
+                signedCoordinateValue(x: 2, y: 0, z: 0),
+                signedCoordinateValue(x: 0, y: 1, z: 0),
+                signedCoordinateValue(x: 1, y: 1, z: 0),
+                signedCoordinateValue(x: 2, y: 1, z: 0)
+            ]
 
-        let actual = try readSignedPixels(from: frame)
-        let expected = [
-            signedCoordinateValue(x: 0, y: 0, z: 0),
-            signedCoordinateValue(x: 1, y: 0, z: 0),
-            signedCoordinateValue(x: 2, y: 0, z: 0),
-            signedCoordinateValue(x: 0, y: 1, z: 0),
-            signedCoordinateValue(x: 1, y: 1, z: 0),
-            signedCoordinateValue(x: 2, y: 1, z: 0)
-        ]
-
-        XCTAssertEqual(actual, expected)
-        XCTAssertEqual(actual.min(), -512)
-        XCTAssertEqual(frame.intensityRange, -1024...1024)
+            XCTAssertEqual(actual, expected)
+            XCTAssertEqual(actual.min(), -512)
+            XCTAssertEqual(frame.intensityRange, -1024...1024)
+        }
     }
 
     func test_nonIdentityAffineWorldPlaneMatchesCPUReference() async throws {
@@ -224,15 +270,16 @@ final class MPRTextureFrameTests: MetalMPRComputeAdapterTestCase {
             steps: 1,
             blend: .single
         )
-
-        let actual = try readSignedPixels(from: frame)
-        let expected = cpuReferencePixels(dataset: dataset,
-                                          plane: plane,
-                                          thickness: 1,
-                                          steps: 1,
-                                          blend: .single)
-        assertSignedPixels(actual, equal: expected, accuracy: 1, "Affine oblique MPR mismatch")
-        assertMeanAbsoluteError(actual, expected, maximum: 0.5, "Affine oblique MPR aggregate mismatch")
+        try withAutoReleasedFrame(frame) {
+            let actual = try readSignedPixels(from: frame)
+            let expected = cpuReferencePixels(dataset: dataset,
+                                              plane: plane,
+                                              thickness: 1,
+                                              steps: 1,
+                                              blend: .single)
+            assertSignedPixels(actual, equal: expected, accuracy: 1, "Affine oblique MPR mismatch")
+            assertMeanAbsoluteError(actual, expected, maximum: 0.5, "Affine oblique MPR aggregate mismatch")
+        }
     }
 
     func test_anisotropicSlabBlendModesUseExpectedSamples() async throws {
@@ -263,10 +310,23 @@ final class MPRTextureFrameTests: MetalMPRComputeAdapterTestCase {
                 steps: 3,
                 blend: expectation.blend
             )
-
-            let actual = try readSignedPixels(from: frame)
-            XCTAssertEqual(actual, Array(repeating: expectation.value, count: 4), "Mismatch for \(expectation.blend)")
+            try withAutoReleasedFrame(frame) {
+                let actual = try readSignedPixels(from: frame)
+                XCTAssertEqual(
+                    actual,
+                    Array(repeating: expectation.value, count: 4),
+                    "Mismatch for \(expectation.blend)"
+                )
+            }
         }
+    }
+
+    private func withAutoReleasedFrame<Result>(
+        _ frame: MPRTextureFrame,
+        perform body: () throws -> Result
+    ) rethrows -> Result {
+        defer { frame.debugReleaseOutputTextureLease() }
+        return try body()
     }
 
     private func makeGradientDataset(dimensions: VolumeDimensions) -> VolumeDataset {

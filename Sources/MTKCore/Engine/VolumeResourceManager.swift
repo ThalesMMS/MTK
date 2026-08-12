@@ -88,6 +88,7 @@ final class VolumeResourceManager {
         enum ContentIdentity: Hashable, Sendable {
             case cacheKey(String)
             case request(UUID)
+            case resource(UUID)
         }
 
         let dimensions: VolumeDimensions
@@ -403,6 +404,50 @@ final class VolumeResourceManager {
         handleReferenceCounts[handle] = 1
         logLifecycle(resourceType: "volume",
                      action: "acquired",
+                     estimatedBytes: cached.estimatedBytes)
+        return handle
+    }
+
+    func acquire<Isolation: Actor>(isolatedTo _: isolated Isolation,
+                                   resource: StreamedVolumeResource,
+                                   referenceDataset: VolumeDataset) throws -> VolumeResourceHandle {
+        guard resource.texture.device.registryID == device.registryID else {
+            throw MTKRenderingEngine.EngineError.volumeResourceUnavailable
+        }
+        guard resource.matches(dataset: referenceDataset) else {
+            throw StreamedVolumeResourceError.referenceMetadataMismatch
+        }
+        let identity = ResourceIdentity.stream(
+            StreamIdentity(descriptor: resource.descriptor,
+                           contentIdentity: .resource(resource.id))
+        )
+        if let handle = acquireCachedHandle(for: identity) {
+            return handle
+        }
+
+        let texture = resource.texture
+        let cached = CachedResource(
+            dataset: referenceDataset,
+            texture: texture,
+            referenceCount: 1,
+            uploadTime: nil,
+            peakMemoryBytes: nil,
+            storageMode: texture.storageMode,
+            pixelFormat: texture.pixelFormat,
+            dimensions: VolumeResourceHandle.Metadata.Dimensions(
+                width: texture.width,
+                height: texture.height,
+                depth: texture.depth
+            ),
+            estimatedBytes: ResourceMemoryEstimator.estimate(for: texture),
+            debugLabel: texture.label
+        )
+        let handle = VolumeResourceHandle(metadata: cached.metadata)
+        textureCache[identity] = cached
+        handleMap[handle] = identity
+        handleReferenceCounts[handle] = 1
+        logLifecycle(resourceType: "volume",
+                     action: "adopted",
                      estimatedBytes: cached.estimatedBytes)
         return handle
     }

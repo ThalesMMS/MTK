@@ -54,8 +54,7 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
             resolvedLibrary = lib
         } else if let defaultLibrary = device.makeDefaultLibrary() {
             resolvedLibrary = defaultLibrary
-        } else if #available(macOS 11.0, *),
-                  let bundled = try? device.makeDefaultLibrary(bundle: coreBundle) {
+        } else if let bundled = try? device.makeDefaultLibrary(bundle: coreBundle) {
             resolvedLibrary = bundled
         } else {
             resolvedLibrary = nil
@@ -95,6 +94,52 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
         }
         dummy.label = "Test.DummyAcceleration"
         self.dummyAccelerationTexture = dummy
+    }
+
+    // MARK: - What the Comparison Is Comparing
+
+    /// #1692 asked whether declaring residency was itself the thing that moved the pixels,
+    /// because the maximum error went from exactly 0.0000 to 1.0000 the moment the line
+    /// was added. It is not, and this holds that answer.
+    ///
+    /// Two frames, differing in everything except the flag. The reference binds a 1×1
+    /// dummy in the acceleration slot; the control binds the real visibility pyramid and
+    /// goes through the accelerated encoder — same residency declaration, same pyramid on
+    /// the GPU — with OPTION_USE_ACCELERATION cleared. They must come back bit for bit
+    /// identical. Everything the accelerated frames in the tests below do differently,
+    /// they do because rays skipped blocks.
+    func testOnlyTheSkippingFlagChangesTheFrame() async throws {
+        #if canImport(MetalPerformanceShaders)
+        guard raycaster.isMetalPerformanceShadersAvailable else {
+            throw XCTSkip("MPS acceleration is unavailable for this Metal runtime; prepareAccelerationStructure(dataset:) would return .unavailable")
+        }
+
+        let dataset = makeSparseTestDataset()
+        let accelerationTexture = try requireAccelerationTexture(for: dataset)
+
+        guard let reference = try await renderWithoutAcceleration(dataset: dataset, method: 1),
+              let control = try await renderWithAcceleration(dataset: dataset,
+                                                             method: 1,
+                                                             accelerationTexture: accelerationTexture,
+                                                             accelerationEnabled: false) else {
+            XCTFail("Failed to render the reference and control frames")
+            return
+        }
+
+        let residencyOnly = try compareTextures(baseline: reference, accelerated: control, tolerance: 0.0)
+
+        print("📊 Flag Isolation Analysis:")
+        print("   Reference vs control: \(residencyOnly.differentPixels) pixels, max \(String(format: "%.4f", residencyOnly.maxPixelError))")
+
+        XCTAssertEqual(
+            residencyOnly.maxPixelError,
+            0,
+            "Binding the visibility pyramid and declaring residency moved \(residencyOnly.differentPixels) "
+            + "pixels on their own, so the accelerated frame cannot be read as the cost of skipping"
+        )
+        #else
+        throw XCTSkip("MPS acceleration is unavailable for this platform; prepareAccelerationStructure(dataset:) would return .unavailable")
+        #endif
     }
 
     // MARK: - Visual Quality Regression Tests
@@ -161,6 +206,13 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
         #endif
     }
 
+    /// MIP is the one mode where the two frames are expected to match exactly, and it is
+    /// worth saying why so the zero is not read as the #1686 smell again: `volume_compute`
+    /// gates empty-space skipping on `isDVR`, so `method: 2` ignores
+    /// `OPTION_USE_ACCELERATION` and the accelerated encoding is the same render. What
+    /// this asserts is that enabling acceleration does not leak into a projection mode.
+    /// `compareTextures` refuses two blank frames, so the zero can no longer be the
+    /// agreement of two dispatches that never ran.
     func testVisualQualityWithMIPRendering() async throws {
         #if canImport(MetalPerformanceShaders)
         guard raycaster.isMetalPerformanceShadersAvailable else {
@@ -215,49 +267,72 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
             throw XCTSkip("MPS acceleration is unavailable for this Metal runtime; prepareAccelerationStructure(dataset:) would return .unavailable")
         }
 
-        let dataset = makeComplexTestDataset()
+        // Both shapes, because a hole needs geometry to hide behind: the shells of the
+        // complex volume never lost more than 6% to the #1692 defect, while the sparse
+        // one lost entire rays to it.
+        for (name, dataset) in [("shells", makeComplexTestDataset()), ("sparse", makeSparseTestDataset())] {
+            try await assertNoClusteredHoles(in: dataset, named: name)
+        }
+        #else
+        throw XCTSkip("MPS acceleration is unavailable for this platform; prepareAccelerationStructure(dataset:) would return .unavailable")
+        #endif
+    }
 
+    #if canImport(MetalPerformanceShaders)
+    private func assertNoClusteredHoles(in dataset: VolumeDataset,
+                                        named name: String,
+                                        file: StaticString = #filePath,
+                                        line: UInt = #line) async throws {
         guard let baselineTexture = try await renderWithoutAcceleration(dataset: dataset, method: 1) else {
-            XCTFail("Failed to render reference Metal-only texture")
+            XCTFail("Failed to render reference Metal-only texture", file: file, line: line)
             return
         }
 
         let accelerationTexture = try requireAccelerationTexture(for: dataset)
 
         guard let acceleratedTexture = try await renderWithAcceleration(dataset: dataset, method: 1, accelerationTexture: accelerationTexture) else {
-            XCTFail("Failed to render accelerated texture")
+            XCTFail("Failed to render accelerated texture", file: file, line: line)
             return
         }
 
+        // #1692: the clustering map is built at 10%, not at the 2% used for the
+        // difference *ratio* elsewhere, and the difference matters.
+        //
+        // Skipping a block moves the ray to the block's exit face, so every sample after
+        // it lands off the uniform step grid the reference marched on. That perturbation
+        // is real but bounded, and it concentrates where rays graze the object — which is
+        // to say it is always contiguous. At 2% the detector fires on it every time and
+        // says "artifact" about a resampling phase. Measured on the sparse volume it is
+        // under 7% per channel and it shrinks with the step: 405 pixels over a 2%
+        // tolerance at quality 256, 119 at 1024, 9 at 4096.
+        //
+        // Content the skipping *removed* does not behave that way. It does not shrink
+        // with the step and it is not small: before the pyramid was made conservative
+        // (see `computeMinMaxDownsample`) rays tangent to a block face lost everything
+        // they should have accumulated, and the same band of pixels differed by a full
+        // 1.0000. A cluster above 10% is that; a cluster below it is the grid.
         let comparison = try compareTextures(
             baseline: baselineTexture,
             accelerated: acceleratedTexture,
-            tolerance: 0.02
+            tolerance: 0.1
         )
 
-        print("📊 Artifact Detection Analysis:")
-        print("   Different pixels:    \(comparison.differentPixels) / \(comparison.totalPixels)")
+        print("📊 Artifact Detection Analysis (\(name)):")
+        print("   Pixels over 10%:     \(comparison.differentPixels) / \(comparison.totalPixels)")
         print("   Max pixel error:     \(String(format: "%.4f", comparison.maxPixelError))")
         print("   Clustered errors:    \(comparison.hasClusteredErrors ? "Yes ⚠️" : "No ✅")")
 
-        // Large clustered errors indicate visible artifacts
+        // A cluster of pixels that lost more than 10% is a hole, not a resampling shift.
         XCTAssertFalse(
             comparison.hasClusteredErrors,
-            "Acceleration should not introduce visible artifacts"
+            "Acceleration skipped a block of the \(name) volume that was carrying visible "
+            + "content: \(comparison.differentPixels) pixels differ by more than 10%, worst "
+            + "\(String(format: "%.4f", comparison.maxPixelError)), and they are contiguous",
+            file: file,
+            line: line
         )
-
-        // Spot check: ensure large errors are isolated, not clustered
-        if comparison.maxPixelError > 0.05 {
-            print("⚠️  Significant pixel errors detected, checking for clustering...")
-            XCTAssertFalse(
-                comparison.hasClusteredErrors,
-                "Large errors should be isolated, not clustered (indicating artifacts)"
-            )
-        }
-        #else
-        throw XCTSkip("MPS acceleration is unavailable for this platform; prepareAccelerationStructure(dataset:) would return .unavailable")
-        #endif
     }
+    #endif
 
     func testEdgeCaseVolumeQuality() async throws {
         #if canImport(MetalPerformanceShaders)
@@ -295,6 +370,16 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
             comparison.differenceRatio,
             0.1, // Allow slightly higher difference for edge cases
             "Quality should be maintained even with sharp transitions"
+        )
+
+        // #1692: the ratio alone let this dataset report a worst pixel of 0.9529 and still
+        // pass — a wall of tissue vanishing from a handful of rays does not move a
+        // percentage of the frame. The magnitude is the part that says "hole".
+        XCTAssertLessThan(
+            comparison.maxPixelError,
+            0.1,
+            "A pixel changed by \(String(format: "%.4f", comparison.maxPixelError)) across the "
+            + "sharp transition: acceleration dropped content the reference march composited"
         )
         #else
         throw XCTSkip("MPS acceleration is unavailable for this platform; prepareAccelerationStructure(dataset:) would return .unavailable")
@@ -435,6 +520,13 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
         computeEncoder.setComputePipelineState(volumeComputePipeline)
         computeEncoder.setBuffer(argumentManager.argumentBuffer, offset: 0, index: 0)
         computeEncoder.setBuffer(cameraBuffer, offset: 0, index: 1)
+        // #1692: every texture this kernel touches — the volume, the four transfer LUTs,
+        // the visibility pyramid and the output — is reached through the argument buffer,
+        // so binding the argument buffer makes none of them resident. VolumeRaycastPass
+        // calls this at all three of its dispatch sites; this suite copied the encoding
+        // block without it, the writes to the output texture went nowhere, and both sides
+        // of every comparison below read back an all-zero frame.
+        argumentManager.registerResources(on: computeEncoder)
 
         let threadgroupSize = MTLSize(width: 16, height: 16, depth: 1)
         let threadgroups = MTLSize(
@@ -454,7 +546,8 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
     private func renderWithAcceleration(
         dataset: VolumeDataset,
         method: Int32,
-        accelerationTexture: any MTLTexture
+        accelerationTexture: any MTLTexture,
+        accelerationEnabled: Bool = true
     ) async throws -> MTLTexture? {
         // Accelerated path: shader-level ZSKIP heuristic plus precomputed
         // visibility, with OPTION_USE_ACCELERATION enabled.
@@ -486,7 +579,7 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
 
         // Encode argument buffer for volume_compute with acceleration enabled.
         let optionUseAcceleration: UInt16 = 1 << 4
-        var optionValue: UInt16 = optionUseAcceleration
+        var optionValue: UInt16 = accelerationEnabled ? optionUseAcceleration : 0
         var quaternion = SIMD4<Float>(0, 0, 0, 1)
         var targetViewSize = UInt16(256)
         var pointSetCount: UInt16 = 0
@@ -515,8 +608,18 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
         // Runtime sanity: option buffer must carry the acceleration flag for this render.
         if let optionBuffer = argumentManager.getBuffer(argumentIndex: .optionValue) {
             let value = optionBuffer.contents().bindMemory(to: UInt16.self, capacity: 1).pointee
-            XCTAssertNotEqual(value & optionUseAcceleration, 0, "OPTION_USE_ACCELERATION must be set for accelerated render")
+            XCTAssertEqual(value & optionUseAcceleration,
+                           accelerationEnabled ? optionUseAcceleration : 0,
+                           "OPTION_USE_ACCELERATION must match the requested mode for this render")
         }
+
+        // #1692: and that the flag had something to act on. Every comparison in this file
+        // ends in "the accelerated frame matches the reference", which is also what comes
+        // out when the pyramid marks nothing skippable and the two encodings run the same
+        // ray march. The cache raises this flag while baking the level the raycast reads.
+        XCTAssertTrue(visibilityCache.isSkippingUseful,
+                      "No block of this dataset is skippable, so the accelerated render is "
+                      + "the reference render and comparing them measures nothing")
 
         var camera = RaycasterTestHelpers.makeTestCameraUniforms()
         memcpy(cameraBuffer.contents(), &camera, CameraUniforms.stride)
@@ -524,6 +627,13 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
         computeEncoder.setComputePipelineState(volumeComputePipeline)
         computeEncoder.setBuffer(argumentManager.argumentBuffer, offset: 0, index: 0)
         computeEncoder.setBuffer(cameraBuffer, offset: 0, index: 1)
+        // #1692: every texture this kernel touches — the volume, the four transfer LUTs,
+        // the visibility pyramid and the output — is reached through the argument buffer,
+        // so binding the argument buffer makes none of them resident. VolumeRaycastPass
+        // calls this at all three of its dispatch sites; this suite copied the encoding
+        // block without it, the writes to the output texture went nowhere, and both sides
+        // of every comparison below read back an all-zero frame.
+        argumentManager.registerResources(on: computeEncoder)
 
         let threadgroupSize = MTLSize(width: 16, height: 16, depth: 1)
         let threadgroups = MTLSize(
@@ -552,10 +662,28 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
         }
     }
 
+    private func assertFrameIsNotBlank(_ bytes: [UInt8],
+                                       label: String,
+                                       file: StaticString,
+                                       line: UInt) {
+        var brightest: UInt8 = 0
+        for byte in bytes where byte > brightest {
+            brightest = byte
+        }
+        XCTAssertGreaterThan(brightest,
+                             0,
+                             "The \(label) render is an all-zero frame: the dispatch wrote nothing, "
+                             + "so comparing it proves nothing",
+                             file: file,
+                             line: line)
+    }
+
     private func compareTextures(
         baseline: any MTLTexture,
         accelerated: any MTLTexture,
-        tolerance: Float
+        tolerance: Float,
+        file: StaticString = #filePath,
+        line: UInt = #line
     ) throws -> TextureComparison {
         guard baseline.width == accelerated.width,
               baseline.height == accelerated.height,
@@ -577,6 +705,14 @@ final class EmptySpaceSkippingQualityTests: XCTestCase {
         let acceleratedData = MPRTextureReadbackHelper.readBytes(from: accelerated,
                                                                  bytesPerRow: bytesPerRow,
                                                                  byteCount: totalBytes)
+
+        // #1692: the comparison this method performs is only worth anything if both
+        // frames were rendered. Undeclared residency made both dispatches write nowhere,
+        // and two all-zero frames agree bit for bit — which is how every assertion in
+        // this file reported a maximum pixel error of exactly 0.0000 for months while
+        // measuring nothing at all. A blank frame is not a quality result.
+        assertFrameIsNotBlank(baselineData, label: "reference", file: file, line: line)
+        assertFrameIsNotBlank(acceleratedData, label: "accelerated", file: file, line: line)
 
         var differentPixels = 0
         var maxPixelError: Float = 0

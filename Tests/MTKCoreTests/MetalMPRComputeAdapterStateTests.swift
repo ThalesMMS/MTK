@@ -49,6 +49,7 @@ final class MetalMPRComputeAdapterStateTests: MetalMPRComputeAdapterTestCase {
             steps: 1,
             blend: .single
         )
+        defer { frame.debugReleaseOutputTextureLease() }
 
         MPRTestHelpers.assertValidFrame(frame,
                                         expectedWidth: 64,
@@ -73,7 +74,7 @@ final class MetalMPRComputeAdapterStateTests: MetalMPRComputeAdapterTestCase {
         let volumeTexture = try await makeVolumeTexture(for: dataset)
 
         try await adapter.send(.setBlend(.maximum))
-        _ = try await adapter.makeSlabTexture(
+        let frame = try await adapter.makeSlabTexture(
             dataset: dataset,
             volumeTexture: volumeTexture,
             plane: plane,
@@ -81,6 +82,7 @@ final class MetalMPRComputeAdapterStateTests: MetalMPRComputeAdapterTestCase {
             steps: 1,
             blend: .single
         )
+        defer { frame.debugReleaseOutputTextureLease() }
 
         let overridesAfter = await adapter.debugOverrides
         XCTAssertNil(overridesAfter.blend)
@@ -102,6 +104,7 @@ final class MetalMPRComputeAdapterStateTests: MetalMPRComputeAdapterTestCase {
             steps: 3,
             blend: .average
         )
+        defer { frame.debugReleaseOutputTextureLease() }
         XCTAssertEqual(try MPRTestHelpers.readInputValues(UInt16.self, from: frame).count, 64 * 64)
 
         let snapshot = await adapter.debugLastSnapshot
@@ -174,6 +177,7 @@ final class MetalMPRComputeAdapterStateTests: MetalMPRComputeAdapterTestCase {
             steps: 1,
             blend: .single
         )
+        defer { frame.debugReleaseOutputTextureLease() }
 
         XCTAssertGreaterThan(frame.texture.width, 0)
         XCTAssertGreaterThan(frame.texture.height, 0)
@@ -194,6 +198,7 @@ final class MetalMPRComputeAdapterStateTests: MetalMPRComputeAdapterTestCase {
             steps: 50,
             blend: .maximum
         )
+        defer { frame.debugReleaseOutputTextureLease() }
 
         MPRTestHelpers.assertValidFrame(frame,
                                         expectedWidth: 64,

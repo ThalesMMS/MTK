@@ -336,15 +336,16 @@ final class MTKRenderingEngineRenderTests: MTKRenderingEngineTestCase {
         )
         try await engine.setVolume(testDataset, for: viewport)
 
-        let first = try await engine.render(viewport)
-        let firstTextureID = ObjectIdentifier(first.texture as AnyObject)
+        _ = try await engine.render(viewport)
+        let firstSignature = await engine.debugMPRFrameSignature(for: viewport)
 
         try await engine.configure(viewport,
                                    slicePosition: 0.8,
                                    window: nil)
         let second = try await engine.render(viewport)
+        let secondSignature = await engine.debugMPRFrameSignature(for: viewport)
 
-        XCTAssertNotEqual(ObjectIdentifier(second.texture as AnyObject), firstTextureID)
+        XCTAssertNotEqual(secondSignature, firstSignature)
         XCTAssertNotNil(second.mprFrame)
     }
 
@@ -355,22 +356,23 @@ final class MTKRenderingEngineRenderTests: MTKRenderingEngineTestCase {
         )
         try await engine.setVolume(testDataset, for: viewport)
 
-        let first = try await engine.render(viewport)
-        let firstTextureID = ObjectIdentifier(first.texture as AnyObject)
+        _ = try await engine.render(viewport)
+        let firstSignature = await engine.debugMPRFrameSignature(for: viewport)
 
         try await engine.configure(viewport,
                                    slabThickness: 3,
                                    slabSteps: 1)
-        let second = try await engine.render(viewport)
-        let secondTextureID = ObjectIdentifier(second.texture as AnyObject)
-        XCTAssertNotEqual(secondTextureID, firstTextureID)
+        _ = try await engine.render(viewport)
+        let secondSignature = await engine.debugMPRFrameSignature(for: viewport)
+        XCTAssertNotEqual(secondSignature, firstSignature)
 
         try await engine.configure(viewport,
                                    slabThickness: 3,
                                    slabSteps: 5)
         let third = try await engine.render(viewport)
+        let thirdSignature = await engine.debugMPRFrameSignature(for: viewport)
 
-        XCTAssertNotEqual(ObjectIdentifier(third.texture as AnyObject), secondTextureID)
+        XCTAssertNotEqual(thirdSignature, secondSignature)
         XCTAssertNotNil(third.mprFrame)
     }
 
@@ -381,16 +383,17 @@ final class MTKRenderingEngineRenderTests: MTKRenderingEngineTestCase {
         )
         try await engine.setVolume(testDataset, for: viewport)
 
-        let first = try await engine.render(viewport)
-        let firstTextureID = ObjectIdentifier(first.texture as AnyObject)
+        _ = try await engine.render(viewport)
+        let firstSignature = await engine.debugMPRFrameSignature(for: viewport)
 
         try await engine.configure(viewport,
                                    slabThickness: 1,
                                    slabSteps: 1,
                                    blend: .maximum)
         let second = try await engine.render(viewport)
+        let secondSignature = await engine.debugMPRFrameSignature(for: viewport)
 
-        XCTAssertNotEqual(ObjectIdentifier(second.texture as AnyObject), firstTextureID)
+        XCTAssertNotEqual(secondSignature, firstSignature)
         XCTAssertNotNil(second.mprFrame)
     }
 

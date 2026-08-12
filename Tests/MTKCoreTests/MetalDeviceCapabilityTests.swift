@@ -267,9 +267,6 @@ final class MetalDeviceCapabilityTests: XCTestCase {
     // MARK: - Helpers
 
     private func supportsAnyFamily(_ families: [MTLGPUFamily]) -> Bool {
-        if #available(iOS 13.0, macOS 11.0, tvOS 13.0, *) {
-            return families.contains { device.supportsFamily($0) }
-        }
-        return false
+        families.contains { device.supportsFamily($0) }
     }
 }

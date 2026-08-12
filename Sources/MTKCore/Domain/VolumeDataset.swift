@@ -217,6 +217,7 @@ public struct ClinicalImageMetadata: Sendable, Equatable {
     public var studyInstanceUID: String?
     public var seriesInstanceUID: String?
     public var frameOfReferenceUID: String?
+    public var isPatientSpaceSliceGeometryVerified: Bool
     public var rescaleSlope: Double?
     public var rescaleIntercept: Double?
     public var sourcePixelFormat: VolumePixelFormat?
@@ -230,6 +231,7 @@ public struct ClinicalImageMetadata: Sendable, Equatable {
                 studyInstanceUID: String? = nil,
                 seriesInstanceUID: String? = nil,
                 frameOfReferenceUID: String? = nil,
+                isPatientSpaceSliceGeometryVerified: Bool = false,
                 rescaleSlope: Double? = nil,
                 rescaleIntercept: Double? = nil,
                 sourcePixelFormat: VolumePixelFormat? = nil,
@@ -242,6 +244,7 @@ public struct ClinicalImageMetadata: Sendable, Equatable {
         self.studyInstanceUID = studyInstanceUID
         self.seriesInstanceUID = seriesInstanceUID
         self.frameOfReferenceUID = frameOfReferenceUID
+        self.isPatientSpaceSliceGeometryVerified = isPatientSpaceSliceGeometryVerified
         self.rescaleSlope = rescaleSlope
         self.rescaleIntercept = rescaleIntercept
         self.sourcePixelFormat = sourcePixelFormat

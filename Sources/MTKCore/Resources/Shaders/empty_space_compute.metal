@@ -71,8 +71,27 @@ kernel void computeMinMaxBaseUnsigned(texture3d<ushort, access::read> source [[t
 /// min (minimum of all R values) and max (maximum of all G values) for the
 /// destination mip level. This preserves correct min-max semantics unlike
 /// bilinear filtering which would average the values.
+///
+/// `apronVoxels` widens the window by that many source texels on every side. The
+/// raycaster (#1692) decides a block is empty from this pyramid and then jumps the ray
+/// over the whole block, so the block's min/max has to bound every density the raycaster
+/// could have sampled *inside* it — which is not the same set as the voxels the block
+/// owns. Two separate reasons, one voxel each:
+///
+///   * the volume is read through a linear sampler, so a sample taken just inside a face
+///     interpolates the neighbouring block's voxel;
+///   * `VR::sampleCoordinate` spreads [0,1] over `dim - 1` voxel *centres*, while
+///     `ESS::sampleAccelerationStructureAtLevel` indexes blocks by `floor(coord * dim)`.
+///     The two conventions drift by up to a voxel across the axis.
+///
+/// One voxel of apron at the first downsample covers both, and it stays one voxel at
+/// every coarser level: a level-1 texel that already spans `[2g-1, 2g+2]` makes its
+/// level-2 parent span `[4g-1, 4g+4]`, the level-3 block `[8b-1, 8b+8]`. Applying the
+/// apron once is therefore both sufficient and far cheaper than dilating level 0, which
+/// would cost 27 reads for every voxel of the volume.
 kernel void computeMinMaxDownsample(texture3d<half, access::read> source [[texture(0)]],
                                     texture3d<half, access::write> destination [[texture(1)]],
+                                    constant int &apronVoxels [[buffer(0)]],
                                     uint3 gid [[thread_position_in_grid]])
 {
     uint dstWidth = destination.get_width();
@@ -83,23 +102,20 @@ kernel void computeMinMaxDownsample(texture3d<half, access::read> source [[textu
         return;
     }
 
-    uint3 srcBase = gid * 2;
-    uint srcWidth = source.get_width();
-    uint srcHeight = source.get_height();
-    uint srcDepth = source.get_depth();
+    int3 srcBase = int3(gid) * 2;
+    int3 srcLast = int3(int(source.get_width()) - 1,
+                        int(source.get_height()) - 1,
+                        int(source.get_depth()) - 1);
+    int apron = max(apronVoxels, 0);
 
     half minVal = half(1.0h);
     half maxVal = half(0.0h);
 
-    // Read 2x2x2 block from source, clamping at edges
-    for (uint dz = 0; dz < 2; dz++) {
-        for (uint dy = 0; dy < 2; dy++) {
-            for (uint dx = 0; dx < 2; dx++) {
-                uint3 coord = uint3(
-                    min(srcBase.x + dx, srcWidth - 1),
-                    min(srcBase.y + dy, srcHeight - 1),
-                    min(srcBase.z + dz, srcDepth - 1)
-                );
+    // Read the 2x2x2 block plus its apron from source, clamping at edges
+    for (int dz = -apron; dz < 2 + apron; dz++) {
+        for (int dy = -apron; dy < 2 + apron; dy++) {
+            for (int dx = -apron; dx < 2 + apron; dx++) {
+                uint3 coord = uint3(clamp(srcBase + int3(dx, dy, dz), int3(0), srcLast));
                 half2 minMax = source.read(coord).rg;
                 minVal = min(minVal, minMax.r);
                 maxVal = max(maxVal, minMax.g);

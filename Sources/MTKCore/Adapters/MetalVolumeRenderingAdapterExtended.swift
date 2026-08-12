@@ -48,7 +48,6 @@ extension MetalVolumeRenderingAdapter: VolumeRenderingPortExtended {
             try await send(.setWindow(min: window.lowerBound, max: window.upperBound))
         }
         try await send(.setLighting(resolved.lightingEnabled))
-        try await send(.setSamplingStep(resolved.samplingStep))
         logClipPlaneApproximationIfNeeded()
     }
 

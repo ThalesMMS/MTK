@@ -211,83 +211,400 @@ final class NoInteractiveReadbackTests: MTKRenderingEngineTestCase {
 
     func test_cgImageDisplayPathForbidden() throws {
         let productionSources = try scanProductionSources(in: "")
-        let allowedBoundaryTokens = ["snapshot", "export", "readback", "debug"]
-        let patterns = [
-            try NSRegularExpression(pattern: #"func\s+[A-Za-z0-9_]+\s*\([^)]*:\s*CGImage\??"#),
-            try NSRegularExpression(pattern: #"(?:^|[^A-Za-z0-9_])display\s*\([^)]*CGImage"#),
-            try NSRegularExpression(pattern: #"\.\s*display\s*\([^)]*CGImage"#)
-        ]
-        let violations = productionSources.keys.sorted().filter { file in
-            guard let source = productionSources[file] else { return false }
-            let normalizedFile = file.lowercased()
-            if allowedBoundaryTokens.contains(where: normalizedFile.contains) {
-                return false
+        let allowedFunctionDeclarations = auditedCGImageFunctionDeclarations()
+        let allowedStandaloneUsages = auditedStandaloneCGImageUsages()
+        var violations = Set<String>()
+        for file in productionSources.keys.sorted() {
+            guard let source = productionSources[file] else { continue }
+            guard let violationLines = cgImageViolationLines(
+                in: source,
+                allowedFunctionDeclarations: allowedFunctionDeclarations[file, default: []],
+                allowedStandaloneUsages: allowedStandaloneUsages[file, default: []]
+            ) else {
+                violations.insert(file)
+                continue
             }
-            let range = NSRange(source.startIndex..<source.endIndex, in: source)
-            for pattern in patterns {
-                guard let match = pattern.firstMatch(in: source, range: range),
-                      let matchRange = Range(match.range, in: source) else {
-                    continue
-                }
-                let snippet = source[matchRange].lowercased()
-                if allowedBoundaryTokens.contains(where: snippet.contains) {
-                    continue
-                }
-                return true
+            for line in violationLines {
+                violations.insert("\(file):\(line)")
             }
-            return false
         }
 
-        XCTAssertEqual(violations, [],
-                       "CGImage display path must not reappear in production code. Violations: \(violations.joined(separator: ", "))")
+        XCTAssertEqual(violations.sorted(), [],
+                       "CGImage display path must not reappear in production code. Violations: \(violations.sorted().joined(separator: ", "))")
     }
 
-    func test_coreSourcesDoNotReferenceCGImagePresentationSymbols() throws {
-        let productionSources = try scanProductionSources(in: "")
-
-        let mtkCoreFiles = productionSources.keys
-            .filter { $0.hasPrefix("Sources/MTKCore/") }
-            .sorted()
-
-        let allowedBoundaryTokens = ["snapshot", "export", "readback", "debug"]
-        let forbiddenTokens = [
-            "UIImage",
-            "NSImage",
-            "CIImage",
-            "Image(uiImage:",
-            "Image(nsImage:"
-        ]
-
-        let violations = mtkCoreFiles.filter { file in
-            guard let source = productionSources[file] else { return false }
-
-            let normalizedFile = file.lowercased()
-            if allowedBoundaryTokens.contains(where: normalizedFile.contains) {
-                return false
-            }
-
-            let containsForbiddenSymbol = forbiddenTokens.contains(where: source.contains)
-            if containsForbiddenSymbol {
-                return true
-            }
-
-            // `CGImage` references are allowed only behind explicit snapshot/export/readback/debug boundaries.
-            if source.contains("CGImage") {
-                return allowedBoundaryTokens.contains(where: source.lowercased().contains) == false
-            }
-
-            return false
-        }
+    func test_cgImageBoundaryClassifier_rejectsInteractiveOccurrenceBesideExportInEitherOrder() {
+        let allowedDeclaration = "func renderSnapshot() -> CGImage {"
+        let exportThenInteractive = """
+        \(allowedDeclaration) fatalError() }
+        func presentInteractiveFrame(_ image: CGImage) {}
+        """
+        let interactiveThenExport = """
+        func presentInteractiveFrame(_ image: CGImage) {}
+        \(allowedDeclaration) fatalError() }
+        """
 
         XCTAssertEqual(
-            violations,
-            [],
-            "MTKCore must not reference CGImage/UIImage/NSImage presentation symbols outside snapshot/export/readback/debug boundaries. Violations: \(violations.joined(separator: ", "))"
+            cgImageViolationLines(
+                in: exportThenInteractive,
+                allowedFunctionDeclarations: [allowedDeclaration],
+                allowedStandaloneUsages: []
+            ),
+            [2]
+        )
+        XCTAssertEqual(
+            cgImageViolationLines(
+                in: interactiveThenExport,
+                allowedFunctionDeclarations: [allowedDeclaration],
+                allowedStandaloneUsages: []
+            ),
+            [1]
+        )
+    }
+
+    func test_cgImageBoundaryClassifier_masksCommentsAndStringsAndFindsQualifiedSymbols() {
+        let source = #"""
+        // export CGImage is documentation, not an allowance.
+        let diagnostic = "debug CGImage"
+        func presentInteractiveFrame(_ image: CoreGraphics.CGImage) {}
+        var cachedInteractiveFrame: CGImage?
+        func currentInteractiveFrame() -> CGImage? { nil }
+        """#
+
+        XCTAssertEqual(
+            cgImageViolationLines(
+                in: source,
+                allowedFunctionDeclarations: [],
+                allowedStandaloneUsages: []
+            ),
+            [3, 4, 5]
+        )
+    }
+
+    func test_cgImageBoundaryClassifier_preservesInterpolationCodeInRawAndRegularStrings() {
+        let source = ##"""
+        let rawText = #"CGImage export"#
+        let interpolated = "\(CoreGraphics.CGImage.self)"
+        let rawInterpolated = #"\#(CGImage.self)"#
+        """##
+
+        XCTAssertEqual(
+            cgImageViolationLines(
+                in: source,
+                allowedFunctionDeclarations: [],
+                allowedStandaloneUsages: []
+            ),
+            [2, 3]
+        )
+    }
+
+    func test_cgImageBoundaryClassifier_requiresCallsToRemainInsideAuditedFunction() {
+        let allowedDeclaration = "func renderSnapshot() -> CGImage {"
+        let source = """
+        \(allowedDeclaration)
+            TextureSnapshotExporter().makeCGImage()
+        }
+        func presentInteractiveFrame() {
+            TextureSnapshotExporter().makeCGImage()
+        }
+        """
+
+        XCTAssertEqual(
+            cgImageViolationLines(
+                in: source,
+                allowedFunctionDeclarations: [allowedDeclaration],
+                allowedStandaloneUsages: []
+            ),
+            [5]
+        )
+    }
+
+    func test_cgImageBoundaryClassifier_preservesLinesWhenMaskingMultilineAllowance() {
+        let allowedUsage = "func makeCGImage(\n    from frame: Frame) -> CGImage"
+        let source = """
+        \(allowedUsage)
+        func presentInteractiveFrame(_ image: CGImage) {}
+        """
+
+        XCTAssertEqual(
+            cgImageViolationLines(
+                in: source,
+                allowedFunctionDeclarations: [],
+                allowedStandaloneUsages: [allowedUsage]
+            ),
+            [3]
         )
     }
 }
 
 private extension NoInteractiveReadbackTests {
+    func auditedCGImageFunctionDeclarations() -> [String: [String]] {
+        [
+            "Sources/MTKCore/Adapters/TextureSnapshotExporter.swift": [
+                "public func makeCGImage(from frame: VolumeRenderFrame) async throws -> CGImage {",
+                "public func makeCGImageSynchronously(from frame: VolumeRenderFrame) throws -> CGImage {",
+                "public func writePNG(from frame: VolumeRenderFrame, to url: URL) async throws {",
+                "private static func bitmapInfo(for pixelFormat: MTLPixelFormat) throws -> CGBitmapInfo {",
+                "private static func writePNG(_ image: CGImage, to url: URL) throws {"
+            ],
+            "Sources/MTKCore/Metal/MetalRaycaster+DebugSliceImage.swift": [
+                "public func makeDebugSliceImage(dataset: VolumeDataset,\n" +
+                    "                                    slice index: Int? = nil) -> CGImage? {"
+            ],
+            "Sources/MTKCore/Testing/VolumeRenderRegressionFixture.swift": [
+                "public static func imagePixelSummary(_ image: CoreGraphics.CGImage) -> PixelSummary? {",
+                "public static func imageContainsVisiblePixels(_ image: CoreGraphics.CGImage) -> Bool {",
+                "public static func texturePixelSummary(_ texture: any MTLTexture) throws -> PixelSummary? {"
+            ]
+        ]
+    }
+
+    func auditedStandaloneCGImageUsages() -> [String: [String]] {
+        [
+            "Sources/MTKCore/Domain/SnapshotExporting.swift": [
+                "func makeCGImage(from frame: VolumeRenderFrame) async throws -> CGImage"
+            ]
+        ]
+    }
+
+    func cgImageViolationLines(in source: String,
+                               allowedFunctionDeclarations: [String],
+                               allowedStandaloneUsages: [String]) -> [Int]? {
+        guard let sourceWithStandaloneAllowancesMasked = sourceMaskingExactlyOneOccurrence(
+            of: allowedStandaloneUsages,
+            from: source
+        ) else { return nil }
+        let sourceUnderTest = sourceMaskingCommentsAndStrings(sourceWithStandaloneAllowancesMasked)
+        guard let allowedFunctionRanges = functionBoundaryRanges(
+            in: sourceUnderTest,
+            declarations: allowedFunctionDeclarations
+        ) else { return nil }
+        guard let pattern = try? NSRegularExpression(pattern: "CGImage") else { return [] }
+        let sourceRange = NSRange(sourceUnderTest.startIndex..<sourceUnderTest.endIndex,
+                                  in: sourceUnderTest)
+        return pattern.matches(in: sourceUnderTest, range: sourceRange).compactMap { match in
+            guard let matchRange = Range(match.range, in: sourceUnderTest) else { return nil }
+            guard !allowedFunctionRanges.contains(where: { $0.contains(matchRange.lowerBound) }) else {
+                return nil
+            }
+            return lineNumber(at: matchRange.lowerBound, in: sourceUnderTest)
+        }
+    }
+
+    func sourceMaskingExactlyOneOccurrence(of allowedUsages: [String],
+                                           from source: String) -> String? {
+        var sourceUnderTest = source
+        for allowedUsage in allowedUsages {
+            let components = sourceUnderTest.components(separatedBy: allowedUsage)
+            guard components.count == 2 else { return nil }
+            let maskedUsage = allowedUsage.map { character -> Character in
+                character == "\n" ? "\n" : " "
+            }
+            sourceUnderTest = components[0] + String(maskedUsage) + components[1]
+        }
+        return sourceUnderTest
+    }
+
+    func functionBoundaryRanges(in source: String,
+                                declarations: [String]) -> [Range<String.Index>]? {
+        var ranges: [Range<String.Index>] = []
+        for declaration in declarations {
+            let components = source.components(separatedBy: declaration)
+            guard components.count == 2,
+                  let declarationRange = source.range(of: declaration),
+                  let openingBrace = source[declarationRange].lastIndex(of: "{") else {
+                return nil
+            }
+            var depth = 0
+            var cursor = openingBrace
+            var closingBrace: String.Index?
+            while cursor < source.endIndex {
+                let character = source[cursor]
+                if character == "{" {
+                    depth += 1
+                } else if character == "}" {
+                    depth -= 1
+                    if depth == 0 {
+                        closingBrace = cursor
+                        break
+                    }
+                }
+                cursor = source.index(after: cursor)
+            }
+            guard let closingBrace else { return nil }
+            ranges.append(declarationRange.lowerBound..<source.index(after: closingBrace))
+        }
+        return ranges
+    }
+
+    func lineNumber(at location: String.Index, in source: String) -> Int {
+        source[..<location].reduce(into: 1) { lineNumber, character in
+            if character == "\n" {
+                lineNumber += 1
+            }
+        }
+    }
+
+    func sourceMaskingCommentsAndStrings(_ source: String) -> String {
+        let characters = Array(source)
+        var result: [Character] = []
+        result.reserveCapacity(characters.count)
+        var index = 0
+        var state = 0 // 0 code, 1 line comment, 2 block comment, 3 string
+        var blockCommentDepth = 0
+        var stringContexts: [(hashCount: Int, quoteCount: Int)] = []
+        var interpolationDepths: [Int] = []
+
+        func isPair(_ first: Character, _ second: Character, at offset: Int) -> Bool {
+            offset + 1 < characters.count &&
+                characters[offset] == first && characters[offset + 1] == second
+        }
+
+        func stringDelimiter(at offset: Int) -> (hashCount: Int, quoteCount: Int, length: Int)? {
+            var cursor = offset
+            while cursor < characters.count, characters[cursor] == "#" {
+                cursor += 1
+            }
+            guard cursor < characters.count, characters[cursor] == "\"" else { return nil }
+            let quoteCount = cursor + 2 < characters.count &&
+                characters[cursor + 1] == "\"" && characters[cursor + 2] == "\"" ? 3 : 1
+            return (cursor - offset, quoteCount, cursor - offset + quoteCount)
+        }
+
+        func closingDelimiterLength(at offset: Int,
+                                    context: (hashCount: Int, quoteCount: Int)) -> Int? {
+            guard offset + context.quoteCount + context.hashCount <= characters.count else { return nil }
+            for quoteOffset in 0..<context.quoteCount
+                where characters[offset + quoteOffset] != "\"" {
+                return nil
+            }
+            for hashOffset in 0..<context.hashCount
+                where characters[offset + context.quoteCount + hashOffset] != "#" {
+                return nil
+            }
+            return context.quoteCount + context.hashCount
+        }
+
+        func interpolationOpeningLength(at offset: Int, hashCount: Int) -> Int? {
+            guard offset < characters.count, characters[offset] == "\\" else { return nil }
+            let openingParenthesis = offset + 1 + hashCount
+            guard openingParenthesis < characters.count,
+                  characters[openingParenthesis] == "(" else { return nil }
+            for hashOffset in 0..<hashCount
+                where characters[offset + 1 + hashOffset] != "#" {
+                return nil
+            }
+            return hashCount + 2
+        }
+
+        func appendMasked(_ character: Character) {
+            result.append(character == "\n" ? "\n" : " ")
+        }
+
+        func appendMasked(count: Int) {
+            for offset in index..<(index + count) {
+                appendMasked(characters[offset])
+            }
+        }
+
+        while index < characters.count {
+            let character = characters[index]
+            switch state {
+            case 0:
+                if isPair("/", "/", at: index) {
+                    result.append(contentsOf: [" ", " "])
+                    index += 2
+                    state = 1
+                } else if isPair("/", "*", at: index) {
+                    result.append(contentsOf: [" ", " "])
+                    index += 2
+                    blockCommentDepth = 1
+                    state = 2
+                } else if let delimiter = stringDelimiter(at: index) {
+                    appendMasked(count: delimiter.length)
+                    index += delimiter.length
+                    stringContexts.append((delimiter.hashCount, delimiter.quoteCount))
+                    state = 3
+                } else if !interpolationDepths.isEmpty, character == "(" {
+                    interpolationDepths[interpolationDepths.count - 1] += 1
+                    result.append(character)
+                    index += 1
+                } else if !interpolationDepths.isEmpty, character == ")" {
+                    interpolationDepths[interpolationDepths.count - 1] -= 1
+                    result.append(character)
+                    index += 1
+                    if interpolationDepths.last == 0 {
+                        interpolationDepths.removeLast()
+                        state = 3
+                    }
+                } else {
+                    result.append(character)
+                    index += 1
+                }
+            case 1:
+                appendMasked(character)
+                index += 1
+                if character == "\n" {
+                    state = 0
+                }
+            case 2:
+                if isPair("/", "*", at: index) {
+                    result.append(contentsOf: [" ", " "])
+                    index += 2
+                    blockCommentDepth += 1
+                } else if isPair("*", "/", at: index) {
+                    result.append(contentsOf: [" ", " "])
+                    index += 2
+                    blockCommentDepth -= 1
+                    if blockCommentDepth == 0 {
+                        state = 0
+                    }
+                } else {
+                    appendMasked(character)
+                    index += 1
+                }
+            default:
+                guard let context = stringContexts.last else {
+                    state = 0
+                    continue
+                }
+                if let openingLength = interpolationOpeningLength(at: index,
+                                                                  hashCount: context.hashCount) {
+                    appendMasked(count: openingLength - 1)
+                    result.append("(")
+                    index += openingLength
+                    interpolationDepths.append(1)
+                    state = 0
+                } else if let closingLength = closingDelimiterLength(at: index,
+                                                                      context: context) {
+                    appendMasked(count: closingLength)
+                    index += closingLength
+                    stringContexts.removeLast()
+                    state = stringContexts.count > interpolationDepths.count ? 3 : 0
+                } else if character == "\\", context.hashCount == 0,
+                          index + 1 < characters.count {
+                    appendMasked(count: 2)
+                    index += 2
+                } else if character == "\\", context.hashCount > 0 {
+                    let escapedCharacter = index + context.hashCount + 1
+                    let hasRawEscape = escapedCharacter < characters.count &&
+                        (0..<context.hashCount).allSatisfy { characters[index + 1 + $0] == "#" }
+                    if hasRawEscape {
+                        appendMasked(count: context.hashCount + 2)
+                        index += context.hashCount + 2
+                    } else {
+                        appendMasked(character)
+                        index += 1
+                    }
+                } else {
+                    appendMasked(character)
+                    index += 1
+                }
+            }
+        }
+        return String(result)
+    }
+
     func assertMPRRenderDoesNotTriggerReadback(axis: Axis) async throws {
         let viewport = try await makeMPRViewport(axis: axis, size: CGSize(width: 32, height: 28))
         let frame = try await engine.render(viewport)

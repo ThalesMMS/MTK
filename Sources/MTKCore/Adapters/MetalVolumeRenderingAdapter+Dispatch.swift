@@ -222,6 +222,7 @@ extension MetalVolumeRenderingAdapter {
     func renderLayerStackWithMetal(state: MetalState,
                                    request: VolumeRenderRequest,
                                    outputTexture providedOutputTexture: (any MTLTexture)? = nil,
+                                   volumeTexture providedVolumeTexture: (any MTLTexture)? = nil,
                                    waitsForCompletion: Bool = true) async throws -> VolumeRenderFrame {
         let layers = try request.visibleScalarLayersForRendering(
             resampleCache: state.registeredLayerResampleCache
@@ -230,15 +231,21 @@ extension MetalVolumeRenderingAdapter {
               let firstScalar = firstLayer.scalarVolume else {
             return try await renderWithMetal(state: state,
                                              request: request,
+                                             datasetTexture: providedVolumeTexture,
                                              outputTexture: providedOutputTexture,
                                              waitsForCompletion: waitsForCompletion)
         }
         let overlayLayers = Array(layers.dropFirst())
+        let matchingProvidedVolumeTexture = firstLayer.id == VolumeRenderRequest.primaryVolumeLayerID &&
+            firstScalar.dataset == request.dataset
+            ? providedVolumeTexture
+            : nil
         guard !overlayLayers.isEmpty else {
             let baseRequest = request.replacingPrimaryVolume(with: firstLayer,
                                                              scalarVolume: firstScalar)
             return try await renderWithMetal(state: state,
                                              request: baseRequest,
+                                             datasetTexture: matchingProvidedVolumeTexture,
                                              outputTexture: providedOutputTexture,
                                              waitsForCompletion: waitsForCompletion)
         }
@@ -265,6 +272,7 @@ extension MetalVolumeRenderingAdapter {
         var currentFrame = try await renderWithMetal(
             state: state,
             request: baseRequest,
+            datasetTexture: matchingProvidedVolumeTexture,
             outputTexture: scratchTextures[0],
             waitsForCompletion: waitsForCompletion
         )

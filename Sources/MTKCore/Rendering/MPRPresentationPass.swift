@@ -136,6 +136,9 @@ public enum MPRPresentationCommandBufferError: Error, Equatable, LocalizedError,
 /// integrations still keep instances MainActor-bound, and `present()` asserts
 /// main-thread use in debug builds to catch accidental off-actor calls.
 public struct MPRPresentationPass {
+    @_spi(Testing) public static let shadingSpecularExponent: Float = 24
+    @_spi(Testing) public static let shadingNormalizedGradientScale: Float = 6
+
     public let device: any MTLDevice
     public let commandQueue: any MTLCommandQueue
     public let library: any MTLLibrary
@@ -182,6 +185,20 @@ public struct MPRPresentationPass {
         var shutterCenterY: Float
         var shutterRadius: Float
         var _pad7: Float
+        var planeOriginTexture: SIMD3<Float>
+        var _pad8: Float
+        var planeAxisUTexture: SIMD3<Float>
+        var _pad9: Float
+        var planeAxisVTexture: SIMD3<Float>
+        var _pad10: Float
+        var shadingEnabled: Int32
+        var shadingAmbient: Float
+        var shadingDiffuse: Float
+        var shadingSpecular: Float
+        var shadingGradientScaleU: Float
+        var shadingGradientScaleV: Float
+        var _pad11: Float
+        var _pad12: Float
     }
 
     private struct MPRLabelmapOverlayUniforms {
@@ -239,6 +256,7 @@ public struct MPRPresentationPass {
     private struct EncodedPresentation {
         let commandBuffer: any MTLCommandBuffer
         let outputTexture: any MTLTexture
+        let finalPresentationTexture: any MTLTexture
         let startedAt: CFAbsoluteTime
     }
 
@@ -297,8 +315,11 @@ public struct MPRPresentationPass {
                                  labelmapOverlays: [MPRLabelmapOverlay] = [],
                                  scalarOverlays: [MPRScalarVolumeOverlay] = [],
                                  shutter: MPRPresentationShutter? = nil,
+                                 shading: MPRShadingSettings = .default,
+                                 convolutionKernel: MPRConvolutionKernel? = nil,
                                  onCommandBufferFailure: ((MPRPresentationCommandBufferError) -> Void)? = nil,
-                                 onCommandBufferCompleted: (() -> Void)? = nil) throws -> CFAbsoluteTime {
+                                 onCommandBufferCompleted: (() -> Void)? = nil,
+                                 onPresentationTextureReady: ((any MTLTexture) -> Void)? = nil) throws -> CFAbsoluteTime {
         try presentImpl(frame: frame,
                         window: window,
                         to: drawable,
@@ -312,8 +333,11 @@ public struct MPRPresentationPass {
                         labelmapOverlays: labelmapOverlays,
                         scalarOverlays: scalarOverlays,
                         shutter: shutter,
+                        shading: shading,
+                        convolutionKernel: convolutionKernel,
                         onCommandBufferFailure: onCommandBufferFailure,
-                        onCommandBufferCompleted: onCommandBufferCompleted)
+                        onCommandBufferCompleted: onCommandBufferCompleted,
+                        onPresentationTextureReady: onPresentationTextureReady)
     }
 
     @available(*, deprecated, message: "Use present(frame:window:to:transform:...) instead.")
@@ -330,6 +354,8 @@ public struct MPRPresentationPass {
                                  labelmapOverlays: [MPRLabelmapOverlay] = [],
                                  scalarOverlays: [MPRScalarVolumeOverlay] = [],
                                  shutter: MPRPresentationShutter? = nil,
+                                 shading: MPRShadingSettings = .default,
+                                 convolutionKernel: MPRConvolutionKernel? = nil,
                                  onCommandBufferFailure: ((MPRPresentationCommandBufferError) -> Void)? = nil,
                                  onCommandBufferCompleted: (() -> Void)? = nil) throws -> CFAbsoluteTime {
         try presentImpl(frame: frame,
@@ -345,6 +371,8 @@ public struct MPRPresentationPass {
                         labelmapOverlays: labelmapOverlays,
                         scalarOverlays: scalarOverlays,
                         shutter: shutter,
+                        shading: shading,
+                        convolutionKernel: convolutionKernel,
                         onCommandBufferFailure: onCommandBufferFailure,
                         onCommandBufferCompleted: onCommandBufferCompleted)
     }
@@ -363,11 +391,15 @@ public struct MPRPresentationPass {
                                       labelmapOverlays: [MPRLabelmapOverlay],
                                       scalarOverlays: [MPRScalarVolumeOverlay],
                                       shutter: MPRPresentationShutter?,
+                                      shading: MPRShadingSettings,
+                                      convolutionKernel: MPRConvolutionKernel?,
                                       onCommandBufferFailure: ((MPRPresentationCommandBufferError) -> Void)?,
-                                      onCommandBufferCompleted: (() -> Void)?) throws -> CFAbsoluteTime {
+                                      onCommandBufferCompleted: (() -> Void)?,
+                                      onPresentationTextureReady: ((any MTLTexture) -> Void)? = nil) throws -> CFAbsoluteTime {
         let outputTextureLease = frame.outputTextureLease
         let shouldReleaseLeaseAfterPresentation = !frame.outputTextureLeaseRetainedByCache
         let encoded: EncodedPresentation
+        outputTextureLease?.markPresentationSubmitted()
         do {
             encoded = try encodePresentation(frame: frame,
                                              window: window,
@@ -382,14 +414,18 @@ public struct MPRPresentationPass {
                                              labelmapOverlays: labelmapOverlays,
                                              scalarOverlays: scalarOverlays,
                                              shutter: shutter,
-                                             allowsDirectOutput: true)
+                                             shading: shading,
+                                             convolutionKernel: convolutionKernel,
+                                             allowsDirectOutput: onPresentationTextureReady == nil)
         } catch {
+            outputTextureLease?.cancelPresentationSubmission()
             if shouldReleaseLeaseAfterPresentation {
                 outputTextureLease?.release()
             }
             throw error
         }
         let commandBuffer = encoded.commandBuffer
+        onPresentationTextureReady?(encoded.finalPresentationTexture)
         let drawableWidth = drawable.texture.width
         let drawableHeight = drawable.texture.height
         commandBuffer.present(drawable)
@@ -475,11 +511,18 @@ public struct MPRPresentationPass {
                                              viewportTransform: MPRViewportTransform = .identity,
                                              labelmapOverlays: [MPRLabelmapOverlay] = [],
                                              scalarOverlays: [MPRScalarVolumeOverlay] = [],
-                                             shutter: MPRPresentationShutter? = nil) throws -> any MTLTexture {
+                                             shutter: MPRPresentationShutter? = nil,
+                                             shading: MPRShadingSettings = .default,
+                                             convolutionKernel: MPRConvolutionKernel? = nil) throws -> any MTLTexture {
+        let outputTextureLease = frame.outputTextureLease
+        let shouldReleaseLeaseAfterPresentation = !frame.outputTextureLeaseRetainedByCache
         let outputTexture = try makePresentationTexture(width: max(1, width),
                                                         height: max(1, height),
                                                         label: "MPR.snapshotTexture")
-        let encoded = try encodePresentation(frame: frame,
+        let encoded: EncodedPresentation
+        outputTextureLease?.markPresentationSubmitted()
+        do {
+            encoded = try encodePresentation(frame: frame,
                                              window: window,
                                              outputTexture: outputTexture,
                                              invert: invert,
@@ -492,15 +535,106 @@ public struct MPRPresentationPass {
                                              labelmapOverlays: labelmapOverlays,
                                              scalarOverlays: scalarOverlays,
                                              shutter: shutter,
+                                             shading: shading,
+                                             convolutionKernel: convolutionKernel,
                                              allowsDirectOutput: false)
+        } catch {
+            outputTextureLease?.cancelPresentationSubmission()
+            if shouldReleaseLeaseAfterPresentation {
+                outputTextureLease?.release()
+            }
+            throw error
+        }
         encoded.commandBuffer.commit()
         encoded.commandBuffer.waitUntilCompleted()
         guard encoded.commandBuffer.error == nil,
               encoded.commandBuffer.status == .completed else {
+            outputTextureLease?.markPresented()
+            if shouldReleaseLeaseAfterPresentation {
+                outputTextureLease?.release()
+            }
             throw MPRPresentationCommandBufferError.commandBufferFailed(
                 status: Int(encoded.commandBuffer.status.rawValue),
                 description: encoded.commandBuffer.error?.localizedDescription
             )
+        }
+        outputTextureLease?.markPresented()
+        if shouldReleaseLeaseAfterPresentation {
+            outputTextureLease?.release()
+        }
+        return outputTexture
+    }
+
+    public mutating func makeSnapshotTextureAsync(frame: MPRTextureFrame,
+                                                  window: ClosedRange<Int32>,
+                                                  transform: MPRDisplayTransform,
+                                                  width: Int,
+                                                  height: Int,
+                                                  invert: Bool = false,
+                                                  colormap: (any MTLTexture)? = nil,
+                                                  bitShift: Int32 = 0,
+                                                  viewportTransform: MPRViewportTransform = .identity,
+                                                  labelmapOverlays: [MPRLabelmapOverlay] = [],
+                                                  scalarOverlays: [MPRScalarVolumeOverlay] = [],
+                                                  shutter: MPRPresentationShutter? = nil,
+                                                  shading: MPRShadingSettings = .default,
+                                                  convolutionKernel: MPRConvolutionKernel? = nil) async throws -> any MTLTexture {
+        let outputTextureLease = frame.outputTextureLease
+        let shouldReleaseLeaseAfterPresentation = !frame.outputTextureLeaseRetainedByCache
+        let outputTexture: any MTLTexture
+        let encoded: EncodedPresentation
+        do {
+            outputTexture = try makePresentationTexture(width: max(1, width),
+                                                        height: max(1, height),
+                                                        label: "MPR.snapshotTexture.async")
+            outputTextureLease?.markPresentationSubmitted()
+            encoded = try encodePresentation(frame: frame,
+                                             window: window,
+                                             outputTexture: outputTexture,
+                                             invert: invert,
+                                             colormap: colormap,
+                                             flipHorizontal: transform.presentationFlipHorizontal,
+                                             flipVertical: transform.presentationFlipVertical,
+                                             transposeUV: transform.transposeUV,
+                                             bitShift: bitShift,
+                                             viewportTransform: viewportTransform,
+                                             labelmapOverlays: labelmapOverlays,
+                                             scalarOverlays: scalarOverlays,
+                                             shutter: shutter,
+                                             shading: shading,
+                                             convolutionKernel: convolutionKernel,
+                                             allowsDirectOutput: false,
+                                             enforcesMainThread: false)
+        } catch {
+            outputTextureLease?.cancelPresentationSubmission()
+            if shouldReleaseLeaseAfterPresentation {
+                outputTextureLease?.release()
+            }
+            throw error
+        }
+
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Swift.Error>) in
+            encoded.commandBuffer.addCompletedHandler { completed in
+                if let reason = CommandBufferCompletion.reasonItDidNotRun(completed) {
+                    outputTextureLease?.markPresented()
+                    if shouldReleaseLeaseAfterPresentation {
+                        outputTextureLease?.release()
+                    }
+                    continuation.resume(
+                        throwing: MPRPresentationCommandBufferError.commandBufferFailed(
+                            status: Int(completed.status.rawValue),
+                            description: reason
+                        )
+                    )
+                    return
+                }
+                outputTextureLease?.markPresented()
+                if shouldReleaseLeaseAfterPresentation {
+                    outputTextureLease?.release()
+                }
+                continuation.resume()
+            }
+            encoded.commandBuffer.commit()
         }
         return outputTexture
     }
@@ -518,12 +652,17 @@ public struct MPRPresentationPass {
                                              labelmapOverlays: [MPRLabelmapOverlay],
                                              scalarOverlays: [MPRScalarVolumeOverlay],
                                              shutter: MPRPresentationShutter?,
-                                             allowsDirectOutput: Bool) throws -> EncodedPresentation {
-        assert(
-            Thread.isMainThread,
-            "MPRPresentationPass uses pipelineCache and cachedPresentationTexture; " +
-                "use it from the MainActor or another single-threaded context."
-        )
+                                             shading: MPRShadingSettings,
+                                             convolutionKernel: MPRConvolutionKernel?,
+                                             allowsDirectOutput: Bool,
+                                             enforcesMainThread: Bool = true) throws -> EncodedPresentation {
+        if enforcesMainThread {
+            assert(
+                Thread.isMainThread,
+                "MPRPresentationPass uses pipelineCache and cachedPresentationTexture; " +
+                    "use it from the MainActor or another single-threaded context."
+            )
+        }
         let startedAt = CFAbsoluteTimeGetCurrent()
         try validate(frame: frame,
                      drawableTexture: outputTexture,
@@ -548,8 +687,15 @@ public struct MPRPresentationPass {
             ? outputTexture
             : reusablePresentationTexture(width: outputWidth, height: outputHeight)
         let colormapTexture = try colormap ?? reusableFallbackColormapTexture()
-        let pipeline = try pipelineState(for: frame.pixelFormat)
+        let pipeline = try pipelineState(for: frame.pixelFormat,
+                                         convolutionEnabled: convolutionKernel != nil)
         let shutterUniforms = Self.shutterUniformValues(for: shutter)
+        let shading = shading.sanitized
+        let sanitizedBitShift = max(0, min(bitShift, 15))
+        let shadingGradientScales = Self.shadingGradientScales(
+            for: frame,
+            bitShift: sanitizedBitShift
+        )
         var uniforms = MPRPresentationUniforms(
             windowMin: window.lowerBound,
             windowMax: window.upperBound,
@@ -557,7 +703,7 @@ public struct MPRPresentationPass {
             useColormap: colormap == nil ? 0 : 1,
             flipHorizontal: flipHorizontal ? 1 : 0,
             flipVertical: flipVertical ? 1 : 0,
-            bitShift: max(0, min(bitShift, 15)),
+            bitShift: sanitizedBitShift,
             transposeUV: transposeUV ? 1 : 0,
             viewportZoom: viewportTransform.zoom,
             viewportPanX: viewportTransform.pan.x,
@@ -582,7 +728,21 @@ public struct MPRPresentationPass {
             shutterCenterX: shutterUniforms.center.x,
             shutterCenterY: shutterUniforms.center.y,
             shutterRadius: shutterUniforms.radius,
-            _pad7: 0
+            _pad7: 0,
+            planeOriginTexture: frame.planeGeometry.originTexture,
+            _pad8: 0,
+            planeAxisUTexture: frame.planeGeometry.axisUTexture,
+            _pad9: 0,
+            planeAxisVTexture: frame.planeGeometry.axisVTexture,
+            _pad10: 0,
+            shadingEnabled: shading.isEnabled ? 1 : 0,
+            shadingAmbient: shading.ambient,
+            shadingDiffuse: shading.diffuse,
+            shadingSpecular: shading.specular,
+            shadingGradientScaleU: shadingGradientScales.x,
+            shadingGradientScaleV: shadingGradientScales.y,
+            _pad11: 0,
+            _pad12: 0
         )
 
         guard let commandBuffer = commandQueue.makeCommandBuffer() else {
@@ -601,6 +761,17 @@ public struct MPRPresentationPass {
         computeEncoder.setBytes(&uniforms,
                                 length: MemoryLayout<MPRPresentationUniforms>.stride,
                                 index: 0)
+        if let convolutionKernel {
+            convolutionKernel.weights.withUnsafeBytes { bytes in
+                computeEncoder.setBytes(bytes.baseAddress!,
+                                        length: bytes.count,
+                                        index: 1)
+            }
+            var kernelSize = UInt32(convolutionKernel.size)
+            computeEncoder.setBytes(&kernelSize,
+                                    length: MemoryLayout<UInt32>.stride,
+                                    index: 2)
+        }
 
         let dispatch = ThreadgroupDispatchConfiguration.default(for: pipeline)
         let presentationThreadsPerGrid = MTLSize(width: presentationTexture.width,
@@ -656,6 +827,7 @@ public struct MPRPresentationPass {
 
         return EncodedPresentation(commandBuffer: commandBuffer,
                                    outputTexture: outputTexture,
+                                   finalPresentationTexture: finalPresentationTexture,
                                    startedAt: startedAt)
     }
 
@@ -671,6 +843,8 @@ public struct MPRPresentationPass {
                                  labelmapOverlays: [MPRLabelmapOverlay] = [],
                                  scalarOverlays: [MPRScalarVolumeOverlay] = [],
                                  shutter: MPRPresentationShutter? = nil,
+                                 shading: MPRShadingSettings = .default,
+                                 convolutionKernel: MPRConvolutionKernel? = nil,
                                  onCommandBufferFailure: ((MPRPresentationCommandBufferError) -> Void)? = nil,
                                  onCommandBufferCompleted: (() -> Void)? = nil) throws -> CFAbsoluteTime {
         try presentImpl(frame: frame,
@@ -686,6 +860,8 @@ public struct MPRPresentationPass {
                         labelmapOverlays: labelmapOverlays,
                         scalarOverlays: scalarOverlays,
                         shutter: shutter,
+                        shading: shading,
+                        convolutionKernel: convolutionKernel,
                         onCommandBufferFailure: onCommandBufferFailure,
                         onCommandBufferCompleted: onCommandBufferCompleted)
     }
@@ -703,6 +879,8 @@ public struct MPRPresentationPass {
                                  labelmapOverlays: [MPRLabelmapOverlay] = [],
                                  scalarOverlays: [MPRScalarVolumeOverlay] = [],
                                  shutter: MPRPresentationShutter? = nil,
+                                 shading: MPRShadingSettings = .default,
+                                 convolutionKernel: MPRConvolutionKernel? = nil,
                                  onCommandBufferFailure: ((MPRPresentationCommandBufferError) -> Void)? = nil,
                                  onCommandBufferCompleted: (() -> Void)? = nil) throws -> CFAbsoluteTime {
         try presentImpl(frame: frame,
@@ -718,6 +896,8 @@ public struct MPRPresentationPass {
                         labelmapOverlays: labelmapOverlays,
                         scalarOverlays: scalarOverlays,
                         shutter: shutter,
+                        shading: shading,
+                        convolutionKernel: convolutionKernel,
                         onCommandBufferFailure: onCommandBufferFailure,
                         onCommandBufferCompleted: onCommandBufferCompleted)
     }
@@ -726,6 +906,10 @@ public struct MPRPresentationPass {
         preset.windowRange
     }
 
+    /// Where the rendered rectangle lands in the drawable, and therefore the
+    /// scale the anatomy is drawn at. Picking and the overlays resolve the same
+    /// layout from `MPROutputAspect`; they must keep agreeing, or the crosshair
+    /// drifts off the pixels it is supposed to sit on.
     private static func presentationLayout(sourceAspectRatio: Float,
                                            rotationRadians: Float,
                                            destinationWidth: Int,
@@ -738,6 +922,35 @@ public struct MPRPresentationPass {
 
     private static func safeSourceAspectRatio(_ aspectRatio: Float) -> Float {
         aspectRatio.isFinite ? max(aspectRatio, Float.ulpOfOne) : 1
+    }
+
+    static func shadingGradientScales(
+        for frame: MPRTextureFrame,
+        bitShift: Int32 = 0
+    ) -> SIMD2<Float> {
+        let rawSpan = max(
+            Double(Int64(frame.intensityRange.upperBound) - Int64(frame.intensityRange.lowerBound)),
+            1
+        )
+        let shiftedSpan = max(rawSpan / Double(1 << max(0, min(bitShift, 15))), 1)
+        let normalizedGradientScale = shadingNormalizedGradientScale / Float(shiftedSpan)
+        let spacingU = physicalTexelSpacing(
+            extent: simd_length(frame.planeGeometry.axisUWorld),
+            pixelCount: frame.texture.width
+        )
+        let spacingV = physicalTexelSpacing(
+            extent: simd_length(frame.planeGeometry.axisVWorld),
+            pixelCount: frame.texture.height
+        )
+        return SIMD2<Float>(
+            normalizedGradientScale / spacingU,
+            normalizedGradientScale / spacingV
+        )
+    }
+
+    private static func physicalTexelSpacing(extent: Float, pixelCount: Int) -> Float {
+        guard extent.isFinite, extent > Float.ulpOfOne else { return 1 }
+        return extent / Float(max(pixelCount - 1, 1))
     }
 
     private static func shutterUniformValues(
@@ -771,13 +984,14 @@ public struct MPRPresentationPass {
         }
     }
 
-    private mutating func pipelineState(for pixelFormat: VolumePixelFormat) throws -> MTLComputePipelineState {
+    private mutating func pipelineState(for pixelFormat: VolumePixelFormat,
+                                        convolutionEnabled: Bool) throws -> MTLComputePipelineState {
         let functionName: String
         switch pixelFormat {
         case .int16Signed:
-            functionName = "mprPresentation"
+            functionName = convolutionEnabled ? "mprPresentationConvolved" : "mprPresentation"
         case .int16Unsigned:
-            functionName = "mprPresentationUnsigned"
+            functionName = convolutionEnabled ? "mprPresentationUnsignedConvolved" : "mprPresentationUnsigned"
         }
 
         return try pipelineState(named: functionName)

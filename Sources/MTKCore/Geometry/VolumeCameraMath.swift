@@ -8,21 +8,48 @@
 import Foundation
 import simd
 
-enum VolumeCameraMath {
-    enum Error: Swift.Error {
+package enum VolumeCameraMath {
+    package enum Error: Swift.Error {
         case degenerateCamera
     }
 
-    struct Matrices {
-        let view: simd_float4x4
-        let projection: simd_float4x4
+    package struct Matrices {
+        package let view: simd_float4x4
+        package let projection: simd_float4x4
 
-        var inverseViewProjection: simd_float4x4 {
+        package var inverseViewProjection: simd_float4x4 {
             simd_inverse(projection * view)
         }
     }
 
-    static func matrices(
+    /// Returns a bounding-sphere camera distance that fits inside the tighter
+    /// horizontal or vertical field of view, including a small display margin.
+    package static func fittedDistance(
+        radius: Float,
+        fieldOfViewDegrees: Float,
+        viewportSize: CGSize,
+        margin: Float = 1.08
+    ) -> Float {
+        let safeRadius = radius.isFinite && radius > 0 ? radius : 1e-3
+        let aspect: Float
+        if viewportSize.width.isFinite, viewportSize.height.isFinite,
+           viewportSize.width > 0, viewportSize.height > 0 {
+            aspect = max(Float(viewportSize.width / viewportSize.height), 1e-3)
+        } else {
+            aspect = 1
+        }
+        let fieldOfView = fieldOfViewDegrees.isFinite
+            ? min(max(fieldOfViewDegrees, 5), 90)
+            : 30
+        let verticalHalfFOV = fieldOfView * .pi / 360
+        let horizontalHalfFOV = atan(tan(verticalHalfFOV) * aspect)
+        let limitingHalfFOV = min(verticalHalfFOV, horizontalHalfFOV)
+        let safeMargin = margin.isFinite ? max(margin, 1) : 1.08
+        let fittedDistance = safeRadius / sin(limitingHalfFOV) * safeMargin
+        return max(max(fittedDistance, safeRadius * 1.25), 1.5)
+    }
+
+    package static func matrices(
         camera: VolumeRenderRequest.Camera,
         viewportWidth: Float,
         viewportHeight: Float
@@ -33,14 +60,15 @@ enum VolumeCameraMath {
             up: camera.up
         )
         let aspect = max(viewportWidth / viewportHeight, 1e-3)
-        let distanceToCenter = simd_length(camera.position)
+        let distanceToCenter = simd_length(camera.position - camera.target)
         let farPadding = distanceToCenter * 0.1 + 1
         let nearZ: Float = 0.01
         let farZ = max(distanceToCenter + farPadding, nearZ + 100)
 
         let projection: simd_float4x4
         if camera.projectionType == .orthographic {
-            let viewHeight: Float = 2
+            let fovY = max(camera.fieldOfView * .pi / 180, 0.01)
+            let viewHeight = max(2 * distanceToCenter * tan(fovY * 0.5), 0.01)
             projection = makeOrthographic(
                 width: viewHeight * aspect,
                 height: viewHeight,

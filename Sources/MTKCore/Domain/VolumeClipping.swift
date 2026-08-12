@@ -40,20 +40,48 @@ public enum VolumeClippingError: Error, Equatable, LocalizedError {
     }
 }
 
-/// Axis-aligned crop box in normalized dataset texture coordinates.
+/// Crop box in normalized dataset texture coordinates, with an optional
+/// orientation.
 ///
-/// The crop box is aligned to dataset IJK axes. Bounds are normalized texture
-/// coordinates in `[0, 1]`, where `(0, 0, 0)` and `(1, 1, 1)` are the full
-/// texture extent. Crop affects 3D volume/projection rendering and visible-only
-/// 3D picking; it does not clip MPR reslices or crosshair state.
+/// Bounds are normalized texture coordinates in `[0, 1]`, where `(0, 0, 0)` and
+/// `(1, 1, 1)` are the full texture extent. Crop affects 3D volume/projection
+/// rendering and visible-only 3D picking; it does not clip MPR reslices or
+/// crosshair state.
+///
+/// `rotation` turns the box inside the volume — `Cropping box tilt`, as opposed
+/// to `Model tilt` which turns the camera (issue #1672). Identity means the box
+/// is aligned to the dataset IJK axes, which is what every caller before this
+/// wanted and still gets by default. The rotation is applied about the texture
+/// centre, so a rotated box keeps the same middle.
 public struct VolumeCropBox: Sendable, Equatable, Codable {
     public var textureMin: SIMD3<Float>
     public var textureMax: SIMD3<Float>
+    /// Orientation of the box about the texture centre. Identity is axis-aligned.
+    public private(set) var rotation: simd_quatf
 
-    public init(textureMin: SIMD3<Float>, textureMax: SIMD3<Float>) throws {
+    public init(
+        textureMin: SIMD3<Float>,
+        textureMax: SIMD3<Float>,
+        rotation: simd_quatf = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
+    ) throws {
         try Self.validate(textureMin: textureMin, textureMax: textureMax)
         self.textureMin = textureMin
         self.textureMax = textureMax
+        self.rotation = Self.normalized(rotation)
+    }
+
+    /// Normalized, or identity when the input cannot be normalized. A
+    /// degenerate quaternion reaching the shader would rotate every sample into
+    /// nothing and blank the render — identity is the honest fallback, and it
+    /// is what the box means when nobody has tilted it.
+    public static func normalized(_ rotation: simd_quatf) -> simd_quatf {
+        let vector = rotation.vector
+        guard vector.x.isFinite, vector.y.isFinite, vector.z.isFinite, vector.w.isFinite else {
+            return simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
+        }
+        let length = simd_length(vector)
+        guard length > 1e-6 else { return simd_quatf(ix: 0, iy: 0, iz: 0, r: 1) }
+        return simd_quatf(vector: vector / length)
     }
 
     /// Creates a crop box from inclusive voxel-index bounds.
@@ -99,9 +127,11 @@ public struct VolumeCropBox: Sendable, Equatable, Codable {
     }
 
     public func contains(textureCoordinate: SIMD3<Float>) -> Bool {
-        textureCoordinate.x >= textureMin.x && textureCoordinate.x <= textureMax.x &&
-            textureCoordinate.y >= textureMin.y && textureCoordinate.y <= textureMax.y &&
-            textureCoordinate.z >= textureMin.z && textureCoordinate.z <= textureMax.z
+        let center = SIMD3<Float>(repeating: 0.5)
+        let orientedCoordinate = rotation.inverse.act(textureCoordinate - center) + center
+        return orientedCoordinate.x >= textureMin.x && orientedCoordinate.x <= textureMax.x &&
+            orientedCoordinate.y >= textureMin.y && orientedCoordinate.y <= textureMax.y &&
+            orientedCoordinate.z >= textureMin.z && orientedCoordinate.z <= textureMax.z
     }
 
     var clipBoundsSnapshot: ClipBoundsSnapshot {
@@ -113,9 +143,14 @@ public struct VolumeCropBox: Sendable, Equatable, Codable {
                            zMax: textureMax.z)
     }
 
-    private init(uncheckedTextureMin textureMin: SIMD3<Float>, textureMax: SIMD3<Float>) {
+    private init(
+        uncheckedTextureMin textureMin: SIMD3<Float>,
+        textureMax: SIMD3<Float>,
+        rotation: simd_quatf = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
+    ) {
         self.textureMin = textureMin
         self.textureMax = textureMax
+        self.rotation = Self.normalized(rotation)
     }
 
     private static func validate(textureMin: SIMD3<Float>, textureMax: SIMD3<Float>) throws {
@@ -138,6 +173,9 @@ public struct VolumeCropBox: Sendable, Equatable, Codable {
 
     private enum CodingKeys: String, CodingKey {
         case xMin, xMax, yMin, yMax, zMin, zMax
+        // Absent in everything written before issue #1672, and decoded as
+        // identity — which is exactly what those boxes were.
+        case rotationX, rotationY, rotationZ, rotationW
     }
 
     public init(from decoder: any Decoder) throws {
@@ -152,6 +190,12 @@ public struct VolumeCropBox: Sendable, Equatable, Codable {
                 try container.decode(Float.self, forKey: .xMax),
                 try container.decode(Float.self, forKey: .yMax),
                 try container.decode(Float.self, forKey: .zMax)
+            ),
+            rotation: simd_quatf(
+                ix: try container.decodeIfPresent(Float.self, forKey: .rotationX) ?? 0,
+                iy: try container.decodeIfPresent(Float.self, forKey: .rotationY) ?? 0,
+                iz: try container.decodeIfPresent(Float.self, forKey: .rotationZ) ?? 0,
+                r: try container.decodeIfPresent(Float.self, forKey: .rotationW) ?? 1
             )
         )
     }
@@ -164,6 +208,10 @@ public struct VolumeCropBox: Sendable, Equatable, Codable {
         try container.encode(textureMax.y, forKey: .yMax)
         try container.encode(textureMin.z, forKey: .zMin)
         try container.encode(textureMax.z, forKey: .zMax)
+        try container.encode(rotation.vector.x, forKey: .rotationX)
+        try container.encode(rotation.vector.y, forKey: .rotationY)
+        try container.encode(rotation.vector.z, forKey: .rotationZ)
+        try container.encode(rotation.vector.w, forKey: .rotationW)
     }
 }
 
@@ -306,6 +354,15 @@ public struct VolumeClippingState: Sendable, Equatable, Codable {
 
     func shaderCropBounds() -> ClipBoundsSnapshot {
         (cropBox ?? .full).clipBoundsSnapshot
+    }
+
+    /// The crop box's orientation, as the shader's `clipBoxQuaternion`.
+    ///
+    /// The shader has always rotated the sample into box space before the
+    /// interval test; nothing on the Swift side ever wrote the quaternion, so
+    /// the box was axis-aligned by omission rather than by design (issue #1672).
+    func shaderCropRotation() -> SIMD4<Float> {
+        (cropBox ?? .full).rotation.vector
     }
 
     func shaderClipPlanes(for dataset: VolumeDataset) throws -> (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>) {

@@ -40,6 +40,24 @@ public enum VolumeRenderQualityOption: String, CaseIterable, Codable, Identifiab
             return 0.75
         }
     }
+
+    /// Linear output scale used while the volume is being manipulated.
+    ///
+    /// Interactive frames intentionally render fewer pixels and are linearly
+    /// upscaled by the presentation pass. Settled production frames always use
+    /// the full drawable resolution.
+    public var interactiveOutputScale: Float {
+        switch self {
+        case .low:
+            return 0.50
+        case .medium:
+            return 0.56
+        case .high:
+            return 0.62
+        case .fantastic:
+            return 0.67
+        }
+    }
 }
 
 public enum VolumeRenderIterationQuality: String, CaseIterable, Codable, Identifiable, Sendable {
@@ -87,11 +105,11 @@ public enum VolumeShadowMode: String, CaseIterable, Codable, Identifiable, Senda
 public struct VolumeRenderQualitySettings: Codable, Equatable, Sendable {
     public static let `default` = VolumeRenderQualitySettings(
         renderResolution: .high,
-        interactingResolution: .medium,
-        depthResolution: .high,
-        iterations: .medium,
+        interactingResolution: .low,
+        depthResolution: .low,
+        iterations: .low,
         shadowMode: .off,
-        disableShadowsWhenInteracting: false,
+        disableShadowsWhenInteracting: true,
         directionalLightIntensity: 1.0,
         ambientLightIntensity: 0.2
     )
@@ -141,6 +159,10 @@ public struct VolumeRenderQualitySettings: Codable, Equatable, Sendable {
     public var interactionSamplingFactor: Float {
         let ratio = interactingSamplingStep / finalSamplingStep
         return VolumetricMath.clampFloat(ratio, lower: 0.1, upper: 1)
+    }
+
+    public var interactionOutputScale: Float {
+        interactingResolution.interactiveOutputScale
     }
 
     public var depthGradientScale: Float {

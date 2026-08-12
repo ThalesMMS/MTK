@@ -75,6 +75,8 @@ public enum PresentationPassError: Error, Equatable, LocalizedError {
     case sizeMismatch(source: CGSize, drawable: CGSize)
     case commandBufferCreationFailed
     case blitEncoderCreationFailed
+    case renderPipelineCreationFailed(String)
+    case renderEncoderCreationFailed
 
     public var errorDescription: String? {
         switch self {
@@ -92,6 +94,53 @@ public enum PresentationPassError: Error, Equatable, LocalizedError {
             return "Failed to create a command buffer for presentation."
         case .blitEncoderCreationFailed:
             return "Failed to create a blit encoder for presentation."
+        case let .renderPipelineCreationFailed(description):
+            return "Failed to create the scaled presentation pipeline: \(description)"
+        case .renderEncoderCreationFailed:
+            return "Failed to create a render encoder for scaled presentation."
+        }
+    }
+}
+
+private struct PresentationPipelineKey: Hashable {
+    let device: ObjectIdentifier
+    let pixelFormat: UInt
+}
+
+private final class PresentationPipelineCache: @unchecked Sendable {
+    static let shared = PresentationPipelineCache()
+
+    private let lock = NSLock()
+    private var pipelines: [PresentationPipelineKey: any MTLRenderPipelineState] = [:]
+
+    func pipeline(device: any MTLDevice,
+                  pixelFormat: MTLPixelFormat) throws -> any MTLRenderPipelineState {
+        let key = PresentationPipelineKey(device: ObjectIdentifier(device as AnyObject),
+                                          pixelFormat: pixelFormat.rawValue)
+        lock.lock()
+        defer { lock.unlock() }
+        if let pipeline = pipelines[key] {
+            return pipeline
+        }
+
+        do {
+            let library = try ShaderLibraryLoader.loadLibrary(for: device)
+            guard let vertexFunction = library.makeFunction(name: "presentation_vertex"),
+                  let fragmentFunction = library.makeFunction(name: "presentation_linear_fragment") else {
+                throw PresentationPassError.renderPipelineCreationFailed("shader functions are unavailable")
+            }
+            let descriptor = MTLRenderPipelineDescriptor()
+            descriptor.label = "PresentationPass.LinearUpscale"
+            descriptor.vertexFunction = vertexFunction
+            descriptor.fragmentFunction = fragmentFunction
+            descriptor.colorAttachments[0].pixelFormat = pixelFormat
+            let pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
+            pipelines[key] = pipeline
+            return pipeline
+        } catch let error as PresentationPassError {
+            throw error
+        } catch {
+            throw PresentationPassError.renderPipelineCreationFailed(error.localizedDescription)
         }
     }
 }
@@ -170,9 +219,9 @@ public struct PresentationPass: Sendable {
 
     /// Presents `sourceTexture` fullscreen into `drawable`.
     ///
-    /// The source and drawable textures must already have identical dimensions
-    /// and pixel formats. Resize handling and output texture recreation belong
-    /// to the caller through the viewport surface's drawable-size callback.
+    /// Matching source and drawable dimensions use a direct blit. Smaller
+    /// interactive sources are linearly upscaled into the drawable on the GPU.
+    /// Pixel formats must match.
     @discardableResult
     public func present(_ sourceTexture: any MTLTexture,
                         metadata: PresentationFrameMetadata,
@@ -232,12 +281,53 @@ public struct PresentationPass: Sendable {
             )
             throw PresentationPassError.commandBufferCreationFailed
         }
-        guard let encoder = commandBuffer.makeBlitCommandEncoder() else {
+
+        lease?.markPresentationSubmitted()
+        let presentationMode: String
+        do {
+            if sourceTexture.width == drawable.texture.width,
+               sourceTexture.height == drawable.texture.height {
+                guard let encoder = commandBuffer.makeBlitCommandEncoder() else {
+                    throw PresentationPassError.blitEncoderCreationFailed
+                }
+                encoder.copy(from: sourceTexture,
+                             sourceSlice: 0,
+                             sourceLevel: 0,
+                             sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+                             sourceSize: MTLSize(width: sourceTexture.width,
+                                                 height: sourceTexture.height,
+                                                 depth: 1),
+                             to: drawable.texture,
+                             destinationSlice: 0,
+                             destinationLevel: 0,
+                             destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
+                encoder.endEncoding()
+                presentationMode = "blit"
+            } else {
+                let pipeline = try PresentationPipelineCache.shared.pipeline(
+                    device: sourceTexture.device,
+                    pixelFormat: drawable.texture.pixelFormat
+                )
+                let descriptor = MTLRenderPassDescriptor()
+                descriptor.colorAttachments[0].texture = drawable.texture
+                descriptor.colorAttachments[0].loadAction = .dontCare
+                descriptor.colorAttachments[0].storeAction = .store
+                guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
+                    throw PresentationPassError.renderEncoderCreationFailed
+                }
+                encoder.label = "PresentationPass.LinearUpscale"
+                encoder.setRenderPipelineState(pipeline)
+                encoder.setFragmentTexture(sourceTexture, index: 0)
+                encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+                encoder.endEncoding()
+                presentationMode = "linearUpscale"
+            }
+        } catch {
             lease?.release()
             Self.lifecycleLogger.error(
-                "Presentation failed before encoding reason=blitEncoderCreationFailed sourceLabel=\(sourceTexture.label ?? "nil")"
+                "Presentation failed during encoding sourceLabel=\(sourceTexture.label ?? "nil") reason=\(String(describing: error))"
             )
-            throw PresentationPassError.blitEncoderCreationFailed
+            throw error
         }
 
         let interactionIDs = Logger.performanceLoggingEnabled
@@ -247,20 +337,8 @@ public struct PresentationPass: Sendable {
                drawableTexture: Self.objectIdentifier(drawable.texture))
             : nil
         Self.logInteractionInfo(
-            "[MTK3DInteraction] presentation.copy.commit source=\(metadata.debugSource ?? "unknown") token=\(metadata.debugPresentationToken ?? "nil") frameIndex=\(Self.describe(metadata.debugFrameIndex)) slotID=\(Self.describe(lease?.debugSlotID)) leaseID=\(lease?.leaseIdentifier.uuidString ?? "nil") commandBufferID=\(interactionIDs?.commandBuffer ?? "nil") commandQueueID=\(interactionIDs?.commandQueue ?? "nil") sourceTextureID=\(interactionIDs?.sourceTexture ?? "nil") drawableTextureID=\(interactionIDs?.drawableTexture ?? "nil") sourceLabel=\(sourceTexture.label ?? "nil") source=\(sourceTexture.width)x\(sourceTexture.height) drawable=\(drawable.texture.width)x\(drawable.texture.height) quality=\(metadata.quality) renderMode=\(metadata.renderMode)"
+            "[MTK3DInteraction] presentation.\(presentationMode).commit source=\(metadata.debugSource ?? "unknown") token=\(metadata.debugPresentationToken ?? "nil") frameIndex=\(Self.describe(metadata.debugFrameIndex)) slotID=\(Self.describe(lease?.debugSlotID)) leaseID=\(lease?.leaseIdentifier.uuidString ?? "nil") commandBufferID=\(interactionIDs?.commandBuffer ?? "nil") commandQueueID=\(interactionIDs?.commandQueue ?? "nil") sourceTextureID=\(interactionIDs?.sourceTexture ?? "nil") drawableTextureID=\(interactionIDs?.drawableTexture ?? "nil") sourceLabel=\(sourceTexture.label ?? "nil") source=\(sourceTexture.width)x\(sourceTexture.height) drawable=\(drawable.texture.width)x\(drawable.texture.height) quality=\(metadata.quality) renderMode=\(metadata.renderMode)"
         )
-        encoder.copy(from: sourceTexture,
-                     sourceSlice: 0,
-                     sourceLevel: 0,
-                     sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
-                     sourceSize: MTLSize(width: sourceTexture.width,
-                                         height: sourceTexture.height,
-                                         depth: 1),
-                     to: drawable.texture,
-                     destinationSlice: 0,
-                     destinationLevel: 0,
-                     destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
-        encoder.endEncoding()
         commandBuffer.present(drawable)
         if Logger.performanceLoggingEnabled {
             CommandBufferProfiler.captureTimes(for: commandBuffer,
@@ -322,7 +400,7 @@ public struct PresentationPass: Sendable {
                 )
             }
             Self.logInteractionInfo(
-                "[MTK3DInteraction] presentation.copy.complete source=\(metadata.debugSource ?? "unknown") token=\(metadata.debugPresentationToken ?? "nil") frameIndex=\(Self.describe(metadata.debugFrameIndex)) slotID=\(Self.describe(lease?.debugSlotID)) leaseID=\(lease?.leaseIdentifier.uuidString ?? "nil") commandBufferID=\(interactionIDs?.commandBuffer ?? "nil") commandQueueID=\(interactionIDs?.commandQueue ?? "nil") sourceTextureID=\(interactionIDs?.sourceTexture ?? "nil") drawableTextureID=\(interactionIDs?.drawableTexture ?? "nil") status=completed sourceLabel=\(sourceTexture.label ?? "nil") drawable=\(drawableWidth)x\(drawableHeight) pixelFormat=\(sourceTexture.pixelFormat)"
+                "[MTK3DInteraction] presentation.\(presentationMode).complete source=\(metadata.debugSource ?? "unknown") token=\(metadata.debugPresentationToken ?? "nil") frameIndex=\(Self.describe(metadata.debugFrameIndex)) slotID=\(Self.describe(lease?.debugSlotID)) leaseID=\(lease?.leaseIdentifier.uuidString ?? "nil") commandBufferID=\(interactionIDs?.commandBuffer ?? "nil") commandQueueID=\(interactionIDs?.commandQueue ?? "nil") sourceTextureID=\(interactionIDs?.sourceTexture ?? "nil") drawableTextureID=\(interactionIDs?.drawableTexture ?? "nil") status=completed sourceLabel=\(sourceTexture.label ?? "nil") drawable=\(drawableWidth)x\(drawableHeight) pixelFormat=\(sourceTexture.pixelFormat)"
             )
             onCommandBufferCompleted?()
         }
@@ -384,13 +462,6 @@ public struct PresentationPass: Sendable {
                                                             drawable: drawableTexture.pixelFormat)
         }
 
-        guard sourceTexture.width == drawableTexture.width,
-              sourceTexture.height == drawableTexture.height else {
-            throw PresentationPassError.sizeMismatch(
-                source: CGSize(width: sourceTexture.width, height: sourceTexture.height),
-                drawable: CGSize(width: drawableTexture.width, height: drawableTexture.height)
-            )
-        }
     }
 
     private func sameDevice(_ lhs: any MTLDevice, _ rhs: any MTLDevice) -> Bool {
@@ -428,6 +499,9 @@ public struct PresentationPass: Sendable {
             "drawableWidth": "\(drawableTextureSize.width)",
             "drawableHeight": "\(drawableTextureSize.height)",
             "drawableSize": "\(drawableTextureSize.width)x\(drawableTextureSize.height)",
+            "outputScale": String(format: "%.6f",
+                                  min(Double(sourceTexture.width) / Double(drawableTextureSize.width),
+                                      Double(sourceTexture.height) / Double(drawableTextureSize.height))),
             "sourcePixelFormat": "\(sourceTexture.pixelFormat)",
             "drawablePixelFormat": "\(drawablePixelFormat)"
         ]

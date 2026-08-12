@@ -50,6 +50,10 @@ public final class GradientHistogramCalculator {
         case commandBufferCreationFailed
         case encoderCreationFailed
         case bufferAllocationFailed
+
+        /// The command buffer completed without reporting an error, but the histogram
+        /// does not account for every voxel — the dispatch did not cover the volume.
+        case incompleteCoverage(counted: Int, expected: Int)
     }
 
     private let device: any MTLDevice
@@ -103,6 +107,31 @@ public final class GradientHistogramCalculator {
             return
         }
 
+        encode(texture: texture,
+               plan: plan,
+               pipeline: resolvedPipeline,
+               voxelMin: voxelMin,
+               voxelMax: voxelMax,
+               gradientMin: gradientMin,
+               gradientMax: gradientMax,
+               attemptsLeft: Self.retriesAfterADiscardedDispatch,
+               completion: completion)
+    }
+
+    /// See ``VolumeHistogramCalculator``: a command buffer discarded as the innocent
+    /// victim of somebody else's GPU fault never runs, and reads back as an empty
+    /// histogram with no error attached.
+    private static let retriesAfterADiscardedDispatch = 1
+
+    private func encode(texture: any MTLTexture,
+                        plan: GradientHistogramDispatchPlan,
+                        pipeline resolvedPipeline: MTLComputePipelineState,
+                        voxelMin: Int32,
+                        voxelMax: Int32,
+                        gradientMin: Float,
+                        gradientMax: Float,
+                        attemptsLeft: Int,
+                        completion: @escaping (Result<[[UInt32]], Error>) -> Void) {
         // StorageModePolicy.md: gradient histogram buffers are CPU-visible compute outputs.
         guard let histogramBuffer = device.makeBuffer(length: plan.bufferLength, options: .storageModeShared) else {
             completion(.failure(HistogramError.bufferAllocationFailed))
@@ -158,9 +187,31 @@ public final class GradientHistogramCalculator {
 
         encoder.endEncoding()
 
+        let expectedVoxelCount = HistogramCoverage.voxelCount(width: threadsPerGrid.width,
+                                                              height: threadsPerGrid.height,
+                                                              depth: threadsPerGrid.depth)
+        let logger = logger
+
+        func retryOrFail(_ reason: String, _ error: Error) {
+            guard attemptsLeft > 0 else {
+                completion(.failure(error))
+                return
+            }
+            logger.error("Gradient histogram dispatch \(reason); retrying once.")
+            encode(texture: texture,
+                   plan: plan,
+                   pipeline: resolvedPipeline,
+                   voxelMin: voxelMin,
+                   voxelMax: voxelMax,
+                   gradientMin: gradientMin,
+                   gradientMax: gradientMax,
+                   attemptsLeft: attemptsLeft - 1,
+                   completion: completion)
+        }
+
         commandBuffer.addCompletedHandler { buffer in
             if let error = buffer.error {
-                completion(.failure(error))
+                retryOrFail("failed with \(error.localizedDescription)", error)
                 return
             }
 
@@ -181,6 +232,17 @@ public final class GradientHistogramCalculator {
                 }
                 results.append(gradientRow)
             }
+
+            // Every voxel lands in exactly one (intensity, gradient) bin, so a grand
+            // total that falls short means the dispatch did not cover the volume.
+            if let shortfall = HistogramCoverage.totalShortfall(in: results,
+                                                                expectedVoxelCount: expectedVoxelCount) {
+                let error = HistogramError.incompleteCoverage(counted: shortfall.counted,
+                                                              expected: shortfall.expected)
+                retryOrFail("covered \(shortfall.counted) of \(shortfall.expected) voxels", error)
+                return
+            }
+
             completion(.success(results))
         }
 

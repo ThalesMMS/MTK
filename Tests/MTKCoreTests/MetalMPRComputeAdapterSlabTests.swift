@@ -40,6 +40,7 @@ final class MetalMPRComputeAdapterSlabTests: MetalMPRComputeAdapterTestCase {
             steps: 1,
             blend: .single
         )
+        defer { frame.debugReleaseOutputTextureLease() }
 
         MPRTestHelpers.assertValidFrame(frame,
                                         expectedWidth: 64,
@@ -64,6 +65,7 @@ final class MetalMPRComputeAdapterSlabTests: MetalMPRComputeAdapterTestCase {
                 steps: 5,
                 blend: blend
             )
+            defer { frame.debugReleaseOutputTextureLease() }
 
             MPRTestHelpers.assertValidFrame(frame,
                                             expectedWidth: 64,
@@ -86,6 +88,7 @@ final class MetalMPRComputeAdapterSlabTests: MetalMPRComputeAdapterTestCase {
             steps: 5,
             blend: .single
         )
+        defer { frame.debugReleaseOutputTextureLease() }
 
         MPRTestHelpers.assertValidFrame(frame,
                                         expectedWidth: 64,
@@ -107,6 +110,7 @@ final class MetalMPRComputeAdapterSlabTests: MetalMPRComputeAdapterTestCase {
             steps: 0,
             blend: .single
         )
+        defer { frame.debugReleaseOutputTextureLease() }
 
         MPRTestHelpers.assertValidFrame(frame,
                                         expectedWidth: 64,
@@ -128,6 +132,7 @@ final class MetalMPRComputeAdapterSlabTests: MetalMPRComputeAdapterTestCase {
             steps: 1,
             blend: .single
         )
+        defer { frame.debugReleaseOutputTextureLease() }
 
         MPRTestHelpers.assertValidFrame(frame,
                                         expectedWidth: 64,
@@ -150,6 +155,7 @@ final class MetalMPRComputeAdapterSlabTests: MetalMPRComputeAdapterTestCase {
             steps: 1,
             blend: .single
         )
+        defer { frame.debugReleaseOutputTextureLease() }
 
         MPRTestHelpers.assertValidFrame(frame,
                                         expectedWidth: 64,

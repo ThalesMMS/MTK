@@ -89,6 +89,40 @@ final class PresentationPassTests: MTKRenderingEngineTestCase {
         XCTAssertTrue(lease.isPresented)
     }
 
+    func test_scaledPresentation_writesUpscaledPixelsIntoDrawable() throws {
+        let device = try requireMetalDevice()
+        let source = try makeTexture(device: device,
+                                     width: 2,
+                                     height: 2,
+                                     pixelFormat: .bgra8Unorm)
+        guard let queue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal command queue unavailable on this test runner")
+        }
+        let drawable = try MPRTestMetalDrawable(device: device, width: 4, height: 4)
+        var sourcePixels: [UInt8] = [
+            0, 0, 255, 255, 0, 255, 0, 255,
+            255, 0, 0, 255, 255, 255, 255, 255
+        ]
+        sourcePixels.withUnsafeMutableBytes { bytes in
+            source.replace(region: MTLRegionMake2D(0, 0, 2, 2),
+                           mipmapLevel: 0,
+                           withBytes: bytes.baseAddress!,
+                           bytesPerRow: 8)
+        }
+
+        _ = try PresentationPass().present(source, to: drawable, commandQueue: queue)
+        try MPRTestHelpers.waitForQueue(queue)
+
+        let outputPixels = try MPRTextureReadbackHelper.readBytes(from: drawable.texture,
+                                                                  bytesPerPixel: 4,
+                                                                  device: device,
+                                                                  commandQueue: queue)
+        XCTAssertEqual(Array(outputPixels[0..<4]), [0, 0, 255, 255])
+        XCTAssertEqual(Array(outputPixels[12..<16]), [0, 255, 0, 255])
+        XCTAssertEqual(Array(outputPixels[48..<52]), [255, 0, 0, 255])
+        XCTAssertEqual(Array(outputPixels[60..<64]), [255, 255, 255, 255])
+    }
+
     func testSourceDoesNotUseReadbackOrCGImage() throws {
         let source = try String(contentsOfFile: sourceFilePath("Sources/MTKCore/Rendering/PresentationPass.swift"))
 

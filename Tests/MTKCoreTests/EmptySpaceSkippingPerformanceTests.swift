@@ -56,8 +56,7 @@ final class EmptySpaceSkippingPerformanceTests: XCTestCase {
             resolvedLibrary = lib
         } else if let defaultLibrary = device.makeDefaultLibrary() {
             resolvedLibrary = defaultLibrary
-        } else if #available(macOS 11.0, *),
-                  let bundled = try? device.makeDefaultLibrary(bundle: coreBundle) {
+        } else if let bundled = try? device.makeDefaultLibrary(bundle: coreBundle) {
             resolvedLibrary = bundled
         } else {
             resolvedLibrary = nil
@@ -155,67 +154,45 @@ final class EmptySpaceSkippingPerformanceTests: XCTestCase {
         #endif
     }
 
-    func testPerformanceImprovementMeetsTarget() async throws {
+    /// Counts the work the acceleration structure removes, instead of timing it.
+    ///
+    /// This used to compare two wall-clock averages and fail below a −5% tolerance, which
+    /// is not a question a shared GPU can answer: on an idle machine it still reported
+    /// "Performance regression detected: −2.1%", and under six concurrent runs of this
+    /// suite it reported −0.2%, −3.7%, −6.7%, −12.7% — 11 failures in 18 runs. A gate that
+    /// says "regression" about somebody else's load is a gate people learn to ignore.
+    ///
+    /// The claim underneath the timing is that the acceleration structure lets rays skip
+    /// empty space, and that is countable. `volume_compute.metal` consults the visibility
+    /// pyramid at `accelerationCoarseMip` — `min(3, mipLevels - 1)` — and jumps over every
+    /// block that level marks invisible. Counting those blocks asks the same question and
+    /// gets the same answer whatever else the GPU is doing.
+    func testAccelerationSkipsMostBlocksOfASparseVolume() async throws {
         #if canImport(MetalPerformanceShaders)
         guard raycaster.isMetalPerformanceShadersAvailable else {
             throw XCTSkip("MPS not available, skipping performance test")
         }
 
         let dataset = makeSparseTestDataset()
-
-        // Measure baseline performance
-        let baselineStart = CFAbsoluteTimeGetCurrent()
-        let iterations = 10
-
-        for _ in 0..<iterations {
-            _ = try await renderWithoutAcceleration(dataset: dataset)
-        }
-
-        let baselineElapsed = CFAbsoluteTimeGetCurrent() - baselineStart
-        let baselineAverage = baselineElapsed / Double(iterations)
-
-        // Measure accelerated performance
         let accelerationTexture = try requireAccelerationTexture(for: dataset)
 
         // Validation: ensure the accelerated path is actually enabled (option flag set).
-        _ = try await renderWithAcceleration(dataset: dataset, accelerationTexture: accelerationTexture, validateAccelerationEnabled: true)
+        _ = try await renderWithAcceleration(dataset: dataset,
+                                             accelerationTexture: accelerationTexture,
+                                             validateAccelerationEnabled: true)
 
-        let acceleratedStart = CFAbsoluteTimeGetCurrent()
+        let skipping = try await skippableBlocks(dataset: dataset,
+                                                 accelerationTexture: accelerationTexture)
 
-        for _ in 0..<iterations {
-            _ = try await renderWithAcceleration(dataset: dataset, accelerationTexture: accelerationTexture)
-        }
+        print("📊 Empty-space work removed:")
+        print("   Coarse mip level:     \(skipping.level)")
+        print("   Blocks at that level: \(skipping.total)")
+        print("   Blocks skipped:       \(skipping.skipped) (\(String(format: "%.1f", skipping.fraction * 100))%)")
 
-        let acceleratedElapsed = CFAbsoluteTimeGetCurrent() - acceleratedStart
-        let acceleratedAverage = acceleratedElapsed / Double(iterations)
-
-        // Calculate improvement
-        let improvement = (baselineAverage - acceleratedAverage) / baselineAverage
-        let improvementPercentage = improvement * 100
-
-        print("📊 Performance Analysis:")
-        print("   Baseline average:    \(String(format: "%.3f", baselineAverage * 1000))ms")
-        print("   Accelerated average: \(String(format: "%.3f", acceleratedAverage * 1000))ms")
-        print("   Improvement:         \(String(format: "%.1f", improvementPercentage))%")
-        print("   Target:              ≥30%")
-
-        // Note: In some test environments, the sparse dataset may not show full 30% improvement
-        // due to overhead of small test volumes. We validate that acceleration doesn't regress
-        // performance and document the measured improvement.
-        if improvementPercentage >= 30 {
-            print("✅ Performance target met: \(String(format: "%.1f", improvementPercentage))% ≥ 30%")
-        } else if improvementPercentage >= 0 {
-            print("⚠️  Performance improved by \(String(format: "%.1f", improvementPercentage))%, below 30% target")
-            print("   (Small test volumes may not demonstrate full optimization benefit)")
-        } else {
-            XCTFail("Performance regression detected: \(String(format: "%.1f", improvementPercentage))%")
-        }
-
-        // At minimum, acceleration should not make performance worse
-        XCTAssertGreaterThanOrEqual(
-            improvementPercentage,
-            -5.0,
-            "Acceleration should not significantly degrade performance (tolerance: -5%)"
+        XCTAssertGreaterThan(
+            skipping.fraction,
+            0.5,
+            "acceleration must let the raycast skip most of a ~93% empty volume, skipped \(skipping.skipped) of \(skipping.total)"
         )
         #else
         throw XCTSkip("MetalPerformanceShaders unavailable on this platform")
@@ -237,6 +214,51 @@ final class EmptySpaceSkippingPerformanceTests: XCTestCase {
         #else
         throw XCTSkip("MetalPerformanceShaders unavailable on this platform")
         #endif
+    }
+
+    // MARK: - GPU Correctness
+
+    /// #1692: the benchmarks above measure two dispatches that reach every texture they
+    /// sample through an argument buffer. Nothing in an argument buffer is resident until
+    /// the encoder is told, and an undeclared output texture swallows the kernel's writes
+    /// silently — the command buffer still completes, and the timings still look like
+    /// timings. Both paths are asserted, because the accelerated one binds a different
+    /// acceleration texture and could fail on its own.
+    func testBenchmarkedDispatchesActuallyRender() async throws {
+        #if canImport(MetalPerformanceShaders)
+        guard raycaster.isMetalPerformanceShadersAvailable else {
+            throw XCTSkip("MPS not available, skipping")
+        }
+
+        let dataset = makeSparseTestDataset()
+        let baselineFrame = try await renderWithoutAcceleration(dataset: dataset)
+        let baseline = try XCTUnwrap(baselineFrame, "baseline render produced no output texture")
+        let accelerationTexture = try requireAccelerationTexture(for: dataset)
+        let acceleratedFrame = try await renderWithAcceleration(dataset: dataset,
+                                                                accelerationTexture: accelerationTexture)
+        let accelerated = try XCTUnwrap(acceleratedFrame, "accelerated render produced no output texture")
+
+        XCTAssertGreaterThan(brightestChannel(of: baseline),
+                             0,
+                             "The baseline benchmark dispatch returned an all-black frame: it composited nothing")
+        XCTAssertGreaterThan(brightestChannel(of: accelerated),
+                             0,
+                             "The accelerated benchmark dispatch returned an all-black frame: it composited nothing")
+        #else
+        throw XCTSkip("MetalPerformanceShaders unavailable on this platform")
+        #endif
+    }
+
+    private func brightestChannel(of texture: any MTLTexture) -> UInt8 {
+        let bytesPerRow = texture.width * 4
+        let bytes = MPRTextureReadbackHelper.readBytes(from: texture,
+                                                       bytesPerRow: bytesPerRow,
+                                                       byteCount: bytesPerRow * texture.height)
+        var brightest: UInt8 = 0
+        for byte in bytes where byte > brightest {
+            brightest = byte
+        }
+        return brightest
     }
 
     // MARK: - Memory Overhead Tests
@@ -337,6 +359,58 @@ final class EmptySpaceSkippingPerformanceTests: XCTestCase {
         try RaycasterTestHelpers.requireAccelerationTexture(from: raycaster, for: dataset, file: file, line: line)
     }
 
+    private struct SkippableBlocks {
+        var level: Int
+        var total: Int
+        var skipped: Int
+        var fraction: Double { total > 0 ? Double(skipped) / Double(total) : 0 }
+    }
+
+    /// Reads back the visibility pyramid level the raycast actually consults and counts
+    /// the blocks it marks invisible — the blocks rays will jump over.
+    private func skippableBlocks(dataset: VolumeDataset,
+                                 accelerationTexture: any MTLTexture) async throws -> SkippableBlocks {
+        let transferTexture = try await transferTexture(for: dataset)
+        let parameters = RaycasterTestHelpers.makeTestRenderingParameters(dataset: dataset, method: 1)
+        let visibility = try await visibilityCache.texture(minMaxTexture: accelerationTexture,
+                                                           transferTexture: transferTexture,
+                                                           parameters: parameters,
+                                                           commandQueue: commandQueue)
+
+        // `accelerationCoarseMip` in volume_compute.metal.
+        let level = min(3, visibility.mipmapLevelCount - 1)
+        let width = max(1, visibility.width >> level)
+        let height = max(1, visibility.height >> level)
+        let depth = max(1, visibility.depth >> level)
+        let bytesPerImage = width * height
+        let byteCount = bytesPerImage * depth
+
+        guard let readback = device.makeBuffer(length: byteCount, options: .storageModeShared),
+              let commandBuffer = commandQueue.makeCommandBuffer(),
+              let blit = commandBuffer.makeBlitCommandEncoder() else {
+            throw XCTestError(.failureWhileWaiting)
+        }
+        blit.copy(from: visibility,
+                  sourceSlice: 0,
+                  sourceLevel: level,
+                  sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+                  sourceSize: MTLSize(width: width, height: height, depth: depth),
+                  to: readback,
+                  destinationOffset: 0,
+                  destinationBytesPerRow: width,
+                  destinationBytesPerImage: bytesPerImage)
+        blit.endEncoding()
+        try await RaycasterTestHelpers.commitAndWait(commandBuffer)
+
+        let pointer = readback.contents().assumingMemoryBound(to: UInt8.self)
+        let blocks = UnsafeBufferPointer(start: pointer, count: byteCount)
+        // `sampleAccelerationStructureAtLevel` skips a block when the pyramid reads >= 0.5,
+        // which is >= 128 out of r8Unorm's 255.
+        return SkippableBlocks(level: level,
+                               total: byteCount,
+                               skipped: blocks.reduce(0) { $0 + ($1 >= 128 ? 1 : 0) })
+    }
+
     private func renderWithoutAcceleration(
         dataset: VolumeDataset
     ) async throws -> MTLTexture? {
@@ -356,7 +430,9 @@ final class EmptySpaceSkippingPerformanceTests: XCTestCase {
         outputDescriptor.height = 256
         outputDescriptor.pixelFormat = .rgba8Unorm
         outputDescriptor.usage = [.shaderWrite, .shaderRead]
-        outputDescriptor.storageMode = .private
+        // #1692: CPU-visible so the frame can be checked for content. A benchmark that
+        // never looks at its output cannot tell a fast kernel from one that did not run.
+        outputDescriptor.storageMode = .shared
 
         guard let outputTexture = device.makeTexture(descriptor: outputDescriptor) else {
             throw XCTestError(.failureWhileWaiting)
@@ -396,6 +472,13 @@ final class EmptySpaceSkippingPerformanceTests: XCTestCase {
         computeEncoder.setComputePipelineState(volumeComputePipeline)
         computeEncoder.setBuffer(argumentManager.argumentBuffer, offset: 0, index: 0)
         computeEncoder.setBuffer(cameraBuffer, offset: 0, index: 1)
+        // #1692: every texture this kernel touches — the volume, the four transfer LUTs,
+        // the visibility pyramid and the output — is reached through the argument buffer,
+        // so binding the argument buffer makes none of them resident. VolumeRaycastPass
+        // calls this at all three of its dispatch sites; this suite copied the encoding
+        // block without it and the dispatches below were timing a kernel whose writes
+        // went nowhere. `testBenchmarkedDispatchesActuallyRender` is what notices.
+        argumentManager.registerResources(on: computeEncoder)
 
         let threadgroupSize = MTLSize(width: 16, height: 16, depth: 1)
         let threadgroups = MTLSize(
@@ -440,7 +523,9 @@ final class EmptySpaceSkippingPerformanceTests: XCTestCase {
         outputDescriptor.height = 256
         outputDescriptor.pixelFormat = .rgba8Unorm
         outputDescriptor.usage = [.shaderWrite, .shaderRead]
-        outputDescriptor.storageMode = .private
+        // #1692: CPU-visible so the frame can be checked for content. A benchmark that
+        // never looks at its output cannot tell a fast kernel from one that did not run.
+        outputDescriptor.storageMode = .shared
 
         guard let outputTexture = device.makeTexture(descriptor: outputDescriptor) else {
             throw XCTestError(.failureWhileWaiting)
@@ -499,6 +584,13 @@ final class EmptySpaceSkippingPerformanceTests: XCTestCase {
         computeEncoder.setComputePipelineState(volumeComputePipeline)
         computeEncoder.setBuffer(argumentManager.argumentBuffer, offset: 0, index: 0)
         computeEncoder.setBuffer(cameraBuffer, offset: 0, index: 1)
+        // #1692: every texture this kernel touches — the volume, the four transfer LUTs,
+        // the visibility pyramid and the output — is reached through the argument buffer,
+        // so binding the argument buffer makes none of them resident. VolumeRaycastPass
+        // calls this at all three of its dispatch sites; this suite copied the encoding
+        // block without it and the dispatches below were timing a kernel whose writes
+        // went nowhere. `testBenchmarkedDispatchesActuallyRender` is what notices.
+        argumentManager.registerResources(on: computeEncoder)
 
         let threadgroupSize = MTLSize(width: 16, height: 16, depth: 1)
         let threadgroups = MTLSize(

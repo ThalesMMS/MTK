@@ -61,7 +61,8 @@ package.
 - `TextureSnapshotExporter`
 
 Interactive output is `MTLTexture`. `CGImage` belongs only at explicit
-snapshot/export/readback boundaries.
+snapshot/export/readback boundaries. MTK does not provide a platform view,
+viewport controller, gesture layer, or application shell.
 
 ### Layers And Segmentation Surfaces
 
@@ -110,9 +111,9 @@ snapshot/export/readback boundaries.
 - `ResourceMemoryMetrics`
 
 Use these APIs for measurement, lower-level rendering experiments, and focused
-tests.
+tests. UI composition remains downstream and is demonstrated in `MTK-Demo`.
 
 ## Internal Implementation Details
 
 Do not build application code directly on renderer internals, render graph
-nodes, resource pools, or viewport controllers.
+nodes, resource pools, or package-internal viewport machinery.

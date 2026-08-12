@@ -617,13 +617,15 @@ final class VolumeRaycastPass: @unchecked Sendable {
     ) -> (threadgroups: MTLSize, threadsPerThreadgroup: MTLSize) {
         let configuration = debugDispatchConfiguration
         let threadsPerGrid = MTLSize(width: viewport.width, height: viewport.height, depth: 1)
-        MetalDispatch.dispatch(encoder: encoder,
-                               threadsPerGrid: threadsPerGrid,
-                               configuration: configuration,
-                               featureFlags: featureFlags)
+        // Report the threadgroup that ran, not the one asked for: a viewport smaller
+        // than the threadgroup is dispatched at the viewport's size.
+        let effective = MetalDispatch.dispatch(encoder: encoder,
+                                               threadsPerGrid: threadsPerGrid,
+                                               configuration: configuration,
+                                               featureFlags: featureFlags)
         return (MetalDispatch.threadgroups(for: threadsPerGrid,
-                                           threadsPerThreadgroup: configuration.threadsPerThreadgroup),
-                configuration.threadsPerThreadgroup)
+                                           threadsPerThreadgroup: effective),
+                effective)
     }
 
     private func validateOutputTextureContract(_ texture: any MTLTexture) throws {

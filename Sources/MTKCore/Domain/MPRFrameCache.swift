@@ -18,6 +18,10 @@ public final class MPRFrameCache<Key: Hashable>: @unchecked Sendable {
 
     public init() {}
 
+    deinit {
+        invalidateAll()
+    }
+
     public var entryCount: Int {
         withLock { entries.count }
     }

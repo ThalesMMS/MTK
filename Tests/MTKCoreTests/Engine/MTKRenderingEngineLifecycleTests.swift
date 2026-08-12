@@ -48,6 +48,7 @@ final class MTKRenderingEngineLifecycleTests: MTKRenderingEngineTestCase {
         let resizedSize = CGSize(width: 48, height: 32)
         try await engine.resize(viewport, to: resizedSize)
         let frame = try await engine.render(viewport)
+        defer { frame.outputTextureLease?.release() }
 
         XCTAssertEqual(frame.metadata.viewportSize, resizedSize)
         XCTAssertEqual(frame.texture.width, Int(resizedSize.width))

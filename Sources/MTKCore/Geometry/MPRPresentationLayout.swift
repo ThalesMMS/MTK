@@ -82,6 +82,14 @@ public enum MPROutputAspect: Sendable, Equatable {
     case fill
     /// Image is aspect-fit using the plane's physical aspect ratio
     /// (`|axisUWorld| / |axisVWorld|`), matching `MPRPresentationPass`.
+    ///
+    /// The resulting scale is `min(width / rectangleWidth, height / rectangleHeight)`
+    /// — set by whichever side runs out of room first. Two consequences worth
+    /// remembering before changing plane geometry: a rectangle that grows keeps
+    /// the anatomy at a *smaller* scale, and growth along the side that still
+    /// has letterbox slack changes nothing at all. That asymmetry is why a
+    /// geometry bug can look like it affects only some panels
+    /// (`Docs/MPRCrosshairGeometryAndTilt.md`).
     case aspectFit(physicalAspectRatio: Float)
 
     /// Resolves the layout for a given destination size in pixels/points.

@@ -512,6 +512,11 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
                                          waitsForCompletion: false)
     }
 
+    package func renderFrame(using request: VolumeRenderRequest,
+                             volumeTexture: any MTLTexture) async throws -> VolumeRenderFrame {
+        try await renderTexture(using: request, volumeTexture: volumeTexture)
+    }
+
     package func prewarmInteractiveOutputTextures(width: Int,
                                                   height: Int,
                                                   count: Int = 3) async throws -> Bool {
@@ -537,6 +542,17 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
         }
 
         effectiveRequest = try applyCompatibilityClippingIfNeeded(to: effectiveRequest)
+        let samplingSource: String
+        if overrides.samplingDistance != nil {
+            samplingSource = "compatibilityOverride"
+        } else if presetResolution.preset != nil {
+            samplingSource = "preset"
+        } else {
+            samplingSource = "request"
+        }
+        logInteractionInfo(
+            "[MTK3DInteraction] adapter.sampling.resolve requested=\(String(format: "%.6f", request.samplingDistance)) effective=\(String(format: "%.6f", effectiveRequest.samplingDistance)) source=\(samplingSource) quality=\(effectiveRequest.quality) viewport=\(Int(effectiveRequest.viewportSize.width))x\(Int(effectiveRequest.viewportSize.height))"
+        )
         let window = try resolveWindow(for: effectiveRequest.dataset)
 
         if try effectiveRequest.visibleScalarLayerCountForRendering() > 1 {
@@ -552,6 +568,7 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
                 let frame = try await renderLayerStackWithMetal(state: metalState,
                                                                 request: effectiveRequest,
                                                                 outputTexture: outputTexture,
+                                                                volumeTexture: providedVolumeTexture,
                                                                 waitsForCompletion: true)
                 lastSnapshot = RenderSnapshot(dataset: request.dataset,
                                               metadata: frame.metadata,
@@ -569,6 +586,7 @@ public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
                 let renderedFrame = try await renderLayerStackWithMetal(state: metalState,
                                                                         request: effectiveRequest,
                                                                         outputTexture: lease.texture,
+                                                                        volumeTexture: providedVolumeTexture,
                                                                         waitsForCompletion: false)
                 lease.updateDebugContext(frameIndex: renderedFrame.metadata.debugFrameIndex)
                 let frame = VolumeRenderFrame(texture: renderedFrame.texture,

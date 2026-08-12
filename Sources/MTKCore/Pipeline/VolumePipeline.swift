@@ -58,7 +58,7 @@ public protocol VolumeMapper: Sendable {
     func map(_ dataset: VolumeDataset) async throws -> MappedVolume
 }
 
-/// Dataset plus rendering defaults ready for core rendering passes.
+/// Dataset plus rendering defaults ready for MTKCore render requests.
 public struct MappedVolume: Sendable, Equatable {
     public var dataset: VolumeDataset
     public var transferFunction: VolumeTransferFunction

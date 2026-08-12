@@ -329,7 +329,8 @@ let restored = try JSONDecoder().decode(TransferFunction.self, from: data)
 
 ### Apply to a Render Request
 
-Convert the public model to the render request type:
+Convert the public model to the MTKCore render request type. The downstream
+application decides how presets are selected and presented:
 
 ```swift
 let transfer = try ClinicalTransferFunctionPreset.ctVRBone

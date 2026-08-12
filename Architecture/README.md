@@ -14,8 +14,8 @@ integration model, and enforcement boundaries.
 
 - [Public API Contract](PublicAPI.md) - Stable, experimental, and internal API
   boundaries for downstream applications.
-- [Clinical Rendering ADR](ClinicalRenderingADR.md) - Metal-native clinical
-  rendering, viewport resource sharing, presentation, explicit
+- [Clinical Rendering ADR](ClinicalRenderingADR.md) - Historical Metal-native
+  clinical rendering, viewport resource sharing, presentation, explicit
   snapshot/export boundaries, and removal of SceneKit and `CGImage` display
   paths from the clinical architecture.
 - [Multi-Volume Registration And Resampling Plan](MultiVolumeRegistration.md) -
