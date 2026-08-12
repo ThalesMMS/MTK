@@ -1,0 +1,1315 @@
+//
+//  MTKRenderingEngine.swift
+//  MTKCore
+//
+//  Central GPU-native rendering engine for shared volume resources and viewports.
+//
+//  Thales Matheus Mendonça Santos — April 2026
+//
+
+import CoreGraphics
+import Foundation
+@preconcurrency import Metal
+import OSLog
+import simd
+
+package typealias Camera = VolumeRenderRequest.Camera
+
+package struct ProfilingOptions: Equatable, Sendable {
+    package var measureUploadTime: Bool
+    package var measureRenderTime: Bool
+    package var measurePresentTime: Bool
+
+    package init(measureUploadTime: Bool = false,
+                measureRenderTime: Bool = false,
+                measurePresentTime: Bool = false) {
+        self.measureUploadTime = measureUploadTime
+        self.measureRenderTime = measureRenderTime
+        self.measurePresentTime = measurePresentTime
+    }
+
+    func isEnabled(stage: ProfilingStage) -> Bool {
+        switch stage {
+        case .dicomParse, .huConversion, .textureUpload, .texturePreparation:
+            return measureUploadTime
+        case .renderGraphRoute, .mprReslice, .volumeRaycast, .memorySnapshot:
+            return measureRenderTime
+        case .presentationPass, .snapshotReadback:
+            return measurePresentTime
+        }
+    }
+}
+
+package actor MTKRenderingEngine {
+    package enum EngineError: Error, Equatable, LocalizedError {
+        case metalDeviceUnavailable
+        case commandQueueCreationFailed
+        case viewportNotFound(ViewportID)
+        case volumeNotSet(ViewportID)
+        case volumeResourceUnavailable
+        case renderTextureUnavailable
+        case unsupportedScalarLayerTransform(String)
+        case volumeRendererUnavailable(reason: String)
+
+        package var errorDescription: String? {
+            switch self {
+            case .metalDeviceUnavailable:
+                return "Metal device unavailable"
+            case .commandQueueCreationFailed:
+                return "Metal command queue creation failed"
+            case .viewportNotFound:
+                return "Viewport not found"
+            case .volumeNotSet:
+                return "Viewport has no volume"
+            case .volumeResourceUnavailable:
+                return "Volume resource unavailable"
+            case .renderTextureUnavailable:
+                return "Render texture unavailable"
+            case .unsupportedScalarLayerTransform(let layerID):
+                return "Scalar volume layer \(layerID) uses an unsupported transform for registered fusion."
+            case .volumeRendererUnavailable(let reason):
+                return "Volume renderer unavailable: \(reason)"
+            }
+        }
+    }
+
+    package struct ViewportState: Sendable {
+        var descriptor: ViewportDescriptor
+        var resourceHandle: VolumeResourceHandle?
+        var currentSize: CGSize
+        var camera: Camera
+        var window: ClosedRange<Int32>?
+        var slicePosition: Float
+        var samplingDistance: Float
+        var quality: VolumeRenderRequest.Quality
+        var renderQualitySettings: VolumeRenderQualitySettings
+        var transferFunction: VolumeTransferFunction?
+        var volumeLayers: [VolumeLayer]
+        var volumeLayerResourceHandles: [String: VolumeResourceHandle]
+        var surfaceMeshLayers: [SurfaceMeshLayer]
+        var clipping: VolumeClippingState
+        var slabThickness: Int
+        var slabSteps: Int
+        var mprBlend: MPRBlendMode
+        var mprPlaneGeometry: MPRPlaneGeometry?
+
+        init(descriptor: ViewportDescriptor) {
+            self.descriptor = descriptor
+            self.resourceHandle = nil
+            self.currentSize = descriptor.initialSize
+            self.camera = Camera(
+                position: SIMD3<Float>(0.5, 0.5, 2.0),
+                target: SIMD3<Float>(repeating: 0.5),
+                up: SIMD3<Float>(0, 1, 0),
+                fieldOfView: 45,
+                projectionType: .perspective
+            )
+            self.window = nil
+            self.slicePosition = 0.5
+            self.samplingDistance = 1.0 / 512.0
+            self.quality = .production
+            self.renderQualitySettings = .default
+            self.transferFunction = nil
+            self.volumeLayers = []
+            self.volumeLayerResourceHandles = [:]
+            self.surfaceMeshLayers = []
+            self.clipping = .disabled
+            self.slabThickness = 1
+            self.slabSteps = 1
+            self.mprBlend = .single
+            self.mprPlaneGeometry = nil
+        }
+    }
+
+    private let device: any MTLDevice
+    private let commandQueue: any MTLCommandQueue
+    private let resourceManager: VolumeResourceManager
+    private let volumeAdapterProvider: MetalVolumeRenderingAdapterProvider
+    private let mprAdapter: MetalMPRAdapter
+    private let renderGraph = ViewportRenderGraph()
+    private var viewports: [ViewportID: ViewportState] = [:]
+    private let mprFrameCache: MPRFrameCache<ViewportID>
+    private var pendingOutputTextureLeases: [ViewportID: [ObjectIdentifier: WeakOutputTextureLeaseBox]] = [:]
+    private var profilingOptions = ProfilingOptions()
+    private var lastFrameTimings: FrameMetadata?
+    private var debugPostAcquireRenderFailure: MetalVolumeRenderingAdapter.RenderingError?
+    private let logger = os.Logger(subsystem: "com.mtk.volumerendering",
+                                   category: "MTKRenderingEngine")
+    private let viewportLifecycleController = ViewportLifecycleController()
+    private let routeResolver = RenderRouteResolver()
+    private let profiler = RenderProfiler()
+    private let metadataBuilder = FrameMetadataBuilder()
+    private let renderPassDispatcher: RenderPassDispatcher
+
+    private final class WeakOutputTextureLeaseBox {
+        weak var lease: OutputTextureLease?
+
+        init(_ lease: OutputTextureLease) {
+            self.lease = lease
+        }
+    }
+
+    package init(device: (any MTLDevice)? = nil,
+                 volumeAdapterFactory: @escaping MetalVolumeRenderingAdapterProvider.Factory = MetalVolumeRenderingAdapterProvider.defaultFactory) async throws {
+        let resolvedDevice: any MTLDevice
+        if let device {
+            resolvedDevice = device
+        } else if let defaultDevice = MTLCreateSystemDefaultDevice() {
+            resolvedDevice = defaultDevice
+        } else {
+            throw EngineError.metalDeviceUnavailable
+        }
+
+        guard let resolvedQueue = resolvedDevice.makeCommandQueue() else {
+            throw EngineError.commandQueueCreationFailed
+        }
+
+        self.device = resolvedDevice
+        self.commandQueue = resolvedQueue
+        self.resourceManager = VolumeResourceManager(device: resolvedDevice,
+                                                     commandQueue: resolvedQueue)
+        self.volumeAdapterProvider = MetalVolumeRenderingAdapterProvider(device: resolvedDevice,
+                                                                         commandQueue: resolvedQueue,
+                                                                         factory: volumeAdapterFactory)
+        self.mprAdapter = try MetalMPRAdapter(device: resolvedDevice,
+                                              commandQueue: resolvedQueue)
+        self.mprFrameCache = MPRFrameCache<ViewportID>()
+        self.renderPassDispatcher = RenderPassDispatcher(
+            device: resolvedDevice,
+            commandQueue: resolvedQueue,
+            volumeAdapterProvider: volumeAdapterProvider,
+            mprAdapter: mprAdapter,
+            resourceManager: resourceManager,
+            mprFrameCache: mprFrameCache,
+            profiler: profiler
+        )
+    }
+
+    package func createViewport(_ descriptor: ViewportDescriptor) async throws -> ViewportID {
+        let id = ViewportID()
+        viewports[id] = ViewportState(descriptor: descriptor)
+        return id
+    }
+
+    /// Destroys a viewport and best-effort releases any tracked output texture
+    /// leases still associated with it.
+    ///
+    /// Frames are transient render results. Callers that keep a `RenderFrame`
+    /// alive across UI or export work should present it or release its
+    /// `outputTextureLease` before destroying the viewport. The engine tracks
+    /// leases for frames it produced and releases pending ones on destruction,
+    /// but detached copies that no longer participate in the normal
+    /// render/present lifecycle should still be closed explicitly by the owner.
+    package func destroyViewport(_ viewport: ViewportID) async {
+        guard let state = viewports.removeValue(forKey: viewport) else {
+            mprFrameCache.invalidate(viewport)
+            releasePendingOutputTextureLeases(for: viewport)
+            return
+        }
+        if let handle = state.resourceHandle {
+            resourceManager.release(handle: handle)
+        }
+        releaseVolumeLayerHandles(state.volumeLayerResourceHandles)
+        mprFrameCache.invalidate(viewport)
+        releasePendingOutputTextureLeases(for: viewport)
+    }
+
+    package func clearVolume(for viewports: [ViewportID]) async {
+        var seenViewports = Set<ViewportID>()
+        for viewport in viewports where seenViewports.insert(viewport).inserted {
+            guard var state = self.viewports[viewport],
+                  let handle = state.resourceHandle
+            else {
+                mprFrameCache.invalidate(viewport)
+                continue
+            }
+            state.resourceHandle = nil
+            let layerHandles = state.volumeLayerResourceHandles
+            state.volumeLayerResourceHandles = [:]
+            state.volumeLayers = []
+            self.viewports[viewport] = state
+            mprFrameCache.invalidate(viewport)
+            resourceManager.release(handle: handle)
+            releaseVolumeLayerHandles(layerHandles)
+        }
+    }
+
+    package func setVolume(_ dataset: VolumeDataset,
+                          for viewport: ViewportID) async throws {
+        guard let initialState = viewports[viewport] else {
+            throw EngineError.viewportNotFound(viewport)
+        }
+        let previousHandle = initialState.resourceHandle
+
+        let newHandle: VolumeResourceHandle
+        if let oldHandle = previousHandle {
+            newHandle = try await resourceManager.replaceDataset(
+                isolatedTo: self,
+                oldHandle: oldHandle,
+                newDataset: dataset
+            )
+        } else {
+            newHandle = try await resourceManager.acquire(
+                isolatedTo: self,
+                dataset: dataset,
+                device: device,
+                commandQueue: commandQueue
+            )
+        }
+
+        guard var currentState = viewports[viewport] else {
+            resourceManager.release(handle: newHandle)
+            throw EngineError.viewportNotFound(viewport)
+        }
+
+        if currentState.resourceHandle != previousHandle,
+           let currentHandle = currentState.resourceHandle {
+            resourceManager.release(handle: currentHandle)
+        }
+
+        currentState.resourceHandle = newHandle
+        viewports[viewport] = currentState
+        mprFrameCache.invalidate(viewport)
+    }
+
+    package func setVolume<S: AsyncSequence>(
+        uploadDescriptor: VolumeUploadDescriptor,
+        slices: S,
+        for viewport: ViewportID,
+        progress: ChunkedVolumeUploader.ProgressHandler? = nil
+    ) async throws where S.Element == VolumeUploadSlice {
+        guard let initialState = viewports[viewport] else {
+            throw EngineError.viewportNotFound(viewport)
+        }
+        let previousHandle = initialState.resourceHandle
+
+        let newHandle = try await resourceManager.acquireFromStream(
+            isolatedTo: self,
+            descriptor: uploadDescriptor,
+            slices: slices,
+            progress: progress
+        )
+
+        guard var currentState = viewports[viewport] else {
+            resourceManager.release(handle: newHandle)
+            throw EngineError.viewportNotFound(viewport)
+        }
+
+        if currentState.resourceHandle != previousHandle {
+            let currentHandle = currentState.resourceHandle
+            if let currentHandle {
+                resourceManager.release(handle: currentHandle)
+            }
+        } else if let previousHandle {
+            resourceManager.release(handle: previousHandle)
+        }
+
+        currentState.resourceHandle = newHandle
+        viewports[viewport] = currentState
+        mprFrameCache.invalidate(viewport)
+    }
+
+    @discardableResult
+    package func setVolume<S: AsyncSequence>(
+        uploadDescriptor: VolumeUploadDescriptor,
+        slices: S,
+        for viewports: [ViewportID],
+        progress: ChunkedVolumeUploader.ProgressHandler? = nil
+    ) async throws -> VolumeResourceHandle? where S.Element == VolumeUploadSlice {
+        guard let replacement = try await beginVolumeReplacement(
+            uploadDescriptor: uploadDescriptor,
+            slices: slices,
+            for: viewports,
+            progress: progress
+        ) else {
+            return nil
+        }
+        commitVolumeReplacement(replacement)
+        return replacement.replacementHandle
+    }
+
+    package func beginVolumeReplacement<S: AsyncSequence>(
+        uploadDescriptor: VolumeUploadDescriptor,
+        slices: S,
+        for viewports: [ViewportID],
+        progress: ChunkedVolumeUploader.ProgressHandler? = nil
+    ) async throws -> VolumeResourceReplacement? where S.Element == VolumeUploadSlice {
+        let uniqueViewports = try validatedUniqueViewports(viewports)
+        guard !uniqueViewports.isEmpty else { return nil }
+        let handle = try await resourceManager.acquireFromStream(
+            isolatedTo: self,
+            descriptor: uploadDescriptor,
+            slices: slices,
+            progress: progress
+        )
+        return try beginVolumeReplacement(handle: handle, for: uniqueViewports)
+    }
+
+    package func beginStreamedVolumeReplacement<S: AsyncSequence>(
+        uploadDescriptor: VolumeUploadDescriptor,
+        slices: S,
+        referenceDataset: VolumeDataset,
+        for viewports: [ViewportID],
+        progress: ChunkedVolumeUploader.ProgressHandler? = nil
+    ) async throws -> (VolumeResourceReplacement, StreamedVolumeResource)?
+        where S.Element == VolumeUploadSlice {
+        let uniqueViewports = try validatedUniqueViewports(viewports)
+        guard !uniqueViewports.isEmpty else { return nil }
+        let handle = try await resourceManager.acquireFromStream(
+            isolatedTo: self,
+            descriptor: uploadDescriptor,
+            slices: slices,
+            progress: progress
+        )
+        let replacement = try beginVolumeReplacement(handle: handle, for: uniqueViewports)
+        do {
+            let resource = try streamedVolumeResource(
+                for: replacement.replacementHandle,
+                descriptor: uploadDescriptor,
+                referenceDataset: referenceDataset
+            )
+            return (replacement, resource)
+        } catch {
+            rollbackVolumeReplacement(replacement)
+            throw error
+        }
+    }
+
+    @discardableResult
+    package func setVolume(_ resource: StreamedVolumeResource,
+                           referenceDataset: VolumeDataset,
+                           for viewports: [ViewportID]) async throws -> VolumeResourceHandle? {
+        guard let replacement = try beginVolumeReplacement(resource,
+                                                            referenceDataset: referenceDataset,
+                                                            for: viewports) else {
+            return nil
+        }
+        commitVolumeReplacement(replacement)
+        return replacement.replacementHandle
+    }
+
+    package func beginVolumeReplacement(
+        _ resource: StreamedVolumeResource,
+        referenceDataset: VolumeDataset,
+        for viewports: [ViewportID]
+    ) throws -> VolumeResourceReplacement? {
+        let uniqueViewports = try validatedUniqueViewports(viewports)
+        guard !uniqueViewports.isEmpty else { return nil }
+        let handle = try resourceManager.acquire(
+            isolatedTo: self,
+            resource: resource,
+            referenceDataset: referenceDataset
+        )
+        return try beginVolumeReplacement(handle: handle, for: uniqueViewports)
+    }
+
+    package func streamedVolumeResource(
+        for handle: VolumeResourceHandle,
+        descriptor: VolumeUploadDescriptor,
+        referenceDataset: VolumeDataset
+    ) throws -> StreamedVolumeResource {
+        guard let texture = resourceManager.texture(for: handle) else {
+            throw EngineError.volumeResourceUnavailable
+        }
+        return try StreamedVolumeResource(texture: texture,
+                                          descriptor: descriptor,
+                                          referenceDataset: referenceDataset)
+    }
+
+    @discardableResult
+    package func setVolume(_ dataset: VolumeDataset,
+                          for viewports: [ViewportID]) async throws -> VolumeResourceHandle? {
+        guard let replacement = try await beginVolumeReplacement(dataset, for: viewports) else {
+            return nil
+        }
+        commitVolumeReplacement(replacement)
+        return replacement.replacementHandle
+    }
+
+    package func beginVolumeReplacement(
+        _ dataset: VolumeDataset,
+        for viewports: [ViewportID]
+    ) async throws -> VolumeResourceReplacement? {
+        let uniqueViewports = try validatedUniqueViewports(viewports)
+        guard !uniqueViewports.isEmpty else { return nil }
+        let handle = try await resourceManager.acquire(
+            isolatedTo: self,
+            dataset: dataset,
+            device: device,
+            commandQueue: commandQueue
+        )
+        return try beginVolumeReplacement(handle: handle, for: uniqueViewports)
+    }
+
+    package func commitVolumeReplacement(_ replacement: VolumeResourceReplacement) {
+        for handle in replacement.previousStates.compactMap(\.state.resourceHandle) {
+            resourceManager.release(handle: handle)
+        }
+    }
+
+    package func rollbackVolumeReplacement(_ replacement: VolumeResourceReplacement) {
+        for previousState in replacement.previousStates {
+            defer { resourceManager.release(handle: replacement.replacementHandle) }
+            guard var state = viewports[previousState.viewport] else {
+                if let previousHandle = previousState.state.resourceHandle {
+                    resourceManager.release(handle: previousHandle)
+                }
+                continue
+            }
+            guard state.resourceHandle == replacement.replacementHandle else {
+                if let previousHandle = previousState.state.resourceHandle {
+                    resourceManager.release(handle: previousHandle)
+                }
+                continue
+            }
+            state = previousState.state
+            viewports[previousState.viewport] = state
+            mprFrameCache.invalidate(previousState.viewport)
+        }
+    }
+
+    private func validatedUniqueViewports(_ requestedViewports: [ViewportID]) throws -> [ViewportID] {
+        var uniqueViewports: [ViewportID] = []
+        var seenViewports = Set<ViewportID>()
+        for viewport in requestedViewports where seenViewports.insert(viewport).inserted {
+            guard viewports[viewport] != nil else {
+                throw EngineError.viewportNotFound(viewport)
+            }
+            uniqueViewports.append(viewport)
+        }
+        return uniqueViewports
+    }
+
+    private func beginVolumeReplacement(
+        handle: VolumeResourceHandle,
+        for uniqueViewports: [ViewportID]
+    ) throws -> VolumeResourceReplacement {
+        for _ in uniqueViewports.dropFirst() {
+            resourceManager.retain(handle: handle)
+        }
+        var didInstallHandle = false
+        defer {
+            if !didInstallHandle {
+                for _ in uniqueViewports {
+                    resourceManager.release(handle: handle)
+                }
+            }
+        }
+
+        let previousStates = try uniqueViewports.map { viewport -> VolumeResourceReplacement.PreviousState in
+            guard let state = viewports[viewport] else {
+                throw EngineError.viewportNotFound(viewport)
+            }
+            return VolumeResourceReplacement.PreviousState(viewport: viewport, state: state)
+        }
+        for viewport in uniqueViewports {
+            viewports[viewport]?.resourceHandle = handle
+            mprFrameCache.invalidate(viewport)
+        }
+        didInstallHandle = true
+        return VolumeResourceReplacement(previousStates: previousStates,
+                                         replacementHandle: handle)
+    }
+
+    package func render(_ viewport: ViewportID) async throws -> RenderFrame {
+        guard let state = viewports[viewport] else {
+            throw EngineError.viewportNotFound(viewport)
+        }
+
+        let routeResolutionStartedAt = profilingOptions.measureRenderTime ? CFAbsoluteTimeGetCurrent() : nil
+        let renderNode: ViewportRenderNode
+        do {
+            renderNode = try routeResolver.resolveNode(
+                viewportID: viewport,
+                viewportType: state.descriptor.type,
+                resourceHandle: state.resourceHandle,
+                using: renderGraph
+            )
+        } catch RenderGraphError.missingResourceHandle {
+            throw EngineError.volumeNotSet(viewport)
+        }
+
+        guard let handle = renderNode.resourceHandle else {
+            throw EngineError.volumeNotSet(viewport)
+        }
+        let dataset = resourceManager.dataset(for: handle)
+        let volumeTexture = resourceManager.texture(for: handle)
+        let transferTextureReady = dataset.map { isTransferTextureReady(for: state,
+                                                                        dataset: $0,
+                                                                        route: renderNode.resolvedRoute) } ?? false
+        do {
+            try routeResolver.validateRequirements(
+                for: renderNode,
+                datasetAvailable: dataset != nil,
+                volumeTextureAvailable: volumeTexture != nil,
+                surfaceAvailable: true,
+                transferTextureAvailable: transferTextureReady,
+                using: renderGraph
+            )
+        } catch RenderGraphError.missingDataset,
+                RenderGraphError.missingVolumeTexture {
+            throw EngineError.volumeResourceUnavailable
+        } catch {
+            throw error
+        }
+        guard let dataset else {
+            throw EngineError.volumeResourceUnavailable
+        }
+        guard let volumeTexture else {
+            throw EngineError.volumeResourceUnavailable
+        }
+
+        let route = renderNode.resolvedRoute
+        profiler.recordRouteResolution(
+            startedAt: routeResolutionStartedAt,
+            route: route,
+            viewportSize: state.currentSize,
+            viewportID: viewport,
+            viewportTypeName: route.viewportType.profilingName,
+            qualityName: state.quality.profilingName,
+            renderModeName: route.compositing?.profilingName ?? state.descriptor.type.renderModeName,
+            options: profilingOptions,
+            device: device
+        )
+
+        let profilingScope = profiler.makeScope(options: profilingOptions)
+        let texture: any MTLTexture
+        let outputTextureLease: OutputTextureLease?
+        let isRaycastFrame: Bool
+        let mprFrame: MPRTextureFrame?
+        let labelmapOverlays: [MPRLabelmapOverlay]
+        let scalarOverlays: [MPRScalarVolumeOverlay]
+        if Logger.performanceLoggingEnabled {
+            let viewportDescription = String(describing: viewport)
+            let viewportType = route.viewportType.profilingName
+            let viewportLabel = state.descriptor.label ?? "nil"
+            let viewportSize = "\(Int(state.currentSize.width))x\(Int(state.currentSize.height))"
+            let message =
+                "Rendering viewport viewportID=\(viewportDescription) route=\(route.profilingName) " +
+                    "viewportType=\(viewportType) viewportLabel=\(viewportLabel) " +
+                    "viewportSize=\(viewportSize) pipeline=\(route.passPipelineName)"
+            logger.info("\(message, privacy: .public)")
+        }
+
+        guard let primaryPass = route.primaryPass else {
+            throw RenderGraphError.unmappedViewportRoute(route.viewportType)
+        }
+
+        switch primaryPass.kind {
+        case .volumeRaycast:
+            isRaycastFrame = true
+            mprFrame = nil
+            labelmapOverlays = []
+            scalarOverlays = []
+            let volumeFrame: RenderPassDispatcher.VolumeRenderFrameResult
+            do {
+                defer {
+                    debugPostAcquireRenderFailure = nil
+                }
+                volumeFrame = try await renderPassDispatcher.renderVolume(
+                    isolatedTo: self,
+                    state: state,
+                    dataset: dataset,
+                    volumeTexture: volumeTexture,
+                    surfaceMeshLayers: state.surfaceMeshLayers,
+                    compositing: primaryPass.compositing ?? route.compositing ?? .frontToBack,
+                    debugPostAcquireRenderFailure: debugPostAcquireRenderFailure
+                )
+            }
+            texture = volumeFrame.texture
+            outputTextureLease = volumeFrame.lease
+            trackPendingOutputTextureLease(volumeFrame.lease, for: viewport)
+
+        case .mprReslice:
+            isRaycastFrame = false
+            let mprResult = try await renderPassDispatcher.renderMPR(
+                isolatedTo: self,
+                viewport: viewport,
+                state: state,
+                axis: primaryPass.axis ?? .axial,
+                dataset: dataset,
+                volumeTexture: volumeTexture,
+                route: route,
+                profilingOptions: profilingOptions
+            )
+            mprFrame = mprResult.frame
+            labelmapOverlays = mprResult.labelmapOverlays
+            scalarOverlays = mprResult.scalarOverlays
+            texture = mprResult.frame.texture
+            outputTextureLease = mprResult.frame.presentationManagedOutputTextureLease
+            if let outputTextureLease {
+                trackPendingOutputTextureLease(outputTextureLease, for: viewport)
+            }
+
+        case .presentation, .mprPresentation, .overlay:
+            throw RenderGraphError.invalidViewportConfiguration(
+                viewport,
+                reason: "Primary render pass cannot be \(primaryPass.kind.profilingName)."
+            )
+        }
+        if texture.width == 0 || texture.height == 0 {
+            throw RenderGraphError.passProducedNoFrame(viewport, primaryPass.kind)
+        }
+
+        profiler.recordMemorySnapshot(
+            resourceManager: resourceManager,
+            route: route,
+            viewportSize: state.currentSize,
+            viewportID: viewport,
+            viewportTypeName: route.viewportType.profilingName,
+            qualityName: state.quality.profilingName,
+            renderModeName: route.compositing?.profilingName ?? state.descriptor.type.renderModeName,
+            options: profilingOptions
+        )
+
+        let renderDuration = profilingScope.renderDuration()
+        let inputs = FrameMetadataBuilder.Inputs(
+            viewportID: viewport,
+            viewportSize: state.currentSize,
+            route: route,
+            texture: texture,
+            mprFrame: mprFrame,
+            labelmapOverlays: labelmapOverlays,
+            scalarOverlays: scalarOverlays,
+            outputTextureLease: outputTextureLease,
+            renderDuration: renderDuration,
+            raycastDuration: isRaycastFrame ? renderDuration : nil,
+            uploadDuration: profilingScope.measureUploadTime ? resourceManager.uploadTime(for: handle) : nil,
+            presentDuration: nil
+        )
+        let frame = metadataBuilder.makeFrame(from: inputs)
+        lastFrameTimings = frame.metadata
+        try renderGraph.validateFrame(frame)
+        return frame
+    }
+
+    package func resize(_ viewport: ViewportID,
+                       to size: CGSize) async throws {
+        guard var state = viewports[viewport] else {
+            throw EngineError.viewportNotFound(viewport)
+        }
+        let snapshot = ViewportLifecycleController.ViewportStateSnapshot(
+            descriptor: state.descriptor,
+            currentSize: state.currentSize
+        )
+        let next = viewportLifecycleController.resized(snapshot, to: size)
+        state.currentSize = next.currentSize
+        viewports[viewport] = state
+        mprFrameCache.invalidate(viewport)
+    }
+
+    package func configure(_ viewport: ViewportID,
+                          type: ViewportType,
+                          label: String? = nil) async throws {
+        guard var state = viewports[viewport] else {
+            throw EngineError.viewportNotFound(viewport)
+        }
+        let snapshot = ViewportLifecycleController.ViewportStateSnapshot(
+            descriptor: state.descriptor,
+            currentSize: state.currentSize
+        )
+        let next = viewportLifecycleController.reconfigured(snapshot,
+                                                           type: type,
+                                                           label: label)
+        guard state.descriptor != next.descriptor else {
+            return
+        }
+        state.descriptor = next.descriptor
+        switch type {
+        case .mpr:
+            break
+        case .volume3D, .projection:
+            state.mprPlaneGeometry = nil
+        }
+        viewports[viewport] = state
+        mprFrameCache.invalidate(viewport)
+    }
+
+    package func configure(_ viewport: ViewportID,
+                          camera: Camera) async throws {
+        guard var state = viewports[viewport] else {
+            throw EngineError.viewportNotFound(viewport)
+        }
+        state.camera = camera
+        viewports[viewport] = state
+    }
+
+    package func configure(_ viewport: ViewportID,
+                          transferFunction: VolumeTransferFunction?) async throws {
+        guard var state = viewports[viewport] else {
+            throw EngineError.viewportNotFound(viewport)
+        }
+        state.transferFunction = transferFunction
+        viewports[viewport] = state
+    }
+
+    package func configure(_ viewport: ViewportID,
+                          volumeLayers: [VolumeLayer]) async throws {
+        try await configure([viewport], volumeLayers: volumeLayers)
+    }
+
+    package func configure(_ viewportIDs: [ViewportID],
+                          volumeLayers: [VolumeLayer]) async throws {
+        var uniqueViewports: [ViewportID] = []
+        var seenViewports = Set<ViewportID>()
+        for viewport in viewportIDs where seenViewports.insert(viewport).inserted {
+            uniqueViewports.append(viewport)
+        }
+        guard !uniqueViewports.isEmpty else { return }
+        for viewport in uniqueViewports {
+            guard viewports[viewport] != nil else {
+                throw EngineError.viewportNotFound(viewport)
+            }
+        }
+
+        let normalizedVolumeLayers = try resampledVolumeLayersIfNeeded(volumeLayers,
+                                                                       for: uniqueViewports)
+        let sharedLayerHandles = try await acquireSharedScalarLayerHandles(
+            for: normalizedVolumeLayers,
+            referenceCount: uniqueViewports.count
+        )
+        var didCommit = false
+        defer {
+            if !didCommit {
+                for _ in uniqueViewports {
+                    releaseVolumeLayerHandles(sharedLayerHandles)
+                }
+            }
+        }
+
+        var previousLayerHandles: [[String: VolumeResourceHandle]] = []
+        var replacements: [(ViewportID, ViewportState)] = []
+        for viewport in uniqueViewports {
+            guard var state = viewports[viewport] else {
+                throw EngineError.viewportNotFound(viewport)
+            }
+            previousLayerHandles.append(state.volumeLayerResourceHandles)
+            state.volumeLayers = normalizedVolumeLayers
+            state.volumeLayerResourceHandles = sharedLayerHandles
+            replacements.append((viewport, state))
+        }
+
+        for (viewport, state) in replacements {
+            viewports[viewport] = state
+        }
+        for handles in previousLayerHandles {
+            releaseVolumeLayerHandles(handles)
+        }
+        didCommit = true
+    }
+
+    package func configure(_ viewport: ViewportID,
+                          surfaceMeshLayers: [SurfaceMeshLayer]) async throws {
+        guard var state = viewports[viewport] else {
+            throw EngineError.viewportNotFound(viewport)
+        }
+        state.surfaceMeshLayers = surfaceMeshLayers
+        viewports[viewport] = state
+    }
+
+    package func configure(_ viewport: ViewportID,
+                          clipping: VolumeClippingState) async throws {
+        guard var state = viewports[viewport] else {
+            throw EngineError.viewportNotFound(viewport)
+        }
+        state.clipping = clipping
+        viewports[viewport] = state
+    }
+
+    package func configure(_ viewport: ViewportID,
+                          slicePosition: Float,
+                          window: ClosedRange<Int32>?) async throws {
+        guard var state = viewports[viewport] else {
+            throw EngineError.viewportNotFound(viewport)
+        }
+        let clampedSlicePosition = VolumetricMath.clampFloat(slicePosition, lower: 0, upper: 1)
+        if state.slicePosition != clampedSlicePosition {
+            mprFrameCache.invalidate(viewport)
+        }
+        state.slicePosition = clampedSlicePosition
+        state.window = window
+        viewports[viewport] = state
+    }
+
+    package func configure(_ viewport: ViewportID,
+                          mprPlaneGeometry: MPRPlaneGeometry?) async throws {
+        guard var state = viewports[viewport] else {
+            throw EngineError.viewportNotFound(viewport)
+        }
+        if state.mprPlaneGeometry != mprPlaneGeometry {
+            mprFrameCache.invalidate(viewport)
+        }
+        state.mprPlaneGeometry = mprPlaneGeometry
+        viewports[viewport] = state
+    }
+
+    package func configure(_ viewport: ViewportID,
+                          window: ClosedRange<Int32>?) async throws {
+        guard var state = viewports[viewport] else {
+            throw EngineError.viewportNotFound(viewport)
+        }
+        state.window = window
+        viewports[viewport] = state
+    }
+
+    package func configure(_ viewport: ViewportID,
+                          slabThickness: Int,
+                          slabSteps: Int,
+                          blend: MPRBlendMode? = nil) async throws {
+        guard var state = viewports[viewport] else {
+            throw EngineError.viewportNotFound(viewport)
+        }
+        let sanitizedThickness = VolumetricMath.sanitizeThickness(slabThickness)
+        let sanitizedSteps = VolumetricMath.sanitizeSteps(slabSteps)
+        let resolvedBlend = blend ?? state.mprBlend
+        if state.slabThickness != sanitizedThickness ||
+            state.slabSteps != sanitizedSteps ||
+            state.mprBlend != resolvedBlend {
+            mprFrameCache.invalidate(viewport)
+        }
+        state.slabThickness = sanitizedThickness
+        state.slabSteps = sanitizedSteps
+        state.mprBlend = resolvedBlend
+        viewports[viewport] = state
+    }
+
+    package func configure(_ viewport: ViewportID,
+                          samplingDistance: Float,
+                          quality: VolumeRenderRequest.Quality,
+                          renderQualitySettings: VolumeRenderQualitySettings? = nil) async throws {
+        guard var state = viewports[viewport] else {
+            throw EngineError.viewportNotFound(viewport)
+        }
+        state.samplingDistance = max(samplingDistance, Float.leastNonzeroMagnitude)
+        state.quality = quality
+        if let renderQualitySettings {
+            state.renderQualitySettings = renderQualitySettings.sanitized
+        }
+        viewports[viewport] = state
+    }
+
+    package func configure(_ viewport: ViewportID,
+                          renderQualitySettings: VolumeRenderQualitySettings) async throws {
+        guard var state = viewports[viewport] else {
+            throw EngineError.viewportNotFound(viewport)
+        }
+        state.renderQualitySettings = renderQualitySettings.sanitized
+        viewports[viewport] = state
+    }
+
+    package func setProfilingOptions(_ options: ProfilingOptions) async {
+        profilingOptions = options
+    }
+
+    package var estimatedGPUMemoryBytes: Int {
+        resourceManager.estimatedGPUMemoryBytes
+    }
+
+    package func resourceMetrics() async -> GPUResourceMetrics {
+        resourceManager.resourceMetrics()
+    }
+
+    package func gpuResourceMetrics() async -> GPUResourceMetrics {
+        await resourceMetrics()
+    }
+
+    package func lastFrameMetadata() async -> FrameMetadata? {
+        lastFrameTimings
+    }
+
+    package func volumeTextureLabel(for viewport: ViewportID) async -> String? {
+        guard let handle = viewports[viewport]?.resourceHandle,
+              let texture = resourceManager.texture(for: handle) else {
+            return nil
+        }
+        return texture.label
+    }
+
+    package func viewportType(for viewport: ViewportID) async throws -> ViewportType {
+        guard let state = viewports[viewport] else {
+            throw EngineError.viewportNotFound(viewport)
+        }
+        return state.descriptor.type
+    }
+
+#if DEBUG
+    package func resourceSharingDiagnostics(for viewports: [ViewportID]) async -> [ViewportResourceDiagnostic] {
+        viewports.compactMap { viewport in
+            guard let handle = self.viewports[viewport]?.resourceHandle,
+                  let textureIdentifier = resourceManager.debugTextureObjectIdentifier(for: handle)
+            else {
+                return nil
+            }
+            return ViewportResourceDiagnostic(viewportID: viewport,
+                                              handle: handle,
+                                              metadata: handle.metadata,
+                                              textureObjectIdentifier: String(describing: textureIdentifier))
+        }
+    }
+
+    package func volumeLayerResourceSharingDiagnostics(for viewports: [ViewportID]) async -> [ViewportLayerResourceDiagnostic] {
+        viewports.flatMap { viewport -> [ViewportLayerResourceDiagnostic] in
+            guard let handles = self.viewports[viewport]?.volumeLayerResourceHandles else {
+                return []
+            }
+            return handles.compactMap { layerID, handle in
+                guard let textureIdentifier = resourceManager.debugTextureObjectIdentifier(for: handle) else {
+                    return nil
+                }
+                return ViewportLayerResourceDiagnostic(viewportID: viewport,
+                                                       layerID: layerID,
+                                                       handle: handle,
+                                                       metadata: handle.metadata,
+                                                       textureObjectIdentifier: String(describing: textureIdentifier))
+            }
+        }
+    }
+#endif
+}
+
+#if DEBUG
+package struct ViewportResourceDiagnostic: Sendable, Equatable {
+    package let viewportID: ViewportID
+    package let handle: VolumeResourceHandle
+    package let metadata: VolumeResourceHandle.Metadata
+    package let textureObjectIdentifier: String
+
+    package init(viewportID: ViewportID,
+                handle: VolumeResourceHandle,
+                metadata: VolumeResourceHandle.Metadata,
+                textureObjectIdentifier: String) {
+        self.viewportID = viewportID
+        self.handle = handle
+        self.metadata = metadata
+        self.textureObjectIdentifier = textureObjectIdentifier
+    }
+}
+
+package struct ViewportLayerResourceDiagnostic: Sendable, Equatable {
+    package let viewportID: ViewportID
+    package let layerID: String
+    package let handle: VolumeResourceHandle
+    package let metadata: VolumeResourceHandle.Metadata
+    package let textureObjectIdentifier: String
+
+    package init(viewportID: ViewportID,
+                layerID: String,
+                handle: VolumeResourceHandle,
+                metadata: VolumeResourceHandle.Metadata,
+                textureObjectIdentifier: String) {
+        self.viewportID = viewportID
+        self.layerID = layerID
+        self.handle = handle
+        self.metadata = metadata
+        self.textureObjectIdentifier = textureObjectIdentifier
+    }
+}
+#endif
+
+private extension MTKRenderingEngine {
+    func resampledVolumeLayersIfNeeded(_ layers: [VolumeLayer],
+                                       for viewportIDs: [ViewportID]) throws -> [VolumeLayer] {
+        guard let transformedLayer = layers.first(where: { layer in
+            guard layer.isVisible,
+                  layer.clampedOpacity > 0,
+                  layer.scalarVolume != nil else {
+                return false
+            }
+            return !LayerTransform(baseWorldToLayerWorld: layer.baseWorldToLayerWorld).isApproximatelyIdentity
+        }) else {
+            return layers
+        }
+
+        var baseDataset: VolumeDataset?
+        var baseIdentity: DatasetIdentity.Content?
+        for viewport in viewportIDs {
+            guard let state = viewports[viewport] else {
+                throw EngineError.viewportNotFound(viewport)
+            }
+            guard let handle = state.resourceHandle,
+                  let dataset = resourceManager.dataset(for: handle) else {
+                throw EngineError.volumeNotSet(viewport)
+            }
+            let identity = DatasetIdentity.Content(dataset: dataset)
+            if let baseIdentity, baseIdentity != identity {
+                throw EngineError.unsupportedScalarLayerTransform(transformedLayer.id)
+            }
+            baseDataset = dataset
+            baseIdentity = identity
+        }
+
+        guard let baseDataset else { return layers }
+        return try layers.map { layer in
+            guard layer.isVisible,
+                  layer.clampedOpacity > 0,
+                  layer.scalarVolume != nil else {
+                return layer
+            }
+            do {
+                return try RegisteredVolumeLayerResampler.resampledLayer(layer, into: baseDataset)
+            } catch RegisteredVolumeLayerResamplingError.unsupportedTransform {
+                throw EngineError.unsupportedScalarLayerTransform(layer.id)
+            }
+        }
+    }
+
+    func acquireSharedScalarLayerHandles(for layers: [VolumeLayer],
+                                         referenceCount: Int) async throws -> [String: VolumeResourceHandle] {
+        guard referenceCount > 0 else { return [:] }
+        let scalarLayers = try visibleScalarLayersRequiringResources(from: layers)
+        var handles: [String: VolumeResourceHandle] = [:]
+        do {
+            for layer in scalarLayers where handles[layer.id] == nil {
+                guard let scalarVolume = layer.scalarVolume else { continue }
+                let handle = try await resourceManager.acquire(
+                    isolatedTo: self,
+                    dataset: scalarVolume.dataset,
+                    device: device,
+                    commandQueue: commandQueue
+                )
+                if referenceCount > 1 {
+                    for _ in 1..<referenceCount {
+                        resourceManager.retain(handle: handle)
+                    }
+                }
+                handles[layer.id] = handle
+            }
+            return handles
+        } catch {
+            for _ in 0..<referenceCount {
+                releaseVolumeLayerHandles(handles)
+            }
+            throw error
+        }
+    }
+
+    func visibleScalarLayersRequiringResources(from layers: [VolumeLayer]) throws -> [VolumeLayer] {
+        try layers.compactMap { layer in
+            guard layer.isVisible,
+                  layer.clampedOpacity > 0,
+                  layer.scalarVolume != nil else {
+                return nil
+            }
+            guard LayerTransform(baseWorldToLayerWorld: layer.baseWorldToLayerWorld).isApproximatelyIdentity else {
+                throw EngineError.unsupportedScalarLayerTransform(layer.id)
+            }
+            return layer
+        }
+    }
+
+    func releaseVolumeLayerHandles(_ handles: [String: VolumeResourceHandle]) {
+        for handle in handles.values {
+            resourceManager.release(handle: handle)
+        }
+    }
+
+    func trackPendingOutputTextureLease(_ lease: OutputTextureLease,
+                                        for viewport: ViewportID) {
+        reapPendingOutputTextureLeases(for: viewport)
+
+        let leaseID = ObjectIdentifier(lease as AnyObject)
+        var leases = pendingOutputTextureLeases[viewport] ?? [:]
+        leases[leaseID] = WeakOutputTextureLeaseBox(lease)
+        pendingOutputTextureLeases[viewport] = leases
+        logger.debug("Tracked output texture lease viewport=\(String(describing: viewport)) pendingLeaseCount=\(leases.count)")
+    }
+
+    func reapPendingOutputTextureLeases(for viewport: ViewportID) {
+        guard let leases = pendingOutputTextureLeases[viewport] else {
+            return
+        }
+
+        let liveLeases = leases.filter { _, box in
+            guard let lease = box.lease else { return false }
+            return !lease.isReleased
+        }
+
+        if liveLeases.isEmpty {
+            pendingOutputTextureLeases[viewport] = nil
+        } else {
+            pendingOutputTextureLeases[viewport] = liveLeases
+        }
+    }
+
+    func releasePendingOutputTextureLeases(for viewport: ViewportID) {
+        reapPendingOutputTextureLeases(for: viewport)
+        guard let leases = pendingOutputTextureLeases.removeValue(forKey: viewport) else {
+            return
+        }
+
+        for box in leases.values {
+            box.lease?.release()
+        }
+        logger.debug("Released pending output texture leases viewport=\(String(describing: viewport)) releasedLeaseCount=\(leases.count)")
+    }
+
+    func isTransferTextureReady(for state: ViewportState,
+                                dataset: VolumeDataset,
+                                route: RenderRoute) -> Bool {
+        guard route.passPipeline.contains(where: { $0.kind == .volumeRaycast || $0.inputDependencies.contains(.transferTexture) }) else {
+            return true
+        }
+
+        let transferFunction = state.transferFunction ?? .defaultGrayscale(for: dataset)
+        return !transferFunction.colourPoints.isEmpty && !transferFunction.opacityPoints.isEmpty
+    }
+}
+
+extension MTKRenderingEngine {
+    package var debugViewportCount: Int {
+        viewports.count
+    }
+
+    #if DEBUG
+    package var debugResourceTextureCount: Int {
+        resourceManager.debugTextureCount
+    }
+
+    package var debugVolumeUploadCounts: (textureCreates: Int, cacheHits: Int) {
+        (resourceManager.debugCounters.volumeTextureCreates,
+         resourceManager.debugCounters.volumeCacheHits)
+    }
+
+    package var debugResourceReferenceCount: Int {
+        resourceManager.debugTotalReferenceCount
+    }
+
+    package var debugMemoryBreakdown: ResourceMemoryBreakdown {
+        resourceManager.debugMemoryBreakdown
+    }
+
+    package var debugOutputPoolTextureCount: Int {
+        resourceManager.debugOutputPoolTextureCount
+    }
+
+    package var debugOutputPoolInUseCount: Int {
+        resourceManager.debugOutputPoolInUseCount
+    }
+
+    package var debugOutputTextureLeaseAcquiredCount: Int {
+        resourceManager.debugOutputTextureLeaseAcquiredCount
+    }
+
+    package var debugOutputTextureLeasePresentedCount: Int {
+        resourceManager.debugOutputTextureLeasePresentedCount
+    }
+
+    package var debugOutputTextureLeaseReleasedCount: Int {
+        resourceManager.debugOutputTextureLeaseReleasedCount
+    }
+
+    package var debugOutputTextureLeasePendingCount: Int {
+        resourceManager.debugOutputTextureLeasePendingCount
+    }
+    #endif
+
+    package func debugAcquireOutputTextureIdentifier(width: Int,
+                                                    height: Int,
+                                                    pixelFormat: MTLPixelFormat,
+                                                    releaseImmediately: Bool = false) throws -> ObjectIdentifier {
+        let texture = try resourceManager.acquireOutputTexture(width: width,
+                                                               height: height,
+                                                               pixelFormat: pixelFormat)
+        let identifier = ObjectIdentifier(texture as AnyObject)
+        if releaseImmediately {
+            resourceManager.releaseOutputTexture(texture)
+        }
+        return identifier
+    }
+
+    package var debugLastFrameTimings: FrameMetadata? {
+        lastFrameTimings
+    }
+
+    package var debugVolumeFrameSubmissionCount: Int {
+        renderPassDispatcher.debugVolumeFrameSubmissionCount
+    }
+
+    package var debugLastVolumeFrameEncoderCount: Int {
+        renderPassDispatcher.debugLastVolumeFrameEncoderCount
+    }
+
+    package var debugVolumeWindowCommandCount: Int? {
+        get async {
+            await renderPassDispatcher.debugVolumeWindowCommandCount(isolatedTo: self)
+        }
+    }
+
+    package func debugDescriptor(for viewport: ViewportID) -> ViewportDescriptor? {
+        viewports[viewport]?.descriptor
+    }
+
+    package func debugCurrentSize(for viewport: ViewportID) -> CGSize? {
+        viewports[viewport]?.currentSize
+    }
+
+    #if DEBUG
+    package func debugTextureObjectIdentifier(for viewport: ViewportID) -> ObjectIdentifier? {
+        guard let handle = viewports[viewport]?.resourceHandle else { return nil }
+        return resourceManager.debugTextureObjectIdentifier(for: handle)
+    }
+    #endif
+
+    package func debugMPRFrameTextureObjectIdentifier(for viewport: ViewportID) async -> ObjectIdentifier? {
+        guard let texture = mprFrameCache.storedFrame(for: viewport)?.texture else { return nil }
+        return ObjectIdentifier(texture as AnyObject)
+    }
+
+    package func debugMPRFrameSignature(for viewport: ViewportID) -> MPRFrameSignature? {
+        mprFrameCache.storedSignature(for: viewport)
+    }
+
+    package func debugMPRPlaneGeometry(for viewport: ViewportID) -> MPRPlaneGeometry? {
+        viewports[viewport]?.mprPlaneGeometry
+    }
+
+    package func debugResourceMetadata(for viewport: ViewportID) -> VolumeResourceHandle.Metadata? {
+        guard let handle = viewports[viewport]?.resourceHandle else { return nil }
+        return resourceManager.metadata(for: handle)
+    }
+
+    package func debugResourceHandle(for viewport: ViewportID) -> VolumeResourceHandle? {
+        viewports[viewport]?.resourceHandle
+    }
+
+    package func debugWindow(for viewport: ViewportID) -> ClosedRange<Int32>? {
+        viewports[viewport]?.window
+    }
+
+    package func debugVolumeLayers(for viewport: ViewportID) -> [VolumeLayer]? {
+        viewports[viewport]?.volumeLayers
+    }
+
+    package func debugSurfaceMeshLayers(for viewport: ViewportID) -> [SurfaceMeshLayer]? {
+        viewports[viewport]?.surfaceMeshLayers
+    }
+
+    package func debugSlicePosition(for viewport: ViewportID) -> Float? {
+        viewports[viewport]?.slicePosition
+    }
+
+    package func debugSlabConfiguration(for viewport: ViewportID) -> (thickness: Int, steps: Int, blend: MPRBlendMode)? {
+        guard let state = viewports[viewport] else { return nil }
+        return (state.slabThickness, state.slabSteps, state.mprBlend)
+    }
+
+    package func debugRenderQuality(for viewport: ViewportID) -> (samplingDistance: Float, quality: VolumeRenderRequest.Quality)? {
+        guard let state = viewports[viewport] else { return nil }
+        return (state.samplingDistance, state.quality)
+    }
+
+    package func debugCamera(for viewport: ViewportID) -> Camera? {
+        viewports[viewport]?.camera
+    }
+
+    package func debugRenderRoute(for viewport: ViewportID) throws -> RenderRoute? {
+        guard let state = viewports[viewport] else { return nil }
+        return renderGraph.resolveRoute(for: state.descriptor.type)
+    }
+
+    package func debugFailNextVolumeRenderAfterOutputLeaseAcquire(
+        with error: MetalVolumeRenderingAdapter.RenderingError = .commandEncodingFailed
+    ) {
+        debugPostAcquireRenderFailure = error
+    }
+}

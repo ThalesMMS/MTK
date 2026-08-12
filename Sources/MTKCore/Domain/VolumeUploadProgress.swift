@@ -1,0 +1,97 @@
+//
+//  VolumeUploadProgress.swift
+//  MTKCore
+//
+//  Progress and metric types for chunked GPU volume upload.
+//
+//  Thales Matheus Mendonça Santos — April 2026
+//
+
+import Foundation
+
+public typealias VolumeUploadProgressHandler = @MainActor @Sendable (VolumeUploadProgress) -> Void
+
+public struct VolumeUploadMetrics: Sendable, Equatable {
+    public let uploadTimeSeconds: Double
+    public let peakMemoryBytes: Int
+    public let slicesProcessed: Int
+
+    public init(uploadTimeSeconds: Double,
+                peakMemoryBytes: Int,
+                slicesProcessed: Int) {
+        self.uploadTimeSeconds = uploadTimeSeconds
+        self.peakMemoryBytes = peakMemoryBytes
+        self.slicesProcessed = slicesProcessed
+    }
+}
+
+public enum VolumeUploadProgress: Sendable, Equatable {
+    case started(totalSlices: Int)
+    case uploadingSlice(current: Int, total: Int)
+    case processingHistogram
+    case completed(metrics: VolumeUploadMetrics)
+}
+
+public struct VolumeUploadSlice: Sendable, Equatable {
+    public let index: Int
+    public let data: Data
+    public let slope: Double
+    public let intercept: Double
+    public let minClamp: Int32
+    public let maxClamp: Int32
+
+    public init(index: Int,
+                data: Data,
+                slope: Double = 1,
+                intercept: Double = 0,
+                minClamp: Int32 = Int32(Int16.min),
+                maxClamp: Int32 = Int32(Int16.max)) {
+        self.index = index
+        self.data = data
+        self.slope = slope
+        self.intercept = intercept
+        self.minClamp = minClamp
+        self.maxClamp = maxClamp
+    }
+}
+
+public struct VolumeUploadDescriptor: Sendable, Equatable {
+    public let dimensions: VolumeDimensions
+    public let spacing: VolumeSpacing
+    public let sourcePixelFormat: VolumePixelFormat
+    public let intensityRange: ClosedRange<Int32>
+    public let orientation: VolumeOrientation
+    public let recommendedWindow: ClosedRange<Int32>?
+    /// Stable identity for the stream's voxel content and per-slice conversion metadata.
+    /// Reuse a value only while both remain unchanged.
+    public let cacheKey: String?
+    public let clinicalMetadata: ClinicalImageMetadata?
+
+    public init(dimensions: VolumeDimensions,
+                spacing: VolumeSpacing,
+                sourcePixelFormat: VolumePixelFormat,
+                intensityRange: ClosedRange<Int32>? = nil,
+                orientation: VolumeOrientation = .canonical,
+                recommendedWindow: ClosedRange<Int32>? = nil,
+                cacheKey: String? = nil,
+                clinicalMetadata: ClinicalImageMetadata? = nil) {
+        self.dimensions = dimensions
+        self.spacing = spacing
+        self.sourcePixelFormat = sourcePixelFormat
+        self.intensityRange = intensityRange ?? Int32(Int16.min)...Int32(Int16.max)
+        self.orientation = orientation
+        self.recommendedWindow = recommendedWindow
+        self.cacheKey = cacheKey
+        self.clinicalMetadata = clinicalMetadata
+    }
+
+    public var imageData: ImageData3D {
+        ImageData3D(dimensions: dimensions,
+                    spacing: spacing,
+                    orientation: orientation,
+                    pixelFormat: .int16Signed,
+                    intensityRange: intensityRange,
+                    recommendedWindow: recommendedWindow,
+                    clinicalMetadata: clinicalMetadata)
+    }
+}

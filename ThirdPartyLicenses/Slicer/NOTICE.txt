@@ -1,0 +1,17 @@
+3D Slicer volume rendering presets
+
+All or portions of this licensed product (such portions are the "Software") have been obtained under license from The Brigham and Women's Hospital, Inc. and are subject to the following terms and conditions: the 3D Slicer Contribution and Software License Agreement in License.txt beside this notice (Part B is the license under which these presets are used).
+
+Source: https://github.com/Slicer/Slicer/blob/main/Modules/Loadable/VolumeRendering/Resources/presets.xml
+The files below hold 3D Slicer presets in MTK's transfer function format (ct_arteries.tf rounds CT-Coronary-Arteries-2).
+The 3D Slicer license states that the Software was designed for research purposes only and that clinical applications
+are neither recommended nor advised.
+
+Sources/MTKCore/Resources/TransferFunctions/ct_cardiac.tf
+Sources/MTKCore/Resources/TransferFunctions/ct_chest_contrast.tf
+Sources/MTKCore/Resources/TransferFunctions/ct_fat.tf
+Sources/MTKCore/Resources/TransferFunctions/ct_liver_vasculature.tf
+Sources/MTKCore/Resources/TransferFunctions/ct_pulmonary_arteries.tf
+Sources/MTKCore/Resources/TransferFunctions/mr_angio.tf
+Sources/MTKCore/Resources/TransferFunctions/mr_t2_brain.tf
+Sources/MTKCore/Resources/TransferFunctions/ct_arteries.tf

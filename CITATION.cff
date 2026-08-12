@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use this software in research, please cite it using the metadata below."
+title: "MTK"
+type: software
+authors:
+  - family-names: "Santos"
+    given-names: "Thales Matheus Mendonça"
+repository-code: "https://github.com/ThalesMMS/MTK"
+url: "https://github.com/ThalesMMS/MTK"
+abstract: >-
+  Swift package for research and prototyping workflows around volumetric
+  medical-image rendering, multi-planar reconstruction, transfer functions,
+  and DICOM volume loading on Apple platforms.
+license: "Apache-2.0"
+keywords:
+  - "medical imaging"
+  - "volume rendering"
+  - "DICOM"
+  - "Swift"
+  - "Metal"

@@ -1,0 +1,907 @@
+//
+//  MetalVolumeRenderingAdapter.swift
+//  MTKCore
+//
+//  Volume rendering adapter backed exclusively by Metal compute. Metal resource setup
+//  failures are surfaced explicitly during initialization.
+//
+//  Thales Matheus Mendonça Santos — October 2025
+//
+
+import Foundation
+import Metal
+import OSLog
+
+/// Metal ray marching renderer backed exclusively by Metal compute.
+///
+/// `MetalVolumeRenderingAdapter` is the primary interface for volumetric rendering in MTK.
+/// This adapter uses Metal for rendering and opportunistically uses Metal Performance
+/// Shaders to build empty-space acceleration for DVR. Metal device,
+/// command queue, shader library, compute pipeline, and buffer allocation failures
+/// are reported as explicit errors instead of being hidden behind another backend.
+///
+/// Empty-space acceleration is optional: unsupported devices and generation failures
+/// continue through the baseline Metal raymarch path.
+///
+/// ## Overview
+///
+/// The adapter implements the ``VolumeRenderingPort`` protocol, providing:
+/// - Direct Volume Rendering (DVR) with multiple compositing modes
+/// - CPU histogram helper for windowing workflows
+/// - Advanced tone curve and transfer function support
+/// - Diagnostic logging for debugging rendering issues
+///
+/// ## Usage
+///
+/// ```swift
+/// let adapter = try MetalVolumeRenderingAdapter()
+/// adapter.enableDiagnosticLogging(true)
+///
+/// let request = VolumeRenderRequest(
+///     dataset: dataset,
+///     camera: camera,
+///     viewportSize: (width: 512, height: 512),
+///     compositing: .frontToBack,
+///     transferFunction: transferFunction
+/// )
+///
+/// let frame = try await adapter.renderFrame(using: request)
+/// let texture = frame.texture
+/// ```
+///
+/// ## Topics
+///
+/// ### Creating an Adapter
+/// - ``init(debugOptions:)``
+/// - ``init(device:commandQueue:library:debugOptions:)``
+///
+/// ### Rendering
+/// - ``renderFrame(using:)``
+/// - ``updatePreset(_:for:)``
+///
+/// ### Configuration
+/// - ``send(_:)``
+/// - ``enableDiagnosticLogging(_:)``
+///
+/// ### Histogram
+/// - ``refreshHistogram(for:descriptor:transferFunction:)``
+///
+/// ### Error Types
+/// - ``AdapterError``
+/// - ``InitializationError``
+/// - ``RenderingError``
+///
+/// ### Supporting Types
+/// - ``Overrides``
+/// - ``RenderSnapshot``
+public actor MetalVolumeRenderingAdapter: VolumeRenderingPort {
+    private typealias ArgumentIndex = ArgumentEncoderManager.ArgumentIndex
+
+    let logger = Logger(subsystem: "com.mtk.volumerendering",
+                        category: "MetalVolumeRenderingAdapter")
+    var overrides = Overrides()
+    internal var extendedState = ExtendedRenderingState()
+    var currentPreset: VolumeRenderingPreset?
+    var currentPresetDatasetIdentity: DatasetIdentity.CachedContent?
+    var lastSnapshot: RenderSnapshot?
+    let metalState: MetalState
+    var diagnosticLoggingEnabled: Bool = false
+    var clipPlaneApproximationLogged = false
+    var windowCommandCount = 0
+
+    final class MetalState: @unchecked Sendable {
+        struct TransferCache {
+            var transfer: VolumeTransferFunction
+            var intensityRange: ClosedRange<Int32>
+            var shift: Float
+            var texture: any MTLTexture
+        }
+
+        struct AccelerationCache {
+            var datasetIdentity: DatasetIdentity.Content
+            var texture: (any MTLTexture)?
+        }
+
+        struct ToneBufferCacheEntry {
+            var points: [SIMD2<Float>]
+            var gain: Float
+            var buffer: any MTLBuffer
+        }
+
+        struct LayerStackScratchTextureCache {
+            var width: Int
+            var height: Int
+            var textures: [any MTLTexture]
+        }
+
+        actor LayerStackRenderLock {
+            private struct Waiter {
+                let id: UInt64
+                let continuation: CheckedContinuation<Void, any Error>
+            }
+
+            private var isLocked = false
+            private var waiters: [Waiter] = []
+            private var nextWaiterID: UInt64 = 0
+
+            func acquire() async throws {
+                try Task.checkCancellation()
+                if !isLocked {
+                    isLocked = true
+                    return
+                }
+
+                let id = nextWaiterID
+                nextWaiterID &+= 1
+
+                try await withTaskCancellationHandler {
+                    try await withCheckedThrowingContinuation { continuation in
+                        waiters.append(Waiter(id: id, continuation: continuation))
+                    }
+                } onCancel: {
+                    Task {
+                        await self.cancelWaiter(id)
+                    }
+                }
+            }
+
+            private func cancelWaiter(_ id: UInt64) {
+                guard let index = waiters.firstIndex(where: { $0.id == id }) else {
+                    return
+                }
+                let waiter = waiters.remove(at: index)
+                waiter.continuation.resume(throwing: CancellationError())
+            }
+
+            func release() {
+                guard !waiters.isEmpty else {
+                    isLocked = false
+                    return
+                }
+
+                let waiter = waiters.removeFirst()
+                waiter.continuation.resume()
+            }
+        }
+
+        let device: any MTLDevice
+        let commandQueue: any MTLCommandQueue
+        let raycastPass: VolumeRaycastPass
+        let library: any MTLLibrary
+        let debugOptions: VolumeRenderingDebugOptions
+        let emptySpaceAccelerator: MPSEmptySpaceAccelerator?
+        var datasetIdentity: DatasetIdentity.Storage?
+        var datasetContentIdentity: DatasetIdentity.Content?
+        var volumeTexture: (any MTLTexture)?
+        var transferCache: TransferCache?
+        var accelerationCache: AccelerationCache?
+        var accelerationCaches: [DatasetIdentity.Content: any MTLTexture] = [:]
+        var accelerationCacheOrder: [DatasetIdentity.Content] = []
+        let accelerationCacheLimit = 4
+        var accelerationBuildCount = 0
+        var lastRequestedOptionValue: UInt16 = 0
+        var toneBufferCache: [Int: ToneBufferCacheEntry] = [:]
+        var interactiveOutputTexture: (any MTLTexture)?
+        let interactiveOutputPool: MetalInteractiveOutputTexturePool
+        let layerStackRenderLock = LayerStackRenderLock()
+        let registeredLayerResampleCache = RegisteredVolumeLayerResampleCache()
+        var layerCompositePass: VolumeLayerCompositePass?
+        var layerStackScratchTextureCache: LayerStackScratchTextureCache?
+        var layerCompositePassCreationCount = 0
+        var layerStackScratchTextureAllocationCount = 0
+        var frameIndex: UInt32 = 0
+        var frameRaycastPasses: [VolumeRaycastPass] = []
+
+        init(device: any MTLDevice,
+             commandQueue: any MTLCommandQueue,
+             raycastPass: VolumeRaycastPass,
+             library: any MTLLibrary,
+             debugOptions: VolumeRenderingDebugOptions) {
+            self.device = device
+            self.commandQueue = commandQueue
+            self.raycastPass = raycastPass
+            self.library = library
+            self.debugOptions = debugOptions
+            switch MPSEmptySpaceAccelerator.create(device: device,
+                                                   commandQueue: commandQueue,
+                                                   library: library) {
+            case .success(let accelerator):
+                self.emptySpaceAccelerator = accelerator
+            case .unavailable:
+                self.emptySpaceAccelerator = nil
+            }
+            self.interactiveOutputPool = MetalInteractiveOutputTexturePool(capacity: 3)
+        }
+
+        func frameRaycastPass(at index: Int) throws -> VolumeRaycastPass {
+            while frameRaycastPasses.count <= index {
+                frameRaycastPasses.append(
+                    try VolumeRaycastPass(device: device,
+                                          library: library,
+                                          debugOptions: debugOptions)
+                )
+            }
+            return frameRaycastPasses[index]
+        }
+
+        var argumentManager: ArgumentEncoderManager {
+            raycastPass.argumentManager
+        }
+
+        func cachedLayerCompositePass() throws -> VolumeLayerCompositePass {
+            if let layerCompositePass {
+                return layerCompositePass
+            }
+            let pass = try VolumeLayerCompositePass(device: device)
+            layerCompositePass = pass
+            layerCompositePassCreationCount += 1
+            return pass
+        }
+
+        func layerStackScratchTextures(width: Int,
+                                       height: Int,
+                                       count: Int) throws -> [any MTLTexture] {
+            if layerStackScratchTextureCache?.width != width ||
+                layerStackScratchTextureCache?.height != height {
+                layerStackScratchTextureCache = LayerStackScratchTextureCache(width: width,
+                                                                              height: height,
+                                                                              textures: [])
+            }
+
+            var cache = layerStackScratchTextureCache ?? LayerStackScratchTextureCache(width: width,
+                                                                                       height: height,
+                                                                                       textures: [])
+            while cache.textures.count < count {
+                guard let texture = OutputTextureFactory.makeTexture(
+                    device: device,
+                    width: width,
+                    height: height,
+                    label: "VolumeCompute.LayerStackScratch\(cache.textures.count)"
+                ) else {
+                    throw RenderingError.outputTextureUnavailable
+                }
+                cache.textures.append(texture)
+                layerStackScratchTextureAllocationCount += 1
+            }
+            layerStackScratchTextureCache = cache
+            return Array(cache.textures.prefix(count))
+        }
+    }
+
+    /// Creates a new Metal-backed volume rendering adapter using the system default device.
+    ///
+    /// Use this convenience initializer when the caller does not need to inject a specific
+    /// `MTLDevice`, command queue, or shader library. If the system cannot provide a Metal
+    /// device, the initializer throws ``InitializationError/metalDeviceUnavailable``.
+    ///
+    /// - Parameter debugOptions: Debug configuration options for logging and validation.
+    /// - Throws: ``InitializationError/metalDeviceUnavailable`` when `MTLCreateSystemDefaultDevice()`
+    ///   returns `nil`, or any error thrown by ``init(device:commandQueue:library:debugOptions:)``.
+    public init(debugOptions: VolumeRenderingDebugOptions = VolumeRenderingDebugOptions()) throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw InitializationError.metalDeviceUnavailable
+        }
+        try self.init(device: device, debugOptions: debugOptions)
+    }
+
+    /// Creates a new Metal-backed volume rendering adapter.
+    ///
+    /// This initializer configures the adapter to use Metal compute shaders for
+    /// high-performance volume rendering. If the required Metal resources cannot be
+    /// initialized, the initializer throws explicit initialization errors.
+    ///
+    /// - Parameters:
+    ///   - device: Metal device for GPU compute operations.
+    ///   - commandQueue: Optional command queue. If `nil`, a new queue is created from the device.
+    ///   - library: Optional Metal shader library. If `nil`, loads `MTK.metallib` from `Bundle.module`.
+    ///   - debugOptions: Debug configuration options for logging and validation.
+    ///
+    /// - Throws: ``InitializationError/commandQueueCreationFailed`` when a command queue cannot be
+    ///   created, ``InitializationError/commandQueueDeviceMismatch`` when an injected command queue
+    ///   belongs to another device, ``InitializationError/shaderLibraryUnavailable`` when no shader
+    ///   library is available, ``InitializationError/shaderLibraryDeviceMismatch`` when a resolved
+    ///   shader library belongs to another device, ``InitializationError/computeFunctionNotFound`` when
+    ///   the shader library does not contain `volume_compute`, ``InitializationError/pipelineCreationFailed``
+    ///   when the compute pipeline cannot be compiled, or ``InitializationError/cameraBufferAllocationFailed``
+    ///   when the camera uniforms buffer cannot be allocated.
+    public init(device: any MTLDevice,
+                commandQueue: (any MTLCommandQueue)? = nil,
+                library: (any MTLLibrary)? = nil,
+                debugOptions: VolumeRenderingDebugOptions = VolumeRenderingDebugOptions()) throws {
+        let queue: any MTLCommandQueue
+        if let commandQueue {
+            guard commandQueue.device === device else {
+                throw InitializationError.commandQueueDeviceMismatch
+            }
+            queue = commandQueue
+        } else if let createdQueue = device.makeCommandQueue() {
+            queue = createdQueue
+        } else {
+            throw InitializationError.commandQueueCreationFailed
+        }
+
+        let lib: any MTLLibrary
+        if let library {
+            lib = library
+        } else {
+            do {
+                lib = try ShaderLibraryLoader.loadLibrary(for: device)
+            } catch let error as ShaderLibraryLoader.LoaderError {
+                if debugOptions.isDebugMode {
+                    Logger(subsystem: "com.mtk.volumerendering", category: "ShaderLoader")
+                        .error("Failed to load MTK.metallib from Bundle.module: \(error.localizedDescription)")
+                }
+                throw InitializationError.shaderLibraryUnavailable
+            } catch {
+                throw InitializationError.shaderLibraryUnavailable
+            }
+        }
+
+        guard lib.device === device else {
+            throw InitializationError.shaderLibraryDeviceMismatch
+        }
+
+        let raycastPass = try VolumeRaycastPass(device: device,
+                                                library: lib,
+                                                debugOptions: debugOptions)
+        self.metalState = MetalState(device: device,
+                                     commandQueue: queue,
+                                     raycastPass: raycastPass,
+                                     library: lib,
+                                     debugOptions: debugOptions)
+    }
+
+    /// Enables or disables diagnostic logging for debugging rendering issues.
+    ///
+    /// When enabled, the adapter logs detailed information about:
+    /// - Render requests (viewport, compositing mode, quality)
+    /// - Applied overrides (compositing, sampling distance, window)
+    /// - Camera matrices (view, projection, inverse view-projection)
+    ///
+    /// - Parameter enabled: Whether to enable diagnostic logging.
+    ///
+    /// - Note: Diagnostic logs use `os_log` with the `com.mtk.volumerendering` subsystem.
+    public func enableDiagnosticLogging(_ enabled: Bool) {
+        diagnosticLoggingEnabled = enabled
+        if enabled {
+            logger.info("Diagnostic logging enabled on MetalVolumeRenderingAdapter.")
+        } else {
+            logger.info("Diagnostic logging disabled on MetalVolumeRenderingAdapter.")
+        }
+    }
+
+    /// Renders a GPU-native volumetric frame from the provided request.
+    ///
+    /// This is the primary interactive rendering method. It renders via Metal compute
+    /// shaders, returns the completed output `MTLTexture`, and does not perform CPU
+    /// readback or create a `CGImage`.
+    ///
+    /// - Parameter request: A ``VolumeRenderRequest`` specifying the dataset, camera,
+    ///   viewport, compositing mode, and transfer function.
+    ///
+    /// - Returns: A ``VolumeRenderFrame`` containing the rendered texture and metadata.
+    ///
+    /// - Throws: ``AdapterError/windowNotSpecified`` when no explicit or recommended window is
+    ///   available, ``AdapterError/emptyColorPoints`` or ``AdapterError/emptyAlphaPoints`` when
+    ///   the transfer function is incomplete, ``AdapterError/degenerateCameraMatrix`` when the
+    ///   camera basis is invalid, or Metal operation errors such as texture creation, command
+    ///   buffer creation, command encoding, or command buffer execution failure.
+    ///
+    /// ## GPU Acceleration
+    ///
+    /// Metal resources are initialized eagerly by ``init(device:commandQueue:library:debugOptions:)``.
+    ///
+    /// ## Parameter Overrides
+    ///
+    /// The adapter applies overrides set via ``send(_:)`` in this order:
+    /// 1. Compositing mode (if override set)
+    /// 2. Sampling distance (if override set)
+    /// 3. Intensity window (extended state → override → recommended; throws if absent)
+    ///
+    /// ## Usage
+    ///
+    /// ```swift
+    /// let request = VolumeRenderRequest(
+    ///     dataset: dataset,
+    ///     camera: VolumeRenderRequest.Camera(
+    ///         position: SIMD3<Float>(0.5, 0.5, 2),
+    ///         target: SIMD3<Float>(0.5, 0.5, 0.5),
+    ///         up: SIMD3<Float>(0, 1, 0),
+    ///         fieldOfView: 45,
+    ///         projectionType: .perspective
+    ///     ),
+    ///     viewportSize: (width: 512, height: 512),
+    ///     samplingDistance: 0.002,
+    ///     compositing: .frontToBack,
+    ///     quality: .balanced,
+    ///     transferFunction: transferFunction
+    /// )
+    ///
+    /// let frame = try await adapter.renderFrame(using: request)
+    /// let texture = frame.texture
+    /// ```
+    public func renderFrame(using request: VolumeRenderRequest) async throws -> VolumeRenderFrame {
+        try Task.checkCancellation()
+
+        if diagnosticLoggingEnabled {
+            logger.info("[DIAG] renderFrame called - viewport: \(request.viewportSize.width)x\(request.viewportSize.height), compositing: \(String(describing: request.compositing)), quality: \(String(describing: request.quality))")
+        }
+
+        let presetResolution = applyCurrentPresetIfNeeded(to: request)
+        var effectiveRequest = presetResolution.request
+
+        if let compositing = overrides.compositing {
+            effectiveRequest.compositing = compositing
+            if diagnosticLoggingEnabled {
+                logger.info("[DIAG] Applied compositing override: \(String(describing: compositing))")
+            }
+        }
+        if let samplingDistance = overrides.samplingDistance {
+            effectiveRequest.samplingDistance = samplingDistance
+            if diagnosticLoggingEnabled {
+                logger.info("[DIAG] Applied sampling distance override: \(samplingDistance)")
+            }
+        }
+
+        effectiveRequest = try applyCompatibilityClippingIfNeeded(to: effectiveRequest)
+        try Task.checkCancellation()
+        let window = try resolveWindow(for: effectiveRequest.dataset)
+
+        if diagnosticLoggingEnabled {
+            logger.info("[DIAG] Using window: \(window.lowerBound)...\(window.upperBound)")
+        }
+
+        let startTime = CFAbsoluteTimeGetCurrent()
+        let frame: VolumeRenderFrame
+        if try effectiveRequest.visibleScalarLayerCountForRendering() > 1 {
+            frame = try await renderLayerStackWithMetal(state: metalState,
+                                                        request: effectiveRequest)
+        } else {
+            frame = try await renderWithMetal(state: metalState,
+                                              request: effectiveRequest)
+        }
+        let renderTime = CFAbsoluteTimeGetCurrent() - startTime
+        let resolvedFrame = VolumeRenderFrame(
+            texture: frame.texture,
+            metadata: VolumeRenderFrame.Metadata(
+                viewportSize: frame.metadata.viewportSize,
+                viewportID: frame.metadata.viewportID,
+                samplingDistance: frame.metadata.samplingDistance,
+                compositing: frame.metadata.compositing,
+                quality: frame.metadata.quality,
+                pixelFormat: frame.metadata.pixelFormat,
+                renderTime: renderTime,
+                gpuStartTime: frame.metadata.gpuStartTime,
+                gpuEndTime: frame.metadata.gpuEndTime
+            )
+        )
+        lastSnapshot = RenderSnapshot(dataset: request.dataset,
+                                      metadata: resolvedFrame.metadata,
+                                      window: window,
+                                      preset: presetResolution.preset)
+        return resolvedFrame
+    }
+
+    /// Renders a GPU-native texture for interactive presentation.
+    ///
+    /// This convenience method intentionally returns only the Metal texture needed by
+    /// onscreen presentation surfaces. The returned texture may be reused by later
+    /// interactive renders from this adapter. Snapshot/export code should request a
+    /// frame and pass it to ``TextureSnapshotExporter`` only when CPU image data is
+    /// required.
+    public func renderInteractiveTexture(using request: VolumeRenderRequest) async throws -> any MTLTexture {
+        try await renderInteractiveFrame(using: request, waitsForCompletion: true).texture
+    }
+
+    /// Renders an interactive texture without handing out a pooled async lease.
+    ///
+    /// Callers that need same-queue async presentation should use
+    /// ``enqueueInteractiveFrame(using:)`` so the returned frame keeps the output
+    /// texture leased until presentation completion.
+    package func enqueueInteractiveTexture(using request: VolumeRenderRequest) async throws -> any MTLTexture {
+        try await renderInteractiveFrame(using: request, waitsForCompletion: true).texture
+    }
+
+    package func enqueueInteractiveFrame(using request: VolumeRenderRequest) async throws -> VolumeRenderFrame {
+        try await renderInteractiveFrame(using: request, waitsForCompletion: false)
+    }
+
+    package func enqueueInteractiveFrame(using request: VolumeRenderRequest,
+                                         volumeTexture: any MTLTexture) async throws -> VolumeRenderFrame {
+        try await renderInteractiveFrame(using: request,
+                                         volumeTexture: volumeTexture,
+                                         waitsForCompletion: false)
+    }
+
+    package func renderFrame(using request: VolumeRenderRequest,
+                             volumeTexture: any MTLTexture) async throws -> VolumeRenderFrame {
+        try await renderTexture(using: request, volumeTexture: volumeTexture)
+    }
+
+    package func prewarmInteractiveOutputTextures(width: Int,
+                                                  height: Int,
+                                                  count: Int = 3) async throws -> Bool {
+        try await metalState.interactiveOutputPool.prewarm(width: width,
+                                                           height: height,
+                                                           device: metalState.device,
+                                                           count: count)
+    }
+
+    private func renderInteractiveFrame(using request: VolumeRenderRequest,
+                                        volumeTexture providedVolumeTexture: (any MTLTexture)? = nil,
+                                        waitsForCompletion: Bool) async throws -> VolumeRenderFrame {
+        try Task.checkCancellation()
+
+        let presetResolution = applyCurrentPresetIfNeeded(to: request)
+        var effectiveRequest = presetResolution.request
+
+        if let compositing = overrides.compositing {
+            effectiveRequest.compositing = compositing
+        }
+        if let samplingDistance = overrides.samplingDistance {
+            effectiveRequest.samplingDistance = samplingDistance
+        }
+
+        effectiveRequest = try applyCompatibilityClippingIfNeeded(to: effectiveRequest)
+        let samplingSource: String
+        if overrides.samplingDistance != nil {
+            samplingSource = "compatibilityOverride"
+        } else if presetResolution.preset != nil {
+            samplingSource = "preset"
+        } else {
+            samplingSource = "request"
+        }
+        logInteractionInfo(
+            "[MTK3DInteraction] adapter.sampling.resolve requested=\(String(format: "%.6f", request.samplingDistance)) effective=\(String(format: "%.6f", effectiveRequest.samplingDistance)) source=\(samplingSource) quality=\(effectiveRequest.quality) viewport=\(Int(effectiveRequest.viewportSize.width))x\(Int(effectiveRequest.viewportSize.height))"
+        )
+        let window = try resolveWindow(for: effectiveRequest.dataset)
+
+        if try effectiveRequest.visibleScalarLayerCountForRendering() > 1 {
+            let viewport = VolumetricMath.clampViewportSize(effectiveRequest.viewportSize)
+            guard viewport.width > 0, viewport.height > 0 else {
+                throw RenderingError.outputTextureUnavailable
+            }
+
+            if waitsForCompletion {
+                let outputTexture = try reusableInteractiveOutputTexture(width: viewport.width,
+                                                                         height: viewport.height,
+                                                                         state: metalState)
+                let frame = try await renderLayerStackWithMetal(state: metalState,
+                                                                request: effectiveRequest,
+                                                                outputTexture: outputTexture,
+                                                                volumeTexture: providedVolumeTexture,
+                                                                waitsForCompletion: true)
+                lastSnapshot = RenderSnapshot(dataset: request.dataset,
+                                              metadata: frame.metadata,
+                                              window: window,
+                                              preset: presetResolution.preset)
+                return frame
+            }
+
+            let frameIndex = UInt64(metalState.frameIndex)
+            let lease = try await metalState.interactiveOutputPool.acquire(width: viewport.width,
+                                                                           height: viewport.height,
+                                                                           device: metalState.device,
+                                                                           frameIndex: frameIndex)
+            do {
+                let renderedFrame = try await renderLayerStackWithMetal(state: metalState,
+                                                                        request: effectiveRequest,
+                                                                        outputTexture: lease.texture,
+                                                                        volumeTexture: providedVolumeTexture,
+                                                                        waitsForCompletion: false)
+                lease.updateDebugContext(frameIndex: renderedFrame.metadata.debugFrameIndex)
+                let frame = VolumeRenderFrame(texture: renderedFrame.texture,
+                                              metadata: renderedFrame.metadata,
+                                              outputTextureLease: lease)
+                lastSnapshot = RenderSnapshot(dataset: request.dataset,
+                                              metadata: frame.metadata,
+                                              window: window,
+                                              preset: presetResolution.preset)
+                return frame
+            } catch {
+                lease.release()
+                throw error
+            }
+        }
+
+        let viewport = VolumetricMath.clampViewportSize(effectiveRequest.viewportSize)
+        let frame: VolumeRenderFrame
+        if waitsForCompletion {
+            let outputTexture = try reusableInteractiveOutputTexture(width: viewport.width,
+                                                                     height: viewport.height,
+                                                                     state: metalState)
+            frame = try await renderWithMetal(state: metalState,
+                                              request: effectiveRequest,
+                                              datasetTexture: providedVolumeTexture,
+                                              outputTexture: outputTexture,
+                                              waitsForCompletion: true)
+        } else {
+            let frameIndex = UInt64(metalState.frameIndex)
+            let lease = try await metalState.interactiveOutputPool.acquire(width: viewport.width,
+                                                                           height: viewport.height,
+                                                                           device: metalState.device,
+                                                                           frameIndex: frameIndex)
+            do {
+                let renderedFrame = try await renderWithMetal(state: metalState,
+                                                              request: effectiveRequest,
+                                                              datasetTexture: providedVolumeTexture,
+                                                              outputTexture: lease.texture,
+                                                              waitsForCompletion: false)
+                lease.updateDebugContext(frameIndex: renderedFrame.metadata.debugFrameIndex)
+                frame = VolumeRenderFrame(texture: renderedFrame.texture,
+                                          metadata: renderedFrame.metadata,
+                                          outputTextureLease: lease)
+            } catch {
+                lease.release()
+                throw error
+            }
+        }
+        lastSnapshot = RenderSnapshot(dataset: request.dataset,
+                                      metadata: frame.metadata,
+                                      window: window,
+                                      preset: presetResolution.preset)
+        return frame
+    }
+
+    func renderWithSharedVolumeTexture(using request: VolumeRenderRequest,
+                                       volumeTexture: any MTLTexture,
+                                       outputTexture: (any MTLTexture)? = nil) async throws -> VolumeRenderFrame {
+        try await renderWithMetal(state: metalState,
+                                  request: request,
+                                  datasetTexture: volumeTexture,
+                                  outputTexture: outputTexture)
+    }
+
+    /// Updates the active rendering preset for a dataset.
+    ///
+    /// Presets define common rendering configurations (e.g., CT Bone, CT Soft Tissue, MR Angio)
+    /// that combine transfer functions, windowing, and other parameters.
+    ///
+    /// - Parameters:
+    ///   - preset: The rendering preset to apply.
+    ///   - dataset: The dataset for which the preset should be applied.
+    ///
+    /// - Returns: An array containing the applied preset (for compatibility with batch operations).
+    ///
+    /// - Note: The preset becomes the active transfer function, compositing mode, and
+    ///   sampling distance for subsequent renders of the supplied dataset. Explicit
+    ///   ``send(_:)`` overrides still take precedence over preset compositing and
+    ///   sampling values.
+    public func updatePreset(_ preset: VolumeRenderingPreset,
+                             for dataset: VolumeDataset) async throws -> [VolumeRenderingPreset] {
+        if diagnosticLoggingEnabled {
+            logger.info("[DIAG] updatePreset called - preset: \(preset.name)")
+        }
+        currentPreset = preset
+        currentPresetDatasetIdentity = DatasetIdentity.CachedContent(dataset: dataset)
+        return [preset]
+    }
+
+    func applyCurrentPresetIfNeeded(to request: VolumeRenderRequest)
+        -> (request: VolumeRenderRequest, preset: VolumeRenderingPreset?) {
+        guard let preset = currentPreset,
+              let presetDatasetIdentity = currentPresetDatasetIdentity,
+              presetDatasetIdentity.matches(dataset: request.dataset) else {
+            return (request, nil)
+        }
+
+        var effectiveRequest = request
+        effectiveRequest.transferFunction = preset.transferFunction
+        effectiveRequest.samplingDistance = preset.samplingDistance
+        effectiveRequest.compositing = preset.compositing
+        effectiveRequest.layers = request.layers.map { layer in
+            guard var scalarVolume = layer.scalarVolume,
+                  presetDatasetIdentity.matches(dataset: scalarVolume.dataset) else {
+                return layer
+            }
+            scalarVolume.transferFunction = preset.transferFunction
+            return VolumeLayer(id: layer.id,
+                               scalarVolume: scalarVolume,
+                               opacity: layer.opacity,
+                               blendMode: layer.blendMode,
+                               baseWorldToLayerWorld: layer.baseWorldToLayerWorld,
+                               isVisible: layer.isVisible)
+        }
+        return (effectiveRequest, preset)
+    }
+
+    /// Calculates an intensity histogram for the given dataset.
+    ///
+    /// The histogram is computed on the CPU using a detached task to avoid blocking
+    /// the main actor. This method scans all voxels in the dataset and bins them
+    /// according to the descriptor's intensity range and bin count.
+    ///
+    /// - Parameters:
+    ///   - dataset: The volume dataset to analyze.
+    ///   - descriptor: Configuration specifying bin count, intensity range, and normalization.
+    ///   - transferFunction: Transfer function for context (currently unused).
+    ///
+    /// - Returns: A ``VolumeHistogram`` containing the binned intensity distribution.
+    ///
+    /// - Throws: ``AdapterError/invalidHistogramBinCount`` if `descriptor.binCount` is 0, or
+    ///   ``AdapterError/datasetReadFailed`` if a voxel reader cannot be created for the dataset.
+    ///
+    /// ## Performance
+    ///
+    /// CPU histogram calculation time scales linearly with voxel count:
+    /// - 256×256×256 volume: ~10-20ms
+    /// - 512×512×512 volume: ~80-120ms
+    ///
+    /// For GPU-accelerated histogram calculation, use the pure Metal compute
+    /// ``VolumeHistogramCalculator``.
+    ///
+    /// ## Usage
+    ///
+    /// ```swift
+    /// let descriptor = VolumeHistogramDescriptor(
+    ///     binCount: 256,
+    ///     intensityRange: -1024...3071,
+    ///     normalize: true
+    /// )
+    ///
+    /// let histogram = try await adapter.refreshHistogram(
+    ///     for: dataset,
+    ///     descriptor: descriptor,
+    ///     transferFunction: transferFunction
+    /// )
+    ///
+    /// // Histogram bins sum to 1.0 if normalize = true
+    /// print("Total: \(histogram.bins.reduce(0, +))")
+    /// ```
+    public func refreshHistogram(for dataset: VolumeDataset,
+                                 descriptor: VolumeHistogramDescriptor,
+                                 transferFunction: VolumeTransferFunction) async throws -> VolumeHistogram {
+        guard descriptor.binCount > 0 else {
+            throw AdapterError.invalidHistogramBinCount
+        }
+
+        let bins = try await Task.detached(priority: .userInitiated) {
+            let voxelCount = dataset.dimensions.voxelCount
+            let workerCount = min(max(ProcessInfo.processInfo.activeProcessorCount, 1),
+                                  max(voxelCount, 1))
+            var histogram = try await withThrowingTaskGroup(of: [Float].self) { group in
+                for worker in 0..<workerCount {
+                    let lowerIndex = voxelCount * worker / workerCount
+                    let upperIndex = voxelCount * (worker + 1) / workerCount
+                    group.addTask {
+                        try dataset.data.withUnsafeBytes { buffer throws -> [Float] in
+                            guard let reader = VolumeDataReader(dataset: dataset, buffer: buffer) else {
+                                throw AdapterError.datasetReadFailed
+                            }
+                            return reader.histogram(binCount: descriptor.binCount,
+                                                    intensityRange: descriptor.intensityRange,
+                                                    indices: lowerIndex..<upperIndex)
+                        }
+                    }
+                }
+
+                var merged = [Float](repeating: 0, count: descriptor.binCount)
+                for try await partial in group {
+                    for index in merged.indices {
+                        merged[index] += partial[index]
+                    }
+                }
+                return merged
+            }
+
+            if descriptor.normalize {
+                let total = histogram.reduce(0, +)
+                if total > 0 {
+                    for index in histogram.indices {
+                        histogram[index] /= total
+                    }
+                }
+            }
+            return histogram
+        }.value
+
+        return VolumeHistogram(descriptor: descriptor, bins: bins)
+    }
+
+    /// Sends a rendering command to update render parameters.
+    ///
+    /// Commands set persistent overrides that apply to all subsequent ``renderFrame(using:)`` calls
+    /// until changed or cleared.
+    ///
+    /// - Parameter command: The command to execute.
+    ///
+    /// - Throws: Commands are processed synchronously and do not currently throw errors.
+    ///
+    /// ## Available Commands
+    ///
+    /// - ``VolumeRenderingCommand/setCompositing(_:)`` - Override compositing mode (DVR, MIP, MinIP, AIP)
+    /// - ``VolumeRenderingCommand/setWindow(_:_:)`` - Override intensity window (HU min/max)
+    /// - ``VolumeRenderingCommand/setSamplingStep(_:)`` - Override ray marching step size
+    /// - ``VolumeRenderingCommand/setLighting(_:)`` - Enable/disable lighting calculations
+    ///
+    /// ## Usage
+    ///
+    /// ```swift
+    /// // Change to Maximum Intensity Projection
+    /// try await adapter.send(.setCompositing(.maximumIntensity))
+    ///
+    /// // Adjust CT window for bone visualization
+    /// try await adapter.send(.setWindow(-500, 1300))
+    ///
+    /// // Reduce sampling distance for higher quality
+    /// try await adapter.send(.setSamplingStep(0.001))
+    ///
+    /// // Disable lighting for pure intensity visualization
+    /// try await adapter.send(.setLighting(false))
+    /// ```
+    public func send(_ command: VolumeRenderingCommand) async throws {
+        if diagnosticLoggingEnabled {
+            logger.info("[DIAG] send command: \(String(describing: command))")
+        }
+        switch command {
+        case .setCompositing(let compositing):
+            overrides.compositing = compositing
+            if diagnosticLoggingEnabled {
+                logger.info("[DIAG] Set compositing: \(String(describing: compositing))")
+            }
+        case .setWindow(let minValue, let maxValue):
+            windowCommandCount += 1
+            overrides.window = minValue...maxValue
+            if diagnosticLoggingEnabled {
+                logger.info("[DIAG] Set window: \(minValue)...\(maxValue)")
+            }
+        case .setSamplingStep(let samplingDistance):
+            overrides.samplingDistance = samplingDistance
+            if diagnosticLoggingEnabled {
+                logger.info("[DIAG] Set sampling distance: \(samplingDistance)")
+            }
+        case .setLighting(let enabled):
+            overrides.lightingEnabled = enabled
+            if diagnosticLoggingEnabled {
+                logger.info("[DIAG] Set lighting: \(enabled)")
+            }
+        }
+    }
+}
+
+extension MetalVolumeRenderingAdapter {
+    @_spi(Testing)
+    public var debugVolumeTextureUsageRawValue: UInt? {
+        metalState.volumeTexture.map { UInt($0.usage.rawValue) }
+    }
+
+    @_spi(Testing)
+    public var debugTransferCacheTexture: (any MTLTexture)? {
+        metalState.transferCache?.texture
+    }
+
+    @_spi(Testing)
+    public var debugAccelerationAvailable: Bool {
+        metalState.emptySpaceAccelerator != nil
+    }
+
+    @_spi(Testing)
+    public var debugAccelerationCacheTexture: (any MTLTexture)? {
+        metalState.accelerationCache?.texture
+    }
+
+    @_spi(Testing)
+    public var debugAccelerationBuildCount: Int {
+        metalState.accelerationBuildCount
+    }
+
+    @_spi(Testing)
+    public var debugLastRequestedOptionValue: UInt16 {
+        metalState.lastRequestedOptionValue
+    }
+
+    @_spi(Testing)
+    public var debugLayerCompositePassCreationCount: Int {
+        metalState.layerCompositePassCreationCount
+    }
+
+    @_spi(Testing)
+    public var debugLayerStackScratchTextureAllocationCount: Int {
+        metalState.layerStackScratchTextureAllocationCount
+    }
+
+    @_spi(Testing)
+    public var debugWindowCommandCount: Int {
+        windowCommandCount
+    }
+}

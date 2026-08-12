@@ -1,0 +1,48 @@
+@Tutorial(time: 20) {
+    @Intro(title: "Render a Volume to a GPU Texture") {
+        Build a `VolumeDataset`, configure MTKCore, and produce a GPU-resident
+        frame without creating a platform view.
+    }
+
+    @Section(title: "Add MTKCore") {
+        @ContentAndMedia {
+            Add the MTK package and select the `MTKCore` product.
+        }
+
+        @Steps {
+            @Step {
+                Import `MTKCore` in the integration target.
+            }
+
+            @Step {
+                Confirm that Metal is available before creating GPU resources.
+            }
+        }
+    }
+
+    @Section(title: "Create and render a dataset") {
+        @ContentAndMedia {
+            `VolumeDataset` is the stable input interface. The renderer returns
+            texture-backed frames; the caller owns presentation.
+        }
+
+        @Steps {
+            @Step {
+                Construct a dataset with voxel storage and spatial metadata.
+            }
+
+            @Step {
+                Configure a transfer function and render settings.
+            }
+
+            @Step {
+                Render a `VolumeRenderFrame` and consume its `MTLTexture`.
+            }
+
+            @Step {
+                Use `TextureSnapshotExporter` only when an explicit `CGImage`
+                snapshot or export is required.
+            }
+        }
+    }
+}

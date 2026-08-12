@@ -1,0 +1,120 @@
+{
+  "version": 1,
+  "strategy": {
+    "storagePolicy": "Small DICOM-derived geometry fixtures are committed as manifest-only synthetic datasets. Large real DICOM series remain optional local fixtures and must be skipped when unavailable.",
+    "coordinateSystem": "DICOM patient LPS millimeters",
+    "toleranceMillimeters": 0.0001,
+    "hashPolicy": "Each fixture carries a sha256-style geometry signature over the dimensions, spacing, orientation, origin, and DICOM metadata fields used by these tests."
+  },
+  "fixtures": [
+    {
+      "id": "ct_axial_anisotropic_shifted_origin",
+      "source": "synthetic-derived-from-ct-axial-dicom-geometry",
+      "description": "CT axial geometry with anisotropic slice spacing, shifted patient origin, and HU rescale metadata.",
+      "storage": "committed-manifest-only",
+      "modality": "CT",
+      "photometricInterpretation": "MONOCHROME2",
+      "pixelFormat": "int16Signed",
+      "tags": ["ctAxial", "anisotropicSpacing", "shiftedOrigin", "rescaleSlopeIntercept"],
+      "rescaleSlope": 1.0,
+      "rescaleIntercept": -1024.0,
+      "dimensions": { "width": 5, "height": 4, "depth": 3 },
+      "spacing": { "x": 0.7, "y": 0.7, "z": 2.5 },
+      "origin": [-120.0, -90.0, 30.0],
+      "row": [1.0, 0.0, 0.0],
+      "column": [0.0, 1.0, 0.0],
+      "geometrySignature": "sha256:7ef4b5f2c47b6a56d7dd0b77273f0e3a6fd1d3c83e66b4901e4ad6b24fddfb01",
+      "expectedIndexWorldPairs": [
+        { "index": [0.0, 0.0, 0.0], "world": [-120.0, -90.0, 30.0] },
+        { "index": [4.0, 3.0, 2.0], "world": [-117.2, -87.9, 35.0] }
+      ],
+      "expectedMPR": [
+        { "axis": "z", "slicePosition": 0.5, "originWorld": [-120.0, -90.0, 32.5], "normalWorld": [0.0, 0.0, 1.0] },
+        { "axis": "y", "slicePosition": 0.5, "originWorld": [-117.2, -88.95, 30.0], "normalWorld": [0.0, 1.0, 0.0] },
+        { "axis": "x", "slicePosition": 0.5, "originWorld": [-118.6, -90.0, 30.0], "normalWorld": [1.0, 0.0, 0.0] }
+      ]
+    },
+    {
+      "id": "ct_inverted_slice_order_sorted_lps",
+      "source": "synthetic-derived-from-reversed-ct-series-after-ipp-sorting",
+      "description": "CT series acquired in reverse slice order; sorted volume advances along a negative patient superior/inferior normal.",
+      "storage": "committed-manifest-only",
+      "modality": "CT",
+      "photometricInterpretation": "MONOCHROME2",
+      "pixelFormat": "int16Signed",
+      "tags": ["ctAxial", "invertedSliceOrder", "nonIdentityIOP"],
+      "rescaleSlope": 1.0,
+      "rescaleIntercept": 0.0,
+      "dimensions": { "width": 4, "height": 4, "depth": 4 },
+      "spacing": { "x": 0.8, "y": 0.8, "z": 3.0 },
+      "origin": [50.0, 20.0, 100.0],
+      "row": [1.0, 0.0, 0.0],
+      "column": [0.0, -1.0, 0.0],
+      "geometrySignature": "sha256:5ed0fbdba3f8c1c01f6b22bf8183993174f7339d0b0fdcfd0df677a176d82da5",
+      "expectedIndexWorldPairs": [
+        { "index": [0.0, 0.0, 0.0], "world": [50.0, 20.0, 100.0] },
+        { "index": [0.0, 0.0, 3.0], "world": [50.0, 20.0, 91.0] },
+        { "index": [3.0, 3.0, 3.0], "world": [52.4, 17.6, 91.0] }
+      ],
+      "expectedMPR": [
+        { "axis": "z", "slicePosition": 0.5, "originWorld": [50.0, 20.0, 95.5], "normalWorld": [0.0, 0.0, -1.0] },
+        { "axis": "y", "slicePosition": 0.5, "originWorld": [52.4, 18.8, 100.0], "normalWorld": [0.0, -1.0, 0.0] },
+        { "axis": "x", "slicePosition": 0.5, "originWorld": [51.2, 20.0, 100.0], "normalWorld": [1.0, 0.0, 0.0] }
+      ]
+    },
+    {
+      "id": "ct_oblique_iop_gradient_direction",
+      "source": "synthetic-derived-from-oblique-ct-iop",
+      "description": "Oblique CT orientation with rotated row direction and superior/inferior column direction.",
+      "storage": "committed-manifest-only",
+      "modality": "CT",
+      "photometricInterpretation": "MONOCHROME2",
+      "pixelFormat": "int16Signed",
+      "tags": ["ctAxial", "nonIdentityIOP", "obliqueVolume"],
+      "rescaleSlope": 1.0,
+      "rescaleIntercept": -1024.0,
+      "dimensions": { "width": 5, "height": 5, "depth": 4 },
+      "spacing": { "x": 1.0, "y": 2.0, "z": 3.0 },
+      "origin": [10.0, -20.0, 5.0],
+      "row": [0.8660254, 0.5, 0.0],
+      "column": [0.0, 0.0, 1.0],
+      "geometrySignature": "sha256:78314d2ac9cb43195157f2955e0d337ebfb16e0163f4d0d4175a9953281975b7",
+      "expectedIndexWorldPairs": [
+        { "index": [0.0, 0.0, 0.0], "world": [10.0, -20.0, 5.0] },
+        { "index": [4.0, 2.0, 3.0], "world": [17.964102, -25.79423, 9.0] }
+      ],
+      "expectedMPR": [
+        { "axis": "z", "slicePosition": 0.5, "originWorld": [12.25, -23.897114, 5.0], "normalWorld": [0.5, -0.8660254, 0.0] },
+        { "axis": "y", "slicePosition": 0.5, "originWorld": [13.464102, -18.0, 9.0], "normalWorld": [0.0, 0.0, 1.0] },
+        { "axis": "x", "slicePosition": 0.5, "originWorld": [11.732051, -19.0, 5.0], "normalWorld": [0.8660254, 0.5, 0.0] }
+      ]
+    },
+    {
+      "id": "mr_sagittal_monochrome1_shifted_origin",
+      "source": "synthetic-derived-from-mr-sagittal-dicom-geometry",
+      "description": "MR sagittal-style orientation with shifted origin and MONOCHROME1 metadata.",
+      "storage": "committed-manifest-only",
+      "modality": "MR",
+      "photometricInterpretation": "MONOCHROME1",
+      "pixelFormat": "int16Signed",
+      "tags": ["mrOrientation", "nonIdentityIOP", "shiftedOrigin", "monochrome1"],
+      "rescaleSlope": 1.0,
+      "rescaleIntercept": 0.0,
+      "dimensions": { "width": 4, "height": 5, "depth": 3 },
+      "spacing": { "x": 1.2, "y": 1.2, "z": 4.0 },
+      "origin": [-40.0, 60.0, -10.0],
+      "row": [0.0, 1.0, 0.0],
+      "column": [0.0, 0.0, 1.0],
+      "geometrySignature": "sha256:9d8655937a3f15de1de230bd02b51efe3693a2e3eaa50a6fc7e9568a33e5e09b",
+      "expectedIndexWorldPairs": [
+        { "index": [0.0, 0.0, 0.0], "world": [-40.0, 60.0, -10.0] },
+        { "index": [3.0, 4.0, 2.0], "world": [-32.0, 63.6, -5.2] }
+      ],
+      "expectedMPR": [
+        { "axis": "z", "slicePosition": 0.5, "originWorld": [-36.0, 60.0, -10.0], "normalWorld": [1.0, 0.0, 0.0] },
+        { "axis": "y", "slicePosition": 0.5, "originWorld": [-40.0, 63.6, -7.6], "normalWorld": [0.0, 0.0, 1.0] },
+        { "axis": "x", "slicePosition": 0.5, "originWorld": [-40.0, 61.8, -10.0], "normalWorld": [0.0, 1.0, 0.0] }
+      ]
+    }
+  ]
+}

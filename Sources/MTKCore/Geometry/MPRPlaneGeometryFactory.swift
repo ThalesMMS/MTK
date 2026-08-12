@@ -1,0 +1,174 @@
+//
+//  MPRPlaneGeometryFactory.swift
+//  MTKCore
+//
+//  Clinical MPR plane generation backed by the dataset's DICOM geometry.
+//
+//  Thales Matheus Mendonça Santos — April 2026
+//
+
+import simd
+
+public enum MPRPlaneGeometryFactory {
+    public static func makePlane(for dataset: VolumeDataset,
+                                 axis: MPRPlaneAxis,
+                                 slicePosition: Float) -> MPRPlaneGeometry {
+        let geometry = makeGeometry(for: dataset)
+        let spans = voxelSpans(for: dataset.dimensions)
+        let clampedPosition = VolumetricMath.clampFloat(slicePosition, lower: 0, upper: 1)
+
+        let sliceIndex: Float
+        let originVoxel: SIMD3<Float>
+        let axisUVoxel: SIMD3<Float>
+        let axisVVoxel: SIMD3<Float>
+        let expectedNormal: SIMD3<Float>
+
+        switch axis {
+        case .x:
+            sliceIndex = spans.x * clampedPosition
+            originVoxel = SIMD3<Float>(sliceIndex, 0, 0)
+            axisUVoxel = SIMD3<Float>(0, spans.y, 0)
+            axisVVoxel = SIMD3<Float>(0, 0, spans.z)
+            expectedNormal = normalized(vector: dataset.imageData.rowDirection,
+                                        fallback: SIMD3<Float>(1, 0, 0))
+        case .y:
+            sliceIndex = spans.y * clampedPosition
+            originVoxel = SIMD3<Float>(spans.x, sliceIndex, 0)
+            axisUVoxel = SIMD3<Float>(-spans.x, 0, 0)
+            axisVVoxel = SIMD3<Float>(0, 0, spans.z)
+            expectedNormal = normalized(vector: dataset.imageData.columnDirection,
+                                        fallback: SIMD3<Float>(0, 1, 0))
+        case .z:
+            sliceIndex = spans.z * clampedPosition
+            originVoxel = SIMD3<Float>(0, 0, sliceIndex)
+            axisUVoxel = SIMD3<Float>(spans.x, 0, 0)
+            axisVVoxel = SIMD3<Float>(0, spans.y, 0)
+            expectedNormal = normalized(vector: dataset.imageData.sliceDirection,
+                                        fallback: SIMD3<Float>(0, 0, 1))
+        }
+
+        let originWorld = geometry.voxelToWorld.transformPoint(originVoxel)
+        let axisUWorld = geometry.voxelToWorld.transformPoint(originVoxel + axisUVoxel) - originWorld
+        let axisVWorld = geometry.voxelToWorld.transformPoint(originVoxel + axisVVoxel) - originWorld
+        let textureBasis = geometry.planeWorldToTex(originW: originWorld,
+                                                    axisUW: axisUWorld,
+                                                    axisVW: axisVWorld)
+        let normalWorld = normalized(cross: axisUWorld, axisVWorld, fallback: expectedNormal)
+
+        return MPRPlaneGeometry(
+            originVoxel: originVoxel,
+            axisUVoxel: axisUVoxel,
+            axisVVoxel: axisVVoxel,
+            originWorld: originWorld,
+            axisUWorld: axisUWorld,
+            axisVWorld: axisVWorld,
+            originTexture: textureBasis.originT,
+            axisUTexture: textureBasis.axisUT,
+            axisVTexture: textureBasis.axisVT,
+            normalWorld: normalWorld
+        )
+    }
+
+    @_spi(Testing)
+    public static func makeGeometry(for dataset: VolumeDataset) -> DICOMGeometry {
+        DICOMGeometry(imageData: dataset.imageData)
+    }
+
+    @_spi(Testing)
+    public static func effectiveNormalSpacing(for dataset: VolumeDataset,
+                                              plane: MPRPlaneGeometry) -> Float {
+        let normal = normalized(vector: plane.normalWorld, fallback: SIMD3<Float>(0, 0, 1))
+        let sliceNormal = normalized(vector: dataset.imageData.sliceDirection,
+                                     fallback: SIMD3<Float>(0, 0, 1))
+        let axisX = normalized(vector: dataset.imageData.rowDirection, fallback: SIMD3<Float>(1, 0, 0))
+            * Float(dataset.spacing.x)
+        let axisY = normalized(vector: dataset.imageData.columnDirection, fallback: SIMD3<Float>(0, 1, 0))
+            * Float(dataset.spacing.y)
+        let axisZ = sliceNormal * Float(dataset.spacing.z)
+        let projectedSpacings = [
+            abs(simd_dot(axisX, normal)),
+            abs(simd_dot(axisY, normal)),
+            abs(simd_dot(axisZ, normal))
+        ]
+        return projectedSpacings.max() ?? 0
+    }
+
+    package static func sliceStepSpacing(for dataset: VolumeDataset,
+                                         plane: MPRPlaneGeometry) -> Float {
+        effectiveNormalSpacing(for: dataset, plane: plane)
+    }
+
+    /// Transforms the physical plane normal into normalized texture space.
+    @_spi(Testing)
+    public static func textureDirectionAlongNormal(for dataset: VolumeDataset,
+                                                   plane: MPRPlaneGeometry) -> SIMD3<Float> {
+        normalized(
+            vector: textureVectorAlongNormal(for: dataset, plane: plane),
+            fallback: simd_cross(plane.axisUTexture, plane.axisVTexture)
+        )
+    }
+
+    @_spi(Testing)
+    public static func volumeExtentAlongNormal(for dataset: VolumeDataset,
+                                               plane: MPRPlaneGeometry) -> Float {
+        let textureUnitsPerWorldUnit = simd_length(textureVectorAlongNormal(for: dataset, plane: plane))
+        guard textureUnitsPerWorldUnit > Float.ulpOfOne else { return 0 }
+        return 1 / textureUnitsPerWorldUnit
+    }
+
+    @_spi(Testing)
+    public static func normalizedTextureThickness(for thickness: Float,
+                                                  dataset: VolumeDataset,
+                                                  plane: MPRPlaneGeometry) -> Float {
+        guard thickness > 0 else { return 0 }
+
+        let effectiveSpacing = effectiveNormalSpacing(for: dataset, plane: plane)
+        let volumeExtentAlongNormal = volumeExtentAlongNormal(for: dataset, plane: plane)
+        guard effectiveSpacing > Float.ulpOfOne,
+              volumeExtentAlongNormal > Float.ulpOfOne else {
+            return 0
+        }
+
+        return (thickness * effectiveSpacing) / volumeExtentAlongNormal
+    }
+}
+
+private extension MPRPlaneGeometryFactory {
+    static func textureVectorAlongNormal(for dataset: VolumeDataset,
+                                         plane: MPRPlaneGeometry) -> SIMD3<Float> {
+        let geometry = makeGeometry(for: dataset)
+        let normal = normalized(vector: plane.normalWorld, fallback: SIMD3<Float>(0, 0, 1))
+        let originTexture = geometry.worldToTex.transformPoint(plane.originWorld)
+        let targetTexture = geometry.worldToTex.transformPoint(plane.originWorld + normal)
+        return targetTexture - originTexture
+    }
+
+    static func voxelSpans(for dimensions: VolumeDimensions) -> SIMD3<Float> {
+        SIMD3<Float>(
+            max(Float(dimensions.width - 1), 0),
+            max(Float(dimensions.height - 1), 0),
+            max(Float(dimensions.depth - 1), 0)
+        )
+    }
+
+    static func normalized(cross lhs: SIMD3<Float>,
+                           _ rhs: SIMD3<Float>,
+                           fallback: SIMD3<Float>) -> SIMD3<Float> {
+        normalized(vector: simd_cross(lhs, rhs), fallback: fallback)
+    }
+
+    static func normalized(vector: SIMD3<Float>,
+                           fallback: SIMD3<Float>) -> SIMD3<Float> {
+        let length = simd_length(vector)
+        if length > Float.ulpOfOne {
+            return vector / length
+        }
+
+        let fallbackLength = simd_length(fallback)
+        if fallbackLength > Float.ulpOfOne {
+            return fallback / fallbackLength
+        }
+
+        return SIMD3<Float>(0, 0, 1)
+    }
+}

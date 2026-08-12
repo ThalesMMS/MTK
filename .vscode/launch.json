@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:MTK}",
+            "name": "Debug VolumeRendererComparison",
+            "target": "VolumeRendererComparison",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug VolumeRendererComparison"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:MTK}",
+            "name": "Release VolumeRendererComparison",
+            "target": "VolumeRendererComparison",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release VolumeRendererComparison"
+        }
+    ]
+}

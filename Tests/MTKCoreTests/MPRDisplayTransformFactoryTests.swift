@@ -1,0 +1,345 @@
+//
+//  MPRDisplayTransformFactoryTests.swift
+//  MTKCoreTests
+//
+//  Verifies anatomical MPR display transforms for canonical, rotated, anisotropic, and
+//  inverted slice geometries.
+//
+//  Thales Matheus Mendonça Santos — April 2026
+//
+
+import XCTest
+import simd
+
+@testable import MTKCore
+
+final class MPRDisplayTransformFactoryTests: XCTestCase {
+    func test_canonicalPlanesProduceClinicalDisplayContract() {
+        let dataset = VolumeDatasetTestFactory.makeTestDataset(
+            dimensions: VolumeDimensions(width: 5, height: 7, depth: 9),
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1)
+        )
+
+        let axial = MPRDisplayTransformFactory.makeTransform(
+            for: MPRPlaneGeometryFactory.makePlane(for: dataset, axis: .z, slicePosition: 0.5),
+            axis: .z
+        )
+        let coronal = MPRDisplayTransformFactory.makeTransform(
+            for: MPRPlaneGeometryFactory.makePlane(for: dataset, axis: .y, slicePosition: 0.5),
+            axis: .y
+        )
+        let sagittal = MPRDisplayTransformFactory.makeTransform(
+            for: MPRPlaneGeometryFactory.makePlane(for: dataset, axis: .x, slicePosition: 0.5),
+            axis: .x
+        )
+
+        XCTAssertEqual(axial.orientation, .standard)
+        XCTAssertFalse(axial.flipHorizontal)
+        XCTAssertFalse(axial.flipVertical)
+        XCTAssertEqual(axial.labels.leading, "R")
+        XCTAssertEqual(axial.labels.trailing, "L")
+        XCTAssertEqual(axial.labels.top, "A")
+        XCTAssertEqual(axial.labels.bottom, "P")
+
+        XCTAssertEqual(coronal.orientation, .rotated180)
+        XCTAssertFalse(coronal.flipHorizontal)
+        XCTAssertFalse(coronal.flipVertical)
+        XCTAssertEqual(coronal.labels.leading, "R")
+        XCTAssertEqual(coronal.labels.trailing, "L")
+        XCTAssertEqual(coronal.labels.top, "S")
+        XCTAssertEqual(coronal.labels.bottom, "I")
+
+        XCTAssertEqual(sagittal.orientation, .standard)
+        XCTAssertFalse(sagittal.flipHorizontal)
+        XCTAssertTrue(sagittal.flipVertical)
+        XCTAssertEqual(sagittal.labels.leading, "A")
+        XCTAssertEqual(sagittal.labels.trailing, "P")
+        XCTAssertEqual(sagittal.labels.top, "S")
+        XCTAssertEqual(sagittal.labels.bottom, "I")
+    }
+
+    func test_nonIdentityOrientationCanRequireQuarterTurnRotation() {
+        let dataset = VolumeDatasetTestFactory.makeTestDataset(
+            dimensions: VolumeDimensions(width: 5, height: 6, depth: 7),
+            spacing: VolumeSpacing(x: 1, y: 1, z: 1),
+            orientation: VolumeOrientation(
+                row: SIMD3<Float>(0, 1, 0),
+                column: SIMD3<Float>(-1, 0, 0),
+                origin: .zero
+            )
+        )
+
+        let transform = MPRDisplayTransformFactory.makeTransform(
+            for: MPRPlaneGeometryFactory.makePlane(for: dataset, axis: .z, slicePosition: 0.5),
+            axis: .z
+        )
+
+        XCTAssertNotEqual(transform.orientation, .standard)
+        XCTAssertEqual(transform.labels.leading, "R")
+        XCTAssertEqual(transform.labels.trailing, "L")
+        XCTAssertEqual(transform.labels.top, "A")
+        XCTAssertEqual(transform.labels.bottom, "P")
+    }
+
+    func test_invertedSliceOrderDoesNotChangeCanonicalEdgeLabels() {
+        let dataset = VolumeDatasetTestFactory.makeTestDataset(
+            dimensions: VolumeDimensions(width: 5, height: 7, depth: 9),
+            spacing: VolumeSpacing(x: 1, y: 1, z: -2)
+        )
+
+        let coronal = MPRDisplayTransformFactory.makeTransform(
+            for: MPRPlaneGeometryFactory.makePlane(for: dataset, axis: .y, slicePosition: 0.5),
+            axis: .y
+        )
+
+        XCTAssertEqual(coronal.labels.leading, "R")
+        XCTAssertEqual(coronal.labels.trailing, "L")
+        XCTAssertEqual(coronal.labels.top, "S")
+        XCTAssertEqual(coronal.labels.bottom, "I")
+    }
+
+    func test_anisotropicSpacingDoesNotChangeSagittalOrientationContract() {
+        let dataset = VolumeDatasetTestFactory.makeTestDataset(
+            dimensions: VolumeDimensions(width: 5, height: 7, depth: 9),
+            spacing: VolumeSpacing(x: 0.7, y: 1.2, z: 3.4)
+        )
+
+        let sagittal = MPRDisplayTransformFactory.makeTransform(
+            for: MPRPlaneGeometryFactory.makePlane(for: dataset, axis: .x, slicePosition: 0.5),
+            axis: .x
+        )
+
+        XCTAssertEqual(sagittal.orientation, .standard)
+        XCTAssertFalse(sagittal.flipHorizontal)
+        XCTAssertTrue(sagittal.flipVertical)
+        XCTAssertEqual(sagittal.labels.leading, "A")
+        XCTAssertEqual(sagittal.labels.trailing, "P")
+        XCTAssertEqual(sagittal.labels.top, "S")
+        XCTAssertEqual(sagittal.labels.bottom, "I")
+    }
+
+    func test_unmatchedObliquePlanePreservesRawLabelsWithoutCrashing() {
+        let plane = MPRPlaneGeometry(
+            originVoxel: .zero,
+            axisUVoxel: SIMD3<Float>(0.1, 0, 1),
+            axisVVoxel: SIMD3<Float>(0, 0.1, 1),
+            originWorld: .zero,
+            axisUWorld: SIMD3<Float>(0.1, 0, 1),
+            axisVWorld: SIMD3<Float>(0, 0.1, 1),
+            originTexture: .zero,
+            axisUTexture: SIMD3<Float>(0.1, 0, 1),
+            axisVTexture: SIMD3<Float>(0, 0.1, 1),
+            normalWorld: SIMD3<Float>(-0.1, -0.1, 0.01)
+        )
+
+        let transform = MPRDisplayTransformFactory.makeTransform(for: plane, axis: .y)
+
+        XCTAssertEqual(transform.labels.leading, "IR")
+        XCTAssertEqual(transform.labels.trailing, "SL")
+        XCTAssertEqual(transform.labels.top, "IA")
+        XCTAssertEqual(transform.labels.bottom, "SP")
+    }
+
+    func test_rotatedPlanePreservesReferencePresentationAcrossDominantAxisBoundaries() {
+        let dataset = VolumeDatasetTestFactory.makeTestDataset(
+            dimensions: VolumeDimensions(width: 17, height: 23, depth: 31),
+            spacing: VolumeSpacing(x: 0.7, y: 1.2, z: 3.4)
+        )
+        let boundaries = [44, 45, 46, 89, 90, 91, 134, 135, 136, 179, 180, 181, 269, 270, 271, 359, 360]
+        let rotationCases: [(rotationAxis: SIMD3<Float>, affectedPlanes: [MPRPlaneAxis])] = [
+            (SIMD3<Float>(0, 0, 1), [.x, .y]),
+            (SIMD3<Float>(0, 1, 0), [.x, .z]),
+            (SIMD3<Float>(1, 0, 0), [.y, .z])
+        ]
+
+        for rotationCase in rotationCases {
+            for planeAxis in rotationCase.affectedPlanes {
+                let referencePlane = MPRGeometryDisplayMapper.makePlane(
+                    for: dataset,
+                    axis: planeAxis,
+                    slicePosition: 0.5
+                )
+                let referenceTransform = MPRDisplayTransformFactory.makeTransform(
+                    for: referencePlane,
+                    axis: planeAxis
+                )
+
+                for sweep in [boundaries, Array(boundaries.reversed())] {
+                    for degrees in sweep {
+                        let plane = MPRGeometryDisplayMapper.makePlane(
+                            for: dataset,
+                            axis: planeAxis,
+                            slicePosition: 0.5,
+                            rotation: simd_quatf(
+                                angle: Float(degrees) * .pi / 180,
+                                axis: rotationCase.rotationAxis
+                            )
+                        )
+                        let transform = MPRDisplayTransformFactory.makeTransform(
+                            for: plane,
+                            axis: planeAxis,
+                            referencePlane: referencePlane
+                        )
+
+                        XCTAssertEqual(transform.orientation,
+                                       referenceTransform.orientation,
+                                       "Unexpected rotation at \(degrees) degrees for \(planeAxis)")
+                        XCTAssertEqual(transform.flipHorizontal,
+                                       referenceTransform.flipHorizontal,
+                                       "Unexpected H flip at \(degrees) degrees for \(planeAxis)")
+                        XCTAssertEqual(transform.flipVertical,
+                                       referenceTransform.flipVertical,
+                                       "Unexpected V flip at \(degrees) degrees for \(planeAxis)")
+                    }
+                }
+            }
+        }
+    }
+
+    func test_obliquePlaneUsesCompositeAnatomicalLabels() {
+        let dataset = VolumeDatasetTestFactory.makeTestDataset(
+            dimensions: VolumeDimensions(width: 17, height: 23, depth: 31),
+            spacing: VolumeSpacing(x: 0.7, y: 1.2, z: 3.4)
+        )
+        let referencePlane = MPRGeometryDisplayMapper.makePlane(
+            for: dataset,
+            axis: .y,
+            slicePosition: 0.5
+        )
+        let plane = MPRGeometryDisplayMapper.makePlane(
+            for: dataset,
+            axis: .y,
+            slicePosition: 0.5,
+            rotation: simd_quatf(angle: 45 * .pi / 180, axis: SIMD3<Float>(0, 0, 1))
+        )
+
+        let transform = MPRDisplayTransformFactory.makeTransform(
+            for: plane,
+            axis: .y,
+            referencePlane: referencePlane
+        )
+
+        XCTAssertEqual(transform.leadingLabel.components.count, 2)
+        XCTAssertEqual(transform.trailingLabel, transform.leadingLabel.opposite)
+        XCTAssertEqual(transform.topLabel, .superior)
+        XCTAssertEqual(transform.bottomLabel, .inferior)
+    }
+
+    func test_additionalFlipsKeepLabelsAlignedWithDisplayedEdges() {
+        let transform = MPRDisplayTransform(
+            orientation: .rotated180,
+            flipHorizontal: false,
+            flipVertical: false,
+            leadingLabel: AnatomicalOrientationLabel(components: [.right, .anterior]),
+            trailingLabel: AnatomicalOrientationLabel(components: [.left, .posterior]),
+            topLabel: .superior,
+            bottomLabel: .inferior
+        )
+
+        let flipped = transform.applyingAdditionalFlips(horizontal: true, vertical: true)
+
+        XCTAssertTrue(flipped.flipHorizontal)
+        XCTAssertTrue(flipped.flipVertical)
+        XCTAssertEqual(flipped.leadingLabel, transform.trailingLabel)
+        XCTAssertEqual(flipped.trailingLabel, transform.leadingLabel)
+        XCTAssertEqual(flipped.topLabel, transform.bottomLabel)
+        XCTAssertEqual(flipped.bottomLabel, transform.topLabel)
+    }
+
+    func test_screenAndTextureCoordinateMappingAreInverseOperations() {
+        let transform = MPRDisplayTransform(
+            orientation: .rotated90CW,
+            flipHorizontal: true,
+            flipVertical: false,
+            leadingLabel: .right,
+            trailingLabel: .left,
+            topLabel: .anterior,
+            bottomLabel: .posterior
+        )
+        let texture = SIMD2<Float>(0.2, 0.8)
+        let screen = transform.screenCoordinates(forTexture: texture)
+        let roundTrip = transform.textureCoordinates(forScreen: screen)
+
+        XCTAssertEqual(roundTrip.x, texture.x, accuracy: 1e-5)
+        XCTAssertEqual(roundTrip.y, texture.y, accuracy: 1e-5)
+    }
+
+    func test_viewportTransformClampsZoomAndPan() {
+        // Zoom-out below fit is allowed down to minimumZoom (0.25); pan is
+        // allowed at any zoom but must keep a quarter of the viewport covered.
+        let belowMinimum = MPRViewportTransform(zoom: 0.1, pan: SIMD2<Float>(0.25, -0.25))
+        XCTAssertEqual(belowMinimum.zoom, MPRViewportTransform.minimumZoom)
+        XCTAssertEqual(belowMinimum.pan.x, 0.25, accuracy: 1e-5)
+        XCTAssertEqual(belowMinimum.pan.y, -0.25, accuracy: 1e-5)
+
+        let panBeyondLimit = MPRViewportTransform(zoom: 0.25, pan: SIMD2<Float>(10, -10))
+        XCTAssertEqual(panBeyondLimit.pan.x, 0.375, accuracy: 1e-5)
+        XCTAssertEqual(panBeyondLimit.pan.y, -0.375, accuracy: 1e-5)
+
+        let aboveMaximum = MPRViewportTransform(zoom: 12, pan: SIMD2<Float>(10, -10))
+        XCTAssertEqual(aboveMaximum.zoom, MPRViewportTransform.maximumZoom)
+        XCTAssertEqual(aboveMaximum.pan.x, 4.25, accuracy: 1e-5)
+        XCTAssertEqual(aboveMaximum.pan.y, -4.25, accuracy: 1e-5)
+    }
+
+    func test_displayAndViewportTransformsRoundTripWithOrientationAndFlips() {
+        let display = MPRDisplayTransform(
+            orientation: .rotated90CW,
+            flipHorizontal: true,
+            flipVertical: true,
+            leadingLabel: .right,
+            trailingLabel: .left,
+            topLabel: .superior,
+            bottomLabel: .inferior
+        )
+        let viewport = MPRViewportTransform(zoom: 2.5, pan: SIMD2<Float>(0.2, -0.1))
+        let texture = SIMD2<Float>(0.25, 0.4)
+
+        let imageScreen = display.screenCoordinates(forTexture: texture)
+        let viewportScreen = viewport.screenCoordinates(forImageScreen: imageScreen)
+        let roundTripImageScreen = viewport.imageScreenCoordinates(forViewportScreen: viewportScreen)
+        let roundTripTexture = display.textureCoordinates(forScreen: roundTripImageScreen)
+
+        XCTAssertEqual(roundTripTexture.x, texture.x, accuracy: 1e-5)
+        XCTAssertEqual(roundTripTexture.y, texture.y, accuracy: 1e-5)
+    }
+
+    func test_viewportTransformMatchesAspectAwareShaderMappingForRotatedNonSquarePlane() {
+        let sourceAspectRatio: Float = 2.4
+        let transform = MPRViewportTransform(
+            zoom: 1.5,
+            pan: SIMD2<Float>(0.04, -0.03),
+            rotationRadians: .pi / 4
+        )
+        let imagePoint = SIMD2<Float>(0.2, 0.7)
+        let sourceSize = SIMD2<Float>(sourceAspectRatio, 1)
+        let absoluteCos = abs(cos(transform.rotationRadians))
+        let absoluteSin = abs(sin(transform.rotationRadians))
+        let rotatedBounds = SIMD2<Float>(
+            absoluteCos * sourceSize.x + absoluteSin * sourceSize.y,
+            absoluteSin * sourceSize.x + absoluteCos * sourceSize.y
+        )
+        let centered = (imagePoint - SIMD2<Float>(repeating: 0.5)) * sourceSize * transform.zoom
+        let expected = SIMD2<Float>(repeating: 0.5)
+            + transform.pan
+            + SIMD2<Float>(
+                centered.x * cos(transform.rotationRadians) - centered.y * sin(transform.rotationRadians),
+                centered.x * sin(transform.rotationRadians) + centered.y * cos(transform.rotationRadians)
+            ) / rotatedBounds
+
+        let viewportPoint = transform.screenCoordinates(
+            forImageScreen: imagePoint,
+            sourceAspectRatio: sourceAspectRatio
+        )
+        let roundTrip = transform.imageScreenCoordinates(
+            forViewportScreen: viewportPoint,
+            sourceAspectRatio: sourceAspectRatio
+        )
+
+        XCTAssertEqual(viewportPoint.x, expected.x, accuracy: 1e-5)
+        XCTAssertEqual(viewportPoint.y, expected.y, accuracy: 1e-5)
+        XCTAssertEqual(roundTrip.x, imagePoint.x, accuracy: 1e-5)
+        XCTAssertEqual(roundTrip.y, imagePoint.y, accuracy: 1e-5)
+    }
+
+}
